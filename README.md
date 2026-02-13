@@ -74,7 +74,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 **`.klaus/config.json`** — Override defaults:
 ```json
 {
-  "worktree_base": "/tmp/klaus",
+  "worktree_base": "/tmp/klaus-sessions",
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
   "default_branch": "main"

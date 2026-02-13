@@ -10,8 +10,8 @@ import (
 
 func TestDefaults(t *testing.T) {
 	cfg := Defaults()
-	if cfg.WorktreeBase != "/tmp/klaus" {
-		t.Errorf("WorktreeBase = %q, want /tmp/klaus", cfg.WorktreeBase)
+	if cfg.WorktreeBase != "/tmp/klaus-sessions" {
+		t.Errorf("WorktreeBase = %q, want /tmp/klaus-sessions", cfg.WorktreeBase)
 	}
 	if cfg.DefaultBudget != "5.00" {
 		t.Errorf("DefaultBudget = %q, want 5.00", cfg.DefaultBudget)
@@ -30,8 +30,8 @@ func TestLoadNoFile(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 	// Should return defaults
-	if cfg.WorktreeBase != "/tmp/klaus" {
-		t.Errorf("WorktreeBase = %q, want /tmp/klaus", cfg.WorktreeBase)
+	if cfg.WorktreeBase != "/tmp/klaus-sessions" {
+		t.Errorf("WorktreeBase = %q, want /tmp/klaus-sessions", cfg.WorktreeBase)
 	}
 }
 
@@ -167,8 +167,8 @@ func TestInit(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parsing config: %v", err)
 	}
-	if cfg.WorktreeBase != "/tmp/klaus" {
-		t.Errorf("config WorktreeBase = %q, want /tmp/klaus", cfg.WorktreeBase)
+	if cfg.WorktreeBase != "/tmp/klaus-sessions" {
+		t.Errorf("config WorktreeBase = %q, want /tmp/klaus-sessions", cfg.WorktreeBase)
 	}
 
 	// Verify prompt.md exists

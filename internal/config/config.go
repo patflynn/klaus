@@ -20,7 +20,7 @@ type Config struct {
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
-		WorktreeBase:  "/tmp/klaus",
+		WorktreeBase:  "/tmp/klaus-sessions",
 		DefaultBudget: "5.00",
 		DataRef:       "refs/klaus/data",
 		DefaultBranch: "main",

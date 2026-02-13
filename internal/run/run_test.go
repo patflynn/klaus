@@ -54,7 +54,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		Prompt:     "Add bluetooth config",
 		Issue:      &issue,
 		Branch:     "agent/20260210-1430-a3f2",
-		Worktree:   "/tmp/klaus/20260210-1430-a3f2",
+		Worktree:   "/tmp/klaus-sessions/20260210-1430-a3f2",
 		TmuxPane:   &pane,
 		Budget:     &budget,
 		LogFile:    &logFile,
@@ -100,7 +100,7 @@ func TestSaveLoadNullFields(t *testing.T) {
 		ID:        "20260210-1430-b1c2",
 		Prompt:    "Fix something",
 		Branch:    "agent/20260210-1430-b1c2",
-		Worktree:  "/tmp/klaus/20260210-1430-b1c2",
+		Worktree:  "/tmp/klaus-sessions/20260210-1430-b1c2",
 		CreatedAt: "2026-02-10T14:30:00-08:00",
 	}
 
