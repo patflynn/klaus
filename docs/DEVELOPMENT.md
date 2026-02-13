@@ -1,131 +1,87 @@
 # Developing klaus
 
-## Setup
+Klaus is developed using klaus. The typical flow is a `klaus session` in the klaus repo itself, with agents doing the implementation work.
+
+## Getting started
 
 ```bash
 cd klaus
-nix develop   # drops you into a shell with go, gopls, golangci-lint, gh, git, tmux
+nix develop       # go, gopls, golangci-lint, gh, git, tmux
+klaus session     # start a coordinator session
 ```
 
-Or if you prefer not to use nix, install Go 1.24+ and the tools above manually.
+From inside the session, you and Claude plan work together, then fan out to agents:
 
-## Build, test, iterate
+```
+You: Let's add a --model flag to the launch command. Can you
+     launch an agent for that?
+
+Claude: [runs klaus launch "Add --model flag to launch command" --issue 5]
+```
+
+A new tmux pane appears with an autonomous agent working in its own worktree. You keep talking to Claude about the next thing.
+
+## The development loop
+
+1. **Capture ideas as issues** — especially when they come up while using klaus on other repos:
+   ```bash
+   gh issue create --repo patflynn/klaus --title "Support --model flag"
+   ```
+
+2. **Start a session** and launch agents against those issues:
+   ```bash
+   klaus session
+   # inside the session:
+   # klaus launch "Fix #5: add --model flag" --issue 5
+   # klaus launch "Fix #8: improve status output" --issue 8
+   ```
+
+3. **Monitor with `klaus status`** — Claude in the coordinator session can check on agents and course-correct.
+
+4. **Review PRs** — agents push branches and open PRs. Review, merge, move on.
+
+5. **Rebuild and pick up changes** — after merging:
+   ```bash
+   make install   # fast: go build to ~/.local/bin/
+   ```
+   Other repos pick up new versions with `nix flake lock --update-input klaus`.
+
+## Developing klaus while using it elsewhere
+
+Ideas for klaus improvements surface while using it on other repos. Don't context-switch — file the issue and keep working:
 
 ```bash
-make build    # go build → bin/klaus
-make test     # go test ./...
-make vet      # go vet ./...
-make lint     # golangci-lint (if installed)
-make install  # build + copy to ~/.local/bin/
+# Working in cosmo, notice klaus could be better
+gh issue create --repo patflynn/klaus --title "Add timeout support for agents"
+
+# Later, in the klaus repo
+klaus session
+# launch an agent to fix it
 ```
 
-The full cycle:
-```bash
-# hack on code
-make test && make install
-# test manually in another tmux session
-```
+Two ways to get the binary:
+- **`make install`** — fast `go build`, good for active iteration
+- **`nix build .`** / flake input — reproducible, what CI and other repos use
 
 ## Project layout
 
 ```
-cmd/klaus/main.go        Entry point — just calls cmd.Execute()
+cmd/klaus/main.go        Entry point
 internal/
-  cmd/                   Cobra command wiring (one file per command)
-  run/                   Run state: ID gen, save/load, list (pure logic, no I/O deps)
+  cmd/                   Cobra commands (one file each)
+  run/                   Run state management (pure logic)
   stream/                JSONL stream formatter (pure logic)
   scan/                  Sensitivity scanner (pure logic)
-  git/                   Git worktree + data ref operations (shells out to git)
-  tmux/                  Tmux pane management (shells out to tmux)
-  config/                Config loading + prompt template rendering
+  git/                   Git worktree + data ref ops
+  tmux/                  Tmux pane management
+  config/                Config loading + prompt templates
 ```
 
-The `internal/` packages are split by dependency boundary:
-- **Pure logic** (`run`, `stream`, `scan`): no external commands, fully unit-testable
-- **External wrappers** (`git`, `tmux`): shell out to system commands, integration-tested
-- **Config** bridges both: pure JSON/template logic, reads from filesystem
-
-## Testing
-
-```bash
-make test                          # all tests
-go test ./internal/run/ -v         # one package, verbose
-go test ./internal/git/ -v -run TestWorktree   # specific test
-```
-
-Git integration tests create temporary repos in `t.TempDir()` — no fixtures, no cleanup needed.
+Pure-logic packages (`run`, `stream`, `scan`) have no external deps and are fully unit-tested. External wrappers (`git`, `tmux`) are integration-tested against temp resources.
 
 ## Nix package
 
-The flake produces both a dev shell and a package:
-
-```bash
-nix build .              # build the package
-./result/bin/klaus       # run it
-nix develop              # enter dev shell
-```
-
-When you change Go dependencies, update the vendor hash:
+When Go dependencies change, update the vendor hash:
 1. Set `vendorHash` to a dummy value in `flake.nix`
-2. Run `nix build .` — the error message gives you the correct hash
+2. `nix build .` — the error gives you the correct hash
 3. Update `vendorHash` with the real hash
-
-## Using klaus on other repos
-
-Add klaus as a flake input in the target repo:
-
-```nix
-inputs.klaus = {
-  url = "github:patflynn/klaus";
-  inputs.nixpkgs.follows = "nixpkgs";
-};
-```
-
-Add to devShell buildInputs:
-```nix
-klaus.packages.${system}.default
-```
-
-Then `nix flake lock --update-input klaus` to pick up new versions after pushing changes.
-
-## Workflow: developing klaus while using it elsewhere
-
-Klaus development happens alongside using it on other repos. Ideas come up while using the tool — capture them as issues, fix them later.
-
-**Day-to-day:**
-```bash
-# In cosmo or build repo, notice a missing feature
-gh issue create --repo patflynn/klaus --title "Support --model flag"
-
-# Later, switch to klaus dev
-cd ~/hack/klaus
-nix develop
-
-# Fix it
-make test && make install   # fast local iteration
-git push                    # CI runs, other repos can update
-
-# In the other repo, pick up the change
-nix flake lock --update-input klaus
-```
-
-**Two paths to get the binary:**
-- `make install` — fast, uses `go build`, good for active development
-- `nix build .` / flake input — reproducible, what CI and other repos use
-
-They're not in conflict. Use `make install` when you're iterating fast. The nix package is the source of truth for distribution.
-
-## Adding a new command
-
-1. Create `internal/cmd/yourcommand.go`
-2. Define a `cobra.Command` and register it in `init()` with `rootCmd.AddCommand(...)`
-3. Use packages from `internal/` for the logic — keep command files thin
-4. `make test && make build` to verify
-5. Commit, push, CI validates
-
-## Adding a new internal package
-
-1. Create `internal/yourpkg/yourpkg.go` + `internal/yourpkg/yourpkg_test.go`
-2. Write tests first if the logic is pure
-3. For packages that shell out (like `git`, `tmux`), test command construction or use temp resources
-4. `make test` to verify
