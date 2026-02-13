@@ -11,24 +11,24 @@
 - [x] cmd/klaus/main.go + internal/cmd/root.go
 
 ## Phase 1: Core Pure-Logic Packages
-- [ ] internal/run/ — RunState, ID generation, state I/O
-- [ ] internal/stream/ — JSONL stream formatter
-- [ ] internal/scan/ — Sensitivity scanner
+- [x] internal/run/ — RunState, ID generation, state I/O
+- [x] internal/stream/ — JSONL stream formatter
+- [x] internal/scan/ — Sensitivity scanner
 
 ## Phase 2: External Command Wrappers
-- [ ] internal/git/ — Worktree and data ref operations
-- [ ] internal/tmux/ — Pane management
-- [ ] internal/config/ — Configuration loading
+- [x] internal/git/ — Worktree and data ref operations
+- [x] internal/tmux/ — Pane management
+- [x] internal/config/ — Configuration loading
 
 ## Phase 3: CLI Commands
-- [ ] launch command
-- [ ] session command
-- [ ] status command
-- [ ] logs command
-- [ ] cleanup command
-- [ ] push-log command
-- [ ] init command
+- [x] launch command
+- [x] session command
+- [x] status command
+- [x] logs command
+- [x] cleanup command
+- [x] push-log command
+- [x] init command
 
 ## Phase 4: Polish
-- [ ] Hidden _format-stream / _finalize subcommands
+- [x] Hidden _format-stream / _finalize subcommands
 - [ ] End-to-end testing
