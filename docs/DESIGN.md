@@ -21,7 +21,7 @@ User prompt
   → klaus launch "<prompt>" --issue N --budget N
   → Generate run ID (YYYYMMDD-HHMM-XXXX)
   → git fetch origin main
-  → git worktree add /tmp/klaus/<id> -b agent/<id> origin/main
+  → git worktree add /tmp/klaus-sessions/<id> -b agent/<id> origin/main
   → Write state file to .git/klaus/runs/<id>.json
   → Build claude command with stream-json output
   → tmux split-window: claude | tee <log> | klaus _format-stream; klaus _finalize <id>
@@ -52,7 +52,7 @@ State + Log files (local .git/klaus/)
   "prompt": "Add bluetooth config",
   "issue": "42",
   "branch": "agent/20260210-1430-a3f2",
-  "worktree": "/tmp/klaus/20260210-1430-a3f2",
+  "worktree": "/tmp/klaus-sessions/20260210-1430-a3f2",
   "tmux_pane": "%5",
   "budget": "5.00",
   "log_file": "/path/to/.git/klaus/logs/20260210-1430-a3f2.jsonl",
@@ -68,7 +68,7 @@ State + Log files (local .git/klaus/)
 `.klaus/config.json`:
 ```json
 {
-  "worktree_base": "/tmp/klaus",
+  "worktree_base": "/tmp/klaus-sessions",
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
   "default_branch": "main"
