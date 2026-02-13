@@ -1,4 +1,4 @@
-.PHONY: build test lint vet clean
+.PHONY: build test lint vet clean install
 
 BINARY := klaus
 BUILD_DIR := bin
@@ -14,6 +14,10 @@ vet:
 
 lint:
 	golangci-lint run ./...
+
+install: build
+	mkdir -p $(HOME)/.local/bin
+	cp $(BUILD_DIR)/$(BINARY) $(HOME)/.local/bin/$(BINARY)
 
 clean:
 	rm -rf $(BUILD_DIR)
