@@ -5,11 +5,10 @@ Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/cl
 ## Quick start
 
 ```bash
-klaus init      # one-time: scaffold .klaus/ config in your repo
-klaus session   # start working
+klaus session
 ```
 
-That's it. You're now in an interactive Claude Code session in a clean worktree. Talk to Claude normally — plan features, debug issues, review code. When there's work that can run in parallel, Claude (or you) spawns agents:
+That's it. You're in an interactive Claude Code session in a clean worktree. Talk to Claude normally — plan features, debug issues, review code. When there's work that can run in parallel, Claude (or you) spawns agents:
 
 ```
 You: We need to fix the flaky auth test, add dark mode to settings,
@@ -66,13 +65,13 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id>` | Force-push a log held back for sensitivity |
-| `klaus init` | One-time setup of `.klaus/` config |
+| `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
 
 ## Configuration
 
-`klaus init` creates `.klaus/` with two files:
+Klaus works out of the box with sensible defaults. To customize, run `klaus init` to scaffold a `.klaus/` directory, or create the files yourself:
 
-**`.klaus/config.json`** — Settings:
+**`.klaus/config.json`** — Override defaults:
 ```json
 {
   "worktree_base": "/tmp/klaus",
@@ -82,7 +81,7 @@ The coordinator session uses these — you generally don't run them directly:
 }
 ```
 
-**`.klaus/prompt.md`** — System prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
+**`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
 
 ## Under the hood
 
