@@ -56,8 +56,9 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 			return err
 		}
 
+		repoName := filepath.Base(root)
 		branch := "agent/" + id
-		worktree := filepath.Join(cfg.WorktreeBase, id)
+		worktree := filepath.Join(cfg.WorktreeBase, repoName, id)
 		defaultBranch := cfg.DefaultBranch
 
 		fmt.Printf("Launching agent %s...\n", id)
@@ -76,7 +77,6 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 		fmt.Printf("  branch:   %s\n", branch)
 
 		// Build system prompt
-		repoName := filepath.Base(root)
 		sysPrompt, err := config.RenderPrompt(root, config.PromptVars{
 			RunID:    id,
 			Issue:    issue,

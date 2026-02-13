@@ -50,7 +50,8 @@ clean on the default branch. Must be run inside a tmux session.`,
 		}
 		id := "session-" + baseID
 		branch := "session/" + id
-		worktree := filepath.Join(cfg.WorktreeBase, id)
+		repoName := filepath.Base(root)
+		worktree := filepath.Join(cfg.WorktreeBase, repoName, id)
 		defaultBranch := cfg.DefaultBranch
 
 		fmt.Printf("Creating coordinator session %s...\n", id)
