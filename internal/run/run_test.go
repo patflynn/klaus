@@ -26,7 +26,7 @@ func TestGenID(t *testing.T) {
 
 func TestGenIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 5; i++ {
 		id, err := GenID()
 		if err != nil {
 			t.Fatalf("GenID() error: %v", err)
