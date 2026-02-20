@@ -1,0 +1,14 @@
+{
+  "id": "20260220-0857-2f3f",
+  "prompt": "Add a session-specific system prompt to the 'klaus session' command, injected via claude's --append-system-prompt flag. This should NOT write any files into the worktree.\n\n## What to implement\n\n1. In internal/config/config.go:\n   - Add a new default template constant 'defaultSessionPromptTemplate' for session coordinators\n   - Add a new function 'RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error)' that reads from '.klaus/session-prompt.md' (falling back to the built-in default)\n   - The template should use the same PromptVars struct and template rendering as RenderPrompt\n\n2. The default session prompt template should convey:\n   - You are a coordinator running inside a klaus session (session ID: {{.RunID}})\n   - Your working directory is an isolated git worktree on branch {{.Branch}} for repo {{.RepoName}}\n   - To delegate implementation tasks to autonomous agents, use: klaus launch \"\u003cprompt\u003e\"\n   - To delegate tasks referencing a GitHub issue: klaus launch --issue \u003cnumber\u003e \"\u003cprompt\u003e\"\n   - To check on running agents: klaus status\n   - To view agent output: klaus logs \u003crun-id\u003e\n   - To clean up finished runs: klaus cleanup \u003crun-id\u003e\n   - You should delegate implementation work to agents rather than doing it directly\n   - Each launched agent gets its own isolated worktree and branch, and will create a PR when done\n   - Keep the prompt language/framework agnostic — the repos being worked on could be anything\n\n3. In internal/cmd/session.go:\n   - After creating the worktree and before running claude, render the session prompt using config.RenderSessionPrompt\n   - Change the claude exec.Command to pass '--append-system-prompt' with the rendered prompt\n   - The PromptVars should be populated with: RunID=id, Branch=branch, RepoName=repoName\n\n4. Add tests:\n   - Test RenderSessionPrompt with default template (no .klaus/session-prompt.md)\n   - Test RenderSessionPrompt with a custom template file\n   - Verify template variables are substituted correctly\n\n5. Make sure everything compiles: go build ./...\n6. Make sure all tests pass: go test ./...\n7. Commit the changes.",
+  "issue": null,
+  "branch": "agent/20260220-0857-2f3f",
+  "worktree": "/tmp/klaus/20260220-0857-2f3f",
+  "tmux_pane": "%4",
+  "budget": "5.00",
+  "log_file": "/home/patrick/hack/klaus/.git/klaus/logs/20260220-0857-2f3f.jsonl",
+  "created_at": "2026-02-20T08:57:38-05:00",
+  "cost_usd": 0.5587827499999999,
+  "duration_ms": 124051,
+  "pr_url": "https://github.com/patflynn/klaus/pull/7"
+}
