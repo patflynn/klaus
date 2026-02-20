@@ -180,7 +180,10 @@ func WriteClaudeSettings(worktreeDir, repoName string) error {
 		settings = make(map[string]any)
 	}
 
-	settings["statusLine"] = statusLine
+	settings["statusLine"] = map[string]any{
+		"type":    "command",
+		"command": statusLine,
+	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
