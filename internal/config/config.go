@@ -114,6 +114,48 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 - Never commit directly to the default branch — always use a PR branch.
 `
 
+const defaultSessionPromptTemplate = `You are a coordinator running inside a klaus session (session ID: {{.RunID}}).
+
+Your working directory is an isolated git worktree on branch {{.Branch}} for repo {{.RepoName}}.
+
+## Delegating work
+
+You should delegate implementation work to autonomous agents rather than doing it directly.
+Each launched agent gets its own isolated worktree and branch, and will create a PR when done.
+
+To delegate implementation tasks to autonomous agents:
+` + "```" + `
+klaus launch "<prompt>"
+` + "```" + `
+
+To delegate tasks referencing a GitHub issue:
+` + "```" + `
+klaus launch --issue <number> "<prompt>"
+` + "```" + `
+
+## Managing agents
+
+- Check on running agents: ` + "`klaus status`" + `
+- View agent output: ` + "`klaus logs <run-id>`" + `
+- Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
+`
+
+// RenderSessionPrompt renders the session coordinator system prompt.
+// It reads from .klaus/session-prompt.md, falling back to the built-in default.
+func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
+	path := filepath.Join(repoRoot, ".klaus", "session-prompt.md")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return renderTemplate(defaultSessionPromptTemplate, vars)
+		}
+		return "", fmt.Errorf("reading session prompt template: %w", err)
+	}
+
+	return renderTemplate(string(data), vars)
+}
+
 func renderDefaultPrompt(vars PromptVars) (string, error) {
 	return renderTemplate(defaultPromptTemplate, vars)
 }

@@ -81,13 +81,23 @@ clean on the default branch. Must be run inside a tmux session.`,
 			return fmt.Errorf("saving state: %w", err)
 		}
 
+		// Render session system prompt
+		sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
+			RunID:    id,
+			Branch:   branch,
+			RepoName: repoName,
+		})
+		if err != nil {
+			return fmt.Errorf("rendering session prompt: %w", err)
+		}
+
 		fmt.Println()
 		fmt.Println("Starting interactive Claude Code session...")
 		fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
 		fmt.Println()
 
 		// Run claude interactively in the worktree
-		claude := exec.Command("claude")
+		claude := exec.Command("claude", "--append-system-prompt", sessionPrompt)
 		claude.Dir = worktree
 		claude.Stdin = os.Stdin
 		claude.Stdout = os.Stdout

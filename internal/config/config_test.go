@@ -152,6 +152,68 @@ func TestRenderPromptCustomTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderSessionPromptDefault(t *testing.T) {
+	dir := t.TempDir() // no .klaus/session-prompt.md
+
+	vars := PromptVars{
+		RunID:    "session-20260210-1430-a3f2",
+		Branch:   "session/session-20260210-1430-a3f2",
+		RepoName: "test-repo",
+	}
+
+	prompt, err := RenderSessionPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "session-20260210-1430-a3f2") {
+		t.Error("prompt should contain session ID")
+	}
+	if !strings.Contains(prompt, "session/session-20260210-1430-a3f2") {
+		t.Error("prompt should contain branch name")
+	}
+	if !strings.Contains(prompt, "test-repo") {
+		t.Error("prompt should contain repo name")
+	}
+	if !strings.Contains(prompt, "klaus launch") {
+		t.Error("prompt should contain klaus launch instruction")
+	}
+	if !strings.Contains(prompt, "klaus status") {
+		t.Error("prompt should contain klaus status instruction")
+	}
+	if !strings.Contains(prompt, "klaus logs") {
+		t.Error("prompt should contain klaus logs instruction")
+	}
+	if !strings.Contains(prompt, "klaus cleanup") {
+		t.Error("prompt should contain klaus cleanup instruction")
+	}
+}
+
+func TestRenderSessionPromptCustomTemplate(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	os.MkdirAll(klausDir, 0o755)
+
+	tmpl := "Session {{.RunID}} on branch {{.Branch}} for {{.RepoName}}"
+	os.WriteFile(filepath.Join(klausDir, "session-prompt.md"), []byte(tmpl), 0o644)
+
+	vars := PromptVars{
+		RunID:    "session-abc",
+		Branch:   "session/session-abc",
+		RepoName: "myrepo",
+	}
+
+	prompt, err := RenderSessionPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	want := "Session session-abc on branch session/session-abc for myrepo"
+	if prompt != want {
+		t.Errorf("prompt = %q, want %q", prompt, want)
+	}
+}
+
 func TestInit(t *testing.T) {
 	dir := t.TempDir()
 
