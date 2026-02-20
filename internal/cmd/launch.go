@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -75,6 +76,10 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 		}
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
+
+		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+		}
 
 		// Build system prompt
 		sysPrompt, err := config.RenderPrompt(root, config.PromptVars{

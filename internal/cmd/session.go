@@ -67,6 +67,10 @@ clean on the default branch. Must be run inside a tmux session.`,
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
 
+		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+		}
+
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
 		state := &run.State{
