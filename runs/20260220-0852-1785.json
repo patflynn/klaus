@@ -1,0 +1,14 @@
+{
+  "id": "20260220-0852-1785",
+  "prompt": "Make 'klaus' with no arguments default to starting a new session (equivalent to 'klaus session'). The change is in internal/cmd/root.go — add a RunE to rootCmd that delegates to sessionCmd.RunE(sessionCmd, args). Also update the Long description to mention this behavior. Make sure it compiles with 'go build ./...'.",
+  "issue": null,
+  "branch": "agent/20260220-0852-1785",
+  "worktree": "/tmp/klaus/20260220-0852-1785",
+  "tmux_pane": "%3",
+  "budget": "5.00",
+  "log_file": "/home/patrick/hack/klaus/.git/klaus/logs/20260220-0852-1785.jsonl",
+  "created_at": "2026-02-20T08:52:31-05:00",
+  "cost_usd": 0.16325975,
+  "duration_ms": 37991,
+  "pr_url": "https://github.com/patflynn/klaus/pull/6"
+}
