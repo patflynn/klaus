@@ -16,8 +16,14 @@ var rootCmd = &cobra.Command{
 	Long: `klaus orchestrates parallel Claude Code agents using git worktrees and tmux panes.
 
 It launches autonomous agents in isolated worktrees, manages their lifecycle,
-streams and formats their output, and tracks run state.`,
+streams and formats their output, and tracks run state.
+
+Running 'klaus' with no arguments starts an interactive coordinator session
+(equivalent to 'klaus session').`,
 	Version: version,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return sessionCmd.RunE(sessionCmd, args)
+	},
 }
 
 func Execute() error {
