@@ -97,7 +97,7 @@ clean on the default branch. Must be run inside a tmux session.`,
 		fmt.Println()
 
 		// Run claude interactively in the worktree
-		claude := exec.Command("claude", "--append-system-prompt", sessionPrompt)
+		claude := exec.Command("claude", "--dangerously-skip-permissions", "--append-system-prompt", sessionPrompt)
 		claude.Dir = worktree
 		claude.Stdin = os.Stdin
 		claude.Stdout = os.Stdout
