@@ -156,6 +156,48 @@ func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderTemplate(string(data), vars)
 }
 
+// WriteClaudeSettings writes a .claude/settings.json into the given worktree
+// directory with a statusLine that displays the repo name and current branch.
+// If the file already exists (e.g. from the checked-out branch), it merges the
+// statusLine key into the existing settings.
+func WriteClaudeSettings(worktreeDir, repoName string) error {
+	claudeDir := filepath.Join(worktreeDir, ".claude")
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+
+	statusLine := fmt.Sprintf(
+		`input=$(cat); cwd=$(echo "$input" | jq -r '.workspace.current_dir'); branch=$(git -C "$cwd" --no-optional-locks branch --show-current 2>/dev/null); if [ -n "$branch" ]; then echo "%s ($branch)"; else echo "%s"; fi`,
+		repoName, repoName,
+	)
+
+	var settings map[string]any
+
+	data, err := os.ReadFile(settingsPath)
+	if err == nil {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			settings = make(map[string]any)
+		}
+	} else {
+		settings = make(map[string]any)
+	}
+
+	settings["statusLine"] = statusLine
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling settings: %w", err)
+	}
+
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		return fmt.Errorf("creating .claude dir: %w", err)
+	}
+
+	if err := os.WriteFile(settingsPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing settings: %w", err)
+	}
+
+	return nil
+}
+
 func renderDefaultPrompt(vars PromptVars) (string, error) {
 	return renderTemplate(defaultPromptTemplate, vars)
 }
