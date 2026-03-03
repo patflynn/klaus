@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -79,6 +80,16 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 
 		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+		}
+
+		// Set up Nix dev environment if flake.nix exists
+		if _, err := os.Stat(filepath.Join(worktree, "flake.nix")); err == nil {
+			fmt.Println("  nix project detected, setting up dev environment...")
+			nixCmd := exec.Command("nix", "develop", "--command", "true")
+			nixCmd.Dir = worktree
+			if err := nixCmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: nix develop failed: %v\n", err)
+			}
 		}
 
 		// Build system prompt

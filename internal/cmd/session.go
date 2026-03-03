@@ -71,6 +71,16 @@ clean on the default branch. Must be run inside a tmux session.`,
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
+		// Set up Nix dev environment if flake.nix exists
+		if _, err := os.Stat(filepath.Join(worktree, "flake.nix")); err == nil {
+			fmt.Println("  nix project detected, setting up dev environment...")
+			nixCmd := exec.Command("nix", "develop", "--command", "true")
+			nixCmd.Dir = worktree
+			if err := nixCmd.Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: nix develop failed: %v\n", err)
+			}
+		}
+
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
 		state := &run.State{
