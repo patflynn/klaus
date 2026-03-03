@@ -110,14 +110,15 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 			id,
 		)
 
-		// Launch in tmux pane
-		paneID, err := tmux.SplitWindow(worktree, paneCmd)
+		// Launch in tmux pane, targeting the pane that ran this command
+		currentPane := os.Getenv("TMUX_PANE")
+		paneID, err := tmux.SplitWindow(currentPane, worktree, paneCmd)
 		if err != nil {
 			return fmt.Errorf("creating tmux pane: %w", err)
 		}
 
 		tmux.SetPaneTitle(paneID, "agent:"+id)
-		tmux.RebalanceLayout()
+		tmux.RebalanceLayout(currentPane)
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)

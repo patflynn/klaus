@@ -5,8 +5,8 @@ import (
 )
 
 func TestBuildArgsSplitWindow(t *testing.T) {
-	args := BuildArgs("split-window", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello")
-	want := []string{"split-window", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello"}
+	args := BuildArgs("split-window", "-t", "%0", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello")
+	want := []string{"split-window", "-t", "%0", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello"}
 
 	if len(args) != len(want) {
 		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
