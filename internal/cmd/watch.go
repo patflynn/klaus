@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -101,10 +103,43 @@ Must be run inside a tmux session.`,
 
 		logFile := filepath.Join(run.LogDir(commonDir), id+".jsonl")
 
+		// Gather review comments context, filtering to trusted reviewers only
+		reviewContext := ""
+		owner, repoNameGH, ghErr := gh.GetRepoOwnerAndName()
+		if ghErr == nil {
+			comments, err := gh.FetchPRReviewComments(owner, repoNameGH, prNumber)
+			if err == nil && len(comments) > 0 {
+				trusted := buildTrustedSet(cfg, owner, repoNameGH)
+				var sb strings.Builder
+				sb.WriteString("\n\nExisting PR review comments:\n")
+				included := 0
+				for _, c := range comments {
+					if !trusted[c.User.Login] {
+						log.Printf("skipping review comment %d from untrusted user %q", c.ID, c.User.Login)
+						continue
+					}
+					sb.WriteString(fmt.Sprintf("- [comment %d] %s: %s\n", c.ID, c.Path, truncate(c.Body, 200)))
+					included++
+				}
+				if included > 0 {
+					reviewContext = sb.String()
+				}
+			}
+		}
+
+		// Check initial conflict status
+		conflictStatus := getPRConflicts(prNumber)
+		conflictNote := ""
+		if conflictStatus == "yes" {
+			conflictNote = "\n\nNote: This PR currently has merge conflicts. Please rebase onto origin/main as the first step."
+		}
+
 		// Build the claude command
 		prompt := fmt.Sprintf(
-			"Monitor CI for PR #%s. Check the current CI status, and if any checks have failed, diagnose the failures and push fixes. Repeat until all checks pass.",
+			"Monitor CI for PR #%s. Check the current CI status, and if any checks have failed, diagnose the failures and push fixes. Check for merge conflicts and rebase if needed. Also check and address any PR review comments. After pushing fixes, reply to addressed review comments. Repeat until all checks pass.%s%s",
 			prNumber,
+			conflictNote,
+			reviewContext,
 		)
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
@@ -164,9 +199,27 @@ Must be run inside a tmux session.`,
 	},
 }
 
+// buildTrustedSet returns a set of usernames trusted for review comments.
+// It combines configured TrustedReviewers with repo collaborators.
+func buildTrustedSet(cfg config.Config, owner, repo string) map[string]bool {
+	trusted := make(map[string]bool)
+	for _, u := range cfg.TrustedReviewers {
+		trusted[u] = true
+	}
+	collabs, err := gh.FetchCollaborators(owner, repo)
+	if err != nil {
+		log.Printf("warning: could not fetch collaborators: %v", err)
+	} else {
+		for _, u := range collabs {
+			trusted[u] = true
+		}
+	}
+	return trusted
+}
+
 // getPRBranch returns the head branch name for a PR using the gh CLI.
 func getPRBranch(prNumber string) (string, error) {
-	cmd := exec.Command("gh", "pr", "view", prNumber, "--json", "headRefName", "-q", ".headRefName")
+	cmd := exec.Command("gh", "pr", "view", "--", prNumber, "--json", "headRefName", "-q", ".headRefName")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

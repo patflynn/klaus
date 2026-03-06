@@ -11,19 +11,21 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase  string `json:"worktree_base"`
-	DefaultBudget string `json:"default_budget"`
-	DataRef       string `json:"data_ref"`
-	DefaultBranch string `json:"default_branch"`
+	WorktreeBase     string   `json:"worktree_base"`
+	DefaultBudget    string   `json:"default_budget"`
+	DataRef          string   `json:"data_ref"`
+	DefaultBranch    string   `json:"default_branch"`
+	TrustedReviewers []string `json:"trusted_reviewers"`
 }
 
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
-		WorktreeBase:  filepath.Join(os.TempDir(), "klaus-sessions"),
-		DefaultBudget: "5.00",
-		DataRef:       "refs/klaus/data",
-		DefaultBranch: "main",
+		WorktreeBase:     filepath.Join(os.TempDir(), "klaus-sessions"),
+		DefaultBudget:    "5.00",
+		DataRef:          "refs/klaus/data",
+		DefaultBranch:    "main",
+		TrustedReviewers: []string{"gemini-code-assist[bot]"},
 	}
 }
 
@@ -142,7 +144,7 @@ const defaultWatchPromptTemplate = `You are an autonomous CI monitoring agent fo
 ## Your Mission
 
 Monitor CI checks for PR #{{.PR}}, diagnose any failures, fix them, and push
-fixes until all checks pass.
+fixes until all checks pass. Also handle merge conflicts and review comments.
 
 ## Workflow
 
@@ -155,7 +157,38 @@ gh pr checks {{.PR}}
 
 If checks are still running, wait 30 seconds and check again.
 
-### 2. When a check fails
+### 2. Check for merge conflicts
+
+After checking CI, check for merge conflicts:
+` + "```" + `
+gh pr view {{.PR}} --json mergeable -q .mergeable
+` + "```" + `
+
+If the result is "CONFLICTING", rebase onto the base branch:
+` + "```" + `
+git fetch origin main
+git rebase origin/main
+` + "```" + `
+
+If the rebase succeeds, run the build/tests to verify, then force push:
+` + "```" + `
+git push --force-with-lease
+` + "```" + `
+
+If the rebase fails, run ` + "`git rebase --abort`" + `, log a warning, and continue
+monitoring other issues.
+
+### 3. Check review comments
+
+Fetch PR review comments to understand requested changes:
+` + "```" + `
+gh api repos/{owner}/{repo}/pulls/{{.PR}}/comments
+` + "```" + `
+
+Review comments may contain actionable feedback. Address them alongside any
+CI failures.
+
+### 4. When a check fails
 
 Identify the failed workflow run. Get the run ID from the checks output, then
 read the failure logs:
@@ -165,23 +198,33 @@ gh run view <run-id> --log-failed
 
 Analyze the logs to understand the root cause.
 
-### 3. Fix the issue
+### 5. Fix the issue
 
 - Read the relevant source and test files to understand the failure.
+- Also address any actionable PR review comments.
 - Make the minimal code change needed to fix the CI failure.
 - Run any available local test commands to verify your fix before pushing.
 - Stage your changes with ` + "`git add`" + `.
 - Create a focused commit describing the fix.
 - Push: ` + "`git push`" + `
 
-### 4. Repeat
+### 6. Reply to addressed review comments
+
+After pushing a fix, reply to each review comment you addressed:
+` + "```" + `
+gh api repos/{owner}/{repo}/pulls/{{.PR}}/comments/{comment-id}/replies -f body="Addressed in <commit-sha>"
+` + "```" + `
+
+Replace ` + "`<commit-sha>`" + ` with the actual commit hash from your push.
+
+### 7. Repeat
 
 After pushing, wait for CI to restart (check with ` + "`gh pr checks {{.PR}}`" + `),
 then monitor again. Continue until all checks pass.
 
 ## Guidelines
 
-- Only fix CI failures — do not make unrelated changes.
+- Only fix CI failures and address review comments — do not make unrelated changes.
 - If a fix attempt does not resolve the issue after 3 tries, report what you
   have found and stop.
 - Read test files and source code as needed to understand failures.
