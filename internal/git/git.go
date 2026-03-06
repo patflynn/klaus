@@ -140,6 +140,47 @@ func SyncToDataRef(repoDir, dataRef, commitMsg string, files map[string]string) 
 	return err
 }
 
+// ParseRepoRef parses a GitHub repo reference into owner, repo name, and clone URL.
+// Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]"
+func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
+	ref = strings.TrimSuffix(ref, ".git")
+
+	switch {
+	case strings.HasPrefix(ref, "https://github.com/"):
+		ref = strings.TrimPrefix(ref, "https://github.com/")
+	case strings.HasPrefix(ref, "http://github.com/"):
+		ref = strings.TrimPrefix(ref, "http://github.com/")
+	case strings.HasPrefix(ref, "git@github.com:"):
+		ref = strings.TrimPrefix(ref, "git@github.com:")
+	}
+
+	ref = strings.TrimRight(ref, "/")
+	parts := strings.SplitN(ref, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", fmt.Errorf("invalid repo reference %q: expected owner/repo", ref)
+	}
+
+	owner = parts[0]
+	repo = parts[1]
+	cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	return owner, repo, cloneURL, nil
+}
+
+// EnsureClone clones a repo to destDir if it doesn't already exist.
+// If it already exists, fetches the latest from origin.
+func EnsureClone(cloneURL, destDir string) error {
+	if _, err := os.Stat(filepath.Join(destDir, ".git")); err == nil {
+		_, fetchErr := runGit(destDir, "fetch", "origin", "--quiet")
+		return fetchErr
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
+		return fmt.Errorf("creating parent dir: %w", err)
+	}
+	_, err := runGit("", "clone", cloneURL, destDir, "--quiet")
+	return err
+}
+
 // PushDataRef pushes the data ref to origin.
 func PushDataRef(repoDir, dataRef string) error {
 	refspec := fmt.Sprintf("%s:%s", dataRef, dataRef)

@@ -27,6 +27,8 @@ type State struct {
 	DurationMS *int64   `json:"duration_ms"`
 	PRURL      *string  `json:"pr_url"`
 	Type       string   `json:"type,omitempty"`
+	TargetRepo *string  `json:"target_repo,omitempty"`
+	CloneDir   *string  `json:"clone_dir,omitempty"`
 }
 
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.

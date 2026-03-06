@@ -72,16 +72,22 @@ func cleanupOne(root, commonDir, id string) error {
 		}
 	}
 
+	// For cross-repo runs, git ops target the clone dir instead of the host root
+	gitRoot := root
+	if state.CloneDir != nil {
+		gitRoot = *state.CloneDir
+	}
+
 	// Remove worktree
 	if state.Worktree != "" {
-		if err := git.WorktreeRemove(root, state.Worktree); err == nil {
+		if err := git.WorktreeRemove(gitRoot, state.Worktree); err == nil {
 			fmt.Println("  removed worktree")
 		}
 	}
 
 	// Delete local branch
 	if state.Branch != "" {
-		if err := git.BranchDelete(root, state.Branch); err == nil {
+		if err := git.BranchDelete(gitRoot, state.Branch); err == nil {
 			fmt.Println("  deleted local branch")
 		}
 	}
