@@ -206,6 +206,28 @@ func TestParseRepoRef(t *testing.T) {
 			input:   "/repo",
 			wantErr: true,
 		},
+		{
+			input:   "../evil/repo",
+			wantErr: true,
+		},
+		{
+			input:   "owner/../etc",
+			wantErr: true,
+		},
+		{
+			input:   "https://github.com/../etc/passwd",
+			wantErr: true,
+		},
+		{
+			input:   "git@github.com:../evil.git",
+			wantErr: true,
+		},
+		{
+			input:     "http://github.com/owner/repo",
+			wantOwner: "owner",
+			wantRepo:  "repo",
+			wantURL:   "https://github.com/owner/repo.git",
+		},
 	}
 
 	for _, tt := range tests {
