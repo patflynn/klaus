@@ -11,19 +11,21 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase  string `json:"worktree_base"`
-	DefaultBudget string `json:"default_budget"`
-	DataRef       string `json:"data_ref"`
-	DefaultBranch string `json:"default_branch"`
+	WorktreeBase     string   `json:"worktree_base"`
+	DefaultBudget    string   `json:"default_budget"`
+	DataRef          string   `json:"data_ref"`
+	DefaultBranch    string   `json:"default_branch"`
+	TrustedReviewers []string `json:"trusted_reviewers"`
 }
 
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
-		WorktreeBase:  filepath.Join(os.TempDir(), "klaus-sessions"),
-		DefaultBudget: "5.00",
-		DataRef:       "refs/klaus/data",
-		DefaultBranch: "main",
+		WorktreeBase:     filepath.Join(os.TempDir(), "klaus-sessions"),
+		DefaultBudget:    "5.00",
+		DataRef:          "refs/klaus/data",
+		DefaultBranch:    "main",
+		TrustedReviewers: []string{"gemini-code-assist[bot]"},
 	}
 }
 
