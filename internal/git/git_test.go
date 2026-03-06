@@ -156,6 +156,83 @@ func TestSyncToDataRefMultipleFiles(t *testing.T) {
 	}
 }
 
+func TestParseRepoRef(t *testing.T) {
+	tests := []struct {
+		input     string
+		wantOwner string
+		wantRepo  string
+		wantURL   string
+		wantErr   bool
+	}{
+		{
+			input:     "patflynn/cosmo",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
+			input:     "https://github.com/patflynn/cosmo",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
+			input:     "https://github.com/patflynn/cosmo.git",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
+			input:     "git@github.com:patflynn/cosmo.git",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
+			input:     "https://github.com/patflynn/cosmo/",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
+			input:   "invalid",
+			wantErr: true,
+		},
+		{
+			input:   "",
+			wantErr: true,
+		},
+		{
+			input:   "/repo",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			owner, repo, url, err := ParseRepoRef(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for %q", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if owner != tt.wantOwner {
+				t.Errorf("owner = %q, want %q", owner, tt.wantOwner)
+			}
+			if repo != tt.wantRepo {
+				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+			}
+			if url != tt.wantURL {
+				t.Errorf("url = %q, want %q", url, tt.wantURL)
+			}
+		})
+	}
+}
+
 func containsLine(output, target string) bool {
 	for _, line := range splitLines(output) {
 		if line == target {
