@@ -39,8 +39,12 @@ func SetPaneTitle(paneID, title string) error {
 }
 
 // RebalanceLayout rebalances the pane layout for the window containing targetPane.
-func RebalanceLayout(targetPane string) {
-	runTmux("select-layout", "-t", targetPane, "even-vertical")
+func RebalanceLayout(targetPane string) error {
+	if targetPane == "" {
+		return fmt.Errorf("targetPane cannot be empty")
+	}
+	_, err := runTmux("select-layout", "-t", targetPane, "even-vertical")
+	return err
 }
 
 // PaneExists checks if a tmux pane is still alive.

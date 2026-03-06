@@ -46,6 +46,17 @@ func TestBuildArgsCapturePane(t *testing.T) {
 	}
 }
 
+func TestRebalanceLayoutEmptyPane(t *testing.T) {
+	err := RebalanceLayout("")
+	if err == nil {
+		t.Fatal("expected error for empty targetPane, got nil")
+	}
+	want := "targetPane cannot be empty"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+}
+
 func TestInSessionOutsideTmux(t *testing.T) {
 	// When running tests outside tmux, TMUX env var is typically not set
 	// This test documents the behavior — it may pass or fail depending on env

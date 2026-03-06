@@ -118,7 +118,9 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 		}
 
 		tmux.SetPaneTitle(paneID, "agent:"+id)
-		tmux.RebalanceLayout(currentPane)
+		if err := tmux.RebalanceLayout(currentPane); err != nil {
+			return fmt.Errorf("rebalancing tmux layout: %w", err)
+		}
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
