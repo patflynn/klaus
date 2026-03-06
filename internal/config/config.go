@@ -111,6 +111,15 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 
 ## Conventions
 - Never commit directly to the default branch — always use a PR branch.
+
+## Testing
+- Run ` + "`go build ./...`" + ` before committing to verify compilation.
+- Run any existing tests with ` + "`go test ./...`" + ` and fix failures before pushing.
+
+## Documentation
+- If you add or change a CLI command or flag, update the help text in the cobra command definition.
+- If you add or change user-facing behavior, update the README if one exists.
+- Keep code comments accurate — update or remove comments that no longer match the code.
 `
 
 const defaultSessionPromptTemplate = `You are a coordinator running inside a klaus session (session ID: {{.RunID}}).

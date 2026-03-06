@@ -61,11 +61,39 @@ The coordinator session uses these — you generally don't run them directly:
 |---------|---------|
 | `klaus session` | Start an interactive coordinator session |
 | `klaus launch "<prompt>"` | Spawn an autonomous agent |
-| `klaus status` | Dashboard of all runs |
+| `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
+| `klaus watch <pr-number>` | Monitor CI for a PR and fix failures autonomously |
+| `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id>` | Force-push a log held back for sensitivity |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
+
+### `klaus watch`
+
+Monitor CI checks for an existing PR. When a check fails, the watch agent reads the failure logs, diagnoses the issue, pushes a fix, and repeats until all checks pass. It also handles merge conflicts and addresses review comments from trusted reviewers.
+
+```bash
+klaus watch 42
+```
+
+### `klaus launch --repo`
+
+Launch an agent against a different GitHub repository. The repo is cloned (or fetched if already cached) and the agent gets its own worktree in that clone. State is still tracked in the host repo.
+
+```bash
+klaus launch --repo owner/repo "Fix the bug in their API"
+```
+
+### `klaus status` columns
+
+The status dashboard shows these columns for each run:
+
+| Column | Values | Meaning |
+|--------|--------|---------|
+| CI | `passing` / `failing` / `pending` / `unknown` | CI check status for the PR |
+| CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
+| MERGE | `ready` / `blocked` / `pending` | Overall merge readiness (combines CI, conflicts, and review status) |
 
 ## Configuration
 
@@ -77,11 +105,16 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "worktree_base": "/tmp/klaus-sessions",
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
-  "default_branch": "main"
+  "default_branch": "main",
+  "trusted_reviewers": ["gemini-code-assist[bot]"]
 }
 ```
 
 **`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
+
+**`.klaus/session-prompt.md`** — Custom prompt for the coordinator session. Same template variables.
+
+**`.klaus/watch-prompt.md`** — Custom prompt for the watch agent. Additional variable: `{{.PR}}`.
 
 ## Under the hood
 
