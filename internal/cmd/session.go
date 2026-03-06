@@ -9,6 +9,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -70,6 +71,9 @@ clean on the default branch. Must be run inside a tmux session.`,
 		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
+
+		// Set up Nix dev environment if flake.nix exists
+		nix.SetupDevEnvironment(worktree)
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)

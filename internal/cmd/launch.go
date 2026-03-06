@@ -9,6 +9,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -80,6 +81,9 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
+
+		// Set up Nix dev environment if flake.nix exists
+		nix.SetupDevEnvironment(worktree)
 
 		// Build system prompt
 		sysPrompt, err := config.RenderPrompt(root, config.PromptVars{
