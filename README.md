@@ -5,7 +5,7 @@ Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/cl
 ## Quick start
 
 ```bash
-klaus session
+klaus
 ```
 
 That's it. You're in an interactive Claude Code session in a clean worktree. Talk to Claude normally — plan features, debug issues, review code. When there's work that can run in parallel, Claude (or you) spawns agents:
