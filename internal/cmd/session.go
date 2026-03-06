@@ -99,6 +99,15 @@ clean on the default branch. Must be run inside a tmux session.`,
 			return fmt.Errorf("rendering session prompt: %w", err)
 		}
 
+		// Configure tmux window for better situational awareness
+		currentPane := os.Getenv("TMUX_PANE")
+		if currentPane != "" {
+			tmux.SetWindowOption(currentPane, "automatic-rename", "off")
+			tmux.RenameWindow(currentPane, repoName)
+			tmux.SetWindowOption(currentPane, "pane-border-status", "top")
+			tmux.SetWindowOption(currentPane, "pane-border-format", "#{pane_title}")
+		}
+
 		fmt.Println()
 		fmt.Println("Starting interactive Claude Code session...")
 		fmt.Println("  Use 'klaus launch' from inside to spawn workers.")

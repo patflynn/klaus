@@ -57,6 +57,34 @@ func TestRebalanceLayoutEmptyPane(t *testing.T) {
 	}
 }
 
+func TestBuildArgsSetWindowOption(t *testing.T) {
+	args := BuildArgs("set-option", "-w", "-t", "%0", "automatic-rename", "off")
+	want := []string{"set-option", "-w", "-t", "%0", "automatic-rename", "off"}
+
+	if len(args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestBuildArgsRenameWindow(t *testing.T) {
+	args := BuildArgs("rename-window", "-t", "%0", "my-repo")
+	want := []string{"rename-window", "-t", "%0", "my-repo"}
+
+	if len(args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
 func TestInSessionOutsideTmux(t *testing.T) {
 	// When running tests outside tmux, TMUX env var is typically not set
 	// This test documents the behavior — it may pass or fail depending on env
