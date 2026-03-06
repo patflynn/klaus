@@ -91,15 +91,15 @@ worktree in that clone.`,
 			repoRoot = cloneDir
 			repoName = repo
 			cloneDirPtr = &cloneDir
-			tr := repoRef
-			targetRepo = &tr
+			targetRepo = &repoRef
 
 			// Use target repo config for default_branch if available
+			defaultBranch = "main"
 			targetCfg, loadErr := config.Load(cloneDir)
-			if loadErr == nil && targetCfg.DefaultBranch != "" {
+			if loadErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not load config from target repo %s: %v\n", repoRef, loadErr)
+			} else if targetCfg.DefaultBranch != "" {
 				defaultBranch = targetCfg.DefaultBranch
-			} else {
-				defaultBranch = "main"
 			}
 		} else {
 			repoRoot = hostRoot

@@ -162,6 +162,9 @@ func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
 
 	owner = parts[0]
 	repo = parts[1]
+	if strings.Contains(owner, "..") || strings.Contains(repo, "..") {
+		return "", "", "", fmt.Errorf("invalid repo reference %q: path traversal not allowed", ref)
+	}
 	cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 	return owner, repo, cloneURL, nil
 }
