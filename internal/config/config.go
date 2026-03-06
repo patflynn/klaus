@@ -59,17 +59,7 @@ type PromptVars struct {
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
 // If the file doesn't exist, returns a default prompt.
 func RenderPrompt(repoRoot string, vars PromptVars) (string, error) {
-	path := filepath.Join(repoRoot, ".klaus", "prompt.md")
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return renderDefaultPrompt(vars)
-		}
-		return "", fmt.Errorf("reading prompt template: %w", err)
-	}
-
-	return renderTemplate(string(data), vars)
+	return renderPromptFromFile(repoRoot, "prompt.md", defaultPromptTemplate, vars)
 }
 
 // Init scaffolds the .klaus/ directory with default config and prompt template.
@@ -144,17 +134,7 @@ klaus launch --issue <number> "<prompt>"
 // RenderSessionPrompt renders the session coordinator system prompt.
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.
 func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
-	path := filepath.Join(repoRoot, ".klaus", "session-prompt.md")
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return renderTemplate(defaultSessionPromptTemplate, vars)
-		}
-		return "", fmt.Errorf("reading session prompt template: %w", err)
-	}
-
-	return renderTemplate(string(data), vars)
+	return renderPromptFromFile(repoRoot, "session-prompt.md", defaultSessionPromptTemplate, vars)
 }
 
 const defaultWatchPromptTemplate = `You are an autonomous CI monitoring agent for PR #{{.PR}} in this repository.
@@ -216,17 +196,7 @@ Branch: {{.Branch}}
 // RenderWatchPrompt renders the watch agent system prompt.
 // It reads from .klaus/watch-prompt.md, falling back to the built-in default.
 func RenderWatchPrompt(repoRoot string, vars PromptVars) (string, error) {
-	path := filepath.Join(repoRoot, ".klaus", "watch-prompt.md")
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return renderTemplate(defaultWatchPromptTemplate, vars)
-		}
-		return "", fmt.Errorf("reading watch prompt template: %w", err)
-	}
-
-	return renderTemplate(string(data), vars)
+	return renderPromptFromFile(repoRoot, "watch-prompt.md", defaultWatchPromptTemplate, vars)
 }
 
 // WriteClaudeSettings writes a .claude/settings.json into the given worktree
@@ -274,8 +244,18 @@ func WriteClaudeSettings(worktreeDir, repoName string) error {
 	return nil
 }
 
-func renderDefaultPrompt(vars PromptVars) (string, error) {
-	return renderTemplate(defaultPromptTemplate, vars)
+func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars PromptVars) (string, error) {
+	path := filepath.Join(repoRoot, ".klaus", filename)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return renderTemplate(defaultTemplate, vars)
+		}
+		return "", fmt.Errorf("reading %s: %w", filename, err)
+	}
+
+	return renderTemplate(string(data), vars)
 }
 
 func renderTemplate(tmplStr string, vars PromptVars) (string, error) {
