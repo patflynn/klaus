@@ -101,10 +101,34 @@ Must be run inside a tmux session.`,
 
 		logFile := filepath.Join(run.LogDir(commonDir), id+".jsonl")
 
+		// Gather review comments context
+		reviewContext := ""
+		owner, repoNameGH, ghErr := getRepoOwnerAndName()
+		if ghErr == nil {
+			comments, err := fetchPRReviewComments(owner, repoNameGH, prNumber)
+			if err == nil && len(comments) > 0 {
+				var sb strings.Builder
+				sb.WriteString("\n\nExisting PR review comments:\n")
+				for _, c := range comments {
+					sb.WriteString(fmt.Sprintf("- [comment %d] %s: %s\n", c.ID, c.Path, truncate(c.Body, 200)))
+				}
+				reviewContext = sb.String()
+			}
+		}
+
+		// Check initial conflict status
+		conflictStatus := getPRConflicts(prNumber)
+		conflictNote := ""
+		if conflictStatus == "yes" {
+			conflictNote = "\n\nNote: This PR currently has merge conflicts. Please rebase onto origin/main as the first step."
+		}
+
 		// Build the claude command
 		prompt := fmt.Sprintf(
-			"Monitor CI for PR #%s. Check the current CI status, and if any checks have failed, diagnose the failures and push fixes. Repeat until all checks pass.",
+			"Monitor CI for PR #%s. Check the current CI status, and if any checks have failed, diagnose the failures and push fixes. Check for merge conflicts and rebase if needed. Also check and address any PR review comments. After pushing fixes, reply to addressed review comments. Repeat until all checks pass.%s%s",
 			prNumber,
+			conflictNote,
+			reviewContext,
 		)
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
