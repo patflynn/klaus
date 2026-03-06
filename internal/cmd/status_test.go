@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/patflynn/klaus/internal/run"
@@ -157,6 +158,64 @@ func TestFormatCost(t *testing.T) {
 			got := formatCost(tt.s)
 			if got != tt.want {
 				t.Errorf("formatCost() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGHCommandArgOrder(t *testing.T) {
+	// Verify that all gh command builders place flags BEFORE the "--" separator
+	// and the PR number AFTER it. This prevents the bug where flags after "--"
+	// are treated as positional arguments by gh.
+	tests := []struct {
+		name string
+		fn   func(string) []string
+		want []string
+	}{
+		{
+			name: "getPRState args",
+			fn:   ghPRStateArgs,
+			want: []string{"pr", "view", "--json", "state", "-q", ".state", "--", "42"},
+		},
+		{
+			name: "getPRCI args",
+			fn:   ghPRChecksArgs,
+			want: []string{"pr", "checks", "--", "42"},
+		},
+		{
+			name: "getPRConflicts args",
+			fn:   ghPRConflictsArgs,
+			want: []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", "42"},
+		},
+		{
+			name: "getPRReviewDecision args",
+			fn:   ghPRReviewDecisionArgs,
+			want: []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", "42"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.fn("42")
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("args = %v, want %v", got, tt.want)
+			}
+
+			// Verify structural invariant: all flags appear before "--"
+			separatorIdx := -1
+			for i, arg := range got {
+				if arg == "--" {
+					separatorIdx = i
+					break
+				}
+			}
+			if separatorIdx == -1 {
+				t.Fatal("missing '--' separator")
+			}
+			for i := separatorIdx + 1; i < len(got); i++ {
+				if got[i][0] == '-' {
+					t.Errorf("flag %q found after '--' separator at index %d", got[i], i)
+				}
 			}
 		})
 	}

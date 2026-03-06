@@ -131,9 +131,14 @@ func extractPRNumber(s *run.State) string {
 	return ""
 }
 
+// ghPRChecksArgs returns the arguments for "gh pr checks" with correct flag placement.
+func ghPRChecksArgs(prNumber string) []string {
+	return []string{"pr", "checks", "--", prNumber}
+}
+
 // getPRCI checks CI status by running "gh pr checks" and summarizing pass/fail/pending.
 func getPRCI(prNumber string) string {
-	cmd := exec.Command("gh", "pr", "checks", "--", prNumber)
+	cmd := exec.Command("gh", ghPRChecksArgs(prNumber)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	err := cmd.Run()
@@ -170,9 +175,14 @@ func getPRCI(prNumber string) string {
 	return "unknown"
 }
 
+// ghPRConflictsArgs returns the arguments for "gh pr view" to check merge conflicts.
+func ghPRConflictsArgs(prNumber string) []string {
+	return []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", prNumber}
+}
+
 // getPRConflicts checks if a PR has merge conflicts.
 func getPRConflicts(prNumber string) string {
-	cmd := exec.Command("gh", "pr", "view", "--", prNumber, "--json", "mergeable", "-q", ".mergeable")
+	cmd := exec.Command("gh", ghPRConflictsArgs(prNumber)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -185,9 +195,14 @@ func getPRConflicts(prNumber string) string {
 	return "none"
 }
 
+// ghPRReviewDecisionArgs returns the arguments for "gh pr view" to fetch review decision.
+func ghPRReviewDecisionArgs(prNumber string) []string {
+	return []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", prNumber}
+}
+
 // getPRReviewDecision fetches the review decision for a PR.
 func getPRReviewDecision(prNumber string) string {
-	cmd := exec.Command("gh", "pr", "view", "--", prNumber, "--json", "reviewDecision", "-q", ".reviewDecision")
+	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prNumber)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -196,9 +211,14 @@ func getPRReviewDecision(prNumber string) string {
 	return strings.TrimSpace(stdout.String())
 }
 
+// ghPRStateArgs returns the arguments for "gh pr view" to fetch PR state.
+func ghPRStateArgs(prNumber string) []string {
+	return []string{"pr", "view", "--json", "state", "-q", ".state", "--", prNumber}
+}
+
 // getPRState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED") by calling gh.
 func getPRState(prNumber string) string {
-	cmd := exec.Command("gh", "pr", "view", "--", prNumber, "--json", "state", "-q", ".state")
+	cmd := exec.Command("gh", ghPRStateArgs(prNumber)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
