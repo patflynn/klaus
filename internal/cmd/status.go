@@ -53,9 +53,18 @@ var statusCmd = &cobra.Command{
 
 			ci, conflicts, merge := "-", "-", "-"
 			if prNum := extractPRNumber(s); prNum != "" {
-				ci = getPRCI(prNum)
-				conflicts = getPRConflicts(prNum)
-				merge = computeMergeStatus(ci, conflicts, getPRReviewDecision(prNum))
+				prState := getPRState(prNum)
+				switch prState {
+				case "MERGED":
+					status = "merged"
+					merge = "merged"
+				case "CLOSED":
+					status = "closed"
+				default:
+					ci = getPRCI(prNum)
+					conflicts = getPRConflicts(prNum)
+					merge = computeMergeStatus(ci, conflicts, getPRReviewDecision(prNum))
+				}
 			}
 
 			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-6s  %-10s  %-10s  %-10s  %s\n",
@@ -185,6 +194,21 @@ func getPRReviewDecision(prNumber string) string {
 		return "unknown"
 	}
 	return strings.TrimSpace(stdout.String())
+}
+
+// getPRState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED") by calling gh.
+func getPRState(prNumber string) string {
+	cmd := exec.Command("gh", "pr", "view", "--", prNumber, "--json", "state", "-q", ".state")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "UNKNOWN"
+	}
+	val := strings.TrimSpace(stdout.String())
+	if val == "" {
+		return "UNKNOWN"
+	}
+	return strings.ToUpper(val)
 }
 
 // computeMergeStatus determines overall merge readiness.
