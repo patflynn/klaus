@@ -15,9 +15,12 @@ func InSession() bool {
 
 // SplitWindow creates a new tmux pane by splitting vertically.
 // Returns the new pane ID. The command runs in the specified dir.
-func SplitWindow(dir, command string) (string, error) {
+// targetPane specifies which pane to split (e.g. from $TMUX_PANE).
+func SplitWindow(targetPane, dir, command string) (string, error) {
 	args := []string{
-		"split-window", "-v", "-d",
+		"split-window",
+		"-t", targetPane,
+		"-v", "-d",
 		"-P", "-F", "#{pane_id}",
 		"-c", dir,
 		command,
@@ -35,9 +38,13 @@ func SetPaneTitle(paneID, title string) error {
 	return err
 }
 
-// RebalanceLayout rebalances the current window's pane layout.
-func RebalanceLayout() {
-	runTmux("select-layout", "even-vertical")
+// RebalanceLayout rebalances the pane layout for the window containing targetPane.
+func RebalanceLayout(targetPane string) error {
+	if targetPane == "" {
+		return fmt.Errorf("targetPane cannot be empty")
+	}
+	_, err := runTmux("select-layout", "-t", targetPane, "even-vertical")
+	return err
 }
 
 // PaneExists checks if a tmux pane is still alive.

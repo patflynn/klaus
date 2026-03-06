@@ -5,8 +5,8 @@ import (
 )
 
 func TestBuildArgsSplitWindow(t *testing.T) {
-	args := BuildArgs("split-window", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello")
-	want := []string{"split-window", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello"}
+	args := BuildArgs("split-window", "-t", "%0", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello")
+	want := []string{"split-window", "-t", "%0", "-v", "-d", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello"}
 
 	if len(args) != len(want) {
 		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
@@ -43,6 +43,17 @@ func TestBuildArgsCapturePane(t *testing.T) {
 		if args[i] != want[i] {
 			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
 		}
+	}
+}
+
+func TestRebalanceLayoutEmptyPane(t *testing.T) {
+	err := RebalanceLayout("")
+	if err == nil {
+		t.Fatal("expected error for empty targetPane, got nil")
+	}
+	want := "targetPane cannot be empty"
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }
 
