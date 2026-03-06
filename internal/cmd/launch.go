@@ -3,13 +3,13 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -83,14 +83,7 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.`,
 		}
 
 		// Set up Nix dev environment if flake.nix exists
-		if _, err := os.Stat(filepath.Join(worktree, "flake.nix")); err == nil {
-			fmt.Println("  nix project detected, setting up dev environment...")
-			nixCmd := exec.Command("nix", "develop", "--command", "true")
-			nixCmd.Dir = worktree
-			if err := nixCmd.Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: nix develop failed: %v\n", err)
-			}
-		}
+		nix.SetupDevEnvironment(worktree)
 
 		// Build system prompt
 		sysPrompt, err := config.RenderPrompt(root, config.PromptVars{
