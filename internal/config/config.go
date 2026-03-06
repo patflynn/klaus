@@ -103,6 +103,12 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
    Run: {{.RunID}}{{if .Issue}}
    Fixes #{{.Issue}}{{end}}
 
+## Testing
+- Write unit tests for all new functions and commands.
+- Tests should cover the happy path and key error cases.
+- Run the project's test suite before creating a PR.
+- If tests fail, fix them before proceeding.
+
 ## Conventions
 - Never commit directly to the default branch — always use a PR branch.
 `
@@ -131,6 +137,12 @@ klaus launch --issue <number> "<prompt>"
 - Check on running agents: ` + "`klaus status`" + `
 - View agent output: ` + "`klaus logs <run-id>`" + `
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
+
+## Testing
+- Ensure launched agents write unit tests for all new functions and commands.
+- Tests should cover the happy path and key error cases.
+- Run the project's test suite before creating a PR.
+- If tests fail, fix them before proceeding.
 `
 
 // RenderSessionPrompt renders the session coordinator system prompt.
@@ -221,6 +233,12 @@ Replace ` + "`<commit-sha>`" + ` with the actual commit hash from your push.
 
 After pushing, wait for CI to restart (check with ` + "`gh pr checks {{.PR}}`" + `),
 then monitor again. Continue until all checks pass.
+
+## Testing
+- Write unit tests for all new functions and commands.
+- Tests should cover the happy path and key error cases.
+- Run the project's test suite before creating a PR.
+- If tests fail, fix them before proceeding.
 
 ## Guidelines
 
