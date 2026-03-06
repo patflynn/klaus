@@ -74,6 +74,18 @@ func KillPane(paneID string) error {
 	return err
 }
 
+// SetWindowOption sets a tmux window option for the window containing target pane.
+func SetWindowOption(target, option, value string) error {
+	_, err := runTmux("set-option", "-w", "-t", target, option, value)
+	return err
+}
+
+// RenameWindow renames the tmux window containing the target pane.
+func RenameWindow(target, name string) error {
+	_, err := runTmux("rename-window", "-t", target, name)
+	return err
+}
+
 // BuildArgs returns the tmux command arguments for a given operation.
 // Exported for testing command construction without actually running tmux.
 func BuildArgs(op string, args ...string) []string {

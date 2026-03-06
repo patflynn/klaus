@@ -178,7 +178,7 @@ worktree in that clone.`,
 			return fmt.Errorf("creating tmux pane: %w", err)
 		}
 
-		tmux.SetPaneTitle(paneID, "agent:"+id)
+		tmux.SetPaneTitle(paneID, FormatPaneTitle(id, issue, prompt))
 		if err := tmux.RebalanceLayout(currentPane); err != nil {
 			return fmt.Errorf("rebalancing tmux layout: %w", err)
 		}
@@ -232,6 +232,33 @@ func buildClaudeCommand(sysPrompt, budget, prompt string) string {
 func shellQuote(s string) string {
 	// Use single quotes, escaping any existing single quotes
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// FormatPaneTitle builds a compact pane title for an agent.
+// Format: "agent:<short-id> #<issue> <short-desc>"
+// Short ID is the last 4 characters of the run ID.
+// Short desc is the first 20 characters of the prompt.
+func FormatPaneTitle(id, issue, prompt string) string {
+	shortID := id
+	if len(id) > 4 {
+		shortID = id[len(id)-4:]
+	}
+
+	title := "agent:" + shortID
+
+	if issue != "" {
+		title += " #" + issue
+	}
+
+	desc := strings.TrimSpace(prompt)
+	if len(desc) > 20 {
+		desc = desc[:20]
+	}
+	if desc != "" {
+		title += " " + desc
+	}
+
+	return title
 }
 
 func stringPtr(s string) *string {
