@@ -47,6 +47,13 @@ func WorktreeRemove(repoDir, path string) error {
 	return err
 }
 
+// WorktreeAddTrack creates a worktree tracking an existing remote branch.
+// It uses -B to force-create/reset the local branch to match origin/<branch>.
+func WorktreeAddTrack(repoDir, path, branch string) error {
+	_, err := runGit(repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+	return err
+}
+
 // BranchDelete deletes a local branch.
 func BranchDelete(repoDir, branch string) error {
 	_, err := runGit(repoDir, "branch", "-D", branch)

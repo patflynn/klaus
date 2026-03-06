@@ -53,6 +53,7 @@ type PromptVars struct {
 	Issue    string
 	Branch   string
 	RepoName string
+	PR       string
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -151,6 +152,78 @@ func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
 			return renderTemplate(defaultSessionPromptTemplate, vars)
 		}
 		return "", fmt.Errorf("reading session prompt template: %w", err)
+	}
+
+	return renderTemplate(string(data), vars)
+}
+
+const defaultWatchPromptTemplate = `You are an autonomous CI monitoring agent for PR #{{.PR}} in this repository.
+
+## Your Mission
+
+Monitor CI checks for PR #{{.PR}}, diagnose any failures, fix them, and push
+fixes until all checks pass.
+
+## Workflow
+
+### 1. Check CI status
+
+Run this command to see the current state of all checks:
+` + "```" + `
+gh pr checks {{.PR}}
+` + "```" + `
+
+If checks are still running, wait 30 seconds and check again.
+
+### 2. When a check fails
+
+Identify the failed workflow run. Get the run ID from the checks output, then
+read the failure logs:
+` + "```" + `
+gh run view <run-id> --log-failed
+` + "```" + `
+
+Analyze the logs to understand the root cause.
+
+### 3. Fix the issue
+
+- Read the relevant source and test files to understand the failure.
+- Make the minimal code change needed to fix the CI failure.
+- Run any available local test commands to verify your fix before pushing.
+- Stage your changes with ` + "`git add`" + `.
+- Create a focused commit describing the fix.
+- Push: ` + "`git push`" + `
+
+### 4. Repeat
+
+After pushing, wait for CI to restart (check with ` + "`gh pr checks {{.PR}}`" + `),
+then monitor again. Continue until all checks pass.
+
+## Guidelines
+
+- Only fix CI failures — do not make unrelated changes.
+- If a fix attempt does not resolve the issue after 3 tries, report what you
+  have found and stop.
+- Read test files and source code as needed to understand failures.
+- Keep commits small and focused on the specific failure.
+
+## Identity
+
+Run: {{.RunID}}
+Branch: {{.Branch}}
+`
+
+// RenderWatchPrompt renders the watch agent system prompt.
+// It reads from .klaus/watch-prompt.md, falling back to the built-in default.
+func RenderWatchPrompt(repoRoot string, vars PromptVars) (string, error) {
+	path := filepath.Join(repoRoot, ".klaus", "watch-prompt.md")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return renderTemplate(defaultWatchPromptTemplate, vars)
+		}
+		return "", fmt.Errorf("reading watch prompt template: %w", err)
 	}
 
 	return renderTemplate(string(data), vars)
