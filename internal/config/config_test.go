@@ -442,6 +442,93 @@ func TestRenderSessionPromptWithRepo(t *testing.T) {
 	}
 }
 
+func TestRenderSessionPromptWithProjects(t *testing.T) {
+	dir := t.TempDir()
+
+	vars := PromptVars{
+		RunID:    "session-test",
+		Branch:   "session/session-test",
+		RepoName: "test-repo",
+		Projects: "- klaus (/home/user/src/klaus)\n- other-project (/home/user/src/other-project)",
+	}
+
+	prompt, err := RenderSessionPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "## Registered projects") {
+		t.Error("prompt should contain registered projects section when projects are present")
+	}
+	if !strings.Contains(prompt, "klaus (/home/user/src/klaus)") {
+		t.Error("prompt should contain project listing")
+	}
+	if !strings.Contains(prompt, "klaus launch --repo <name>") {
+		t.Error("prompt should mention 'klaus launch --repo <name>'")
+	}
+}
+
+func TestRenderSessionPromptWithoutProjects(t *testing.T) {
+	dir := t.TempDir()
+
+	vars := PromptVars{
+		RunID:    "session-test",
+		Branch:   "session/session-test",
+		RepoName: "test-repo",
+	}
+
+	prompt, err := RenderSessionPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	if strings.Contains(prompt, "## Registered projects") {
+		t.Error("prompt should not contain registered projects section when no projects")
+	}
+}
+
+func TestFormatProjectList(t *testing.T) {
+	t.Run("empty projects", func(t *testing.T) {
+		result := FormatProjectList(map[string]string{})
+		if result != "" {
+			t.Errorf("expected empty string for empty projects, got %q", result)
+		}
+	})
+
+	t.Run("nil projects", func(t *testing.T) {
+		result := FormatProjectList(nil)
+		if result != "" {
+			t.Errorf("expected empty string for nil projects, got %q", result)
+		}
+	})
+
+	t.Run("single project", func(t *testing.T) {
+		result := FormatProjectList(map[string]string{
+			"my-proj": "/tmp/my-proj",
+		})
+		if !strings.Contains(result, "- my-proj (/tmp/my-proj)") {
+			t.Errorf("unexpected format: %q", result)
+		}
+	})
+
+	t.Run("multiple projects sorted", func(t *testing.T) {
+		result := FormatProjectList(map[string]string{
+			"zebra": "/tmp/zebra",
+			"alpha": "/tmp/alpha",
+		})
+		lines := strings.Split(result, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+		}
+		if !strings.HasPrefix(lines[0], "- alpha") {
+			t.Errorf("expected first line to be alpha, got %q", lines[0])
+		}
+		if !strings.HasPrefix(lines[1], "- zebra") {
+			t.Errorf("expected second line to be zebra, got %q", lines[1])
+		}
+	})
+}
+
 func TestRenderPromptEmptyRepoRoot(t *testing.T) {
 	// With empty repoRoot, should use default template
 	vars := PromptVars{RunID: "test-123"}

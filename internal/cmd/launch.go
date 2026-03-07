@@ -10,6 +10,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -21,9 +22,9 @@ var launchCmd = &cobra.Command{
 	Long: `Creates a git worktree, launches Claude Code in autonomous mode in a new
 tmux pane, and tracks the run state. Must be run inside a tmux session.
 
-Use --repo to launch an agent against a different GitHub repository. The repo
-will be cloned (or fetched if already cached) and the agent gets its own
-worktree in that clone.`,
+Use --repo to launch an agent against a different repository. If the name
+matches a registered project (no owner/ prefix), the project's local path is
+used directly. Otherwise, the repo is cloned from GitHub.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prompt := args[0]
@@ -38,6 +39,17 @@ worktree in that clone.`,
 		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
 
+		// Resolve --repo: if it matches a registered project name (no owner/ prefix),
+		// use that project's local path directly instead of cloning.
+		var projectLocalPath string
+		if repoRef != "" && !strings.Contains(repoRef, "/") {
+			if reg, loadErr := project.Load(); loadErr == nil {
+				if localPath, ok := reg.Get(repoRef); ok {
+					projectLocalPath = localPath
+				}
+			}
+		}
+
 		// If no --repo and not in a git repo, check session target
 		if hostRoot == "" && repoRef == "" {
 			if s, storeErr := sessionStore(); storeErr == nil {
@@ -49,8 +61,8 @@ worktree in that clone.`,
 			}
 		}
 
-		if hostRoot == "" && repoRef == "" {
-			return fmt.Errorf("no target repo — use --repo owner/repo or 'klaus target owner/repo' to set a default")
+		if hostRoot == "" && repoRef == "" && projectLocalPath == "" {
+			return fmt.Errorf("no target repo — use --repo owner/repo, 'klaus target owner/repo', or 'klaus project add' to register a project")
 		}
 
 		hostCfg, err := config.Load(hostRoot)
@@ -77,6 +89,7 @@ worktree in that clone.`,
 
 		// Determine the target repo for git operations.
 		// When --repo is set, we clone the target and use it for worktree/branch ops.
+		// When --repo matches a registered project, use the local path directly.
 		// State is always tracked in the host repo.
 		var (
 			repoRoot      string  // repo dir for git ops (clone or host)
@@ -86,7 +99,23 @@ worktree in that clone.`,
 			cloneDirPtr   *string
 		)
 
-		if repoRef != "" {
+		if projectLocalPath != "" {
+			// Registered project — use local path directly, no cloning
+			repoRoot = projectLocalPath
+			repoName = filepath.Base(projectLocalPath)
+
+			defaultBranch = "main"
+			targetCfg, loadErr := config.Load(projectLocalPath)
+			if loadErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not load config from project %s: %v\n", repoRef, loadErr)
+			} else if targetCfg.DefaultBranch != "" {
+				defaultBranch = targetCfg.DefaultBranch
+			}
+
+			// Store as target for state tracking
+			targetRepo = &repoRef
+			cloneDirPtr = &projectLocalPath
+		} else if repoRef != "" {
 			owner, repo, cloneURL, err := git.ParseRepoRef(repoRef)
 			if err != nil {
 				return fmt.Errorf("parsing repo reference: %w", err)
@@ -300,7 +329,7 @@ func stringPtr(s string) *string {
 func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
-	launchCmd.Flags().String("repo", "", "Target GitHub repo (e.g., owner/repo or full URL)")
+	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
 	rootCmd.AddCommand(launchCmd)
 }
