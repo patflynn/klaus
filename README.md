@@ -21,12 +21,14 @@ Three new tmux panes appear. Each agent works independently in its own worktree,
 
 ## What happens when you run `klaus session`
 
-1. A fresh git worktree is created from `origin/main`
+1. A fresh git worktree is created from `origin/main` (or a scratch workspace if not in a repo)
 2. Claude Code starts interactively in that worktree
 3. You talk to Claude as usual — it has `klaus` on PATH
 4. When Claude runs `klaus launch`, a new tmux pane splits off with an autonomous agent
 5. `klaus status` gives you and Claude a dashboard of all running agents
 6. When you're done, `klaus cleanup --all` tears everything down
+
+You can also run `klaus` outside a git repository. In this mode, the session uses a scratch workspace under `~/.klaus/sessions/` and loads configuration from `~/.klaus/config.json`. Use `klaus launch --repo owner/repo` to target specific repositories.
 
 The session is the experience. The other commands are infrastructure.
 
@@ -97,7 +99,7 @@ The status dashboard shows these columns for each run:
 
 ## Configuration
 
-Klaus works out of the box with sensible defaults. To customize, run `klaus init` to scaffold a `.klaus/` directory, or create the files yourself:
+Klaus works out of the box with sensible defaults. To customize, run `klaus init` to scaffold a `.klaus/` directory (or `~/.klaus/config.json` when outside a repo), or create the files yourself. Configuration layers: defaults → `~/.klaus/config.json` → `.klaus/config.json`.
 
 **`.klaus/config.json`** — Override defaults:
 ```json

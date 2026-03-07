@@ -105,6 +105,31 @@ func Init(repoRoot string) error {
 	return nil
 }
 
+// InitGlobal scaffolds ~/.klaus/config.json with default configuration.
+// Used when running outside a git repository.
+func InitGlobal() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolving home dir: %w", err)
+	}
+	dir := filepath.Join(home, ".klaus")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating ~/.klaus dir: %w", err)
+	}
+
+	cfg := Defaults()
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+
+	return nil
+}
+
 const defaultPromptTemplate = `You are an autonomous agent working on this repository.
 
 ## Workflow
@@ -134,9 +159,12 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 `
 
 const defaultSessionPromptTemplate = `You are a coordinator running inside a klaus session (session ID: {{.RunID}}).
-
+{{if .RepoName}}
 Your working directory is an isolated git worktree on branch {{.Branch}} for repo {{.RepoName}}.
-
+{{else}}
+Your working directory is a scratch workspace (no git repo). Use --repo owner/repo with
+klaus launch to target specific repositories.
+{{end}}
 ## Delegating work
 
 You should delegate implementation work to autonomous agents rather than doing it directly.
@@ -151,7 +179,12 @@ To delegate tasks referencing a GitHub issue:
 ` + "```" + `
 klaus launch --issue <number> "<prompt>"
 ` + "```" + `
-
+{{if not .RepoName}}
+When not in a git repo, you must specify a target repository:
+` + "```" + `
+klaus launch --repo owner/repo "<prompt>"
+` + "```" + `
+{{end}}
 ## Managing agents
 
 - Check on running agents: ` + "`klaus status`" + `
@@ -433,6 +466,10 @@ func LoadPrinciples(dir string) (string, error) {
 }
 
 func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars PromptVars) (string, error) {
+	if repoRoot == "" {
+		return renderTemplate(defaultTemplate, vars)
+	}
+
 	path := filepath.Join(repoRoot, ".klaus", filename)
 
 	data, err := os.ReadFile(path)

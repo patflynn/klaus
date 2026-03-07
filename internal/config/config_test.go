@@ -377,3 +377,105 @@ func TestInit(t *testing.T) {
 		t.Error("prompt template should contain {{.RunID}}")
 	}
 }
+
+func TestLoadEmptyRepoRoot(t *testing.T) {
+	// When repoRoot is empty, Load should return defaults (plus any global config)
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\") error: %v", err)
+	}
+	// Should have valid defaults
+	if cfg.DefaultBudget == "" {
+		t.Error("DefaultBudget should not be empty")
+	}
+	if cfg.DefaultBranch == "" {
+		t.Error("DefaultBranch should not be empty")
+	}
+}
+
+func TestRenderSessionPromptNoRepo(t *testing.T) {
+	// When RepoName is empty, the no-repo variant of the session prompt is rendered
+	vars := PromptVars{
+		RunID: "session-20260307-1430-a3f2",
+	}
+
+	prompt, err := RenderSessionPrompt("", vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "session-20260307-1430-a3f2") {
+		t.Error("prompt should contain session ID")
+	}
+	if !strings.Contains(prompt, "scratch workspace") {
+		t.Error("prompt should mention scratch workspace when no repo")
+	}
+	if !strings.Contains(prompt, "--repo owner/repo") {
+		t.Error("prompt should mention --repo flag when no repo")
+	}
+	if strings.Contains(prompt, "isolated git worktree on branch") {
+		t.Error("prompt should not mention git worktree when no repo")
+	}
+}
+
+func TestRenderSessionPromptWithRepo(t *testing.T) {
+	dir := t.TempDir()
+	vars := PromptVars{
+		RunID:    "session-20260307-1430-a3f2",
+		Branch:   "session/session-20260307-1430-a3f2",
+		RepoName: "my-project",
+	}
+
+	prompt, err := RenderSessionPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "isolated git worktree on branch") {
+		t.Error("prompt should mention git worktree when in a repo")
+	}
+	if !strings.Contains(prompt, "my-project") {
+		t.Error("prompt should contain repo name")
+	}
+	if strings.Contains(prompt, "scratch workspace") {
+		t.Error("prompt should not mention scratch workspace when in a repo")
+	}
+}
+
+func TestRenderPromptEmptyRepoRoot(t *testing.T) {
+	// With empty repoRoot, should use default template
+	vars := PromptVars{RunID: "test-123"}
+	prompt, err := RenderPrompt("", vars)
+	if err != nil {
+		t.Fatalf("RenderPrompt(\"\") error: %v", err)
+	}
+	if !strings.Contains(prompt, "Run: test-123") {
+		t.Error("prompt should contain run ID from default template")
+	}
+}
+
+func TestInitGlobal(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	if err := InitGlobal(); err != nil {
+		t.Fatalf("InitGlobal() error: %v", err)
+	}
+
+	configPath := filepath.Join(homeDir, ".klaus", "config.json")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("reading global config: %v", err)
+	}
+
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parsing global config: %v", err)
+	}
+	if cfg.WorktreeBase != wantWorktreeBase {
+		t.Errorf("config WorktreeBase = %q, want %q", cfg.WorktreeBase, wantWorktreeBase)
+	}
+	if cfg.DefaultBudget != "5.00" {
+		t.Errorf("config DefaultBudget = %q, want 5.00", cfg.DefaultBudget)
+	}
+}

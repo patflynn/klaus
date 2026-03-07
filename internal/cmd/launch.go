@@ -35,10 +35,10 @@ worktree in that clone.`,
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
 		}
 
-		// Host repo — always needed for state tracking
-		hostRoot, err := git.RepoRoot()
-		if err != nil {
-			return fmt.Errorf("not inside a git repository")
+		// Host repo — optional when --repo is specified
+		hostRoot, _ := git.RepoRoot()
+		if hostRoot == "" && repoRef == "" {
+			return fmt.Errorf("not in a git repo — use --repo owner/repo to specify a target")
 		}
 
 		hostCfg, err := config.Load(hostRoot)
@@ -151,11 +151,11 @@ worktree in that clone.`,
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
-		// For cross-repo launches, finalize must run from the host repo context
-		// so that state is resolved from the host's .git/klaus/ directory.
+		// For cross-repo launches with a host repo, finalize must run from the
+		// host repo context so that data-ref sync works correctly.
 		selfBin := "klaus" // assumes klaus is in PATH
 		var finalizePrefix string
-		if targetRepo != nil {
+		if targetRepo != nil && hostRoot != "" {
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
 		noWatch, _ := cmd.Flags().GetBool("no-watch")
