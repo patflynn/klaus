@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/template"
 )
 
@@ -311,6 +312,50 @@ func WriteClaudeSettings(worktreeDir, repoName string) error {
 		return fmt.Errorf("writing settings: %w", err)
 	}
 
+	return nil
+}
+
+// PreTrustWorktree creates a Claude Code project entry for the given directory
+// so that the workspace trust dialog is not shown when launching Claude
+// interactively. Claude Code stores per-project data in
+// ~/.claude/projects/<encoded-path>/ and shows a trust dialog for directories
+// without an existing project entry.
+func PreTrustWorktree(worktreeDir string) error {
+	absPath, err := filepath.Abs(worktreeDir)
+	if err != nil {
+		return fmt.Errorf("resolving worktree path: %w", err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("finding home dir: %w", err)
+	}
+
+	// Claude Code encodes paths by replacing path separators with hyphens.
+	encoded := strings.ReplaceAll(absPath, string(filepath.Separator), "-")
+	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
+
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return fmt.Errorf("creating project dir: %w", err)
+	}
+
+	indexPath := filepath.Join(projectDir, "sessions-index.json")
+	if _, err := os.Stat(indexPath); err == nil {
+		return nil // already exists
+	}
+
+	index := map[string]any{
+		"version":      1,
+		"entries":      []any{},
+		"originalPath": absPath,
+	}
+	data, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling sessions index: %w", err)
+	}
+	if err := os.WriteFile(indexPath, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing sessions index: %w", err)
+	}
 	return nil
 }
 

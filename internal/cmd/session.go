@@ -72,6 +72,10 @@ clean on the default branch. Must be run inside a tmux session.`,
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
+		if err := config.PreTrustWorktree(worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
+		}
+
 		// Set up Nix dev environment if flake.nix exists
 		nix.SetupDevEnvironment(worktree)
 
