@@ -159,17 +159,8 @@ worktree in that clone.`,
 		if targetRepo != nil {
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
-		paneCmd := fmt.Sprintf(
-			"cd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
-			shellQuote(worktree),
-			claudeCmd,
-			shellQuote(logFile),
-			selfBin,
-			finalizePrefix,
-			selfBin,
-			shellQuote(id),
-			id,
-		)
+		noWatch, _ := cmd.Flags().GetBool("no-watch")
+		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch)
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
@@ -216,13 +207,32 @@ worktree in that clone.`,
 	},
 }
 
+func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
+	autoWatch := ""
+	if !noWatch {
+		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
+	}
+	return fmt.Sprintf(
+		"cd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
+		shellQuote(worktree),
+		claudeCmd,
+		shellQuote(logFile),
+		selfBin,
+		finalizePrefix,
+		selfBin,
+		shellQuote(id),
+		autoWatch,
+		id,
+	)
+}
+
 func buildClaudeCommand(sysPrompt, budget, prompt string) string {
 	parts := []string{
 		"claude", "-p",
 		"--dangerously-skip-permissions",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--max-budget-usd", budget,
+		"--max-budget-usd", shellQuote(budget),
 		"--append-system-prompt", shellQuote(sysPrompt),
 		shellQuote(prompt),
 	}
@@ -235,24 +245,32 @@ func shellQuote(s string) string {
 }
 
 // FormatPaneTitle builds a compact pane title for an agent.
-// Format: "agent:<short-id> #<issue> <short-desc>"
-// Short ID is the last 4 characters of the run ID.
-// Short desc is the first 20 characters of the prompt.
+// Format with issue:    "#<issue> <short-desc>"
+// Format without issue: "<short-id> <short-desc>"
+// Short desc is up to 40 characters of the prompt, trimmed to a word boundary.
 func FormatPaneTitle(id, issue, prompt string) string {
-	shortID := id
-	if len(id) > 4 {
-		shortID = id[len(id)-4:]
-	}
+	const (
+		shortIDLength = 4
+		maxDescLength = 40
+	)
 
-	title := "agent:" + shortID
-
+	var title string
 	if issue != "" {
-		title += " #" + issue
+		title = "#" + issue
+	} else {
+		title = id
+		if len(id) > shortIDLength {
+			title = id[len(id)-shortIDLength:]
+		}
 	}
 
 	desc := strings.TrimSpace(prompt)
-	if len(desc) > 20 {
-		desc = desc[:20]
+	if len(desc) > maxDescLength {
+		desc = desc[:maxDescLength]
+		// Trim to last word boundary
+		if i := strings.LastIndex(desc, " "); i > 0 {
+			desc = desc[:i]
+		}
 	}
 	if desc != "" {
 		title += " " + desc
@@ -272,5 +290,6 @@ func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target GitHub repo (e.g., owner/repo or full URL)")
+	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
 	rootCmd.AddCommand(launchCmd)
 }
