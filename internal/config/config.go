@@ -105,17 +105,14 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
    Fixes #{{.Issue}}{{end}}
 
 ## Testing
-- Write unit tests for all new functions and commands.
-- Tests should cover the happy path and key error cases.
-- Run the project's test suite before creating a PR.
-- If tests fail, fix them before proceeding.
+- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
+- Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
+- A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
+- Run ` + "`go build ./...`" + ` before committing to verify compilation.
+- Run the project's test suite before creating a PR. Fix failures before pushing.
 
 ## Conventions
 - Never commit directly to the default branch — always use a PR branch.
-
-## Testing
-- Run ` + "`go build ./...`" + ` before committing to verify compilation.
-- Run any existing tests with ` + "`go test ./...`" + ` and fix failures before pushing.
 
 ## Documentation
 - If you add or change a CLI command or flag, update the help text in the cobra command definition.
@@ -149,8 +146,9 @@ klaus launch --issue <number> "<prompt>"
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
 
 ## Testing
-- Ensure launched agents write unit tests for all new functions and commands.
-- Tests should cover the happy path and key error cases.
+- Ensure launched agents prefer integration and e2e tests over mocked unit tests.
+- Tests should exercise real behavior — a few tests that run the real binary are worth more than many with injected fakes.
+- Only unit test genuinely tricky logic.
 - Run the project's test suite before creating a PR.
 - If tests fail, fix them before proceeding.
 `
@@ -245,8 +243,8 @@ After pushing, wait for CI to restart (check with ` + "`gh pr checks {{.PR}}`" +
 then monitor again. Continue until all checks pass.
 
 ## Testing
-- Write unit tests for all new functions and commands.
-- Tests should cover the happy path and key error cases.
+- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
+- Only unit test genuinely tricky logic.
 - Run the project's test suite before creating a PR.
 - If tests fail, fix them before proceeding.
 

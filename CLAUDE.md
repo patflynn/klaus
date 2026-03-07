@@ -5,9 +5,10 @@
 - Do NOT mention AI in commit messages or PR descriptions
 
 ## Testing
-- All new functions and commands must have corresponding tests in *_test.go files
+- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals
+- Only unit test genuinely tricky logic — don't write tests that just mirror the implementation
+- A few tests that run the real binary are worth more than many tests with injected fakes
 - Run `go test ./...` before committing
-- Tests should cover happy path and error cases
 - PRs without tests for new code will not be merged
 
 ## Documentation
