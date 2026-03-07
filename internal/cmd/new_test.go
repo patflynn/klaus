@@ -84,6 +84,9 @@ func TestBuildScaffoldPromptWebType(t *testing.T) {
 	if !strings.Contains(prompt, "Playwright") {
 		t.Error("prompt with default principles should mention Playwright")
 	}
+	if !strings.Contains(prompt, "Tailwind CSS") {
+		t.Error("prompt for web projects should mention Tailwind CSS")
+	}
 }
 
 func TestBuildScaffoldPromptIncludesPrinciples(t *testing.T) {
@@ -115,6 +118,9 @@ func TestLoadPrinciplesDefault(t *testing.T) {
 	}
 	if !strings.Contains(principles, "nix flakes") {
 		t.Error("default principles should mention nix flakes")
+	}
+	if !strings.Contains(principles, "Tailwind CSS") {
+		t.Error("default principles should mention Tailwind CSS")
 	}
 }
 

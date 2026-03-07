@@ -458,6 +458,7 @@ const DefaultPrinciples = `# Project Principles
 ## Tech Defaults
 - Go for CLI tools and backend services
 - TypeScript for web applications
+- Tailwind CSS for styling in web applications
 - These are defaults — override based on project needs
 
 ## Dependencies
