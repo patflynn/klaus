@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/patflynn/klaus/internal/config"
@@ -127,24 +128,16 @@ func extractPRURL(text string) string {
 	return ""
 }
 
+var prURLRegex = regexp.MustCompile(`/pull/(\d+)`)
+
 // extractPRNumberFromURL extracts the PR number from a GitHub PR URL.
 // For example, "https://github.com/owner/repo/pull/123" returns "123".
 func extractPRNumberFromURL(prURL string) string {
-	idx := strings.Index(prURL, "/pull/")
-	if idx == -1 {
+	matches := prURLRegex.FindStringSubmatch(prURL)
+	if len(matches) < 2 {
 		return ""
 	}
-	rest := prURL[idx+len("/pull/"):]
-	// Take just the numeric part (stop at /, ?, # or end)
-	var num strings.Builder
-	for _, c := range rest {
-		if c >= '0' && c <= '9' {
-			num.WriteRune(c)
-		} else {
-			break
-		}
-	}
-	return num.String()
+	return matches[1]
 }
 
 var autoWatchCmd = &cobra.Command{
@@ -157,12 +150,12 @@ var autoWatchCmd = &cobra.Command{
 
 		commonDir, err := git.CommonDir()
 		if err != nil {
-			return nil
+			return err
 		}
 
-		state, err := run.Load(commonDir, id)
+		state, err := run.Load(commonDir, filepath.Base(id))
 		if err != nil {
-			return nil
+			return fmt.Errorf("auto-watch: failed to load state for run %s: %w", id, err)
 		}
 
 		// No PR created — nothing to do

@@ -232,7 +232,7 @@ func buildClaudeCommand(sysPrompt, budget, prompt string) string {
 		"--dangerously-skip-permissions",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--max-budget-usd", budget,
+		"--max-budget-usd", shellQuote(budget),
 		"--append-system-prompt", shellQuote(sysPrompt),
 		shellQuote(prompt),
 	}
