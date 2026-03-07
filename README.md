@@ -84,9 +84,15 @@ The coordinator session uses these — you generally don't run them directly:
 
 Monitor CI checks for an existing PR. When a check fails, the watch agent reads the failure logs, diagnoses the issue, pushes a fix, and repeats until all checks pass. It also handles merge conflicts and addresses review comments from trusted reviewers.
 
+After all CI checks pass, the agent waits for new review comments (default 2 minutes) before exiting. If new comments arrive during the wait, it addresses them and re-enters the CI monitoring loop.
+
 ```bash
 klaus watch 42
+klaus watch 42 --review-wait 300   # wait up to 5 minutes for reviews
+klaus watch 42 --review-wait 0     # exit immediately when CI passes
 ```
+
+The wait duration can also be set via `review_wait_secs` in `.klaus/config.json`.
 
 ### `klaus launch --repo`
 
