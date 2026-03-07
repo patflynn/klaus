@@ -143,16 +143,10 @@ Must be run inside a tmux session.`,
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
-		// Export KLAUS_SESSION_ID so _finalize can locate the session store in the tmux pane.
 		selfBin := "klaus"
-		sessionID := os.Getenv(sessionIDEnv)
-		envPrefix := ""
-		if sessionID != "" {
-			envPrefix = fmt.Sprintf("export %s=%s; ", sessionIDEnv, shellQuote(sessionID))
-		}
 		paneCmd := fmt.Sprintf(
 			"%scd %s && %s | tee %s | %s _format-stream; %s _finalize %s; echo ''; printf 'Watch %%s (PR #%%s) exited. Press Enter to close.\\n' %s %s; read",
-			envPrefix,
+			tmuxSessionEnvPrefix(),
 			shellQuote(worktree),
 			claudeCmd,
 			shellQuote(logFile),

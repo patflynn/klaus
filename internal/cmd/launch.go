@@ -200,8 +200,7 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
 		noWatch, _ := cmd.Flags().GetBool("no-watch")
-		sessionID := os.Getenv(sessionIDEnv)
-		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, sessionID, noWatch)
+		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch)
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
@@ -248,20 +247,14 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 	},
 }
 
-func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, sessionID string, noWatch bool) string {
+func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
 	autoWatch := ""
 	if !noWatch {
 		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
 	}
-	// Export KLAUS_SESSION_ID so that _finalize and _auto-watch (which run in
-	// the tmux pane's shell, not the calling process) can locate the session store.
-	envPrefix := ""
-	if sessionID != "" {
-		envPrefix = fmt.Sprintf("export %s=%s; ", sessionIDEnv, shellQuote(sessionID))
-	}
 	return fmt.Sprintf(
 		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
-		envPrefix,
+		tmuxSessionEnvPrefix(),
 		shellQuote(worktree),
 		claudeCmd,
 		shellQuote(logFile),

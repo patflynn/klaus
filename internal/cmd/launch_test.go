@@ -180,10 +180,9 @@ func TestBuildPaneCommand(t *testing.T) {
 	logFile := "/tmp/logs/abc123.jsonl"
 	selfBin := "klaus"
 	id := "20260306-1720-176a"
-	sessionID := "session-20260306-1720-abc1"
 
 	t.Run("includes auto-watch by default", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, sessionID, false)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
 		if !strings.Contains(cmd, "_auto-watch") {
 			t.Error("expected _auto-watch in pipeline, got:", cmd)
 		}
@@ -193,7 +192,7 @@ func TestBuildPaneCommand(t *testing.T) {
 	})
 
 	t.Run("no-watch excludes auto-watch", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, sessionID, true)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, true)
 		if strings.Contains(cmd, "_auto-watch") {
 			t.Error("expected no _auto-watch in pipeline with --no-watch, got:", cmd)
 		}
@@ -204,7 +203,7 @@ func TestBuildPaneCommand(t *testing.T) {
 
 	t.Run("cross-repo includes finalize prefix for auto-watch", func(t *testing.T) {
 		prefix := "cd '/host/repo' && "
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id, sessionID, false)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id, false)
 		// Should have the prefix before both _finalize and _auto-watch
 		parts := strings.Split(cmd, "_auto-watch")
 		if len(parts) < 2 {
@@ -216,15 +215,17 @@ func TestBuildPaneCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("exports KLAUS_SESSION_ID when set", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, sessionID, false)
+	t.Run("exports KLAUS_SESSION_ID via tmuxSessionEnvPrefix", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "session-20260306-1720-abc1")
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
 		if !strings.Contains(cmd, "export KLAUS_SESSION_ID='session-20260306-1720-abc1'") {
 			t.Error("expected KLAUS_SESSION_ID export in pane command, got:", cmd)
 		}
 	})
 
-	t.Run("no KLAUS_SESSION_ID export when empty", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, "", false)
+	t.Run("no KLAUS_SESSION_ID export when env unset", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
 		if strings.Contains(cmd, "KLAUS_SESSION_ID") {
 			t.Error("expected no KLAUS_SESSION_ID export when session ID is empty, got:", cmd)
 		}
