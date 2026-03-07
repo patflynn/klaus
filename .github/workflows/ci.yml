@@ -21,4 +21,4 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v4
-      - uses: zizmorproject/zizmor-action@v1
+      - uses: zizmorcore/zizmor-action@v1
