@@ -64,6 +64,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus session` | Start an interactive coordinator session |
 | `klaus launch "<prompt>"` | Spawn an autonomous agent |
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
+| `klaus target owner/repo` | Set session-level default target repo |
 | `klaus watch <pr-number>` | Monitor CI for a PR and fix failures autonomously |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
@@ -86,6 +87,22 @@ Launch an agent against a different GitHub repository. The repo is cloned (or fe
 ```bash
 klaus launch --repo owner/repo "Fix the bug in their API"
 ```
+
+### `klaus target`
+
+Set a session-level default target repo. When the coordinator session is not inside a git repo, this avoids needing `--repo` on every `klaus launch`.
+
+```bash
+klaus target owner/repo              # set default
+klaus target                         # show current target
+klaus target --clear                 # remove default
+```
+
+The targeting priority for `klaus launch` is:
+1. `--repo` flag (explicit, always wins)
+2. Current git repo (if in one)
+3. Session target (`klaus target` setting)
+4. Error with usage hint
 
 ### `klaus status` columns
 
