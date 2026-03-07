@@ -135,7 +135,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case fsEventMsg:
-		return m, loadStatesCmd(m.commonDir)
+		return m, tea.Batch(loadStatesCmd(m.commonDir), watchFSCmd(m.watcher))
 
 	case tickMsg:
 		return m, tea.Batch(
@@ -224,38 +224,38 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 	b.WriteString(dimStyle.Render(" " + strings.Repeat("─", clamp(m.width-2, 0, 120))))
 	b.WriteString("\n")
 
-	// Separate into PRs and bare agents (no PR)
-	type prEntry struct {
-		prNum  string
-		state  *run.State
-		status *prStatus
-	}
-	var prs []prEntry
+	// Group agents by PR number in a single pass (O(N)).
+	prToAgents := make(map[string][]*run.State)
 	var bareAgents []*run.State
+	var prOrder []string
+	seenPRs := make(map[string]bool)
 
-	seen := make(map[string]bool)
 	for _, s := range g.Runs {
 		if s.Type == "session" {
 			continue
 		}
 		prNum := extractPRNumber(s)
-		if prNum != "" && !seen[prNum] {
-			seen[prNum] = true
-			ps := g.PRMap[prNum]
-			prs = append(prs, prEntry{prNum: prNum, state: s, status: ps})
-		} else if prNum == "" {
+		if prNum != "" {
+			prToAgents[prNum] = append(prToAgents[prNum], s)
+			if !seenPRs[prNum] {
+				prOrder = append(prOrder, prNum)
+				seenPRs[prNum] = true
+			}
+		} else {
 			bareAgents = append(bareAgents, s)
 		}
 	}
 
-	// Render PRs
-	for _, pr := range prs {
-		b.WriteString(m.renderPRLine(pr.prNum, pr.state, pr.status))
+	// Render PRs and their agents
+	for _, prNum := range prOrder {
+		agents := prToAgents[prNum]
+		if len(agents) == 0 {
+			continue
+		}
+		b.WriteString(m.renderPRLine(prNum, agents[0], g.PRMap[prNum]))
 		b.WriteString("\n")
-		// Show linked running agents
-		for _, s := range g.Runs {
-			agentPR := extractPRNumber(s)
-			if agentPR == pr.prNum && isAgentRunning(s) {
+		for _, s := range agents {
+			if isAgentRunning(s) {
 				b.WriteString(renderAgentSubline(s))
 				b.WriteString("\n")
 			}
