@@ -34,7 +34,8 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 			return err
 		}
 
-		state, err := run.Load(commonDir, id)
+		store := run.NewGitDirStore(commonDir)
+		state, err := store.Load(id)
 		if err != nil {
 			return fmt.Errorf("no run found with id: %s", id)
 		}
@@ -49,7 +50,7 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 
 		fmt.Printf("Force-pushing log for %s (bypassing sensitivity check)...\n", id)
 
-		stateFile := run.StateDir(commonDir) + "/" + id + ".json"
+		stateFile := store.StateDir() + "/" + id + ".json"
 		files := map[string]string{
 			"runs/" + id + ".json":  stateFile,
 			"logs/" + id + ".jsonl": *state.LogFile,

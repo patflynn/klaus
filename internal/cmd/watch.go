@@ -54,7 +54,8 @@ Must be run inside a tmux session.`,
 			budget = cfg.DefaultBudget
 		}
 
-		if err := run.EnsureDirs(commonDir); err != nil {
+		store := run.NewGitDirStore(commonDir)
+		if err := store.EnsureDirs(); err != nil {
 			return err
 		}
 
@@ -101,7 +102,7 @@ Must be run inside a tmux session.`,
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
 
-		logFile := filepath.Join(run.LogDir(commonDir), id+".jsonl")
+		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 		// Gather review comments context, filtering to trusted reviewers only
 		reviewContext := ""
@@ -186,7 +187,7 @@ Must be run inside a tmux session.`,
 			Type:      "watch",
 		}
 
-		if err := run.Save(commonDir, state); err != nil {
+		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
 		}
 

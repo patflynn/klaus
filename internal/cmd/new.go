@@ -119,11 +119,12 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// We need a .git dir for state tracking — the cloned repo has one
 	gitCommonDir := resolveGitCommonDir(repoDir)
-	if err := run.EnsureDirs(gitCommonDir); err != nil {
+	store := run.NewGitDirStore(gitCommonDir)
+	if err := store.EnsureDirs(); err != nil {
 		return err
 	}
 
-	logFile := filepath.Join(run.LogDir(gitCommonDir), id+".jsonl")
+	logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 	// Build claude command
 	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
@@ -165,7 +166,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 		CreatedAt: createdAt,
 		Type:      "new",
 	}
-	if err := run.Save(gitCommonDir, state); err != nil {
+	if err := store.Save(state); err != nil {
 		return fmt.Errorf("saving state: %w", err)
 	}
 

@@ -41,7 +41,8 @@ clean on the default branch. Must be run inside a tmux session.`,
 			return err
 		}
 
-		if err := run.EnsureDirs(commonDir); err != nil {
+		store := run.NewGitDirStore(commonDir)
+		if err := store.EnsureDirs(); err != nil {
 			return err
 		}
 
@@ -89,7 +90,7 @@ clean on the default branch. Must be run inside a tmux session.`,
 			Worktree:  worktree,
 			CreatedAt: createdAt,
 		}
-		if err := run.Save(commonDir, state); err != nil {
+		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
 		}
 

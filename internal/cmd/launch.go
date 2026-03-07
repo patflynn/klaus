@@ -55,7 +55,8 @@ worktree in that clone.`,
 			budget = hostCfg.DefaultBudget
 		}
 
-		if err := run.EnsureDirs(hostCommonDir); err != nil {
+		store := run.NewGitDirStore(hostCommonDir)
+		if err := store.EnsureDirs(); err != nil {
 			return err
 		}
 
@@ -146,7 +147,7 @@ worktree in that clone.`,
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
 
-		logFile := filepath.Join(run.LogDir(hostCommonDir), id+".jsonl")
+		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 		// Build the claude command
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
@@ -194,7 +195,7 @@ worktree in that clone.`,
 			CloneDir:   cloneDirPtr,
 		}
 
-		if err := run.Save(hostCommonDir, state); err != nil {
+		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
 		}
 

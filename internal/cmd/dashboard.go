@@ -35,7 +35,8 @@ Keyboard shortcuts:
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		p := tea.NewProgram(newDashboardModel(commonDir), tea.WithAltScreen())
+		store := run.NewGitDirStore(commonDir)
+		p := tea.NewProgram(newDashboardModel(store), tea.WithAltScreen())
 		_, err = p.Run()
 		return err
 	},
@@ -81,26 +82,26 @@ type repoGroup struct {
 
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
-	commonDir string
-	states    []*run.State
-	ghStatus  map[string]*prStatus // keyed by PR number
-	width     int
-	height    int
-	err       error
-	watcher   *fsnotify.Watcher
+	store    run.StateStore
+	states   []*run.State
+	ghStatus map[string]*prStatus // keyed by PR number
+	width    int
+	height   int
+	err      error
+	watcher  *fsnotify.Watcher
 }
 
-func newDashboardModel(commonDir string) dashboardModel {
+func newDashboardModel(store run.StateStore) dashboardModel {
 	return dashboardModel{
-		commonDir: commonDir,
-		ghStatus:  make(map[string]*prStatus),
+		store:    store,
+		ghStatus: make(map[string]*prStatus),
 	}
 }
 
 func (m dashboardModel) Init() tea.Cmd {
 	return tea.Batch(
-		loadStatesCmd(m.commonDir),
-		startWatcherCmd(m.commonDir),
+		loadStatesCmd(m.store),
+		startWatcherCmd(m.store),
 		tickCmd(),
 	)
 }
@@ -116,7 +117,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, tea.Batch(
-				loadStatesCmd(m.commonDir),
+				loadStatesCmd(m.store),
 				fetchGHStatusCmd(m.states),
 			)
 		}
@@ -135,7 +136,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case fsEventMsg:
-		return m, tea.Batch(loadStatesCmd(m.commonDir), watchFSCmd(m.watcher))
+		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher))
 
 	case tickMsg:
 		return m, tea.Batch(
@@ -319,9 +320,9 @@ func renderBareAgentLine(s *run.State) string {
 
 // Commands for the bubbletea event loop.
 
-func loadStatesCmd(commonDir string) tea.Cmd {
+func loadStatesCmd(store run.StateStore) tea.Cmd {
 	return func() tea.Msg {
-		states, err := run.List(commonDir)
+		states, err := store.List()
 		if err != nil {
 			return errMsg{err: err}
 		}
@@ -357,9 +358,9 @@ func tickAfterCmd() tea.Cmd {
 	})
 }
 
-func startWatcherCmd(commonDir string) tea.Cmd {
+func startWatcherCmd(store run.StateStore) tea.Cmd {
 	return func() tea.Msg {
-		stateDir := run.StateDir(commonDir)
+		stateDir := store.StateDir()
 		// Ensure the directory exists before watching
 		os.MkdirAll(stateDir, 0o755)
 
