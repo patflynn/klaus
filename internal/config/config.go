@@ -70,6 +70,7 @@ type PromptVars struct {
 	Branch   string
 	RepoName string
 	PR       string
+	Projects string // Formatted list of registered projects for session prompt
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -193,10 +194,14 @@ klaus launch --repo owner/repo "<prompt>"  # override per launch
 - Check on running agents: ` + "`klaus status`" + `
 - View agent output: ` + "`klaus logs <run-id>`" + `
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
-- Set default target repo: ` + "`klaus target owner/repo`" + `
+- Set default target repo: ` + "`klaus target owner/repo`" + ` or ` + "`klaus target <project-name>`" + `
 - Show current target: ` + "`klaus target`" + `
+{{if .Projects}}
+## Registered projects
 
-## Testing
+These projects are available by name with ` + "`klaus launch --repo <name>`" + ` or ` + "`klaus target <name>`" + `:
+{{.Projects}}
+{{end}}## Testing
 - Ensure launched agents prefer integration and e2e tests over mocked unit tests.
 - Tests should exercise real behavior — a few tests that run the real binary are worth more than many with injected fakes.
 - Only unit test genuinely tricky logic.
@@ -208,6 +213,45 @@ klaus launch --repo owner/repo "<prompt>"  # override per launch
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.
 func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "session-prompt.md", defaultSessionPromptTemplate, vars)
+}
+
+// FormatProjectList formats a map of project name → local path as a bulleted list
+// for use in the session prompt. Returns empty string if no projects are registered.
+func FormatProjectList(projects map[string]string) string {
+	if len(projects) == 0 {
+		return ""
+	}
+	var lines []string
+	for name, localPath := range projects {
+		lines = append(lines, fmt.Sprintf("- %s (%s)", name, contractHomeForDisplay(localPath)))
+	}
+	// Sort for deterministic output
+	sortStrings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// contractHomeForDisplay replaces the home directory prefix with ~ for display.
+func contractHomeForDisplay(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == home {
+		return "~"
+	}
+	if strings.HasPrefix(path, home+string(filepath.Separator)) {
+		return "~" + path[len(home):]
+	}
+	return path
+}
+
+// sortStrings sorts a slice of strings in place.
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
 }
 
 const defaultWatchPromptTemplate = `You are an autonomous CI monitoring agent for PR #{{.PR}} in this repository.

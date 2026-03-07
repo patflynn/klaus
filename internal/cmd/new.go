@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -95,6 +96,22 @@ func runNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading principles: %w", err)
 	}
 
+	// Load project registry to determine clone directory
+	reg, regErr := project.Load()
+
+	// If projects_dir is set, clone there instead of cwd
+	cloneDir := cwd
+	if regErr == nil {
+		if projDir, expandErr := reg.ExpandedProjectsDir(); expandErr == nil && projDir != "" {
+			// Only use projects_dir if it's explicitly configured (not the default ~/src)
+			if reg.ProjectsDir != "" {
+				if mkErr := os.MkdirAll(projDir, 0o755); mkErr == nil {
+					cloneDir = projDir
+				}
+			}
+		}
+	}
+
 	// Create GitHub repo and clone it
 	fmt.Printf("Creating repository %s...\n", name)
 	ghOutput, err := runGHRepoCreate(name)
@@ -103,9 +120,20 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println(ghOutput)
 
-	repoDir, err := resolveNewRepoDir(cwd, name)
+	repoDir, err := resolveNewRepoDir(cloneDir, name)
 	if err != nil {
 		return err
+	}
+
+	// Auto-register the new project
+	if regErr == nil {
+		if addErr := reg.Add(name, repoDir); addErr == nil {
+			if saveErr := reg.Save(); saveErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not save project registry: %v\n", saveErr)
+			} else {
+				fmt.Printf("Registered project %s → %s\n", name, repoDir)
+			}
+		}
 	}
 
 	// Generate the scaffolding prompt

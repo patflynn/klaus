@@ -64,6 +64,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus session` | Start an interactive coordinator session |
 | `klaus launch "<prompt>"` | Spawn an autonomous agent |
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
+| `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus watch <pr-number>` | Monitor CI for a PR and fix failures autonomously |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
@@ -97,19 +98,21 @@ klaus launch --repo owner/repo "Fix the bug in their API"
 
 ### `klaus target`
 
-Set a session-level default target repo. When the coordinator session is not inside a git repo, this avoids needing `--repo` on every `klaus launch`.
+Set a session-level default target repo. When the coordinator session is not inside a git repo, this avoids needing `--repo` on every `klaus launch`. Accepts a registered project name or `owner/repo`.
 
 ```bash
-klaus target owner/repo              # set default
+klaus target owner/repo              # set default by owner/repo
+klaus target my-project              # set default using registered project name
 klaus target                         # show current target
 klaus target --clear                 # remove default
 ```
 
 The targeting priority for `klaus launch` is:
-1. `--repo` flag (explicit, always wins)
-2. Current git repo (if in one)
-3. Session target (`klaus target` setting)
-4. Error with usage hint
+1. `--repo` flag — if it matches a registered project name (no `owner/` prefix), resolves to that project's local path
+2. `--repo` flag — `owner/repo` or full URL (clones/fetches from GitHub)
+3. Current git repo (if in one)
+4. Session target (`klaus target` setting)
+5. Error with usage hint
 
 ### `klaus status` columns
 
@@ -154,7 +157,7 @@ klaus project set-dir ~/hack              # set the default clone directory
 
 ### `klaus new`
 
-Creates a new GitHub repo and launches a Claude agent to scaffold it. Reads principles from `.klaus/principles.md` (or built-in defaults). The agent makes all scaffolding decisions based on those principles — no templates.
+Creates a new GitHub repo and launches a Claude agent to scaffold it. Reads principles from `.klaus/principles.md` (or built-in defaults). The agent makes all scaffolding decisions based on those principles — no templates. The new project is automatically registered in the project registry.
 
 ```bash
 klaus new my-project

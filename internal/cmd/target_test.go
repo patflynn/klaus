@@ -2,9 +2,12 @@ package cmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -123,5 +126,58 @@ func TestTargetCommandIntegration(t *testing.T) {
 	// File should be removed
 	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
 		t.Errorf("target.json should be removed after clear")
+	}
+}
+
+func TestTargetResolvesProjectName(t *testing.T) {
+	// Create a temporary git repo to simulate a registered project with a remote
+	tmpDir := t.TempDir()
+	repoDir := filepath.Join(tmpDir, "my-project")
+
+	// Init a git repo with a remote
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmds := [][]string{
+		{"git", "init", repoDir},
+		{"git", "-C", repoDir, "remote", "add", "origin", "https://github.com/testowner/my-project.git"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("running %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Create a registry with this project
+	regPath := filepath.Join(tmpDir, "projects.json")
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"my-project": repoDir,
+		},
+	}
+	if err := reg.SaveTo(regPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	// Simulate the target resolution logic
+	repoRef := "my-project"
+	loaded, err := project.LoadFrom(regPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if !strings.Contains(repoRef, "/") {
+		if localPath, ok := loaded.Get(repoRef); ok {
+			remote := gitRemoteURL(localPath)
+			if remote == "" {
+				t.Fatal("expected remote URL from project repo")
+			}
+			if !strings.Contains(remote, "testowner/my-project") {
+				t.Errorf("expected remote to contain testowner/my-project, got %q", remote)
+			}
+		} else {
+			t.Error("project my-project should be found in registry")
+		}
 	}
 }

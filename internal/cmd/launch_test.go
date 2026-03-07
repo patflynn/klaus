@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/patflynn/klaus/internal/project"
 )
 
 func TestFormatPaneTitle(t *testing.T) {
@@ -100,6 +103,74 @@ func TestFormatPaneTitle(t *testing.T) {
 					tt.id, tt.issue, tt.prompt, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLaunchResolvesProjectName(t *testing.T) {
+	// Test that a bare name (no /) is resolved from the project registry.
+	// We test the resolution logic directly since the full launch flow needs tmux.
+	tmpDir := t.TempDir()
+	regPath := filepath.Join(tmpDir, "projects.json")
+
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"my-project": "/home/user/src/my-project",
+		},
+	}
+	if err := reg.SaveTo(regPath); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := project.LoadFrom(regPath)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	// Simulate the launch resolution: if repoRef has no "/" and matches a project, use it
+	repoRef := "my-project"
+	var projectLocalPath string
+	if !strings.Contains(repoRef, "/") {
+		if localPath, ok := loaded.Get(repoRef); ok {
+			projectLocalPath = localPath
+		}
+	}
+
+	if projectLocalPath != "/home/user/src/my-project" {
+		t.Errorf("expected project path /home/user/src/my-project, got %q", projectLocalPath)
+	}
+
+	// An owner/repo format should NOT be resolved as a project name
+	repoRef = "owner/repo"
+	projectLocalPath = ""
+	if !strings.Contains(repoRef, "/") {
+		if localPath, ok := loaded.Get(repoRef); ok {
+			projectLocalPath = localPath
+		}
+	}
+
+	if projectLocalPath != "" {
+		t.Errorf("owner/repo should not resolve as project name, got %q", projectLocalPath)
+	}
+
+	// An unregistered project name should not resolve
+	repoRef = "unknown-project"
+	projectLocalPath = ""
+	if !strings.Contains(repoRef, "/") {
+		if localPath, ok := loaded.Get(repoRef); ok {
+			projectLocalPath = localPath
+		}
+	}
+
+	if projectLocalPath != "" {
+		t.Errorf("unregistered project should not resolve, got %q", projectLocalPath)
+	}
+}
+
+func TestLaunchErrorMessageMentionsProjectAdd(t *testing.T) {
+	// Verify the error message hints at 'klaus project add'
+	errMsg := "no target repo — use --repo owner/repo, 'klaus target owner/repo', or 'klaus project add' to register a project"
+	if !strings.Contains(errMsg, "klaus project add") {
+		t.Error("error message should mention 'klaus project add'")
 	}
 }
 

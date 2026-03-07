@@ -10,6 +10,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -111,11 +112,18 @@ from inside the session to target specific repositories.`,
 			return fmt.Errorf("saving state: %w", err)
 		}
 
+		// Load project list for session prompt
+		var projectList string
+		if reg, loadErr := project.Load(); loadErr == nil {
+			projectList = config.FormatProjectList(reg.List())
+		}
+
 		// Render session system prompt
 		sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
 			RunID:    id,
 			Branch:   branch,
 			RepoName: repoName,
+			Projects: projectList,
 		})
 		if err != nil {
 			return fmt.Errorf("rendering session prompt: %w", err)
