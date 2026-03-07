@@ -298,6 +298,54 @@ func TestRenderPromptDefaultContainsTesting(t *testing.T) {
 	}
 }
 
+func TestPreTrustWorktree(t *testing.T) {
+	// Use a temp dir as both the worktree and the home dir
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+
+	t.Setenv("HOME", homeDir)
+
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("PreTrustWorktree() error: %v", err)
+	}
+
+	// Check that the project directory was created
+	encoded := strings.ReplaceAll(worktreeDir, string(filepath.Separator), "-")
+	indexPath := filepath.Join(homeDir, ".claude", "projects", encoded, "sessions-index.json")
+
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("reading sessions-index.json: %v", err)
+	}
+
+	var index map[string]any
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatalf("parsing sessions-index.json: %v", err)
+	}
+
+	if v, ok := index["version"].(float64); !ok || v != 1 {
+		t.Errorf("version = %v, want 1", index["version"])
+	}
+	if p, ok := index["originalPath"].(string); !ok || p != worktreeDir {
+		t.Errorf("originalPath = %v, want %s", index["originalPath"], worktreeDir)
+	}
+}
+
+func TestPreTrustWorktreeIdempotent(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+
+	t.Setenv("HOME", homeDir)
+
+	// Call twice — second call should not error
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("first PreTrustWorktree() error: %v", err)
+	}
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("second PreTrustWorktree() error: %v", err)
+	}
+}
+
 func TestInit(t *testing.T) {
 	dir := t.TempDir()
 
