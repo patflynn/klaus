@@ -14,9 +14,9 @@
       {
         packages.default = pkgs.buildGoModule {
           pname = "klaus";
-          version = "0.1.0";
+          version = "0.2.0";
           src = ./.;
-          vendorHash = "sha256-7K17JaXFsjf163g5PXCb5ng2gYdotnZ2IDKk8KFjNj0=";
+          vendorHash = "sha256-QEmX66Gurv5iozyzrdA5Re6ZKPl+TXpZF3BFngMNfJY=";
           nativeBuildInputs = [ pkgs.git ];
         };
 
