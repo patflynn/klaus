@@ -8,7 +8,7 @@ Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/cl
 klaus
 ```
 
-That's it. You're in an interactive Claude Code session in a clean worktree. Talk to Claude normally — plan features, debug issues, review code. When there's work that can run in parallel, Claude (or you) spawns agents:
+That's it. Run it from a repo or from your home directory — either works. You're in an interactive Claude Code session. Talk to Claude normally — plan features, debug issues, review code. When there's work that can run in parallel, Claude (or you) spawns agents:
 
 ```
 You: We need to fix the flaky auth test, add dark mode to settings,
@@ -19,16 +19,16 @@ Claude: [runs klaus launch for each task]
 
 Three new tmux panes appear. Each agent works independently in its own worktree, pushes a branch, and opens a PR. Your coordinator session stays focused on the big picture.
 
-## What happens when you run `klaus session`
+## What happens when you run `klaus`
 
-1. A fresh git worktree is created from `origin/main` (or a scratch workspace if not in a repo)
-2. Claude Code starts interactively in that worktree
+1. **In a repo:** a fresh git worktree is created from `origin/main`. **Anywhere else:** a scratch workspace under `~/.klaus/sessions/`
+2. Claude Code starts interactively in that workspace
 3. You talk to Claude as usual — it has `klaus` on PATH
 4. When Claude runs `klaus launch`, a new tmux pane splits off with an autonomous agent
 5. `klaus status` gives you and Claude a dashboard of all running agents
 6. When you're done, `klaus cleanup --all` tears everything down
 
-You can also run `klaus` outside a git repository. In this mode, the session uses a scratch workspace under `~/.klaus/sessions/` and loads configuration from `~/.klaus/config.json`. Use `klaus launch --repo owner/repo` to target specific repositories.
+Klaus is repo-agnostic. You can run it from your home directory and target any repo with `klaus launch --repo owner/repo` or set a session default with `klaus target owner/repo`.
 
 The session is the experience. The other commands are infrastructure.
 
