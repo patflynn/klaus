@@ -159,17 +159,8 @@ worktree in that clone.`,
 		if targetRepo != nil {
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
-		paneCmd := fmt.Sprintf(
-			"cd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
-			shellQuote(worktree),
-			claudeCmd,
-			shellQuote(logFile),
-			selfBin,
-			finalizePrefix,
-			selfBin,
-			shellQuote(id),
-			id,
-		)
+		noWatch, _ := cmd.Flags().GetBool("no-watch")
+		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch)
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
@@ -216,13 +207,32 @@ worktree in that clone.`,
 	},
 }
 
+func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
+	autoWatch := ""
+	if !noWatch {
+		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
+	}
+	return fmt.Sprintf(
+		"cd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
+		shellQuote(worktree),
+		claudeCmd,
+		shellQuote(logFile),
+		selfBin,
+		finalizePrefix,
+		selfBin,
+		shellQuote(id),
+		autoWatch,
+		id,
+	)
+}
+
 func buildClaudeCommand(sysPrompt, budget, prompt string) string {
 	parts := []string{
 		"claude", "-p",
 		"--dangerously-skip-permissions",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--max-budget-usd", budget,
+		"--max-budget-usd", shellQuote(budget),
 		"--append-system-prompt", shellQuote(sysPrompt),
 		shellQuote(prompt),
 	}
@@ -280,5 +290,6 @@ func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target GitHub repo (e.g., owner/repo or full URL)")
+	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
 	rootCmd.AddCommand(launchCmd)
 }
