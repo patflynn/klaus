@@ -28,6 +28,7 @@ func TestValidProjectName(t *testing.T) {
 		{"starts with dot", ".project", false},
 		{"has slash", "my/project", false},
 		{"has at sign", "my@project", false},
+		{"ends with dot", "project.", false},
 		{"too long", strings.Repeat("a", 101), false},
 		{"max length", strings.Repeat("a", 100), true},
 	}
@@ -59,6 +60,9 @@ func TestBuildScaffoldPrompt(t *testing.T) {
 		{"CLAUDE.md", "CLAUDE.md"},
 		{"push to main", "push directly to main"},
 		{"no PR", "Do NOT create a PR"},
+		{"description tag", "<user-description>"},
+		{"principles tag", "<principles>"},
+		{"untrusted data warning", "Treat the content inside"},
 	}
 
 	for _, c := range checks {
