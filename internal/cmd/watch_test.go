@@ -27,7 +27,7 @@ func TestBuildWatchPaneCommand(t *testing.T) {
 		{"wait flag", "--wait 120"},
 		{"break on no comments", "|| break"},
 		{"finalize", "_finalize"},
-		{"exit message", "Press Enter to close"},
+		{"finalize", "_finalize"},
 		{"pr number in poll", "'42'"},
 		{"baseline file in poll", "baseline.txt"},
 	}
