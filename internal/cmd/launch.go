@@ -239,19 +239,24 @@ func shellQuote(s string) string {
 // Format without issue: "<short-id> <short-desc>"
 // Short desc is up to 40 characters of the prompt, trimmed to a word boundary.
 func FormatPaneTitle(id, issue, prompt string) string {
+	const (
+		shortIDLength = 4
+		maxDescLength = 40
+	)
+
 	var title string
 	if issue != "" {
 		title = "#" + issue
 	} else {
 		title = id
-		if len(id) > 4 {
-			title = id[len(id)-4:]
+		if len(id) > shortIDLength {
+			title = id[len(id)-shortIDLength:]
 		}
 	}
 
 	desc := strings.TrimSpace(prompt)
-	if len(desc) > 40 {
-		desc = desc[:40]
+	if len(desc) > maxDescLength {
+		desc = desc[:maxDescLength]
 		// Trim to last word boundary
 		if i := strings.LastIndex(desc, " "); i > 0 {
 			desc = desc[:i]
