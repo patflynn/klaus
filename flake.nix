@@ -12,11 +12,14 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        packages.default = pkgs.buildGoModule {
+        packages.default = let
+          version = if (self ? rev) then "0.3.0-${builtins.substring 0 7 self.rev}" else "0.3.0-dirty";
+        in pkgs.buildGoModule {
           pname = "klaus";
-          version = "0.2.0";
+          inherit version;
           src = ./.;
           vendorHash = "sha256-QEmX66Gurv5iozyzrdA5Re6ZKPl+TXpZF3BFngMNfJY=";
+          ldflags = [ "-X" "github.com/patflynn/klaus/internal/cmd.version=${version}" ];
           nativeBuildInputs = [ pkgs.git ];
         };
 
