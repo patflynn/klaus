@@ -1,13 +1,13 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
@@ -80,21 +80,33 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 	}
 	defer f.Close()
 
-	// Scan for result event with cost/duration
-	scanner := json.NewDecoder(f)
-	for scanner.More() {
+	// Use line-by-line scanning for robust JSONL parsing.
+	// json.NewDecoder can corrupt its internal state on malformed lines,
+	// causing subsequent events to be silently skipped.
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
 		var ev struct {
 			Type         string  `json:"type"`
 			TotalCostUSD float64 `json:"total_cost_usd"`
 			DurationMS   int64   `json:"duration_ms"`
 			Message      *struct {
 				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type    string `json:"type"`
+					Text    string `json:"text"`
+					Content string `json:"content"`
 				} `json:"content"`
 			} `json:"message"`
+			// Top-level content for tool_result events
+			Content string `json:"content"`
 		}
-		if err := scanner.Decode(&ev); err != nil {
+		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
 		}
 
@@ -116,22 +128,39 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 					}
 				}
 			}
+		default:
+			// Handle tool_result and other event types that may
+			// contain the PR URL (e.g. gh pr create output).
+			if ev.Content != "" {
+				if url := extractPRURL(ev.Content); url != "" {
+					state.PRURL = &url
+				}
+			}
+			if ev.Message != nil {
+				for _, block := range ev.Message.Content {
+					text := block.Text
+					if text == "" {
+						text = block.Content
+					}
+					if text != "" {
+						if url := extractPRURL(text); url != "" {
+							state.PRURL = &url
+						}
+					}
+				}
+			}
 		}
 	}
 
 	return store.Save(state)
 }
 
+// prURLExtractRegex matches GitHub PR URLs in free-form text, including
+// inside markdown links, angle brackets, or adjacent punctuation.
+var prURLExtractRegex = regexp.MustCompile(`https?://github\.com/[^\s"<>\]]+/pull/\d+`)
+
 func extractPRURL(text string) string {
-	// Look for GitHub PR URLs
-	for _, word := range strings.Fields(text) {
-		// Clean trailing punctuation
-		word = strings.TrimRight(word, ".,;:!?)")
-		if strings.Contains(word, "github.com/") && strings.Contains(word, "/pull/") {
-			return word
-		}
-	}
-	return ""
+	return prURLExtractRegex.FindString(text)
 }
 
 var prURLRegex = regexp.MustCompile(`/pull/(\d+)`)

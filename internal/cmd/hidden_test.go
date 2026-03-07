@@ -1,6 +1,12 @@
 package cmd
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/patflynn/klaus/internal/run"
+)
 
 func TestExtractPRNumberFromURL(t *testing.T) {
 	tests := []struct {
@@ -101,6 +107,36 @@ func TestExtractPRURL(t *testing.T) {
 			text: "https://github.com/owner/repo/pull/1",
 			want: "https://github.com/owner/repo/pull/1",
 		},
+		{
+			name: "markdown link",
+			text: "Created [PR #42](https://github.com/owner/repo/pull/42) for review.",
+			want: "https://github.com/owner/repo/pull/42",
+		},
+		{
+			name: "angle brackets",
+			text: "PR created: <https://github.com/owner/repo/pull/7>",
+			want: "https://github.com/owner/repo/pull/7",
+		},
+		{
+			name: "parenthesized URL",
+			text: "See the PR (https://github.com/owner/repo/pull/55) for details.",
+			want: "https://github.com/owner/repo/pull/55",
+		},
+		{
+			name: "URL with trailing comma",
+			text: "https://github.com/owner/repo/pull/10, which fixes the bug",
+			want: "https://github.com/owner/repo/pull/10",
+		},
+		{
+			name: "http URL",
+			text: "http://github.com/owner/repo/pull/3",
+			want: "http://github.com/owner/repo/pull/3",
+		},
+		{
+			name: "bare gh pr create output",
+			text: "https://github.com/owner/repo/pull/42\n",
+			want: "https://github.com/owner/repo/pull/42",
+		},
 	}
 
 	for _, tt := range tests {
@@ -110,5 +146,188 @@ func TestExtractPRURL(t *testing.T) {
 				t.Errorf("extractPRURL(%q) = %q, want %q", tt.text, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFinalizeFromLog(t *testing.T) {
+	t.Run("extracts PR URL from assistant text", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I'll create the PR now."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Created PR at https://github.com/owner/repo/pull/42"}]}}
+{"type":"result","total_cost_usd":1.5,"duration_ms":30000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+		assertCost(t, state, 1.5)
+		assertDuration(t, state, 30000)
+	})
+
+	t.Run("extracts PR URL from tool_result event", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title test"}}]}}
+{"type":"tool_result","content":"https://github.com/owner/repo/pull/99\n"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done! I created the PR."}]}}
+{"type":"result","total_cost_usd":2.0,"duration_ms":45000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/99")
+	})
+
+	t.Run("extracts PR URL from user message with tool_result content", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"https://github.com/owner/repo/pull/7\n"}]}}
+{"type":"result","total_cost_usd":1.0,"duration_ms":10000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/7")
+	})
+
+	t.Run("handles markdown link in assistant text", func(t *testing.T) {
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Created [PR #42](https://github.com/owner/repo/pull/42) for review."}]}}
+{"type":"result","total_cost_usd":1.0,"duration_ms":5000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+	})
+
+	t.Run("survives malformed JSONL lines", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init"}
+not valid json at all
+{"truncated":
+{"type":"assistant","message":{"content":[{"type":"text","text":"PR: https://github.com/owner/repo/pull/5"}]}}
+{"type":"result","total_cost_usd":0.5,"duration_ms":2000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/5")
+		assertCost(t, state, 0.5)
+	})
+
+	t.Run("no PR URL in log", func(t *testing.T) {
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Just doing some work."}]}}
+{"type":"result","total_cost_usd":0.1,"duration_ms":1000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		if state.PRURL != nil {
+			t.Errorf("expected nil PRURL, got %q", *state.PRURL)
+		}
+	})
+
+	t.Run("last PR URL wins", func(t *testing.T) {
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"First PR: https://github.com/owner/repo/pull/1"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Recreated PR: https://github.com/owner/repo/pull/2"}]}}
+{"type":"result","total_cost_usd":1.0,"duration_ms":5000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/2")
+	})
+}
+
+// setupFinalizeTest creates a temporary log file and state for testing finalizeFromLog.
+func setupFinalizeTest(t *testing.T, logContent string) (*run.State, run.StateStore) {
+	t.Helper()
+	dir := t.TempDir()
+
+	logFile := filepath.Join(dir, "test.jsonl")
+	if err := os.WriteFile(logFile, []byte(logContent), 0644); err != nil {
+		t.Fatalf("writing log file: %v", err)
+	}
+
+	stateDir := filepath.Join(dir, "runs")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("creating state dir: %v", err)
+	}
+
+	state := &run.State{
+		ID:      "test-run",
+		LogFile: &logFile,
+	}
+
+	store := &testStateStore{dir: stateDir, state: state}
+	return state, store
+}
+
+// testStateStore is a minimal StateStore for testing.
+type testStateStore struct {
+	dir   string
+	state *run.State
+}
+
+func (s *testStateStore) Save(state *run.State) error {
+	s.state = state
+	return nil
+}
+
+func (s *testStateStore) Load(id string) (*run.State, error) {
+	return s.state, nil
+}
+
+func (s *testStateStore) List() ([]*run.State, error) {
+	return []*run.State{s.state}, nil
+}
+
+func (s *testStateStore) Delete(id string) error {
+	return nil
+}
+
+func (s *testStateStore) StateDir() string {
+	return s.dir
+}
+
+func (s *testStateStore) LogDir() string {
+	return s.dir
+}
+
+func (s *testStateStore) EnsureDirs() error {
+	return nil
+}
+
+func assertPRURL(t *testing.T, state *run.State, want string) {
+	t.Helper()
+	if state.PRURL == nil {
+		t.Fatalf("expected PRURL %q, got nil", want)
+	}
+	if *state.PRURL != want {
+		t.Errorf("PRURL = %q, want %q", *state.PRURL, want)
+	}
+}
+
+func assertCost(t *testing.T, state *run.State, want float64) {
+	t.Helper()
+	if state.CostUSD == nil {
+		t.Fatalf("expected CostUSD %v, got nil", want)
+	}
+	if *state.CostUSD != want {
+		t.Errorf("CostUSD = %v, want %v", *state.CostUSD, want)
+	}
+}
+
+func assertDuration(t *testing.T, state *run.State, want int64) {
+	t.Helper()
+	if state.DurationMS == nil {
+		t.Fatalf("expected DurationMS %v, got nil", want)
+	}
+	if *state.DurationMS != want {
+		t.Errorf("DurationMS = %v, want %v", *state.DurationMS, want)
 	}
 }
