@@ -214,4 +214,20 @@ func TestBuildPaneCommand(t *testing.T) {
 			t.Error("expected finalize prefix before _auto-watch, got:", cmd)
 		}
 	})
+
+	t.Run("exports KLAUS_SESSION_ID via tmuxSessionEnvPrefix", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "session-20260306-1720-abc1")
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
+		if !strings.Contains(cmd, "export KLAUS_SESSION_ID='session-20260306-1720-abc1'") {
+			t.Error("expected KLAUS_SESSION_ID export in pane command, got:", cmd)
+		}
+	})
+
+	t.Run("no KLAUS_SESSION_ID export when env unset", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
+		if strings.Contains(cmd, "KLAUS_SESSION_ID") {
+			t.Error("expected no KLAUS_SESSION_ID export when session ID is empty, got:", cmd)
+		}
+	})
 }

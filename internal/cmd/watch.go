@@ -142,10 +142,11 @@ Must be run inside a tmux session.`,
 		)
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
-		// Build the pane command: run claude, pipe through tee and formatter, then finalize
+		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
 		selfBin := "klaus"
 		paneCmd := fmt.Sprintf(
-			"cd %s && %s | tee %s | %s _format-stream; %s _finalize %s; echo ''; printf 'Watch %%s (PR #%%s) exited. Press Enter to close.\\n' %s %s; read",
+			"%scd %s && %s | tee %s | %s _format-stream; %s _finalize %s; echo ''; printf 'Watch %%s (PR #%%s) exited. Press Enter to close.\\n' %s %s; read",
+			tmuxSessionEnvPrefix(),
 			shellQuote(worktree),
 			claudeCmd,
 			shellQuote(logFile),

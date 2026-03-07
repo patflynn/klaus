@@ -253,7 +253,8 @@ func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id 
 		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
 	}
 	return fmt.Sprintf(
-		"cd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
+		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s; echo ''; echo \"Run %s exited. Press Enter to close.\"; read",
+		tmuxSessionEnvPrefix(),
 		shellQuote(worktree),
 		claudeCmd,
 		shellQuote(logFile),
