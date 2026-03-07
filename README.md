@@ -70,6 +70,10 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id>` | Force-push a log held back for sensitivity |
+| `klaus project add <owner/repo>` | Register a project (clones if needed) |
+| `klaus project list` | Show registered projects |
+| `klaus project remove <name>` | Unregister a project |
+| `klaus project set-dir <path>` | Set the default projects directory |
 | `klaus new <project-name>` | Scaffold a new project using principles-based generation |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
@@ -134,6 +138,19 @@ klaus merge --merge-method rebase --no-delete-branch 42
 ```
 
 Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`.
+
+### `klaus project`
+
+Manage a persistent registry of projects. The registry maps short names to local paths and is stored in `~/.klaus/projects.json`.
+
+```bash
+klaus project add owner/repo              # clone into projects dir and register
+klaus project add owner/repo --path .     # register an existing local checkout
+klaus project add my-tool                 # search your GitHub repos by name
+klaus project list                        # show all registered projects
+klaus project remove my-tool              # unregister (does not delete the clone)
+klaus project set-dir ~/hack              # set the default clone directory
+```
 
 ### `klaus new`
 
