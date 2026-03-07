@@ -359,6 +359,68 @@ func PreTrustWorktree(worktreeDir string) error {
 	return nil
 }
 
+// DefaultPrinciples is used when .klaus/principles.md doesn't exist.
+const DefaultPrinciples = `# Project Principles
+
+## Tech Defaults
+- Go for CLI tools and backend services
+- TypeScript for web applications
+- These are defaults — override based on project needs
+
+## Dependencies
+- Minimal dependencies. Prefer stdlib and zero-dep solutions.
+- Every dependency is a maintenance and supply chain liability.
+- Vanilla over frameworks unless complexity genuinely warrants one.
+
+## Environment
+- Use nix flakes for environment management (flake.nix with dev shell)
+- Include klaus in the dev shell: use 'github:patflynn/klaus' as a flake input
+- No global tool assumptions — everything through nix
+
+## Testing
+- Automated e2e testing from day one
+- Tests should exercise the real thing, not just unit tests
+- Playwright for web projects, go test for Go projects
+- CI must run tests on every PR
+
+## Security & Supply Chain
+- SLSA-style CI/CD pipelines in GitHub Actions
+- Use zizmor to verify GitHub Actions are configured safely
+- No secrets in code, privacy-conscious data handling
+- Pin dependencies to exact versions
+
+## CI/CD
+- GitHub Actions for CI
+- GitHub Pages for static web apps (PWA pattern, no server infrastructure unless needed)
+- CI checks: build, test, lint where appropriate
+
+## Code Quality
+- Tight, well-factored modules
+- Low overall system complexity
+- Don't implement features if ongoing maintenance cost is too high
+- Three lines of duplicated code beats a premature abstraction
+
+## Project Setup
+- CLAUDE.md with project conventions and rules
+- .klaus/config.json for klaus integration
+- README.md with setup instructions
+- .gitignore appropriate to the language
+`
+
+// LoadPrinciples reads .klaus/principles.md from the given directory.
+// If the file doesn't exist, returns DefaultPrinciples.
+func LoadPrinciples(dir string) (string, error) {
+	path := filepath.Join(dir, ".klaus", "principles.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DefaultPrinciples, nil
+		}
+		return "", fmt.Errorf("reading principles: %w", err)
+	}
+	return string(data), nil
+}
+
 func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars PromptVars) (string, error) {
 	path := filepath.Join(repoRoot, ".klaus", filename)
 
