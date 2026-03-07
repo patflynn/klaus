@@ -35,10 +35,22 @@ worktree in that clone.`,
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
 		}
 
-		// Host repo — optional when --repo is specified
+		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
+
+		// If no --repo and not in a git repo, check session target
 		if hostRoot == "" && repoRef == "" {
-			return fmt.Errorf("not in a git repo — use --repo owner/repo to specify a target")
+			if s, storeErr := sessionStore(); storeErr == nil {
+				if hds, ok := s.(*run.HomeDirStore); ok {
+					if target, loadErr := run.LoadTarget(hds.BaseDir()); loadErr == nil && target != "" {
+						repoRef = target
+					}
+				}
+			}
+		}
+
+		if hostRoot == "" && repoRef == "" {
+			return fmt.Errorf("no target repo — use --repo owner/repo or 'klaus target owner/repo' to set a default")
 		}
 
 		hostCfg, err := config.Load(hostRoot)

@@ -51,18 +51,24 @@ var finalizeCmd = &cobra.Command{
 			}
 		}
 
-		// Sync to data ref — still uses the git repo
-		root, err := git.RepoRoot()
+		// Sync to data ref — use the target repo's clone dir if available,
+		// otherwise fall back to the current git repo.
+		var syncRoot string
+		if state.CloneDir != nil {
+			syncRoot = *state.CloneDir
+		} else {
+			syncRoot, err = git.RepoRoot()
+			if err != nil {
+				return nil
+			}
+		}
+
+		cfg, err := config.Load(syncRoot)
 		if err != nil {
 			return nil
 		}
 
-		cfg, err := config.Load(root)
-		if err != nil {
-			return nil
-		}
-
-		syncRunToDataRef(root, store, cfg.DataRef, state)
+		syncRunToDataRef(syncRoot, store, cfg.DataRef, state)
 		return nil
 	},
 }

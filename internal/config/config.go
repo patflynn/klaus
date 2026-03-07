@@ -180,9 +180,12 @@ To delegate tasks referencing a GitHub issue:
 klaus launch --issue <number> "<prompt>"
 ` + "```" + `
 {{if not .RepoName}}
-When not in a git repo, you must specify a target repository:
+When not in a git repo, you must specify a target repository. You can either
+set a session-level default or specify it per launch:
 ` + "```" + `
-klaus launch --repo owner/repo "<prompt>"
+klaus target owner/repo              # set default for this session
+klaus launch "<prompt>"              # uses the target
+klaus launch --repo owner/repo "<prompt>"  # override per launch
 ` + "```" + `
 {{end}}
 ## Managing agents
@@ -190,6 +193,8 @@ klaus launch --repo owner/repo "<prompt>"
 - Check on running agents: ` + "`klaus status`" + `
 - View agent output: ` + "`klaus logs <run-id>`" + `
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
+- Set default target repo: ` + "`klaus target owner/repo`" + `
+- Show current target: ` + "`klaus target`" + `
 
 ## Testing
 - Ensure launched agents prefer integration and e2e tests over mocked unit tests.
