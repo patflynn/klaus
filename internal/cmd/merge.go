@@ -90,6 +90,7 @@ func getPRTitle(prNumber string) string {
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to get title for PR #%s: %v\n", prNumber, err)
 		return "(unknown)"
 	}
 	title := strings.TrimSpace(stdout.String())
@@ -139,7 +140,7 @@ func rebaseAndPush(prNumber string) error {
 
 	repoRoot, err := git.RepoRoot()
 	if err != nil {
-		return fmt.Errorf("not inside a git repository")
+		return fmt.Errorf("could not determine git repository root: %w", err)
 	}
 
 	if err := git.FetchBranch(repoRoot, "main"); err != nil {
@@ -155,8 +156,12 @@ func rebaseAndPush(prNumber string) error {
 	}
 	worktreePath := filepath.Join(tmpDir, "rebase")
 	defer func() {
-		git.WorktreeRemove(repoRoot, worktreePath)
-		os.RemoveAll(tmpDir)
+		if err := git.WorktreeRemove(repoRoot, worktreePath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", err)
+		}
+		if err := os.RemoveAll(tmpDir); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to remove temp directory: %v\n", err)
+		}
 	}()
 
 	if err := git.WorktreeAddTrack(repoRoot, worktreePath, branch); err != nil {
