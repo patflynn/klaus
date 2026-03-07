@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
@@ -15,9 +16,11 @@ var cleanupCmd = &cobra.Command{
 	Long: `Cleans up a run by killing its tmux pane, removing its worktree,
 deleting local branches, and removing state files.
 
-Use --all to clean up all runs.`,
+Use --all to clean up all runs. Runs with active tmux panes are skipped
+by default; pass --force to remove them anyway.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
+		force, _ := cmd.Flags().GetBool("force")
 
 		root, _ := git.RepoRoot() // may be empty outside a repo
 
@@ -27,7 +30,7 @@ Use --all to clean up all runs.`,
 				return err
 			}
 			if store != nil {
-				return cleanupAll(root, store)
+				return cleanupAll(root, store, force)
 			}
 			// No session env — could scan all, but require explicit session
 			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
@@ -42,11 +45,11 @@ Use --all to clean up all runs.`,
 			return err
 		}
 		_ = state // cleanupOne will re-load
-		return cleanupOne(root, store, args[0])
+		return cleanupOne(root, store, args[0], force)
 	},
 }
 
-func cleanupAll(root string, store run.StateStore) error {
+func cleanupAll(root string, store run.StateStore, force bool) error {
 	states, err := store.List()
 	if err != nil {
 		return err
@@ -56,17 +59,35 @@ func cleanupAll(root string, store run.StateStore) error {
 		return nil
 	}
 	for _, s := range states {
-		if err := cleanupOne(root, store, s.ID); err != nil {
+		if err := cleanupOne(root, store, s.ID, force); err != nil {
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
 	return nil
 }
 
-func cleanupOne(root string, store run.StateStore, id string) error {
+// isRunActive reports whether the run has a live tmux pane or is the current session.
+var isRunActive = func(state *run.State) bool {
+	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
+		return true
+	}
+	if state.Type == "session" {
+		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanupOne(root string, store run.StateStore, id string, force bool) error {
 	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("no run found with id: %s", id)
+	}
+
+	if !force && isRunActive(state) {
+		fmt.Printf("skipping %s (still running) — use --force to remove\n", id)
+		return nil
 	}
 
 	fmt.Printf("Cleaning up %s...\n", id)
@@ -109,5 +130,6 @@ func cleanupOne(root string, store run.StateStore, id string) error {
 
 func init() {
 	cleanupCmd.Flags().Bool("all", false, "Clean up all runs")
+	cleanupCmd.Flags().Bool("force", false, "Remove runs even if they are still running")
 	rootCmd.AddCommand(cleanupCmd)
 }
