@@ -17,6 +17,7 @@ type Config struct {
 	DataRef          string   `json:"data_ref"`
 	DefaultBranch    string   `json:"default_branch"`
 	TrustedReviewers []string `json:"trusted_reviewers"`
+	ReviewWaitSecs   int      `json:"review_wait_secs"`
 }
 
 // Defaults returns a Config with default values.
@@ -27,6 +28,7 @@ func Defaults() Config {
 		DataRef:          "refs/klaus/data",
 		DefaultBranch:    "main",
 		TrustedReviewers: []string{"gemini-code-assist[bot]"},
+		ReviewWaitSecs:   120,
 	}
 }
 

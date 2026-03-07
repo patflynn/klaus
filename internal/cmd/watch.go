@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,11 +26,17 @@ var watchCmd = &cobra.Command{
 If a check fails, the agent reads the failure logs, diagnoses the issue,
 pushes a fix to the PR branch, and repeats until all checks pass.
 
+After all CI checks pass, the agent waits for new review comments
+(default 2 minutes, configurable via --review-wait). If new comments
+arrive during the wait, the agent addresses them and re-enters the CI
+monitoring loop.
+
 Must be run inside a tmux session.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prNumber := args[0]
 		budget, _ := cmd.Flags().GetString("budget")
+		reviewWait, _ := cmd.Flags().GetInt("review-wait")
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus watch must be run inside a tmux session")
@@ -47,6 +54,10 @@ Must be run inside a tmux session.`,
 
 		if budget == "" {
 			budget = cfg.DefaultBudget
+		}
+
+		if !cmd.Flags().Changed("review-wait") {
+			reviewWait = cfg.ReviewWaitSecs
 		}
 
 		store, err := sessionStore()
@@ -142,17 +153,14 @@ Must be run inside a tmux session.`,
 		)
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
-		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
+		// Build the pane command with a review-polling loop.
+		// After each agent run, poll for new review comments. If new comments
+		// arrive within the wait period, re-enter the agent loop.
 		selfBin := "klaus"
-		paneCmd := fmt.Sprintf(
-			"%scd %s && %s | tee %s | %s _format-stream; %s _finalize %s",
-			tmuxSessionEnvPrefix(),
-			shellQuote(worktree),
-			claudeCmd,
-			shellQuote(logFile),
-			selfBin,
-			selfBin,
-			shellQuote(id),
+		baselineFile := filepath.Join(os.TempDir(), "klaus-review-baseline-"+id+".txt")
+		paneCmd := buildWatchPaneCommand(
+			tmuxSessionEnvPrefix(), worktree, claudeCmd, logFile,
+			selfBin, id, prNumber, baselineFile, reviewWait,
 		)
 
 		// Launch in tmux pane, targeting the pane that ran this command
@@ -231,7 +239,43 @@ func getPRBranch(prNumber string) (string, error) {
 	return branch, nil
 }
 
+// buildWatchPaneCommand constructs the shell command run inside the tmux pane.
+// It wraps the agent in a loop: after each agent run, it polls for new review
+// comments and re-enters the loop if any are found within the wait period.
+func buildWatchPaneCommand(envPrefix, worktree, claudeCmd, logFile, selfBin, id, prNumber, baselineFile string, reviewWait int) string {
+	waitStr := strconv.Itoa(reviewWait)
+
+	// The loop:
+	// 1. Save current review comment IDs as baseline
+	// 2. Run the Claude agent
+	// 3. Poll for new review comments (exits 0 if found, non-zero if timeout)
+	// 4. If new comments found, update baseline and loop; otherwise break
+	return fmt.Sprintf(
+		"%scd %s && "+
+			"%s _save-review-baseline %s %s; "+
+			"while true; do "+
+			"%s | tee %s | %s _format-stream; "+
+			"%s _poll-reviews %s %s --wait %s || break; "+
+			"%s _save-review-baseline %s %s; "+
+			"done; "+
+			"%s _finalize %s",
+		envPrefix,
+		shellQuote(worktree),
+		// Initial baseline save
+		selfBin, shellQuote(prNumber), shellQuote(baselineFile),
+		// Agent loop body
+		claudeCmd, shellQuote(logFile), selfBin,
+		// Poll for new reviews
+		selfBin, shellQuote(prNumber), shellQuote(baselineFile), waitStr,
+		// Update baseline for next iteration
+		selfBin, shellQuote(prNumber), shellQuote(baselineFile),
+		// Finalize
+		selfBin, shellQuote(id),
+	)
+}
+
 func init() {
 	watchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
+	watchCmd.Flags().Int("review-wait", 120, "Seconds to wait for new review comments after CI passes")
 	rootCmd.AddCommand(watchCmd)
 }
