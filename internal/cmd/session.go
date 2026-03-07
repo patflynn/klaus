@@ -139,6 +139,15 @@ from inside the session to target specific repositories.`,
 		fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
 		fmt.Println()
 
+		// Launch dashboard in a bottom pane before starting Claude
+		if currentPane != "" {
+			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
+			_, err := tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
+			}
+		}
+
 		// Run claude interactively in the worktree, passing session ID to children
 		claude := exec.Command("claude", "--dangerously-skip-permissions", "--append-system-prompt", sessionPrompt)
 		claude.Dir = worktree

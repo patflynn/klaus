@@ -85,6 +85,34 @@ func TestBuildArgsRenameWindow(t *testing.T) {
 	}
 }
 
+func TestBuildArgsSplitWindowSized(t *testing.T) {
+	args := BuildArgs("split-window", "-t", "%0", "-v", "-d", "-l", "30%", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "klaus dashboard")
+	want := []string{"split-window", "-t", "%0", "-v", "-d", "-l", "30%", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "klaus dashboard"}
+
+	if len(args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
+func TestBuildArgsSplitWindowSizedHorizontal(t *testing.T) {
+	args := BuildArgs("split-window", "-t", "%0", "-h", "-d", "-l", "50%", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello")
+	want := []string{"split-window", "-t", "%0", "-h", "-d", "-l", "50%", "-P", "-F", "#{pane_id}", "-c", "/tmp/test", "echo hello"}
+
+	if len(args) != len(want) {
+		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
+		}
+	}
+}
+
 func TestInSessionOutsideTmux(t *testing.T) {
 	// When running tests outside tmux, TMUX env var is typically not set
 	// This test documents the behavior — it may pass or fail depending on env
