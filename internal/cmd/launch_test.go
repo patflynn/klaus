@@ -1,6 +1,9 @@
 package cmd
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFormatPaneTitle(t *testing.T) {
 	tests := []struct {
@@ -84,4 +87,46 @@ func TestFormatPaneTitle(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBuildPaneCommand(t *testing.T) {
+	worktree := "/tmp/worktrees/repo/abc123"
+	claudeCmd := "claude -p 'do stuff'"
+	logFile := "/tmp/logs/abc123.jsonl"
+	selfBin := "klaus"
+	id := "20260306-1720-176a"
+
+	t.Run("includes auto-watch by default", func(t *testing.T) {
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
+		if !strings.Contains(cmd, "_auto-watch") {
+			t.Error("expected _auto-watch in pipeline, got:", cmd)
+		}
+		if !strings.Contains(cmd, "_finalize") {
+			t.Error("expected _finalize in pipeline, got:", cmd)
+		}
+	})
+
+	t.Run("no-watch excludes auto-watch", func(t *testing.T) {
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, true)
+		if strings.Contains(cmd, "_auto-watch") {
+			t.Error("expected no _auto-watch in pipeline with --no-watch, got:", cmd)
+		}
+		if !strings.Contains(cmd, "_finalize") {
+			t.Error("expected _finalize still present in pipeline, got:", cmd)
+		}
+	})
+
+	t.Run("cross-repo includes finalize prefix for auto-watch", func(t *testing.T) {
+		prefix := "cd '/host/repo' && "
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id, false)
+		// Should have the prefix before both _finalize and _auto-watch
+		parts := strings.Split(cmd, "_auto-watch")
+		if len(parts) < 2 {
+			t.Fatal("expected _auto-watch in pipeline")
+		}
+		// The part before _auto-watch should contain the prefix
+		if !strings.Contains(parts[0], "cd '/host/repo'") {
+			t.Error("expected finalize prefix before _auto-watch, got:", cmd)
+		}
+	})
 }
