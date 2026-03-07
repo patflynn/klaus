@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -17,13 +16,7 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show all runs and their current state",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return fmt.Errorf("not inside a git repository")
-		}
-
-		store := run.NewGitDirStore(commonDir)
-		states, err := store.List()
+		states, _, err := listStatesFromEnvOrAll()
 		if err != nil {
 			return err
 		}

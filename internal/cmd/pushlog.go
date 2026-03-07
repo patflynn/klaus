@@ -6,7 +6,6 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
-	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -24,20 +23,14 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return err
-		}
-
 		cfg, err := config.Load(root)
 		if err != nil {
 			return err
 		}
 
-		store := run.NewGitDirStore(commonDir)
-		state, err := store.Load(id)
+		state, store, err := loadStateFromEnvOrAll(id)
 		if err != nil {
-			return fmt.Errorf("no run found with id: %s", id)
+			return err
 		}
 
 		if state.LogFile == nil {

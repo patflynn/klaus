@@ -9,6 +9,67 @@ import (
 	"strings"
 )
 
+// Shared helpers used by both GitDirStore and HomeDirStore.
+
+func saveState(dir string, st *State) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling state: %w", err)
+	}
+	path := filepath.Join(dir, st.ID+".json")
+	return os.WriteFile(path, data, 0o644)
+}
+
+func loadState(dir string, id string) (*State, error) {
+	path := filepath.Join(dir, id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading state file: %w", err)
+	}
+	var st State
+	if err := json.Unmarshal(data, &st); err != nil {
+		return nil, fmt.Errorf("parsing state file: %w", err)
+	}
+	return &st, nil
+}
+
+func listStates(dir string) ([]*State, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading state dir: %w", err)
+	}
+
+	var states []*State
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		st, err := loadState(dir, id)
+		if err != nil {
+			continue // skip corrupt files
+		}
+		states = append(states, st)
+	}
+
+	sort.Slice(states, func(i, j int) bool {
+		return states[i].CreatedAt > states[j].CreatedAt
+	})
+
+	return states, nil
+}
+
+func deleteState(dir string, id string) error {
+	path := filepath.Join(dir, id+".json")
+	return os.Remove(path)
+}
+
 // StateStore defines the interface for persisting run state.
 type StateStore interface {
 	Save(s *State) error
@@ -49,62 +110,17 @@ func (s *GitDirStore) EnsureDirs() error {
 }
 
 func (s *GitDirStore) Save(st *State) error {
-	dir := s.StateDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshaling state: %w", err)
-	}
-	path := filepath.Join(dir, st.ID+".json")
-	return os.WriteFile(path, data, 0o644)
+	return saveState(s.StateDir(), st)
 }
 
 func (s *GitDirStore) Load(id string) (*State, error) {
-	path := filepath.Join(s.StateDir(), id+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading state file: %w", err)
-	}
-	var st State
-	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("parsing state file: %w", err)
-	}
-	return &st, nil
+	return loadState(s.StateDir(), id)
 }
 
 func (s *GitDirStore) List() ([]*State, error) {
-	dir := s.StateDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading state dir: %w", err)
-	}
-
-	var states []*State
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		st, err := s.Load(id)
-		if err != nil {
-			continue // skip corrupt files
-		}
-		states = append(states, st)
-	}
-
-	sort.Slice(states, func(i, j int) bool {
-		return states[i].CreatedAt > states[j].CreatedAt
-	})
-
-	return states, nil
+	return listStates(s.StateDir())
 }
 
 func (s *GitDirStore) Delete(id string) error {
-	path := filepath.Join(s.StateDir(), id+".json")
-	return os.Remove(path)
+	return deleteState(s.StateDir(), id)
 }
