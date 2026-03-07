@@ -164,7 +164,7 @@ Must be run inside a tmux session.`,
 			return fmt.Errorf("creating tmux pane: %w", err)
 		}
 
-		tmux.SetPaneTitle(paneID, "watch:"+id)
+		tmux.SetPaneTitle(paneID, "watch #"+prNumber)
 		if err := tmux.RebalanceLayout(currentPane); err != nil {
 			return fmt.Errorf("rebalancing tmux layout: %w", err)
 		}

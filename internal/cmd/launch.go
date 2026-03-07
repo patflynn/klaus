@@ -235,24 +235,27 @@ func shellQuote(s string) string {
 }
 
 // FormatPaneTitle builds a compact pane title for an agent.
-// Format: "agent:<short-id> #<issue> <short-desc>"
-// Short ID is the last 4 characters of the run ID.
-// Short desc is the first 20 characters of the prompt.
+// Format with issue:    "#<issue> <short-desc>"
+// Format without issue: "<short-id> <short-desc>"
+// Short desc is up to 40 characters of the prompt, trimmed to a word boundary.
 func FormatPaneTitle(id, issue, prompt string) string {
-	shortID := id
-	if len(id) > 4 {
-		shortID = id[len(id)-4:]
-	}
-
-	title := "agent:" + shortID
-
+	var title string
 	if issue != "" {
-		title += " #" + issue
+		title = "#" + issue
+	} else {
+		title = id
+		if len(id) > 4 {
+			title = id[len(id)-4:]
+		}
 	}
 
 	desc := strings.TrimSpace(prompt)
-	if len(desc) > 20 {
-		desc = desc[:20]
+	if len(desc) > 40 {
+		desc = desc[:40]
+		// Trim to last word boundary
+		if i := strings.LastIndex(desc, " "); i > 0 {
+			desc = desc[:i]
+		}
 	}
 	if desc != "" {
 		title += " " + desc
