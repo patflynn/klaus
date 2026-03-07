@@ -38,8 +38,9 @@ func TestGenIDUniqueness(t *testing.T) {
 	}
 }
 
-func TestSaveLoadRoundtrip(t *testing.T) {
+func TestGitDirStoreSaveLoadRoundtrip(t *testing.T) {
 	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
 
 	issue := "42"
 	pane := "%5"
@@ -64,11 +65,11 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		PRURL:      &prURL,
 	}
 
-	if err := Save(tmpDir, original); err != nil {
+	if err := store.Save(original); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
 
-	loaded, err := Load(tmpDir, original.ID)
+	loaded, err := store.Load(original.ID)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -93,8 +94,9 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 }
 
-func TestSaveLoadNullFields(t *testing.T) {
+func TestGitDirStoreSaveLoadNullFields(t *testing.T) {
 	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
 
 	original := &State{
 		ID:        "20260210-1430-b1c2",
@@ -104,11 +106,11 @@ func TestSaveLoadNullFields(t *testing.T) {
 		CreatedAt: "2026-02-10T14:30:00-08:00",
 	}
 
-	if err := Save(tmpDir, original); err != nil {
+	if err := store.Save(original); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
 
-	loaded, err := Load(tmpDir, original.ID)
+	loaded, err := store.Load(original.ID)
 	if err != nil {
 		t.Fatalf("Load() error: %v", err)
 	}
@@ -127,8 +129,9 @@ func TestSaveLoadNullFields(t *testing.T) {
 	}
 }
 
-func TestList(t *testing.T) {
+func TestGitDirStoreList(t *testing.T) {
 	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
 
 	states := []*State{
 		{ID: "20260210-1430-aaaa", Prompt: "first", Branch: "b1", Worktree: "/tmp/1", CreatedAt: "2026-02-10T14:30:00Z"},
@@ -137,12 +140,12 @@ func TestList(t *testing.T) {
 	}
 
 	for _, s := range states {
-		if err := Save(tmpDir, s); err != nil {
+		if err := store.Save(s); err != nil {
 			t.Fatalf("Save() error: %v", err)
 		}
 	}
 
-	result, err := List(tmpDir)
+	result, err := store.List()
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
@@ -160,9 +163,10 @@ func TestList(t *testing.T) {
 	}
 }
 
-func TestListEmpty(t *testing.T) {
+func TestGitDirStoreListEmpty(t *testing.T) {
 	tmpDir := t.TempDir()
-	result, err := List(tmpDir)
+	store := NewGitDirStore(tmpDir)
+	result, err := store.List()
 	if err != nil {
 		t.Fatalf("List() error: %v", err)
 	}
@@ -171,8 +175,9 @@ func TestListEmpty(t *testing.T) {
 	}
 }
 
-func TestDelete(t *testing.T) {
+func TestGitDirStoreDelete(t *testing.T) {
 	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
 
 	s := &State{
 		ID:        "20260210-1430-dddd",
@@ -182,22 +187,84 @@ func TestDelete(t *testing.T) {
 		CreatedAt: "2026-02-10T14:30:00Z",
 	}
 
-	if err := Save(tmpDir, s); err != nil {
+	if err := store.Save(s); err != nil {
 		t.Fatalf("Save() error: %v", err)
 	}
 
 	// Verify file exists
-	path := filepath.Join(StateDir(tmpDir), s.ID+".json")
+	path := filepath.Join(store.StateDir(), s.ID+".json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("state file should exist: %v", err)
 	}
 
-	if err := Delete(tmpDir, s.ID); err != nil {
+	if err := store.Delete(s.ID); err != nil {
 		t.Fatalf("Delete() error: %v", err)
 	}
 
 	// Verify file is gone
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Error("state file should not exist after Delete()")
+	}
+}
+
+func TestGitDirStoreEnsureDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
+
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs() error: %v", err)
+	}
+
+	// Verify both directories were created
+	if _, err := os.Stat(store.StateDir()); err != nil {
+		t.Errorf("StateDir should exist: %v", err)
+	}
+	if _, err := os.Stat(store.LogDir()); err != nil {
+		t.Errorf("LogDir should exist: %v", err)
+	}
+}
+
+func TestGitDirStoreDirPaths(t *testing.T) {
+	store := NewGitDirStore("/repo/.git")
+	if got := store.StateDir(); got != filepath.Join("/repo/.git", "klaus", "runs") {
+		t.Errorf("StateDir() = %q, want /repo/.git/klaus/runs", got)
+	}
+	if got := store.LogDir(); got != filepath.Join("/repo/.git", "klaus", "logs") {
+		t.Errorf("LogDir() = %q, want /repo/.git/klaus/logs", got)
+	}
+}
+
+func TestGitDirStoreListSkipsCorruptFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewGitDirStore(tmpDir)
+
+	// Save a valid state
+	valid := &State{
+		ID:        "20260210-1430-aaaa",
+		Prompt:    "valid",
+		Branch:    "b1",
+		Worktree:  "/tmp/1",
+		CreatedAt: "2026-02-10T14:30:00Z",
+	}
+	if err := store.Save(valid); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Write a corrupt file
+	corrupt := filepath.Join(store.StateDir(), "20260210-1430-bbbb.json")
+	if err := os.WriteFile(corrupt, []byte("not json"), 0o644); err != nil {
+		t.Fatalf("writing corrupt file: %v", err)
+	}
+
+	result, err := store.List()
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Fatalf("List() returned %d items, want 1 (skipping corrupt)", len(result))
+	}
+	if result[0].ID != "20260210-1430-aaaa" {
+		t.Errorf("result[0].ID = %q, want 20260210-1430-aaaa", result[0].ID)
 	}
 }

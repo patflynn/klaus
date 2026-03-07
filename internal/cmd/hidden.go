@@ -39,14 +39,15 @@ var finalizeCmd = &cobra.Command{
 			return err
 		}
 
-		state, err := run.Load(commonDir, id)
+		store := run.NewGitDirStore(commonDir)
+		state, err := store.Load(id)
 		if err != nil {
 			return nil // silently ignore if state not found
 		}
 
 		// Parse log for cost/duration/PR URL
 		if state.LogFile != nil {
-			if err := finalizeFromLog(commonDir, state); err != nil {
+			if err := finalizeFromLog(store, state); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: finalize: %v\n", err)
 			}
 		}
@@ -62,12 +63,12 @@ var finalizeCmd = &cobra.Command{
 			return nil
 		}
 
-		syncRunToDataRef(root, commonDir, cfg.DataRef, state)
+		syncRunToDataRef(root, store, cfg.DataRef, state)
 		return nil
 	},
 }
 
-func finalizeFromLog(commonDir string, state *run.State) error {
+func finalizeFromLog(store run.StateStore, state *run.State) error {
 	f, err := os.Open(*state.LogFile)
 	if err != nil {
 		return err
@@ -113,7 +114,7 @@ func finalizeFromLog(commonDir string, state *run.State) error {
 		}
 	}
 
-	return run.Save(commonDir, state)
+	return store.Save(state)
 }
 
 func extractPRURL(text string) string {
@@ -153,7 +154,8 @@ var autoWatchCmd = &cobra.Command{
 			return err
 		}
 
-		state, err := run.Load(commonDir, filepath.Base(id))
+		store := run.NewGitDirStore(commonDir)
+		state, err := store.Load(filepath.Base(id))
 		if err != nil {
 			return fmt.Errorf("auto-watch: failed to load state for run %s: %w", id, err)
 		}
@@ -210,8 +212,8 @@ var autoWatchCmd = &cobra.Command{
 	},
 }
 
-func syncRunToDataRef(root, commonDir, dataRef string, state *run.State) {
-	stateFile := run.StateDir(commonDir) + "/" + state.ID + ".json"
+func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *run.State) {
+	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
 		"runs/" + state.ID + ".json": stateFile,
 	}

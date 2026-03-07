@@ -33,7 +33,8 @@ Modes:
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		state, err := run.Load(commonDir, id)
+		store := run.NewGitDirStore(commonDir)
+		state, err := store.Load(id)
 		if err != nil {
 			return fmt.Errorf("no run found with id: %s", id)
 		}

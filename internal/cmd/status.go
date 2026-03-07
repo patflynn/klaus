@@ -22,7 +22,8 @@ var statusCmd = &cobra.Command{
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		states, err := run.List(commonDir)
+		store := run.NewGitDirStore(commonDir)
+		states, err := store.List()
 		if err != nil {
 			return err
 		}

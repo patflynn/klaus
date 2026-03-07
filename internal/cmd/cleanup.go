@@ -29,19 +29,21 @@ Use --all to clean up all runs.`,
 			return err
 		}
 
+		store := run.NewGitDirStore(commonDir)
+
 		if all {
-			return cleanupAll(root, commonDir)
+			return cleanupAll(root, store)
 		}
 
 		if len(args) != 1 {
 			return fmt.Errorf("usage: klaus cleanup <run-id> or klaus cleanup --all")
 		}
-		return cleanupOne(root, commonDir, args[0])
+		return cleanupOne(root, store, args[0])
 	},
 }
 
-func cleanupAll(root, commonDir string) error {
-	states, err := run.List(commonDir)
+func cleanupAll(root string, store run.StateStore) error {
+	states, err := store.List()
 	if err != nil {
 		return err
 	}
@@ -50,15 +52,15 @@ func cleanupAll(root, commonDir string) error {
 		return nil
 	}
 	for _, s := range states {
-		if err := cleanupOne(root, commonDir, s.ID); err != nil {
+		if err := cleanupOne(root, store, s.ID); err != nil {
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
 	return nil
 }
 
-func cleanupOne(root, commonDir, id string) error {
-	state, err := run.Load(commonDir, id)
+func cleanupOne(root string, store run.StateStore, id string) error {
+	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("no run found with id: %s", id)
 	}
@@ -93,7 +95,7 @@ func cleanupOne(root, commonDir, id string) error {
 	}
 
 	// Remove state file
-	if err := run.Delete(commonDir, id); err == nil {
+	if err := store.Delete(id); err == nil {
 		fmt.Println("  removed state file")
 	}
 
