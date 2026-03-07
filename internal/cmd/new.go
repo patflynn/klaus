@@ -239,10 +239,11 @@ Your task:
 4. Create CLAUDE.md with project conventions
 5. Create .klaus/config.json
 6. Write a basic README.md
-7. Set up the initial test infrastructure (Playwright for web, go test for Go)
-8. Create a minimal working 'hello world' that the tests exercise
-9. Commit everything and push
-10. Do NOT create a PR — push directly to main (this is the initial scaffold)`,
+7. Use Tailwind CSS with the Vite plugin for styling (web projects only)
+8. Set up the initial test infrastructure (Playwright for web, go test for Go)
+9. Create a minimal working 'hello world' that the tests exercise
+10. Commit everything and push
+11. Do NOT create a PR — push directly to main (this is the initial scaffold)`,
 		projectType, name, description, principles, projectType)
 }
 
