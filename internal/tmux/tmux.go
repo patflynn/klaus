@@ -32,6 +32,26 @@ func SplitWindow(targetPane, dir, command string) (string, error) {
 	return out, nil
 }
 
+// SplitWindowSized creates a new tmux pane with a specified size.
+// orientation is "-v" for top/bottom or "-h" for left/right.
+// size is passed to tmux's -l flag (e.g. "30%" or "15").
+func SplitWindowSized(targetPane, dir, command, orientation, size string) (string, error) {
+	args := []string{
+		"split-window",
+		"-t", targetPane,
+		orientation, "-d",
+		"-l", size,
+		"-P", "-F", "#{pane_id}",
+		"-c", dir,
+		command,
+	}
+	out, err := runTmux(args...)
+	if err != nil {
+		return "", fmt.Errorf("split-window: %w", err)
+	}
+	return out, nil
+}
+
 // SetPaneTitle sets the title of a tmux pane.
 func SetPaneTitle(paneID, title string) error {
 	_, err := runTmux("select-pane", "-t", paneID, "-T", title)
