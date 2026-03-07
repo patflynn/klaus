@@ -13,3 +13,12 @@ jobs:
       - run: go build ./...
       - run: go test ./...
       - run: go vet ./...
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: zizmorproject/zizmor-action@v1
