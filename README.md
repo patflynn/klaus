@@ -70,6 +70,9 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id>` | Force-push a log held back for sensitivity |
+| `klaus new <project-name>` | Scaffold a new project using principles-based generation |
+| `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
+| `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
 
 ### `klaus watch`
@@ -114,6 +117,32 @@ The status dashboard shows these columns for each run:
 | CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
 | MERGE | `ready` / `blocked` / `pending` | Overall merge readiness (combines CI, conflicts, and review status) |
 
+### `klaus dashboard`
+
+Live TUI that monitors all active agents and their PR statuses. Groups runs by repository, auto-refreshes via filesystem watching for local state and GitHub polling every 30s.
+
+Keyboard shortcuts: `q` quit, `r` force refresh.
+
+### `klaus merge`
+
+Sequentially merges a list of PRs. Handles conflicts by rebasing onto main, verifying the build, and force-pushing. Waits for CI to pass before merging (up to 10 min).
+
+```bash
+klaus merge 42 43 44
+klaus merge --dry-run 42
+klaus merge --merge-method rebase --no-delete-branch 42
+```
+
+Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`.
+
+### `klaus new`
+
+Creates a new GitHub repo and launches a Claude agent to scaffold it. Reads principles from `.klaus/principles.md` (or built-in defaults). The agent makes all scaffolding decisions based on those principles — no templates.
+
+```bash
+klaus new my-project
+```
+
 ## Configuration
 
 Klaus works out of the box with sensible defaults. To customize, run `klaus init` to scaffold a `.klaus/` directory (or `~/.klaus/config.json` when outside a repo), or create the files yourself. Configuration layers: defaults → `~/.klaus/config.json` → `.klaus/config.json`.
@@ -141,11 +170,12 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 - **tmux panes** give live visibility into each agent's progress
 - **JSONL logs** are saved for replay and post-run analysis
 - **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting
+- **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts sync to the repo's data ref
 - **Data ref** (`refs/klaus/data`) stores run metadata without polluting your branch list
 
 ## Requirements
 
 - `tmux` (sessions run inside tmux)
 - `claude` (Claude Code CLI)
-- `git`
+- `git` (needed for agent worktrees; sessions can run without it)
 - `gh` (GitHub CLI, for PR operations)
