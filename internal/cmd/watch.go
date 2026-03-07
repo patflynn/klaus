@@ -145,7 +145,7 @@ Must be run inside a tmux session.`,
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
 		selfBin := "klaus"
 		paneCmd := fmt.Sprintf(
-			"%scd %s && %s | tee %s | %s _format-stream; %s _finalize %s; echo ''; printf 'Watch %%s (PR #%%s) exited. Press Enter to close.\\n' %s %s; read",
+			"%scd %s && %s | tee %s | %s _format-stream; %s _finalize %s",
 			tmuxSessionEnvPrefix(),
 			shellQuote(worktree),
 			claudeCmd,
@@ -153,8 +153,6 @@ Must be run inside a tmux session.`,
 			selfBin,
 			selfBin,
 			shellQuote(id),
-			shellQuote(id),
-			shellQuote(prNumber),
 		)
 
 		// Launch in tmux pane, targeting the pane that ran this command
