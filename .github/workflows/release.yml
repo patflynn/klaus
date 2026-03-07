@@ -44,7 +44,7 @@ jobs:
             arch="${target#*/}"
             output="klaus-${os}-${arch}"
             echo "Building ${output}..."
-            GOOS="${os}" GOARCH="${arch}" go build -ldflags "${LDFLAGS}" -o "${output}" .
+            GOOS="${os}" GOARCH="${arch}" go build -ldflags "${LDFLAGS}" -o "${output}" ./cmd/klaus/
           done
 
       - name: Create release
