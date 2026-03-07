@@ -11,7 +11,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
-	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -30,12 +29,13 @@ Keyboard shortcuts:
   q  quit
   r  force refresh`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		commonDir, err := git.CommonDir()
+		store, err := sessionStoreOrAll()
 		if err != nil {
-			return fmt.Errorf("not inside a git repository")
+			return err
 		}
-
-		store := run.NewGitDirStore(commonDir)
+		if store == nil {
+			return fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
+		}
 		p := tea.NewProgram(newDashboardModel(store), tea.WithAltScreen())
 		_, err = p.Run()
 		return err

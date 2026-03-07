@@ -19,25 +19,29 @@ Use --all to clean up all runs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 
-		root, err := git.RepoRoot()
-		if err != nil {
-			return fmt.Errorf("not inside a git repository")
-		}
-
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return err
-		}
-
-		store := run.NewGitDirStore(commonDir)
+		root, _ := git.RepoRoot() // may be empty outside a repo
 
 		if all {
-			return cleanupAll(root, store)
+			store, err := sessionStoreOrAll()
+			if err != nil {
+				return err
+			}
+			if store != nil {
+				return cleanupAll(root, store)
+			}
+			// No session env — could scan all, but require explicit session
+			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
 		}
 
 		if len(args) != 1 {
 			return fmt.Errorf("usage: klaus cleanup <run-id> or klaus cleanup --all")
 		}
+
+		state, store, err := loadStateFromEnvOrAll(args[0])
+		if err != nil {
+			return err
+		}
+		_ = state // cleanupOne will re-load
 		return cleanupOne(root, store, args[0])
 	},
 }

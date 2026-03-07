@@ -30,23 +30,36 @@ func Defaults() Config {
 	}
 }
 
-// Load reads config from .klaus/config.json in the given repo root.
-// If the file doesn't exist, returns defaults.
+// Load reads config by layering: defaults → ~/.klaus/config.json → .klaus/config.json.
+// Repo-local config overrides global config.
 func Load(repoRoot string) (Config, error) {
 	cfg := Defaults()
-	path := filepath.Join(repoRoot, ".klaus", "config.json")
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
+	// Layer 1: global config from ~/.klaus/config.json
+	if home, err := os.UserHomeDir(); err == nil {
+		globalPath := filepath.Join(home, ".klaus", "config.json")
+		if data, err := os.ReadFile(globalPath); err == nil {
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				return cfg, fmt.Errorf("parsing global config: %w", err)
+			}
 		}
-		return cfg, fmt.Errorf("reading config: %w", err)
 	}
 
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return cfg, fmt.Errorf("parsing config: %w", err)
+	// Layer 2: repo-local config from .klaus/config.json (overrides global)
+	if repoRoot != "" {
+		localPath := filepath.Join(repoRoot, ".klaus", "config.json")
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return cfg, nil
+			}
+			return cfg, fmt.Errorf("reading config: %w", err)
+		}
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return cfg, fmt.Errorf("parsing config: %w", err)
+		}
 	}
+
 	return cfg, nil
 }
 

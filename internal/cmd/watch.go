@@ -40,11 +40,6 @@ Must be run inside a tmux session.`,
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return err
-		}
-
 		cfg, err := config.Load(root)
 		if err != nil {
 			return err
@@ -54,7 +49,10 @@ Must be run inside a tmux session.`,
 			budget = cfg.DefaultBudget
 		}
 
-		store := run.NewGitDirStore(commonDir)
+		store, err := sessionStore()
+		if err != nil {
+			return err
+		}
 		if err := store.EnsureDirs(); err != nil {
 			return err
 		}

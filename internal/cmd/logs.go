@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/stream"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -28,15 +27,9 @@ Modes:
 		raw, _ := cmd.Flags().GetBool("raw")
 		replay, _ := cmd.Flags().GetBool("replay")
 
-		commonDir, err := git.CommonDir()
+		state, _, err := loadStateFromEnvOrAll(id)
 		if err != nil {
-			return fmt.Errorf("not inside a git repository")
-		}
-
-		store := run.NewGitDirStore(commonDir)
-		state, err := store.Load(id)
-		if err != nil {
-			return fmt.Errorf("no run found with id: %s", id)
+			return err
 		}
 
 		if raw {

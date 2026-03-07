@@ -34,12 +34,11 @@ var finalizeCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
 
-		commonDir, err := git.CommonDir()
+		store, err := sessionStore()
 		if err != nil {
-			return err
+			return nil // silently ignore if session not set
 		}
 
-		store := run.NewGitDirStore(commonDir)
 		state, err := store.Load(id)
 		if err != nil {
 			return nil // silently ignore if state not found
@@ -52,7 +51,7 @@ var finalizeCmd = &cobra.Command{
 			}
 		}
 
-		// Sync to data ref
+		// Sync to data ref — still uses the git repo
 		root, err := git.RepoRoot()
 		if err != nil {
 			return nil
@@ -149,12 +148,11 @@ var autoWatchCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
 
-		commonDir, err := git.CommonDir()
+		store, err := sessionStore()
 		if err != nil {
-			return err
+			return fmt.Errorf("auto-watch: %w", err)
 		}
 
-		store := run.NewGitDirStore(commonDir)
 		state, err := store.Load(filepath.Base(id))
 		if err != nil {
 			return fmt.Errorf("auto-watch: failed to load state for run %s: %w", id, err)
@@ -171,10 +169,11 @@ var autoWatchCmd = &cobra.Command{
 			return nil
 		}
 
-		// Derive main repo root from common dir
-		mainRoot := filepath.Dir(commonDir)
-
-		gitRoot := mainRoot
+		// Determine git root for worktree/branch cleanup
+		gitRoot, err := git.RepoRoot()
+		if err != nil {
+			return fmt.Errorf("auto-watch: not inside a git repository")
+		}
 		if state.CloneDir != nil {
 			gitRoot = *state.CloneDir
 		}

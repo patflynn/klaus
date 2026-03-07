@@ -41,11 +41,6 @@ worktree in that clone.`,
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		hostCommonDir, err := git.CommonDir()
-		if err != nil {
-			return err
-		}
-
 		hostCfg, err := config.Load(hostRoot)
 		if err != nil {
 			return err
@@ -55,7 +50,10 @@ worktree in that clone.`,
 			budget = hostCfg.DefaultBudget
 		}
 
-		store := run.NewGitDirStore(hostCommonDir)
+		store, err := sessionStore()
+		if err != nil {
+			return err
+		}
 		if err := store.EnsureDirs(); err != nil {
 			return err
 		}

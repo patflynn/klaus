@@ -15,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const klausSessionIDEnv = "KLAUS_SESSION_ID"
+
 var sessionCmd = &cobra.Command{
 	Use:   "session",
 	Short: "Start an interactive coordinator session",
@@ -31,18 +33,8 @@ clean on the default branch. Must be run inside a tmux session.`,
 			return fmt.Errorf("not inside a git repository")
 		}
 
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return err
-		}
-
 		cfg, err := config.Load(root)
 		if err != nil {
-			return err
-		}
-
-		store := run.NewGitDirStore(commonDir)
-		if err := store.EnsureDirs(); err != nil {
 			return err
 		}
 
@@ -51,6 +43,14 @@ clean on the default branch. Must be run inside a tmux session.`,
 			return err
 		}
 		id := "session-" + baseID
+
+		store, err := run.NewHomeDirStore(id)
+		if err != nil {
+			return err
+		}
+		if err := store.EnsureDirs(); err != nil {
+			return err
+		}
 		branch := "session/" + id
 		repoName := filepath.Base(root)
 		worktree := filepath.Join(cfg.WorktreeBase, repoName, id)
@@ -118,12 +118,13 @@ clean on the default branch. Must be run inside a tmux session.`,
 		fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
 		fmt.Println()
 
-		// Run claude interactively in the worktree
+		// Run claude interactively in the worktree, passing session ID to children
 		claude := exec.Command("claude", "--dangerously-skip-permissions", "--append-system-prompt", sessionPrompt)
 		claude.Dir = worktree
 		claude.Stdin = os.Stdin
 		claude.Stdout = os.Stdout
 		claude.Stderr = os.Stderr
+		claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
 		claude.Run() // ignore error — user may exit normally
 
 		fmt.Println()
