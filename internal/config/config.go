@@ -198,6 +198,8 @@ klaus launch --repo owner/repo "<prompt>"  # override per launch
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
 - Set default target repo: ` + "`klaus target owner/repo`" + ` or ` + "`klaus target <project-name>`" + `
 - Show current target: ` + "`klaus target`" + `
+- Merge PRs sequentially: ` + "`klaus merge <pr-number> [<pr-number>...]`" + `
+- Open live dashboard: ` + "`klaus dashboard`" + `
 {{if .Projects}}
 ## Registered projects
 
