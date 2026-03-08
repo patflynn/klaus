@@ -151,9 +151,11 @@ from inside the session to target specific repositories.`,
 		var dashPane string
 		if currentPane != "" {
 			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
-			dashPane, err = tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
+			paneID, err := tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
+			} else {
+				dashPane = paneID
 			}
 		}
 
@@ -166,7 +168,9 @@ from inside the session to target specific repositories.`,
 		claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
 		claude.Run() // ignore error — user may exit normally
 		if dashPane != "" {
-			tmux.KillPane(dashPane)
+			if err := tmux.KillPane(dashPane); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
+			}
 		}
 
 		fmt.Println()
