@@ -274,6 +274,11 @@ PR. The agent will commit and push to the PR branch directly.`,
 		budgetPtr := &budget
 		logFilePtr := &logFile
 
+		// Normalize target repo name against the project registry so that
+		// "cosmo", "patflynn/cosmo", and full URLs all resolve to the same
+		// canonical name in the dashboard.
+		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
+
 		state := &run.State{
 			ID:         id,
 			Prompt:     prompt,
@@ -285,7 +290,7 @@ PR. The agent will commit and push to the PR branch directly.`,
 			Budget:     budgetPtr,
 			LogFile:    logFilePtr,
 			CreatedAt:  createdAt,
-			TargetRepo: targetRepo,
+			TargetRepo: normalizedTarget,
 			CloneDir:   cloneDirPtr,
 		}
 		if isPRFix {
@@ -385,6 +390,32 @@ func stringPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// normalizeTargetRepo resolves the target repo to a canonical short name.
+// If targetRepo is set, normalizes it against registered projects.
+// If targetRepo is nil but hostRoot is a git repo matching a registered project,
+// uses the project name instead of leaving it nil (which shows as "(local)").
+func normalizeTargetRepo(targetRepo *string, hostRoot string) *string {
+	reg, _ := project.Load()
+
+	if targetRepo != nil && *targetRepo != "" {
+		n := project.NormalizeRepoName(*targetRepo, reg)
+		return &n
+	}
+
+	// No explicit target — try to detect from the host repo's git remote
+	if hostRoot != "" && reg != nil {
+		remote := gitRemoteURL(hostRoot)
+		if remote != "" {
+			n := project.NormalizeRepoName(remote, reg)
+			if n != "" {
+				return &n
+			}
+		}
+	}
+
+	return targetRepo
 }
 
 // getPRURL returns the HTML URL for a PR using the gh CLI.
