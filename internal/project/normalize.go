@@ -2,6 +2,8 @@ package project
 
 import (
 	"strings"
+
+	"github.com/patflynn/klaus/internal/git"
 )
 
 // NormalizeRepoName resolves a repo reference to its shortest canonical name
@@ -19,19 +21,7 @@ func NormalizeRepoName(ref string, reg *Registry) string {
 	}
 
 	// Strip URL prefixes and .git suffix to get owner/repo form
-	cleaned := ref
-	cleaned = strings.TrimSuffix(cleaned, ".git")
-	for _, prefix := range []string{
-		"https://github.com/",
-		"http://github.com/",
-		"git@github.com:",
-	} {
-		if strings.HasPrefix(cleaned, prefix) {
-			cleaned = strings.TrimPrefix(cleaned, prefix)
-			break
-		}
-	}
-	cleaned = strings.TrimRight(cleaned, "/")
+	cleaned := git.CleanGitHubRef(ref)
 
 	// If no slash, it might already be a project name
 	if !strings.Contains(cleaned, "/") {

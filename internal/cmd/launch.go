@@ -409,9 +409,7 @@ func normalizeTargetRepo(targetRepo *string, hostRoot string) *string {
 		remote := gitRemoteURL(hostRoot)
 		if remote != "" {
 			n := project.NormalizeRepoName(remote, reg)
-			if n != "" {
-				return &n
-			}
+			return &n
 		}
 	}
 
