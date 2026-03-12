@@ -266,6 +266,64 @@ func TestRenderWatchPromptCustomTemplate(t *testing.T) {
 	}
 }
 
+func TestRenderPRFixPromptDefault(t *testing.T) {
+	dir := t.TempDir() // no .klaus/pr-fix-prompt.md
+
+	vars := PromptVars{
+		RunID:    "20260312-1820-abcd",
+		PR:       "99",
+		Branch:   "feature/my-branch",
+		RepoName: "test-repo",
+		Issue:    "42",
+	}
+
+	prompt, err := RenderPRFixPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPRFixPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "PR #99") {
+		t.Error("prompt should contain PR number")
+	}
+	if !strings.Contains(prompt, "Do NOT create a new PR") {
+		t.Error("prompt should instruct not to create a new PR")
+	}
+	if !strings.Contains(prompt, "feature/my-branch") {
+		t.Error("prompt should contain branch name")
+	}
+	if !strings.Contains(prompt, "#42") {
+		t.Error("prompt should reference issue when provided")
+	}
+	if !strings.Contains(prompt, "20260312-1820-abcd") {
+		t.Error("prompt should contain run ID")
+	}
+}
+
+func TestRenderPRFixPromptCustomTemplate(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	os.MkdirAll(klausDir, 0o755)
+
+	tmpl := "Fix PR #{{.PR}} run {{.RunID}} on {{.Branch}}"
+	os.WriteFile(filepath.Join(klausDir, "pr-fix-prompt.md"), []byte(tmpl), 0o644)
+
+	vars := PromptVars{
+		RunID:  "fix-abc",
+		PR:     "55",
+		Branch: "feature/fix",
+	}
+
+	prompt, err := RenderPRFixPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPRFixPrompt() error: %v", err)
+	}
+
+	want := "Fix PR #55 run fix-abc on feature/fix"
+	if prompt != want {
+		t.Errorf("prompt = %q, want %q", prompt, want)
+	}
+}
+
 func TestRenderPromptFromFileReadError(t *testing.T) {
 	dir := t.TempDir()
 	klausDir := filepath.Join(dir, ".klaus")

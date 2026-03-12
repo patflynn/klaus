@@ -161,6 +161,47 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 - Keep code comments accurate — update or remove comments that no longer match the code.
 `
 
+const defaultPRFixPromptTemplate = `You are an autonomous agent pushing fixes to PR #{{.PR}} in this repository.
+
+## Workflow
+1. Make your changes in this worktree.
+2. Run ` + "`git add`" + ` on any new files.
+3. Test your changes.
+4. Create a focused git commit.
+5. Push your changes: ` + "`git push`" + `
+
+**IMPORTANT: Do NOT create a new PR. You are working on an existing PR branch ({{.Branch}}).
+Just commit and push — the PR will update automatically.**
+{{if .Issue}}
+Reference issue #{{.Issue}} in your commit messages where appropriate.
+{{end}}
+## Testing
+- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
+- Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
+- A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
+- Run ` + "`go build ./...`" + ` before committing to verify compilation.
+- Run the project's test suite before pushing. Fix failures before pushing.
+
+## Conventions
+- Never commit directly to the default branch — always use a PR branch.
+
+## Documentation
+- If you add or change a CLI command or flag, update the help text in the cobra command definition.
+- If you add or change user-facing behavior, update the README if one exists.
+- Keep code comments accurate — update or remove comments that no longer match the code.
+
+## Identity
+Run: {{.RunID}}
+Branch: {{.Branch}}
+PR: #{{.PR}}
+`
+
+// RenderPRFixPrompt renders the system prompt for PR-fix mode.
+// It reads from .klaus/pr-fix-prompt.md, falling back to the built-in default.
+func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
+	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
+}
+
 const defaultSessionPromptTemplate = `You are a coordinator running inside a klaus session (session ID: {{.RunID}}).
 {{if .RepoName}}
 Your working directory is an isolated git worktree on branch {{.Branch}} for repo {{.RepoName}}.

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,13 +26,17 @@ tmux pane, and tracks the run state. Must be run inside a tmux session.
 
 Use --repo to launch an agent against a different repository. If the name
 matches a registered project (no owner/ prefix), the project's local path is
-used directly. Otherwise, the repo is cloned from GitHub.`,
+used directly. Otherwise, the repo is cloned from GitHub.
+
+Use --pr to push fixes to an existing PR's branch instead of creating a new
+PR. The agent will commit and push to the PR branch directly.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prompt := args[0]
 		issue, _ := cmd.Flags().GetString("issue")
 		budget, _ := cmd.Flags().GetString("budget")
 		repoRef, _ := cmd.Flags().GetString("repo")
+		prNumber, _ := cmd.Flags().GetString("pr")
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
@@ -147,23 +153,59 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 			defaultBranch = hostCfg.DefaultBranch
 		}
 
-		branch := "agent/" + id
 		worktree := filepath.Join(hostCfg.WorktreeBase, repoName, id)
 
-		fmt.Printf("Launching agent %s...\n", id)
-		if targetRepo != nil {
-			fmt.Printf("  target:   %s\n", *targetRepo)
-		}
+		// When --pr is set, track the PR's branch instead of creating a new one
+		var branch string
+		var isPRFix bool
+		var prURL string
 
-		// Fetch latest default branch
-		if err := git.FetchBranch(repoRoot, defaultBranch); err != nil {
-			return fmt.Errorf("fetching %s: %w", defaultBranch, err)
-		}
+		if prNumber != "" {
+			prBranch, err := getPRBranch(prNumber)
+			if err != nil {
+				return fmt.Errorf("getting PR branch: %w", err)
+			}
+			branch = prBranch
+			isPRFix = true
 
-		// Create worktree
-		startPoint := "origin/" + defaultBranch
-		if err := git.WorktreeAdd(repoRoot, worktree, branch, startPoint); err != nil {
-			return fmt.Errorf("creating worktree: %w", err)
+			// Look up the PR URL for state tracking
+			prURL, err = getPRURL(prNumber)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
+			}
+
+			fmt.Printf("Launching agent %s (PR #%s fix)...\n", id, prNumber)
+			if targetRepo != nil {
+				fmt.Printf("  target:   %s\n", *targetRepo)
+			}
+
+			// Fetch the PR branch
+			if err := git.FetchBranch(repoRoot, prBranch); err != nil {
+				return fmt.Errorf("fetching %s: %w", prBranch, err)
+			}
+
+			// Create worktree tracking the PR branch
+			if err := git.WorktreeAddTrack(repoRoot, worktree, prBranch); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
+		} else {
+			branch = "agent/" + id
+
+			fmt.Printf("Launching agent %s...\n", id)
+			if targetRepo != nil {
+				fmt.Printf("  target:   %s\n", *targetRepo)
+			}
+
+			// Fetch latest default branch
+			if err := git.FetchBranch(repoRoot, defaultBranch); err != nil {
+				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+			}
+
+			// Create worktree
+			startPoint := "origin/" + defaultBranch
+			if err := git.WorktreeAdd(repoRoot, worktree, branch, startPoint); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
 		}
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
@@ -176,12 +218,23 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 		nix.SetupDevEnvironment(worktree)
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
-		sysPrompt, err := config.RenderPrompt(repoRoot, config.PromptVars{
-			RunID:    id,
-			Issue:    issue,
-			Branch:   branch,
-			RepoName: repoName,
-		})
+		var sysPrompt string
+		if isPRFix {
+			sysPrompt, err = config.RenderPRFixPrompt(repoRoot, config.PromptVars{
+				RunID:    id,
+				Issue:    issue,
+				PR:       prNumber,
+				Branch:   branch,
+				RepoName: repoName,
+			})
+		} else {
+			sysPrompt, err = config.RenderPrompt(repoRoot, config.PromptVars{
+				RunID:    id,
+				Issue:    issue,
+				Branch:   branch,
+				RepoName: repoName,
+			})
+		}
 		if err != nil {
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
@@ -200,7 +253,8 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
 		noWatch, _ := cmd.Flags().GetBool("no-watch")
-		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch)
+		// PR-fix runs always skip auto-watch since we're already on the PR branch
+		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
@@ -224,6 +278,7 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 			ID:         id,
 			Prompt:     prompt,
 			Issue:      issuePtr,
+			PR:         stringPtr(prNumber),
 			Branch:     branch,
 			Worktree:   worktree,
 			TmuxPane:   &paneID,
@@ -232,6 +287,12 @@ used directly. Otherwise, the repo is cloned from GitHub.`,
 			CreatedAt:  createdAt,
 			TargetRepo: targetRepo,
 			CloneDir:   cloneDirPtr,
+		}
+		if isPRFix {
+			state.Type = "pr-fix"
+			if prURL != "" {
+				state.PRURL = &prURL
+			}
 		}
 
 		if err := store.Save(state); err != nil {
@@ -326,8 +387,21 @@ func stringPtr(s string) *string {
 	return &s
 }
 
+// getPRURL returns the HTML URL for a PR using the gh CLI.
+func getPRURL(prNumber string) (string, error) {
+	cmd := exec.Command("gh", "pr", "view", "--json", "url", "-q", ".url", "--", prNumber)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
+	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
