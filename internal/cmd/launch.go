@@ -169,7 +169,10 @@ PR. The agent will commit and push to the PR branch directly.`,
 			isPRFix = true
 
 			// Look up the PR URL for state tracking
-			prURL, _ = getPRURL(prNumber)
+			prURL, err = getPRURL(prNumber)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
+			}
 
 			fmt.Printf("Launching agent %s (PR #%s fix)...\n", id, prNumber)
 			if targetRepo != nil {
