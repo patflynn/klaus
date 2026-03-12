@@ -12,6 +12,7 @@ type State struct {
 	ID         string   `json:"id"`
 	Prompt     string   `json:"prompt"`
 	Issue      *string  `json:"issue"`
+	PR         *string  `json:"pr,omitempty"`
 	Branch     string   `json:"branch"`
 	Worktree   string   `json:"worktree"`
 	TmuxPane   *string  `json:"tmux_pane"`

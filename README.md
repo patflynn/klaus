@@ -65,6 +65,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch "<prompt>"` | Spawn an autonomous agent |
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
+| `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus watch <pr-number>` | Monitor CI for a PR and fix failures autonomously |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
@@ -93,6 +94,17 @@ klaus watch 42 --review-wait 0     # exit immediately when CI passes
 ```
 
 The wait duration can also be set via `review_wait_secs` in `.klaus/config.json`.
+
+### `klaus launch --pr`
+
+Push fixes to an existing PR's branch instead of creating a new PR. The agent checks out the PR's branch, makes changes, and pushes directly — the PR updates automatically. Useful for addressing review comments or fixing CI failures on an existing PR.
+
+```bash
+klaus launch --pr 42 "Address the review comments"
+klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
+```
+
+The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits). Auto-watch is skipped since the agent is already working on the PR branch.
 
 ### `klaus launch --repo`
 

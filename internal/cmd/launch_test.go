@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/project"
 )
 
@@ -230,4 +231,93 @@ func TestBuildPaneCommand(t *testing.T) {
 			t.Error("expected no KLAUS_SESSION_ID export when session ID is empty, got:", cmd)
 		}
 	})
+}
+
+func TestBuildPaneCommandPRFixSkipsAutoWatch(t *testing.T) {
+	// When noWatch is true (as set for pr-fix runs), auto-watch is excluded
+	worktree := "/tmp/worktrees/repo/abc123"
+	claudeCmd := "claude -p 'fix stuff'"
+	logFile := "/tmp/logs/abc123.jsonl"
+	selfBin := "klaus"
+	id := "20260312-1820-abcd"
+
+	cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, true)
+	if strings.Contains(cmd, "_auto-watch") {
+		t.Error("pr-fix pane command should not contain _auto-watch, got:", cmd)
+	}
+	if !strings.Contains(cmd, "_finalize") {
+		t.Error("pr-fix pane command should still contain _finalize, got:", cmd)
+	}
+}
+
+func TestPRFixPromptInstructsPushOnly(t *testing.T) {
+	dir := t.TempDir() // no .klaus/pr-fix-prompt.md — uses default
+
+	vars := config.PromptVars{
+		RunID:    "20260312-1820-abcd",
+		Issue:    "42",
+		PR:       "99",
+		Branch:   "feature/my-branch",
+		RepoName: "test-repo",
+	}
+
+	prompt, err := config.RenderPRFixPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPRFixPrompt() error: %v", err)
+	}
+
+	// Must instruct push-only, no PR creation
+	if !strings.Contains(prompt, "Do NOT create a new PR") {
+		t.Error("pr-fix prompt must instruct agent not to create a new PR")
+	}
+	if !strings.Contains(prompt, "git push") {
+		t.Error("pr-fix prompt must instruct agent to push")
+	}
+	if !strings.Contains(prompt, "PR #99") {
+		t.Error("pr-fix prompt must mention the PR number")
+	}
+	if !strings.Contains(prompt, "feature/my-branch") {
+		t.Error("pr-fix prompt must mention the branch name")
+	}
+	if !strings.Contains(prompt, "#42") {
+		t.Error("pr-fix prompt must mention the issue when provided")
+	}
+	if !strings.Contains(prompt, "20260312-1820-abcd") {
+		t.Error("pr-fix prompt must contain run ID")
+	}
+	// Should NOT contain "Create a PR" or "gh pr create"
+	if strings.Contains(prompt, "gh pr create") {
+		t.Error("pr-fix prompt must not mention gh pr create")
+	}
+}
+
+func TestPRFixPromptNoIssue(t *testing.T) {
+	dir := t.TempDir()
+
+	vars := config.PromptVars{
+		RunID:  "20260312-1820-abcd",
+		PR:     "99",
+		Branch: "feature/my-branch",
+	}
+
+	prompt, err := config.RenderPRFixPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPRFixPrompt() error: %v", err)
+	}
+
+	// Without an issue, the issue reference should not appear
+	if strings.Contains(prompt, "issue #") {
+		t.Error("pr-fix prompt should not mention issue when none is provided")
+	}
+}
+
+func TestLaunchCmdHasPRFlag(t *testing.T) {
+	// Verify the --pr flag is registered on the launch command
+	f := launchCmd.Flags().Lookup("pr")
+	if f == nil {
+		t.Fatal("expected --pr flag to be registered on launch command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--pr default value should be empty, got %q", f.DefValue)
+	}
 }
