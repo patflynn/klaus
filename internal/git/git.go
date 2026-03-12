@@ -140,9 +140,9 @@ func SyncToDataRef(repoDir, dataRef, commitMsg string, files map[string]string) 
 	return err
 }
 
-// ParseRepoRef parses a GitHub repo reference into owner, repo name, and clone URL.
-// Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]"
-func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
+// CleanGitHubRef strips GitHub URL prefixes, .git suffix, and trailing slashes
+// from a repo reference, returning the bare "owner/repo" or short name form.
+func CleanGitHubRef(ref string) string {
 	ref = strings.TrimSuffix(ref, ".git")
 
 	switch {
@@ -154,7 +154,13 @@ func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
 		ref = strings.TrimPrefix(ref, "git@github.com:")
 	}
 
-	ref = strings.TrimRight(ref, "/")
+	return strings.TrimRight(ref, "/")
+}
+
+// ParseRepoRef parses a GitHub repo reference into owner, repo name, and clone URL.
+// Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]"
+func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
+	ref = CleanGitHubRef(ref)
 	parts := strings.SplitN(ref, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", "", fmt.Errorf("invalid repo reference %q: expected owner/repo", ref)

@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -414,12 +415,13 @@ func fetchPRStatus(prNumber string) *prStatus {
 
 // groupByRepo organizes states into repo groups, sorted by repo name.
 func groupByRepo(states []*run.State) []repoGroup {
+	reg, _ := project.Load()
 	groups := make(map[string]*repoGroup)
 	for _, s := range states {
 		if s.Type == "session" {
 			continue
 		}
-		repo := repoFromState(s)
+		repo := repoFromState(s, reg)
 		g, ok := groups[repo]
 		if !ok {
 			g = &repoGroup{
@@ -441,13 +443,19 @@ func groupByRepo(states []*run.State) []repoGroup {
 	return result
 }
 
-// repoFromState extracts the repo identifier from a run state.
-func repoFromState(s *run.State) string {
+// repoFromState extracts the repo identifier from a run state, normalizing
+// against the project registry so that different forms of the same repo
+// (e.g. "cosmo" vs "patflynn/cosmo") group together.
+func repoFromState(s *run.State, reg *project.Registry) string {
 	if s.TargetRepo != nil && *s.TargetRepo != "" {
-		return *s.TargetRepo
+		return project.NormalizeRepoName(*s.TargetRepo, reg)
 	}
 	if s.PRURL != nil {
-		return repoFromPRURL(*s.PRURL)
+		ownerRepo := repoFromPRURL(*s.PRURL)
+		if ownerRepo != "(unknown)" {
+			return project.NormalizeRepoName(ownerRepo, reg)
+		}
+		return ownerRepo
 	}
 	return "(local)"
 }

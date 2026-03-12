@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -113,7 +114,55 @@ func TestRepoFromState(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := repoFromState(tt.s)
+			got := repoFromState(tt.s, nil)
+			if got != tt.want {
+				t.Errorf("repoFromState() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRepoFromState_WithRegistry(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"cosmo": "/home/user/src/cosmo",
+		},
+	}
+
+	tests := []struct {
+		name string
+		s    *run.State
+		want string
+	}{
+		{
+			name: "owner/repo normalizes to project name",
+			s:    &run.State{TargetRepo: strPtr("patflynn/cosmo")},
+			want: "cosmo",
+		},
+		{
+			name: "project name stays as-is",
+			s:    &run.State{TargetRepo: strPtr("cosmo")},
+			want: "cosmo",
+		},
+		{
+			name: "unregistered owner/repo stays as-is",
+			s:    &run.State{TargetRepo: strPtr("patflynn/other")},
+			want: "patflynn/other",
+		},
+		{
+			name: "PRURL fallback normalizes to project name",
+			s:    &run.State{PRURL: strPtr("https://github.com/patflynn/cosmo/pull/42")},
+			want: "cosmo",
+		},
+		{
+			name: "local when nothing set",
+			s:    &run.State{},
+			want: "(local)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repoFromState(tt.s, reg)
 			if got != tt.want {
 				t.Errorf("repoFromState() = %q, want %q", got, tt.want)
 			}
@@ -342,14 +391,16 @@ func TestLoadStatesFromDir(t *testing.T) {
 
 func TestDashboardViewRender(t *testing.T) {
 	cost := 5.50
+	// Use a repo name unlikely to be in any real registry to keep the test
+	// independent of the user's ~/.klaus/projects.json.
 	states := []*run.State{
 		{
 			ID:         "20260307-0900-aaaa",
 			Prompt:     "tests requirement",
 			Type:       "launch",
 			CreatedAt:  time.Now().Add(-1 * time.Hour).Format(time.RFC3339),
-			TargetRepo: strPtr("patflynn/klaus"),
-			PRURL:      strPtr("https://github.com/patflynn/klaus/pull/30"),
+			TargetRepo: strPtr("testowner/testrepo"),
+			PRURL:      strPtr("https://github.com/testowner/testrepo/pull/30"),
 			CostUSD:    &cost,
 		},
 		{
@@ -357,7 +408,7 @@ func TestDashboardViewRender(t *testing.T) {
 			Prompt:     "add dashboard",
 			Type:       "launch",
 			CreatedAt:  time.Now().Format(time.RFC3339),
-			TargetRepo: strPtr("patflynn/klaus"),
+			TargetRepo: strPtr("testowner/testrepo"),
 			TmuxPane:   strPtr("%5"),
 		},
 	}
@@ -375,7 +426,7 @@ func TestDashboardViewRender(t *testing.T) {
 	if !strings.Contains(view, "klaus dashboard") {
 		t.Error("view should contain 'klaus dashboard' header")
 	}
-	if !strings.Contains(view, "patflynn/klaus") {
+	if !strings.Contains(view, "testowner/testrepo") {
 		t.Error("view should contain repo name")
 	}
 	if !strings.Contains(view, "#30") {

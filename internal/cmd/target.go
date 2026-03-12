@@ -63,33 +63,27 @@ uses this target. Useful when the coordinator session is not inside a git repo.
 		if !strings.Contains(repoRef, "/") {
 			reg, loadErr := project.Load()
 			if loadErr == nil {
-				if localPath, ok := reg.Get(repoRef); ok {
-					// Resolve owner/repo from the git remote
-					remote := gitRemoteURL(localPath)
-					if remote != "" {
-						owner, repo, _, parseErr := git.ParseRepoRef(remote)
-						if parseErr == nil {
-							normalized := owner + "/" + repo
-							if err := run.SaveTarget(baseDir, normalized); err != nil {
-								return err
-							}
-							fmt.Fprintf(cmd.OutOrStdout(), "Target set to %s (from project %s)\n", normalized, repoRef)
-							return nil
-						}
+				if _, ok := reg.Get(repoRef); ok {
+					// It's a known project name — use it as the canonical name
+					if err := run.SaveTarget(baseDir, repoRef); err != nil {
+						return err
 					}
-					return fmt.Errorf("project %q is registered at %s but has no parseable git remote", repoRef, localPath)
+					fmt.Fprintf(cmd.OutOrStdout(), "Target set to %s\n", repoRef)
+					return nil
 				}
 			}
 		}
 
-		// Validate the repo reference as owner/repo
+		// Validate the repo reference as owner/repo or URL
 		owner, repo, _, err := git.ParseRepoRef(repoRef)
 		if err != nil {
 			return fmt.Errorf("invalid repo reference: %w", err)
 		}
 
-		// Normalize to owner/repo format
-		normalized := owner + "/" + repo
+		// Normalize: if the repo portion matches a registered project, use the short name
+		reg, _ := project.Load()
+		normalized := project.NormalizeRepoName(owner+"/"+repo, reg)
+
 		if err := run.SaveTarget(baseDir, normalized); err != nil {
 			return err
 		}
