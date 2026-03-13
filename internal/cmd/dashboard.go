@@ -278,7 +278,9 @@ func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) s
 	prompt := truncate(s.Prompt, 20)
 
 	state := "OPEN"
-	if ps != nil && ps.State != "" {
+	if s.MergedAt != nil {
+		state = "MERGED"
+	} else if ps != nil && ps.State != "" {
 		state = ps.State
 	}
 

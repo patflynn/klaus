@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -25,9 +26,10 @@ type mergeRunner struct {
 	rebaseAndPush       func(string) error
 	mergePR             func(string, string, bool) error
 	pollCI              func(string) error
+	markMerged          func(prNumber string)
 }
 
-func newMergeRunner(out io.Writer) *mergeRunner {
+func newMergeRunner(out io.Writer, store run.StateStore) *mergeRunner {
 	return &mergeRunner{
 		out:                 out,
 		getPRTitle:          getPRTitle,
@@ -37,6 +39,29 @@ func newMergeRunner(out io.Writer) *mergeRunner {
 		rebaseAndPush:       rebaseAndPush,
 		mergePR:             mergePRExec,
 		pollCI:              defaultPollCI,
+		markMerged:          markRunsMerged(store),
+	}
+}
+
+// markRunsMerged returns a function that finds run states matching a PR number
+// and updates their MergedAt field. This triggers the dashboard's fsnotify
+// watcher so it can reflect the merge immediately.
+func markRunsMerged(store run.StateStore) func(string) {
+	return func(prNumber string) {
+		if store == nil {
+			return
+		}
+		states, err := store.List()
+		if err != nil {
+			return
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		for _, s := range states {
+			if extractPRNumber(s) == prNumber {
+				s.MergedAt = &now
+				store.Save(s)
+			}
+		}
 	}
 }
 
@@ -61,7 +86,12 @@ If a rebase fails or CI times out, stops and reports the stuck PR.`,
 			return err
 		}
 
-		runner := newMergeRunner(os.Stdout)
+		// Best-effort: get the session store so we can update run states
+		// after merge. If not in a session, store will be nil and
+		// markMerged will be a no-op.
+		store, _ := sessionStore()
+
+		runner := newMergeRunner(os.Stdout, store)
 
 		if dryRun {
 			return runner.dryRun(args)
@@ -282,6 +312,9 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 			return r.stopQueue(prNum, fmt.Sprintf("merge failed: %v", err), prNumbers[i+1:])
 		}
 		fmt.Fprintf(r.out, "  Merged PR #%s.\n", prNum)
+		if r.markMerged != nil {
+			r.markMerged(prNum)
+		}
 	}
 
 	fmt.Fprintf(r.out, "\nAll %d PRs merged successfully.\n", len(prNumbers))
