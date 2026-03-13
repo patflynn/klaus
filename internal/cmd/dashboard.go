@@ -338,11 +338,11 @@ func fetchGHStatusCmd(states []*run.State) tea.Cmd {
 		for _, s := range states {
 			prNum := extractPRNumber(s)
 			prRef := extractPRRef(s)
-			if prNum == "" || prRef == "" || seen[prNum] {
+			if prNum == "" || seen[prNum] {
 				continue
 			}
 			seen[prNum] = true
-			statuses[prNum] = fetchPRStatus(prRef)
+			statuses[prNum] = fetchPRStatus(prNum, prRef)
 		}
 		return ghStatusMsg{statuses: statuses}
 	}
@@ -401,8 +401,8 @@ func watchFSCmd(w *fsnotify.Watcher) tea.Cmd {
 
 // fetchPRStatus queries GitHub for a single PR's status.
 // prRef should be a full PR URL so gh can resolve it from any directory.
-func fetchPRStatus(prRef string) *prStatus {
-	ps := &prStatus{PRNumber: prRef}
+func fetchPRStatus(prNumber, prRef string) *prStatus {
+	ps := &prStatus{PRNumber: prNumber}
 	ps.State = getPRState(prRef)
 	if ps.State == "MERGED" || ps.State == "CLOSED" {
 		return ps
