@@ -165,7 +165,7 @@ func TestFormatCost(t *testing.T) {
 
 func TestGHCommandArgOrder(t *testing.T) {
 	// Verify that all gh command builders place flags BEFORE the "--" separator
-	// and the PR number AFTER it. This prevents the bug where flags after "--"
+	// and the PR ref AFTER it. This prevents the bug where flags after "--"
 	// are treated as positional arguments by gh.
 	tests := []struct {
 		name string
@@ -173,22 +173,22 @@ func TestGHCommandArgOrder(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "getPRState args",
+			name: "getPRState args with number",
 			fn:   ghPRStateArgs,
 			want: []string{"pr", "view", "--json", "state", "-q", ".state", "--", "42"},
 		},
 		{
-			name: "getPRCI args",
+			name: "getPRCI args with number",
 			fn:   ghPRChecksArgs,
 			want: []string{"pr", "checks", "--", "42"},
 		},
 		{
-			name: "getPRConflicts args",
+			name: "getPRConflicts args with number",
 			fn:   ghPRConflictsArgs,
 			want: []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", "42"},
 		},
 		{
-			name: "getPRReviewDecision args",
+			name: "getPRReviewDecision args with number",
 			fn:   ghPRReviewDecisionArgs,
 			want: []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", "42"},
 		},
@@ -216,6 +216,51 @@ func TestGHCommandArgOrder(t *testing.T) {
 				if got[i][0] == '-' {
 					t.Errorf("flag %q found after '--' separator at index %d", got[i], i)
 				}
+			}
+		})
+	}
+}
+
+func TestGHCommandArgsAcceptURL(t *testing.T) {
+	// Verify that gh command builders work with full PR URLs, which allows
+	// gh to resolve PRs regardless of the current working directory.
+	url := "https://github.com/owner/repo/pull/42"
+	fns := []struct {
+		name string
+		fn   func(string) []string
+	}{
+		{"ghPRStateArgs", ghPRStateArgs},
+		{"ghPRChecksArgs", ghPRChecksArgs},
+		{"ghPRConflictsArgs", ghPRConflictsArgs},
+		{"ghPRReviewDecisionArgs", ghPRReviewDecisionArgs},
+	}
+	for _, tt := range fns {
+		t.Run(tt.name, func(t *testing.T) {
+			args := tt.fn(url)
+			// The URL should be the last argument, after "--"
+			last := args[len(args)-1]
+			if last != url {
+				t.Errorf("last arg = %q, want %q", last, url)
+			}
+		})
+	}
+}
+
+func TestExtractPRRef(t *testing.T) {
+	tests := []struct {
+		name  string
+		prURL *string
+		want  string
+	}{
+		{"nil URL", nil, ""},
+		{"valid URL", strPtr("https://github.com/owner/repo/pull/42"), "https://github.com/owner/repo/pull/42"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &run.State{PRURL: tt.prURL}
+			got := extractPRRef(s)
+			if got != tt.want {
+				t.Errorf("extractPRRef() = %q, want %q", got, tt.want)
 			}
 		})
 	}
