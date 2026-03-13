@@ -53,13 +53,16 @@ func markRunsMerged(store run.StateStore) func(string) {
 		}
 		states, err := store.List()
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to list run states to mark as merged: %v\n", err)
 			return
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
 		for _, s := range states {
 			if extractPRNumber(s) == prNumber {
 				s.MergedAt = &now
-				store.Save(s)
+				if err := store.Save(s); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to save merged status for run %s: %v\n", s.ID, err)
+				}
 			}
 		}
 	}
