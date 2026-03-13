@@ -81,6 +81,9 @@ func determineStatus(s *run.State) string {
 		return "running"
 	}
 
+	if s.MergedAt != nil {
+		return "merged"
+	}
 	if s.PRURL != nil {
 		return "pr-created"
 	}

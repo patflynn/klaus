@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/patflynn/klaus/internal/run"
 )
 
 func TestValidateMergeMethod(t *testing.T) {
@@ -457,4 +459,117 @@ func TestRunMergeFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "merge failed") {
 		t.Errorf("error should mention merge failed: %v", err)
 	}
+}
+
+func TestRunUpdatesStateAfterMerge(t *testing.T) {
+	// Use a real HomeDirStore backed by a temp directory to verify
+	// state files are written to disk after merge.
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	// Create run states: two with PRs that will be merged, one unrelated.
+	prURL42 := "https://github.com/owner/repo/pull/42"
+	prURL99 := "https://github.com/owner/repo/pull/99"
+	prURL7 := "https://github.com/owner/repo/pull/7"
+
+	states := []*run.State{
+		{ID: "20260101-0000-aaaa", Prompt: "fix bug", Branch: "b1", PRURL: &prURL42, CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "20260101-0000-bbbb", Prompt: "add feature", Branch: "b2", PRURL: &prURL99, CreatedAt: "2026-01-01T00:01:00Z"},
+		{ID: "20260101-0000-cccc", Prompt: "other work", Branch: "b3", PRURL: &prURL7, CreatedAt: "2026-01-01T00:02:00Z"},
+	}
+	for _, s := range states {
+		if err := store.Save(s); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	var buf bytes.Buffer
+	runner := &mergeRunner{
+		out:                 &buf,
+		getPRTitle:          func(string) string { return "Test PR" },
+		getPRCI:             func(string) string { return "passing" },
+		getPRConflicts:      func(string) string { return "none" },
+		getPRReviewDecision: func(string) string { return "APPROVED" },
+		rebaseAndPush:       func(string) error { return nil },
+		pollCI:              func(string) error { return nil },
+		mergePR:             func(string, string, bool) error { return nil },
+		markMerged:          markRunsMerged(store),
+	}
+
+	err := runner.run([]string{"42", "99"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	// Reload states from disk and verify MergedAt was set for PRs 42 and 99.
+	s42, err := store.Load("20260101-0000-aaaa")
+	if err != nil {
+		t.Fatalf("Load aaaa: %v", err)
+	}
+	if s42.MergedAt == nil {
+		t.Error("PR #42 state should have MergedAt set after merge")
+	}
+
+	s99, err := store.Load("20260101-0000-bbbb")
+	if err != nil {
+		t.Fatalf("Load bbbb: %v", err)
+	}
+	if s99.MergedAt == nil {
+		t.Error("PR #99 state should have MergedAt set after merge")
+	}
+
+	// PR #7 was not merged — MergedAt should remain nil.
+	s7, err := store.Load("20260101-0000-cccc")
+	if err != nil {
+		t.Fatalf("Load cccc: %v", err)
+	}
+	if s7.MergedAt != nil {
+		t.Errorf("PR #7 state should NOT have MergedAt set, got %q", *s7.MergedAt)
+	}
+}
+
+func TestRunDoesNotUpdateStateOnMergeFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	prURL42 := "https://github.com/owner/repo/pull/42"
+	s := &run.State{ID: "20260101-0000-dddd", Prompt: "fix", Branch: "b1", PRURL: &prURL42, CreatedAt: "2026-01-01T00:00:00Z"}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var buf bytes.Buffer
+	runner := &mergeRunner{
+		out:                 &buf,
+		getPRTitle:          func(string) string { return "Test PR" },
+		getPRCI:             func(string) string { return "passing" },
+		getPRConflicts:      func(string) string { return "none" },
+		getPRReviewDecision: func(string) string { return "APPROVED" },
+		rebaseAndPush:       func(string) error { return nil },
+		pollCI:              func(string) error { return nil },
+		mergePR:             func(string, string, bool) error { return fmt.Errorf("merge failed") },
+		markMerged:          markRunsMerged(store),
+	}
+
+	_ = runner.run([]string{"42"}, "squash", true)
+
+	reloaded, err := store.Load("20260101-0000-dddd")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.MergedAt != nil {
+		t.Error("MergedAt should not be set when merge fails")
+	}
+}
+
+func TestMarkRunsMergedNilStore(t *testing.T) {
+	// markRunsMerged with nil store should not panic.
+	fn := markRunsMerged(nil)
+	fn("42") // Should be a no-op.
 }
