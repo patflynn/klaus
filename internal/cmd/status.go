@@ -46,8 +46,8 @@ var statusCmd = &cobra.Command{
 			prompt := truncate(s.Prompt, 40)
 
 			ci, conflicts, merge := "-", "-", "-"
-			if prNum := extractPRNumber(s); prNum != "" {
-				prState := getPRState(prNum)
+			if prRef := extractPRRef(s); prRef != "" {
+				prState := getPRState(prRef)
 				switch prState {
 				case "MERGED":
 					status = "merged"
@@ -55,9 +55,9 @@ var statusCmd = &cobra.Command{
 				case "CLOSED":
 					status = "closed"
 				default:
-					ci = getPRCI(prNum)
-					conflicts = getPRConflicts(prNum)
-					merge = computeMergeStatus(ci, conflicts, getPRReviewDecision(prNum))
+					ci = getPRCI(prRef)
+					conflicts = getPRConflicts(prRef)
+					merge = computeMergeStatus(ci, conflicts, getPRReviewDecision(prRef))
 				}
 			}
 
@@ -125,14 +125,25 @@ func extractPRNumber(s *run.State) string {
 	return ""
 }
 
+// extractPRRef returns the full PR URL from a run state (for use with gh CLI),
+// or "" if no PRURL is set. Using the full URL ensures gh can find the PR
+// regardless of the current working directory.
+func extractPRRef(s *run.State) string {
+	if s.PRURL == nil {
+		return ""
+	}
+	return *s.PRURL
+}
+
 // ghPRChecksArgs returns the arguments for "gh pr checks" with correct flag placement.
-func ghPRChecksArgs(prNumber string) []string {
-	return []string{"pr", "checks", "--", prNumber}
+// prRef can be a PR number or a full PR URL.
+func ghPRChecksArgs(prRef string) []string {
+	return []string{"pr", "checks", "--", prRef}
 }
 
 // getPRCI checks CI status by running "gh pr checks" and summarizing pass/fail/pending.
-func getPRCI(prNumber string) string {
-	cmd := exec.Command("gh", ghPRChecksArgs(prNumber)...)
+func getPRCI(prRef string) string {
+	cmd := exec.Command("gh", ghPRChecksArgs(prRef)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	err := cmd.Run()
@@ -170,13 +181,14 @@ func getPRCI(prNumber string) string {
 }
 
 // ghPRConflictsArgs returns the arguments for "gh pr view" to check merge conflicts.
-func ghPRConflictsArgs(prNumber string) []string {
-	return []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", prNumber}
+// prRef can be a PR number or a full PR URL.
+func ghPRConflictsArgs(prRef string) []string {
+	return []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", prRef}
 }
 
 // getPRConflicts checks if a PR has merge conflicts.
-func getPRConflicts(prNumber string) string {
-	cmd := exec.Command("gh", ghPRConflictsArgs(prNumber)...)
+func getPRConflicts(prRef string) string {
+	cmd := exec.Command("gh", ghPRConflictsArgs(prRef)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -190,13 +202,14 @@ func getPRConflicts(prNumber string) string {
 }
 
 // ghPRReviewDecisionArgs returns the arguments for "gh pr view" to fetch review decision.
-func ghPRReviewDecisionArgs(prNumber string) []string {
-	return []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", prNumber}
+// prRef can be a PR number or a full PR URL.
+func ghPRReviewDecisionArgs(prRef string) []string {
+	return []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", prRef}
 }
 
 // getPRReviewDecision fetches the review decision for a PR.
-func getPRReviewDecision(prNumber string) string {
-	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prNumber)...)
+func getPRReviewDecision(prRef string) string {
+	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prRef)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -206,13 +219,14 @@ func getPRReviewDecision(prNumber string) string {
 }
 
 // ghPRStateArgs returns the arguments for "gh pr view" to fetch PR state.
-func ghPRStateArgs(prNumber string) []string {
-	return []string{"pr", "view", "--json", "state", "-q", ".state", "--", prNumber}
+// prRef can be a PR number or a full PR URL.
+func ghPRStateArgs(prRef string) []string {
+	return []string{"pr", "view", "--json", "state", "-q", ".state", "--", prRef}
 }
 
 // getPRState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED") by calling gh.
-func getPRState(prNumber string) string {
-	cmd := exec.Command("gh", ghPRStateArgs(prNumber)...)
+func getPRState(prRef string) string {
+	cmd := exec.Command("gh", ghPRStateArgs(prRef)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
