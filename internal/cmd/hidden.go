@@ -204,11 +204,15 @@ var autoWatchCmd = &cobra.Command{
 			return nil
 		}
 
-		// Determine git root for worktree/branch cleanup
-		gitRoot, err := git.RepoRoot()
+		// Determine the main repo root for worktree/branch cleanup.
+		// We must use CommonDir (not RepoRoot) because RepoRoot returns the
+		// worktree path when run from a worktree — and we're about to remove
+		// that worktree, which would leave us in a deleted directory.
+		commonDir, err := git.CommonDir()
 		if err != nil {
 			return fmt.Errorf("auto-watch: not inside a git repository")
 		}
+		gitRoot := filepath.Dir(commonDir)
 		if state.CloneDir != nil {
 			gitRoot = *state.CloneDir
 		}
