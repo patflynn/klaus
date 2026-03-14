@@ -45,27 +45,19 @@ PR. The agent will commit and push to the PR branch directly.`,
 		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
 
-		// Resolve --repo: if it matches a registered project name (no owner/ prefix),
-		// use that project's local path directly instead of cloning.
-		var projectLocalPath string
-		if repoRef != "" && !strings.Contains(repoRef, "/") {
-			if reg, loadErr := project.Load(); loadErr == nil {
-				if localPath, ok := reg.Get(repoRef); ok {
-					projectLocalPath = localPath
+		// Load session target (if any) to feed into resolution
+		var sessionTarget string
+		if s, storeErr := sessionStore(); storeErr == nil {
+			if hds, ok := s.(*run.HomeDirStore); ok {
+				if target, loadErr := run.LoadTarget(hds.BaseDir()); loadErr == nil {
+					sessionTarget = target
 				}
 			}
 		}
 
-		// If no --repo and not in a git repo, check session target
-		if hostRoot == "" && repoRef == "" {
-			if s, storeErr := sessionStore(); storeErr == nil {
-				if hds, ok := s.(*run.HomeDirStore); ok {
-					if target, loadErr := run.LoadTarget(hds.BaseDir()); loadErr == nil && target != "" {
-						repoRef = target
-					}
-				}
-			}
-		}
+		// Resolve which repo to use. Priority: --repo > session target > hostRoot
+		reg, _ := project.Load()
+		repoRef, projectLocalPath := resolveRepoTarget(repoRef, sessionTarget, reg)
 
 		if hostRoot == "" && repoRef == "" && projectLocalPath == "" {
 			return fmt.Errorf("no target repo — use --repo owner/repo, 'klaus target owner/repo', or 'klaus project add' to register a project")
@@ -414,6 +406,31 @@ func normalizeTargetRepo(targetRepo *string, hostRoot string) *string {
 	}
 
 	return targetRepo
+}
+
+// resolveRepoTarget determines which repo to use for the agent worktree.
+// Priority: explicit --repo flag > session target > (caller falls back to hostRoot).
+// If the resolved ref matches a registered project name (no "/" in the ref),
+// projectLocalPath is set to the project's local directory.
+func resolveRepoTarget(repoFlag, sessionTarget string, reg *project.Registry) (repoRef, projectLocalPath string) {
+	repoRef = repoFlag
+
+	// If no --repo flag, use the session target. This takes priority over the
+	// current git repo (hostRoot) because the coordinator session may be
+	// running inside one repo while targeting another.
+	if repoRef == "" && sessionTarget != "" {
+		repoRef = sessionTarget
+	}
+
+	// Resolve against project registry: bare names (no "/") may map to a
+	// local clone, avoiding a fresh GitHub clone.
+	if repoRef != "" && !strings.Contains(repoRef, "/") && reg != nil {
+		if localPath, ok := reg.Get(repoRef); ok {
+			projectLocalPath = localPath
+		}
+	}
+
+	return repoRef, projectLocalPath
 }
 
 // getPRURL returns the HTML URL for a PR using the gh CLI.
