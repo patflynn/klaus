@@ -64,6 +64,56 @@ func TestWorktreeAddRemove(t *testing.T) {
 	}
 }
 
+func TestCommonDirFromWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt")
+
+	if err := WorktreeAdd(repo, wtPath, "test-branch", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(repo, wtPath)
+
+	// Save original dir and chdir to worktree
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(origDir)
+	os.Chdir(wtPath)
+
+	// RepoRoot from a worktree returns the worktree path, NOT the main repo
+	root, err := RepoRoot()
+	if err != nil {
+		t.Fatalf("RepoRoot: %v", err)
+	}
+	if root != wtPath {
+		t.Errorf("RepoRoot() = %q, expected worktree path %q", root, wtPath)
+	}
+
+	// CommonDir from a worktree returns the main repo's .git dir
+	common, err := CommonDir()
+	if err != nil {
+		t.Fatalf("CommonDir: %v", err)
+	}
+	mainRoot := filepath.Dir(common)
+	if mainRoot != repo {
+		t.Errorf("filepath.Dir(CommonDir()) = %q, expected main repo %q", mainRoot, repo)
+	}
+
+	// The main repo root survives worktree removal — this is critical for
+	// auto-watch, which removes the worktree then launches watch from the
+	// main repo root.
+	if err := WorktreeRemove(repo, wtPath); err != nil {
+		t.Fatalf("WorktreeRemove: %v", err)
+	}
+	if _, err := os.Stat(mainRoot); err != nil {
+		t.Errorf("main repo root should still exist after worktree removal: %v", err)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Error("worktree should be gone after removal")
+	}
+}
+
 func TestEnsureDataRef(t *testing.T) {
 	repo := initTestRepo(t)
 	ref := "refs/klaus/data"
