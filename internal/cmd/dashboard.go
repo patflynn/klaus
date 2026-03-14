@@ -165,6 +165,19 @@ func (m dashboardModel) View() string {
 	}
 
 	groups := groupByRepo(m.states)
+
+	// Populate each group's PRMap from the fetched GitHub statuses.
+	for i := range groups {
+		for _, s := range groups[i].Runs {
+			prNum := extractPRNumber(s)
+			if prNum != "" {
+				if ps, ok := m.ghStatus[prNum]; ok {
+					groups[i].PRMap[prNum] = ps
+				}
+			}
+		}
+	}
+
 	totalCost := computeTotalCost(m.states)
 	runningCount, totalCount := countAgents(m.states)
 	sessionDur := computeSessionDuration(m.states)
