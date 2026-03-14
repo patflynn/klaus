@@ -16,7 +16,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const klausSessionIDEnv = "KLAUS_SESSION_ID"
+const (
+	klausSessionIDEnv = "KLAUS_SESSION_ID"
+	agentPollInterval = 3 * time.Second
+)
 
 var sessionCmd = &cobra.Command{
 	Use:   "session",
@@ -167,20 +170,80 @@ from inside the session to target specific repositories.`,
 		claude.Stderr = os.Stderr
 		claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
 		claude.Run() // ignore error — user may exit normally
+
+		fmt.Println()
+		fmt.Printf("Session %s ended.\n", id)
+
+		// Wait for any running agents to finish, then clean up their panes
+		waitForAgents(store)
+
 		if dashPane != "" {
 			if err := tmux.KillPane(dashPane); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
 			}
 		}
 
-		fmt.Println()
-		fmt.Printf("Session %s ended.\n", id)
 		if inRepo {
 			fmt.Printf("  Worktree preserved at: %s\n", worktree)
 		}
 		fmt.Printf("  To clean up: klaus cleanup %s\n", id)
 		return nil
 	},
+}
+
+// waitForAgents polls for active agent panes and waits for them to
+// finish before returning. Panes that have completed their work but
+// are still alive (e.g. stuck on a shell prompt) are killed so the
+// session can exit cleanly.
+func waitForAgents(store run.StateStore) {
+	states, err := store.List()
+	if err != nil {
+		return
+	}
+
+	// Collect agent runs that still have live tmux panes
+	var active []*run.State
+	for _, s := range states {
+		if s.Type == "session" {
+			continue
+		}
+		if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
+			active = append(active, s)
+		}
+	}
+
+	if len(active) == 0 {
+		return
+	}
+
+	fmt.Printf("Waiting for %d agent(s) to finish...\n", len(active))
+
+	// Poll until all agent panes have exited or their work is done
+	for len(active) > 0 {
+		time.Sleep(agentPollInterval)
+
+		var stillActive []*run.State
+		for _, s := range active {
+			if !tmux.PaneExists(*s.TmuxPane) {
+				fmt.Printf("  agent %s finished\n", s.ID)
+				continue
+			}
+
+			// Check if the pane's command has completed. An idle pane
+			// means the agent's pipeline has finished and the pane is
+			// either dead or left at a shell prompt.
+			if tmux.PaneIsIdle(*s.TmuxPane) {
+				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
+				tmux.KillPane(*s.TmuxPane)
+				continue
+			}
+
+			stillActive = append(stillActive, s)
+		}
+		active = stillActive
+	}
+
+	fmt.Println("All agents finished.")
 }
 
 func init() {
