@@ -311,6 +311,109 @@ func TestPRFixPromptNoIssue(t *testing.T) {
 	}
 }
 
+func TestResolveRepoTarget_SessionTargetUsedWhenNoFlag(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"reel-life": "/home/user/hack/reel-life",
+		},
+	}
+
+	repoRef, projectLocalPath := resolveRepoTarget("", "reel-life", reg)
+
+	if repoRef != "reel-life" {
+		t.Errorf("repoRef = %q, want %q", repoRef, "reel-life")
+	}
+	if projectLocalPath != "/home/user/hack/reel-life" {
+		t.Errorf("projectLocalPath = %q, want %q", projectLocalPath, "/home/user/hack/reel-life")
+	}
+}
+
+func TestResolveRepoTarget_RepoFlagOverridesSessionTarget(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"reel-life":     "/home/user/hack/reel-life",
+			"other-project": "/home/user/hack/other-project",
+		},
+	}
+
+	repoRef, projectLocalPath := resolveRepoTarget("other-project", "reel-life", reg)
+
+	if repoRef != "other-project" {
+		t.Errorf("repoRef = %q, want %q", repoRef, "other-project")
+	}
+	if projectLocalPath != "/home/user/hack/other-project" {
+		t.Errorf("projectLocalPath = %q, want %q", projectLocalPath, "/home/user/hack/other-project")
+	}
+}
+
+func TestResolveRepoTarget_SessionTargetWorksEvenWithHostRoot(t *testing.T) {
+	// This tests the bug fix from issue #103.
+	// The old code only checked session target when hostRoot was empty.
+	// With the new resolveRepoTarget() function, session target is always
+	// used when repoFlag is empty, regardless of whether the caller has a
+	// hostRoot. The caller (RunE) only falls back to hostRoot after
+	// resolveRepoTarget returns empty values.
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"reel-life": "/home/user/hack/reel-life",
+		},
+	}
+
+	repoRef, projectLocalPath := resolveRepoTarget("", "reel-life", reg)
+
+	if repoRef != "reel-life" {
+		t.Errorf("repoRef = %q, want %q", repoRef, "reel-life")
+	}
+	if projectLocalPath != "/home/user/hack/reel-life" {
+		t.Errorf("projectLocalPath = %q, want %q", projectLocalPath, "/home/user/hack/reel-life")
+	}
+}
+
+func TestResolveRepoTarget_OwnerRepoParsedCorrectly(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"reel-life": "/home/user/hack/reel-life",
+		},
+	}
+
+	repoRef, projectLocalPath := resolveRepoTarget("", "patflynn/reel-life", reg)
+
+	if repoRef != "patflynn/reel-life" {
+		t.Errorf("repoRef = %q, want %q", repoRef, "patflynn/reel-life")
+	}
+	if projectLocalPath != "" {
+		t.Errorf("projectLocalPath = %q, want empty (owner/repo should not resolve as project name)", projectLocalPath)
+	}
+}
+
+func TestResolveRepoTarget_EmptyTargetFallsThrough(t *testing.T) {
+	reg := &project.Registry{
+		Projects: map[string]string{
+			"reel-life": "/home/user/hack/reel-life",
+		},
+	}
+
+	repoRef, projectLocalPath := resolveRepoTarget("", "", reg)
+
+	if repoRef != "" {
+		t.Errorf("repoRef = %q, want empty", repoRef)
+	}
+	if projectLocalPath != "" {
+		t.Errorf("projectLocalPath = %q, want empty", projectLocalPath)
+	}
+}
+
+func TestResolveRepoTarget_NilRegistry(t *testing.T) {
+	repoRef, projectLocalPath := resolveRepoTarget("", "reel-life", nil)
+
+	if repoRef != "reel-life" {
+		t.Errorf("repoRef = %q, want %q", repoRef, "reel-life")
+	}
+	if projectLocalPath != "" {
+		t.Errorf("projectLocalPath = %q, want empty (nil registry should not resolve)", projectLocalPath)
+	}
+}
+
 func TestLaunchCmdHasPRFlag(t *testing.T) {
 	// Verify the --pr flag is registered on the launch command
 	f := launchCmd.Flags().Lookup("pr")
