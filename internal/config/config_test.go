@@ -368,7 +368,7 @@ func TestPreTrustWorktree(t *testing.T) {
 	}
 
 	// Check that the project directory was created
-	encoded := strings.ReplaceAll(worktreeDir, string(filepath.Separator), "-")
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
 	indexPath := filepath.Join(homeDir, ".claude", "projects", encoded, "sessions-index.json")
 
 	data, err := os.ReadFile(indexPath)
@@ -384,6 +384,39 @@ func TestPreTrustWorktree(t *testing.T) {
 	if v, ok := index["version"].(float64); !ok || v != 1 {
 		t.Errorf("version = %v, want 1", index["version"])
 	}
+	if p, ok := index["originalPath"].(string); !ok || p != worktreeDir {
+		t.Errorf("originalPath = %v, want %s", index["originalPath"], worktreeDir)
+	}
+}
+
+func TestPreTrustWorktreeDottedPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	// Create a worktree path with dot-prefixed components like .klaus session workspaces
+	worktreeDir := filepath.Join(t.TempDir(), ".klaus", "sessions", "run-123")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("creating worktree dir: %v", err)
+	}
+
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("PreTrustWorktree() error: %v", err)
+	}
+
+	// Dots should be replaced with hyphens, matching Claude Code's encoding
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	indexPath := filepath.Join(homeDir, ".claude", "projects", encoded, "sessions-index.json")
+
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("reading sessions-index.json: %v", err)
+	}
+
+	var index map[string]any
+	if err := json.Unmarshal(data, &index); err != nil {
+		t.Fatalf("parsing sessions-index.json: %v", err)
+	}
+
 	if p, ok := index["originalPath"].(string); !ok || p != worktreeDir {
 		t.Errorf("originalPath = %v, want %s", index["originalPath"], worktreeDir)
 	}

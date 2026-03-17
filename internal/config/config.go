@@ -469,8 +469,8 @@ func PreTrustWorktree(worktreeDir string) error {
 		return fmt.Errorf("finding home dir: %w", err)
 	}
 
-	// Claude Code encodes paths by replacing path separators with hyphens.
-	encoded := strings.ReplaceAll(absPath, string(filepath.Separator), "-")
+	// Claude Code encodes paths by replacing path separators and dots with hyphens.
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(absPath)
 	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
 
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
