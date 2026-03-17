@@ -368,8 +368,7 @@ func TestPreTrustWorktree(t *testing.T) {
 	}
 
 	// Check that the project directory was created
-	encoded := strings.ReplaceAll(worktreeDir, string(filepath.Separator), "-")
-	encoded = strings.ReplaceAll(encoded, ".", "-")
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
 	indexPath := filepath.Join(homeDir, ".claude", "projects", encoded, "sessions-index.json")
 
 	data, err := os.ReadFile(indexPath)
@@ -405,8 +404,7 @@ func TestPreTrustWorktreeDottedPath(t *testing.T) {
 	}
 
 	// Dots should be replaced with hyphens, matching Claude Code's encoding
-	encoded := strings.ReplaceAll(worktreeDir, string(filepath.Separator), "-")
-	encoded = strings.ReplaceAll(encoded, ".", "-")
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
 	indexPath := filepath.Join(homeDir, ".claude", "projects", encoded, "sessions-index.json")
 
 	data, err := os.ReadFile(indexPath)
