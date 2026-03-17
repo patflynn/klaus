@@ -25,7 +25,8 @@ type State struct {
 	Type       string   `json:"type,omitempty"`
 	TargetRepo *string  `json:"target_repo,omitempty"`
 	CloneDir   *string  `json:"clone_dir,omitempty"`
-	MergedAt   *string  `json:"merged_at,omitempty"`
+	MergedAt       *string  `json:"merged_at,omitempty"`
+	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
 }
 
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.

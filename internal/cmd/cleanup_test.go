@@ -145,6 +145,25 @@ func TestIsRunActiveWithSessionEnv(t *testing.T) {
 	}
 }
 
+func TestIsRunActiveWithDashboardPane(t *testing.T) {
+	origIsRunActive := isRunActive
+	defer func() { isRunActive = origIsRunActive }()
+	isRunActive = origIsRunActive
+
+	// A run with no panes should not be active
+	s := &run.State{ID: "run-1"}
+	if isRunActive(s) {
+		t.Error("expected run without panes to not be active")
+	}
+
+	// A run with a DashboardPane that doesn't exist should not be active
+	fakePaneID := "%999999"
+	s2 := &run.State{ID: "run-2", DashboardPane: &fakePaneID}
+	if isRunActive(s2) {
+		t.Error("expected run with dead dashboard pane to not be active")
+	}
+}
+
 // fakeStore is an in-memory StateStore for testing.
 type fakeStore struct {
 	states map[string]*run.State
