@@ -71,6 +71,9 @@ var isRunActive = func(state *run.State) bool {
 	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
 		return true
 	}
+	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+		return true
+	}
 	if state.Type == "session" {
 		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
 			return true
@@ -96,6 +99,13 @@ func cleanupOne(root string, store run.StateStore, id string, force bool) error 
 	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
 		if err := tmux.KillPane(*state.TmuxPane); err == nil {
 			fmt.Println("  killed tmux pane")
+		}
+	}
+
+	// Kill dashboard pane if alive
+	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+		if err := tmux.KillPane(*state.DashboardPane); err == nil {
+			fmt.Println("  killed dashboard pane")
 		}
 	}
 
