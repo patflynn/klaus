@@ -455,9 +455,10 @@ func WriteClaudeSettings(worktreeDir, repoName string) error {
 
 // PreTrustWorktree creates a Claude Code project entry for the given directory
 // so that the workspace trust dialog is not shown when launching Claude
-// interactively. Claude Code stores per-project data in
-// ~/.claude/projects/<encoded-path>/ and shows a trust dialog for directories
-// without an existing project entry.
+// interactively. It does two things:
+//  1. Creates ~/.claude/projects/<encoded-path>/sessions-index.json
+//  2. Sets hasTrustDialogAccepted=true in the Claude Code config file
+//     (~/.claude/.config.json if it exists, otherwise ~/.claude.json)
 func PreTrustWorktree(worktreeDir string) error {
 	absPath, err := filepath.Abs(worktreeDir)
 	if err != nil {
@@ -469,7 +470,7 @@ func PreTrustWorktree(worktreeDir string) error {
 		return fmt.Errorf("finding home dir: %w", err)
 	}
 
-	// Claude Code encodes paths by replacing path separators and dots with hyphens.
+	// Step 1: Create sessions-index.json for the project directory.
 	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(absPath)
 	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
 
@@ -478,22 +479,86 @@ func PreTrustWorktree(worktreeDir string) error {
 	}
 
 	indexPath := filepath.Join(projectDir, "sessions-index.json")
-	if _, err := os.Stat(indexPath); err == nil {
-		return nil // already exists
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		index := map[string]any{
+			"version":      1,
+			"entries":      []any{},
+			"originalPath": absPath,
+		}
+		data, err := json.MarshalIndent(index, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshaling sessions index: %w", err)
+		}
+		if err := os.WriteFile(indexPath, append(data, '\n'), 0o644); err != nil {
+			return fmt.Errorf("writing sessions index: %w", err)
+		}
 	}
 
-	index := map[string]any{
-		"version":      1,
-		"entries":      []any{},
-		"originalPath": absPath,
+	// Step 2: Set hasTrustDialogAccepted in the Claude Code config file.
+	if err := setTrustInClaudeConfig(homeDir, absPath); err != nil {
+		return fmt.Errorf("setting trust in claude config: %w", err)
 	}
-	data, err := json.MarshalIndent(index, "", "  ")
+
+	return nil
+}
+
+// setTrustInClaudeConfig reads the Claude Code config file, sets
+// projects[absPath].hasTrustDialogAccepted = true, and writes it back.
+func setTrustInClaudeConfig(homeDir, absPath string) error {
+	// Resolve config file path: prefer ~/.claude/.config.json if it exists,
+	// otherwise use ~/.claude.json.
+	configPath := filepath.Join(homeDir, ".claude", ".config.json")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		configPath = filepath.Join(homeDir, ".claude.json")
+	}
+
+	// Read existing config or start fresh.
+	var config map[string]any
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		if err := json.Unmarshal(data, &config); err != nil {
+			config = make(map[string]any)
+		}
+	} else {
+		config = make(map[string]any)
+	}
+
+	// Ensure projects map exists.
+	projects, ok := config["projects"].(map[string]any)
+	if !ok {
+		projects = make(map[string]any)
+		config["projects"] = projects
+	}
+
+	// Get or create the project entry, preserving existing fields.
+	entry, ok := projects[absPath].(map[string]any)
+	if !ok {
+		entry = make(map[string]any)
+		projects[absPath] = entry
+	}
+
+	// Check if already trusted to avoid unnecessary writes.
+	if trusted, ok := entry["hasTrustDialogAccepted"].(bool); ok && trusted {
+		return nil
+	}
+
+	entry["hasTrustDialogAccepted"] = true
+
+	out, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshaling sessions index: %w", err)
+		return fmt.Errorf("marshaling claude config: %w", err)
 	}
-	if err := os.WriteFile(indexPath, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("writing sessions index: %w", err)
+
+	// Ensure parent directory exists (for ~/.claude.json the parent is ~,
+	// for ~/.claude/.config.json we need ~/.claude/).
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
 	}
+
+	if err := os.WriteFile(configPath, append(out, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing claude config: %w", err)
+	}
+
 	return nil
 }
 
