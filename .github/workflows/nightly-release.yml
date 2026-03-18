@@ -1,0 +1,203 @@
+name: Nightly Release
+
+on:
+  workflow_dispatch: # Allow manual triggering
+  schedule:
+    - cron: '0 6 * * *' # Run daily at 06:00 UTC
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547 # v1.12.0
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for new commits since last release
+        id: check
+        run: |
+          # Find the latest version tag
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "No existing version tags found. Will create initial release."
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "latest_tag=" >> "$GITHUB_OUTPUT"
+            echo "current_version=0.0.0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Latest tag: $LATEST_TAG"
+
+          # Check if there are commits since the last tag
+          COMMIT_COUNT=$(git rev-list "${LATEST_TAG}..HEAD" --count)
+          echo "Commits since ${LATEST_TAG}: ${COMMIT_COUNT}"
+
+          if [ "$COMMIT_COUNT" -eq 0 ]; then
+            echo "No new commits since ${LATEST_TAG}. Skipping release."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
+          # Strip the leading 'v' for semver parsing
+          echo "current_version=${LATEST_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Gather changes
+        if: steps.check.outputs.has_changes == 'true'
+        id: changes
+        env:
+          LATEST_TAG: ${{ steps.check.outputs.latest_tag }}
+        run: |
+
+          if [ -z "$LATEST_TAG" ]; then
+            # First release — use all commits
+            git log --pretty=format:"%h %s" | head -50 > /tmp/commit_log.txt
+            git log --stat --pretty=format:"" | head -100 > /tmp/diff_stat.txt
+            git log -p --pretty=format:"" | head -500 > /tmp/diff.txt
+          else
+            git log "${LATEST_TAG}..HEAD" --pretty=format:"%h %s" > /tmp/commit_log.txt
+            git diff "${LATEST_TAG}..HEAD" --stat > /tmp/diff_stat.txt
+            # Truncate diff to keep API payload reasonable
+            git diff "${LATEST_TAG}..HEAD" | head -1500 > /tmp/diff.txt
+          fi
+
+      - name: Determine version bump and generate release notes
+        if: steps.check.outputs.has_changes == 'true'
+        id: ai
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CURRENT_VERSION: ${{ steps.check.outputs.current_version }}
+        run: |
+          # Build the prompt from files using jq to handle all escaping
+          PROMPT=$(jq -n \
+            --arg version "$CURRENT_VERSION" \
+            --rawfile commits /tmp/commit_log.txt \
+            --rawfile stats /tmp/diff_stat.txt \
+            --rawfile diff /tmp/diff.txt \
+            '{
+              prompt: ("You are a release manager. Analyze the following changes and determine:\n1. The appropriate semantic version bump (patch, minor, or major)\n2. Concise, human-quality release notes in markdown\n\nGuidelines:\n- Breaking changes (removed features, changed interfaces, incompatible config changes) = major\n- New features, new modules, new host configurations = minor\n- Bug fixes, dependency updates, refactors, documentation, CI changes = patch\n\nCurrent version: " + $version + "\n\nCommit log:\n```\n" + $commits + "\n```\n\nFiles changed:\n```\n" + $stats + "\n```\n\nDiff (truncated):\n```\n" + $diff + "\n```\n\nRespond with ONLY a JSON object (no markdown fencing, no extra text) in this exact format:\n{\n  \"bump\": \"patch|minor|major\",\n  \"new_version\": \"X.Y.Z\",\n  \"release_notes\": \"markdown release notes here\"\n}")
+            }' | jq -r '.prompt')
+
+          # Build the full API request payload with jq (safe escaping)
+          REQUEST_BODY=$(jq -n \
+            --arg prompt "$PROMPT" \
+            '{
+              model: "claude-sonnet-4-6",
+              max_tokens: 1024,
+              messages: [{ role: "user", content: $prompt }]
+            }')
+
+          # Call the Anthropic API
+          HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -X POST https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$REQUEST_BODY")
+
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
+          BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Anthropic API returned HTTP ${HTTP_CODE}"
+            echo "$BODY" | head -20
+            exit 1
+          fi
+
+          # Extract the text content from the API response
+          AI_TEXT=$(echo "$BODY" | jq -r '.content[0].text')
+
+          # Parse the JSON from Claude's response
+          # Handle cases where response might be wrapped in markdown fences
+          AI_JSON=$(echo "$AI_TEXT" | sed -n '/^{/,/^}/p')
+          if [ -z "$AI_JSON" ]; then
+            AI_JSON=$(echo "$AI_TEXT" | sed '/^```/d')
+          fi
+
+          # Validate and extract fields
+          NEW_VERSION=$(echo "$AI_JSON" | jq -r '.new_version // empty')
+          BUMP=$(echo "$AI_JSON" | jq -r '.bump // empty')
+          RELEASE_NOTES=$(echo "$AI_JSON" | jq -r '.release_notes // empty')
+
+          if [ -z "$NEW_VERSION" ] || [ -z "$BUMP" ] || [ -z "$RELEASE_NOTES" ]; then
+            echo "::error::Failed to parse AI response"
+            echo "Raw response: $AI_TEXT"
+            exit 1
+          fi
+
+          # Validate version format
+          if ! echo "$NEW_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid version format: ${NEW_VERSION}"
+            exit 1
+          fi
+
+          echo "Bump type: ${BUMP}"
+          echo "New version: v${NEW_VERSION}"
+
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bump=${BUMP}" >> "$GITHUB_OUTPUT"
+
+          # Write release notes to a file for the next step (avoids shell interpolation issues)
+          echo "$RELEASE_NOTES" > /tmp/release_notes.md
+
+      - name: Push tag to trigger release workflow
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEW_VERSION: ${{ steps.ai.outputs.new_version }}
+        run: |
+          TAG="v${NEW_VERSION}"
+
+          # Configure git for tagging
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Set remote URL with token for push (persist-credentials is false)
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          # Create and push the tag — this triggers release.yml which
+          # cross-compiles binaries and creates the GitHub release
+          git tag -a "$TAG" -m "Release ${TAG}"
+          git push origin "$TAG"
+
+          echo "Pushed tag ${TAG} — release.yml will handle the rest"
+
+          # Save release notes for the release workflow to pick up
+          # The release.yml uses --generate-notes, but we can update
+          # the release body after it's created
+          echo "$TAG" > /tmp/tag_name.txt
+
+      - name: Wait for release and update notes
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          NEW_VERSION: ${{ steps.ai.outputs.new_version }}
+        run: |
+          TAG="v${NEW_VERSION}"
+
+          # Wait for the release to be created by release.yml
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "Release $TAG found, updating notes..."
+              gh release edit "$TAG" --notes-file /tmp/release_notes.md
+              echo "Release notes updated."
+              exit 0
+            fi
+            echo "Waiting for release $TAG to be created... (attempt $i/30)"
+            sleep 10
+          done
+
+          echo "::warning::Release $TAG not found after 5 minutes. Notes not updated."
