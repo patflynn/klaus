@@ -387,6 +387,30 @@ func TestPreTrustWorktree(t *testing.T) {
 	if p, ok := index["originalPath"].(string); !ok || p != worktreeDir {
 		t.Errorf("originalPath = %v, want %s", index["originalPath"], worktreeDir)
 	}
+
+	// Check that ~/.claude.json has the trust entry
+	claudeJSON := filepath.Join(homeDir, ".claude.json")
+	cdata, err := os.ReadFile(claudeJSON)
+	if err != nil {
+		t.Fatalf("reading ~/.claude.json: %v", err)
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(cdata, &config); err != nil {
+		t.Fatalf("parsing ~/.claude.json: %v", err)
+	}
+
+	projects, ok := config["projects"].(map[string]any)
+	if !ok {
+		t.Fatal("~/.claude.json missing projects key")
+	}
+	entry, ok := projects[worktreeDir].(map[string]any)
+	if !ok {
+		t.Fatalf("~/.claude.json missing project entry for %s", worktreeDir)
+	}
+	if trusted, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !trusted {
+		t.Errorf("hasTrustDialogAccepted = %v, want true", entry["hasTrustDialogAccepted"])
+	}
 }
 
 func TestPreTrustWorktreeDottedPath(t *testing.T) {
@@ -419,6 +443,90 @@ func TestPreTrustWorktreeDottedPath(t *testing.T) {
 
 	if p, ok := index["originalPath"].(string); !ok || p != worktreeDir {
 		t.Errorf("originalPath = %v, want %s", index["originalPath"], worktreeDir)
+	}
+}
+
+func TestPreTrustWorktreeUsesConfigJSON(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	// Create ~/.claude/.config.json so PreTrustWorktree prefers it
+	claudeDir := filepath.Join(homeDir, ".claude")
+	os.MkdirAll(claudeDir, 0o755)
+	existing := map[string]any{"someKey": "someValue", "projects": map[string]any{}}
+	data, _ := json.Marshal(existing)
+	os.WriteFile(filepath.Join(claudeDir, ".config.json"), data, 0o644)
+
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("PreTrustWorktree() error: %v", err)
+	}
+
+	// Should have written to .config.json, not .claude.json
+	cdata, err := os.ReadFile(filepath.Join(claudeDir, ".config.json"))
+	if err != nil {
+		t.Fatalf("reading .config.json: %v", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(cdata, &config); err != nil {
+		t.Fatalf("parsing .config.json: %v", err)
+	}
+
+	// Existing keys should be preserved
+	if config["someKey"] != "someValue" {
+		t.Error("existing keys in .config.json should be preserved")
+	}
+
+	projects := config["projects"].(map[string]any)
+	entry := projects[worktreeDir].(map[string]any)
+	if trusted, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !trusted {
+		t.Errorf("hasTrustDialogAccepted = %v, want true", entry["hasTrustDialogAccepted"])
+	}
+
+	// ~/.claude.json should NOT have been created
+	if _, err := os.Stat(filepath.Join(homeDir, ".claude.json")); err == nil {
+		t.Error("~/.claude.json should not exist when .config.json is used")
+	}
+}
+
+func TestPreTrustWorktreePreservesExistingEntry(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	// Pre-populate ~/.claude.json with an existing project entry
+	existing := map[string]any{
+		"projects": map[string]any{
+			worktreeDir: map[string]any{
+				"allowedTools": []any{"tool1"},
+				"mcpServers":   map[string]any{},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(existing, "", "  ")
+	os.WriteFile(filepath.Join(homeDir, ".claude.json"), data, 0o644)
+
+	if err := PreTrustWorktree(worktreeDir); err != nil {
+		t.Fatalf("PreTrustWorktree() error: %v", err)
+	}
+
+	cdata, err := os.ReadFile(filepath.Join(homeDir, ".claude.json"))
+	if err != nil {
+		t.Fatalf("reading config file: %v", err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal(cdata, &config); err != nil {
+		t.Fatalf("unmarshaling config: %v", err)
+	}
+	projects := config["projects"].(map[string]any)
+	entry := projects[worktreeDir].(map[string]any)
+
+	// Existing fields should be preserved
+	if tools, ok := entry["allowedTools"].([]any); !ok || len(tools) != 1 {
+		t.Error("existing allowedTools should be preserved")
+	}
+	if trusted, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !trusted {
+		t.Error("hasTrustDialogAccepted should be true")
 	}
 }
 
