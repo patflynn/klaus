@@ -510,9 +510,14 @@ func TestPreTrustWorktreePreservesExistingEntry(t *testing.T) {
 		t.Fatalf("PreTrustWorktree() error: %v", err)
 	}
 
-	cdata, _ := os.ReadFile(filepath.Join(homeDir, ".claude.json"))
+	cdata, err := os.ReadFile(filepath.Join(homeDir, ".claude.json"))
+	if err != nil {
+		t.Fatalf("reading config file: %v", err)
+	}
 	var config map[string]any
-	json.Unmarshal(cdata, &config)
+	if err := json.Unmarshal(cdata, &config); err != nil {
+		t.Fatalf("unmarshaling config: %v", err)
+	}
 	projects := config["projects"].(map[string]any)
 	entry := projects[worktreeDir].(map[string]any)
 
