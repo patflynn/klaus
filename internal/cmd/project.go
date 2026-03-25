@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/spf13/cobra"
 )
@@ -77,7 +78,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		parts := strings.SplitN(ref, "/", 2)
 		owner = parts[0]
 		repoName = parts[1]
-		cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repoName)
+		cloneURL = git.CloneURL(owner, repoName)
 	} else {
 		// Bare name — search GitHub repos
 		repoName = ref

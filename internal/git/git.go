@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // RepoRoot returns the top-level directory of the git repository.
@@ -140,6 +141,39 @@ func SyncToDataRef(repoDir, dataRef, commitMsg string, files map[string]string) 
 	return err
 }
 
+// ghProtocol caches the result of detecting the user's preferred git protocol.
+var (
+	ghProtocolOnce sync.Once
+	ghProtocolSSH  bool
+)
+
+// detectGHProtocol runs "gh config get git_protocol" and returns true if SSH.
+// Exported as a variable so tests can override it.
+var detectGHProtocol = func() bool {
+	out, err := exec.Command("gh", "config", "get", "git_protocol").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "ssh"
+}
+
+// useSSHProtocol returns true if the user has configured gh to use SSH.
+func useSSHProtocol() bool {
+	ghProtocolOnce.Do(func() {
+		ghProtocolSSH = detectGHProtocol()
+	})
+	return ghProtocolSSH
+}
+
+// CloneURL returns the git clone URL for a GitHub repo, respecting the user's
+// configured git protocol (via gh config).
+func CloneURL(owner, repo string) string {
+	if useSSHProtocol() {
+		return fmt.Sprintf("git@github.com:%s/%s.git", owner, repo)
+	}
+	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+}
+
 // CleanGitHubRef strips GitHub URL prefixes, .git suffix, and trailing slashes
 // from a repo reference, returning the bare "owner/repo" or short name form.
 func CleanGitHubRef(ref string) string {
@@ -171,7 +205,7 @@ func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
 	if strings.Contains(owner, "..") || strings.Contains(repo, "..") {
 		return "", "", "", fmt.Errorf("invalid repo reference %q: path traversal not allowed", ref)
 	}
-	cloneURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+	cloneURL = CloneURL(owner, repo)
 	return owner, repo, cloneURL, nil
 }
 

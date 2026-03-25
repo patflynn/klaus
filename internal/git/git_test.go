@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -206,7 +207,50 @@ func TestSyncToDataRefMultipleFiles(t *testing.T) {
 	}
 }
 
+// resetProtocolCache resets the sync.Once so protocol detection runs again.
+func resetProtocolCache() {
+	ghProtocolOnce = sync.Once{}
+	ghProtocolSSH = false
+}
+
+func TestCloneURL(t *testing.T) {
+	origDetect := detectGHProtocol
+	defer func() {
+		detectGHProtocol = origDetect
+		resetProtocolCache()
+	}()
+
+	t.Run("https", func(t *testing.T) {
+		resetProtocolCache()
+		detectGHProtocol = func() bool { return false }
+		got := CloneURL("owner", "repo")
+		want := "https://github.com/owner/repo.git"
+		if got != want {
+			t.Errorf("CloneURL() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ssh", func(t *testing.T) {
+		resetProtocolCache()
+		detectGHProtocol = func() bool { return true }
+		got := CloneURL("owner", "repo")
+		want := "git@github.com:owner/repo.git"
+		if got != want {
+			t.Errorf("CloneURL() = %q, want %q", got, want)
+		}
+	})
+}
+
 func TestParseRepoRef(t *testing.T) {
+	// Force HTTPS protocol for deterministic test results.
+	origDetect := detectGHProtocol
+	defer func() {
+		detectGHProtocol = origDetect
+		resetProtocolCache()
+	}()
+	resetProtocolCache()
+	detectGHProtocol = func() bool { return false }
+
 	tests := []struct {
 		input     string
 		wantOwner string
@@ -302,6 +346,28 @@ func TestParseRepoRef(t *testing.T) {
 				t.Errorf("url = %q, want %q", url, tt.wantURL)
 			}
 		})
+	}
+}
+
+func TestParseRepoRefSSH(t *testing.T) {
+	origDetect := detectGHProtocol
+	defer func() {
+		detectGHProtocol = origDetect
+		resetProtocolCache()
+	}()
+	resetProtocolCache()
+	detectGHProtocol = func() bool { return true }
+
+	owner, repo, url, err := ParseRepoRef("patflynn/cosmo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if owner != "patflynn" || repo != "cosmo" {
+		t.Errorf("owner/repo = %s/%s, want patflynn/cosmo", owner, repo)
+	}
+	want := "git@github.com:patflynn/cosmo.git"
+	if url != want {
+		t.Errorf("url = %q, want %q", url, want)
 	}
 }
 
