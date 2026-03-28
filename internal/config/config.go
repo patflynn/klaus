@@ -12,14 +12,24 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase        string   `json:"worktree_base"`
-	DefaultBudget       string   `json:"default_budget"`
-	DataRef             string   `json:"data_ref"`
-	DefaultBranch       string   `json:"default_branch"`
-	TrustedReviewers    []string `json:"trusted_reviewers"`
-	ReviewWaitSecs      int      `json:"review_wait_secs"`
-	RequireApproval     *bool    `json:"require_approval,omitempty"`
-	AutoMergeOnApproval *bool    `json:"auto_merge_on_approval,omitempty"`
+	WorktreeBase        string           `json:"worktree_base"`
+	DefaultBudget       string           `json:"default_budget"`
+	DataRef             string           `json:"data_ref"`
+	DefaultBranch       string           `json:"default_branch"`
+	TrustedReviewers    []string         `json:"trusted_reviewers"`
+	ReviewWaitSecs      int              `json:"review_wait_secs"`
+	RequireApproval     *bool            `json:"require_approval,omitempty"`
+	AutoMergeOnApproval *bool            `json:"auto_merge_on_approval,omitempty"`
+	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
+}
+
+// PreReviewConfig configures the pre-PR review checks.
+type PreReviewConfig struct {
+	Enabled      *bool    `json:"enabled,omitempty"`         // default: true
+	Linters      []string `json:"linters,omitempty"`         // default: auto-detect from project
+	ReviewModel  string   `json:"review_model,omitempty"`    // default: "haiku"
+	MaxFixRounds int      `json:"max_fix_rounds,omitempty"`  // default: 2
+	BlockOn      string   `json:"block_on,omitempty"`        // default: "high" (block PR on high+ findings)
 }
 
 // RequiresApproval returns true if approval is required before merging.
@@ -38,6 +48,46 @@ func (c *Config) AutoMergesOnApproval() bool {
 		return false
 	}
 	return *c.AutoMergeOnApproval
+}
+
+// PreReviewEnabled returns whether pre-review is enabled (default: true).
+func (c *Config) PreReviewEnabled() bool {
+	if c.PreReview == nil || c.PreReview.Enabled == nil {
+		return true
+	}
+	return *c.PreReview.Enabled
+}
+
+// PreReviewLinters returns configured linters, or empty if none configured.
+func (c *Config) PreReviewLinters() []string {
+	if c.PreReview == nil {
+		return nil
+	}
+	return c.PreReview.Linters
+}
+
+// PreReviewModel returns the configured review model, or "haiku" by default.
+func (c *Config) PreReviewModel() string {
+	if c.PreReview == nil || c.PreReview.ReviewModel == "" {
+		return "haiku"
+	}
+	return c.PreReview.ReviewModel
+}
+
+// PreReviewMaxFixRounds returns the max fix rounds, or 2 by default.
+func (c *Config) PreReviewMaxFixRounds() int {
+	if c.PreReview == nil || c.PreReview.MaxFixRounds == 0 {
+		return 2
+	}
+	return c.PreReview.MaxFixRounds
+}
+
+// PreReviewBlockOn returns the minimum severity to block on, or "high" by default.
+func (c *Config) PreReviewBlockOn() string {
+	if c.PreReview == nil || c.PreReview.BlockOn == "" {
+		return "high"
+	}
+	return c.PreReview.BlockOn
 }
 
 // Defaults returns a Config with default values.
@@ -171,6 +221,10 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 - A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
 - Run ` + "`go build ./...`" + ` before committing to verify compilation.
 - Run the project's test suite before creating a PR. Fix failures before pushing.
+
+## Pre-PR Review
+- Before creating a PR, run ` + "`klaus _pre-review`" + ` in your worktree.
+- If it reports critical or high findings, fix them before proceeding with the PR.
 
 ## Conventions
 - Never commit directly to the default branch — always use a PR branch.
