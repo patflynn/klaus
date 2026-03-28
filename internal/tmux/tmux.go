@@ -58,6 +58,12 @@ func SetPaneTitle(paneID, title string) error {
 	return err
 }
 
+// LockPaneTitle prevents applications in the pane from overriding the title.
+func LockPaneTitle(paneID string) error {
+	_, err := runTmux("set-option", "-p", "-t", paneID, "allow-rename", "off")
+	return err
+}
+
 // RebalanceLayout rebalances the pane layout for the window containing targetPane.
 func RebalanceLayout(targetPane string) error {
 	if targetPane == "" {

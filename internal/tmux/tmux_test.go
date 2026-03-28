@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -110,6 +111,15 @@ func TestBuildArgsSplitWindowSizedHorizontal(t *testing.T) {
 		if args[i] != want[i] {
 			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
 		}
+	}
+}
+
+func TestBuildArgsLockPaneTitle(t *testing.T) {
+	args := BuildArgs("set-option", "-p", "-t", "%3", "allow-rename", "off")
+	want := []string{"set-option", "-p", "-t", "%3", "allow-rename", "off"}
+
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("BuildArgs() got = %q, want %q", args, want)
 	}
 }
 

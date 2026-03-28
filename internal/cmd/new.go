@@ -176,7 +176,15 @@ func runNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating tmux pane: %w", err)
 	}
 
-	tmux.SetPaneTitle(paneID, FormatPaneTitle(id, "", "new "+name))
+	if err := tmux.SetPaneTitle(paneID, FormatPaneTitle(id, "", "new "+name)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to set pane title: %v\n", err)
+	}
+	if err := tmux.SetWindowOption(paneID, "automatic-rename", "off"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to disable automatic rename: %v\n", err)
+	}
+	if err := tmux.LockPaneTitle(paneID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to lock pane title: %v\n", err)
+	}
 	if err := tmux.RebalanceLayout(currentPane); err != nil {
 		return fmt.Errorf("rebalancing tmux layout: %w", err)
 	}
