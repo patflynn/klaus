@@ -348,15 +348,18 @@ func renderBareAgentLine(s *run.State) string {
 	status := agentStatusLabel(s)
 	cost := formatCost(s)
 	prompt := truncate(s.Prompt, 20)
-	hostTag := ""
-	if s.Host != nil && *s.Host != "" {
-		hostTag = " " + sandboxStyle.Render(fmt.Sprintf("[%s]", *s.Host))
+
+	var line string
+	if isAgentRunning(s) {
+		line = yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost))
+	} else {
+		line = dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost))
 	}
 
-	if isAgentRunning(s) {
-		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost)) + hostTag
+	if s.Host != nil && *s.Host != "" {
+		line += " " + sandboxStyle.Render(fmt.Sprintf("[%s]", *s.Host))
 	}
-	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost)) + hostTag
+	return line
 }
 
 // Commands for the bubbletea event loop.
@@ -462,8 +465,12 @@ func checkSandboxCmd(states []*run.State) tea.Cmd {
 	return func() tea.Msg {
 		statuses := make(map[string]bool, len(hosts))
 		for _, h := range hosts {
-			cmd := exec.Command("ssh", "-o", "ConnectTimeout=2", "-o", "BatchMode=yes", h, "true")
-			statuses[h] = cmd.Run() == nil
+			if strings.HasPrefix(h, "-") {
+				statuses[h] = false
+			} else {
+				cmd := exec.Command("ssh", "-o", "ConnectTimeout=2", "-o", "BatchMode=yes", h, "true")
+				statuses[h] = cmd.Run() == nil
+			}
 		}
 		return sandboxStatusMsg{statuses: statuses}
 	}
