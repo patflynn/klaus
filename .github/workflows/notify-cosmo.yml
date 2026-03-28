@@ -9,6 +9,7 @@ permissions: {}
 jobs:
   notify:
     runs-on: ubuntu-latest
+    environment: production
     permissions: {}
     steps:
       - name: Dispatch to cosmo
