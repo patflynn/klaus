@@ -18,7 +18,7 @@
           pname = "klaus";
           inherit version;
           src = ./.;
-          vendorHash = "sha256-QEmX66Gurv5iozyzrdA5Re6ZKPl+TXpZF3BFngMNfJY=";
+          vendorHash = "sha256-cTLSz2wqFC0yJ9madAn3oDR6zhgfnqTTluBWHpJk+F8=";
           ldflags = [ "-X" "github.com/patflynn/klaus/internal/cmd.version=${version}" ];
           nativeBuildInputs = [ pkgs.git ];
         };
