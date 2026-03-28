@@ -195,7 +195,10 @@ the repo is auto-detected from run state.`,
 
 		// Load config to check require_approval setting
 		repoRoot, _ := git.RepoRoot()
-		cfg, _ := config.Load(repoRoot)
+		cfg, err := config.Load(repoRoot)
+		if err != nil {
+			return fmt.Errorf("could not load configuration: %w", err)
+		}
 		if !cfg.RequiresApproval() {
 			runner.forceApproval = true // approval not required by config
 		}

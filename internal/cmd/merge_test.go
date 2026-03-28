@@ -357,7 +357,6 @@ func TestRunStopsOnRebaseFailure(t *testing.T) {
 		t.Errorf("error should mention rebase: %v", err)
 	}
 
-	// PR 1 should have been merged, but not 2 or 3
 	if !reflect.DeepEqual(merged, []string{"1"}) {
 		t.Errorf("merged = %v, want [1]", merged)
 	}
@@ -681,6 +680,7 @@ func TestMergeSkipsUnapprovedWithYesFlag(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
+	// Only PR 1 should be merged; 2 and 3 should be skipped
 	if len(merged) != 1 || merged[0] != "1" {
 		t.Errorf("merged = %v, want [1]", merged)
 	}
@@ -697,6 +697,7 @@ func TestMergeSkipsUnapprovedWithYesFlag(t *testing.T) {
 func TestMergePromptsForUnapprovedInteractive(t *testing.T) {
 	var buf bytes.Buffer
 	merged := []string{}
+	// Simulate user typing "y" then "s"
 	runner := testMergeRunner(&buf)
 	runner.in = strings.NewReader("y\ns\n")
 	runner.forceApproval = false
@@ -711,6 +712,7 @@ func TestMergePromptsForUnapprovedInteractive(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
+	// PR 1: user said "y" -> merged; PR 2: user said "s" -> skipped
 	if len(merged) != 1 || merged[0] != "1" {
 		t.Errorf("merged = %v, want [1]", merged)
 	}
@@ -760,6 +762,7 @@ func TestMergeApprovedPRsPassThrough(t *testing.T) {
 
 func TestMergeEOFStopsQueue(t *testing.T) {
 	var buf bytes.Buffer
+	// Empty reader simulates EOF/Ctrl+D
 	runner := testMergeRunner(&buf)
 	runner.in = strings.NewReader("")
 	runner.forceApproval = false

@@ -120,7 +120,7 @@ func findRunByPR(prNumber string, states []*run.State, store run.StateStore) (*r
 			// Need to find the store for this state when scanning all sessions
 			_, foundStore, err := loadStateFromEnvOrAll(s.ID)
 			if err != nil {
-				return s, nil, nil
+				return nil, nil, fmt.Errorf("found run %s but could not load its state store: %w", s.ID, err)
 			}
 			return s, foundStore, nil
 		}
