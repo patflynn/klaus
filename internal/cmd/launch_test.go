@@ -182,7 +182,7 @@ func TestBuildPaneCommand(t *testing.T) {
 	selfBin := "klaus"
 	id := "20260306-1720-176a"
 
-	t.Run("includes finalize", func(t *testing.T) {
+	t.Run("builds correct pipeline without auto-watch", func(t *testing.T) {
 		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "_finalize") {
 			t.Error("expected _finalize in pipeline, got:", cmd)
