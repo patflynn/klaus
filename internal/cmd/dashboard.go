@@ -339,7 +339,7 @@ func renderAgentSubline(s *run.State) string {
 	shortID := shortRunID(s.ID)
 	prompt := truncate(s.Prompt, 20)
 	hostTag := sandboxTag(s)
-	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...%s", shortID, prompt, hostTag))
+	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...", shortID, prompt)) + hostTag
 }
 
 func renderBareAgentLine(s *run.State) string {

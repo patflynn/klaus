@@ -379,7 +379,7 @@ are synced back after completion. Use --local to force local execution, or
 func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
 	autoWatch := ""
 	if !noWatch {
-		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
+		autoWatch = fmt.Sprintf(" && %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
 	}
 	return fmt.Sprintf(
 		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s",
@@ -542,14 +542,14 @@ func syncWorktreeToSandbox(host, worktree string) error {
 func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
 	autoWatch := ""
 	if !noWatch {
-		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
+		autoWatch = fmt.Sprintf(" && %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
 	}
 	// Run claude on sandbox via SSH, pipe output locally through tee + formatter,
 	// then finalize locally, rsync results back, and optionally auto-watch.
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
 	return fmt.Sprintf(
-		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s; %s%s",
+		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s && %s%s",
 		tmuxSessionEnvPrefix(),
 		shellQuote(host),
 		shellQuote(worktree),
