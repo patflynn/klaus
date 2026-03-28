@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
@@ -302,6 +303,21 @@ PR. The agent will commit and push to the PR branch directly.`,
 
 		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
+		}
+
+		// Emit agent:started event
+		if hds, ok := store.(*run.HomeDirStore); ok {
+			startedData := map[string]interface{}{
+				"id":     id,
+				"prompt": prompt,
+			}
+			if issue != "" {
+				startedData["issue"] = issue
+			}
+			if normalizedTarget != nil {
+				startedData["target_repo"] = *normalizedTarget
+			}
+			emitEvent(hds.BaseDir(), id, event.AgentStarted, startedData)
 		}
 
 		fmt.Printf("  pane:     %s\n", paneID)
