@@ -12,12 +12,32 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase     string   `json:"worktree_base"`
-	DefaultBudget    string   `json:"default_budget"`
-	DataRef          string   `json:"data_ref"`
-	DefaultBranch    string   `json:"default_branch"`
-	TrustedReviewers []string `json:"trusted_reviewers"`
-	ReviewWaitSecs   int      `json:"review_wait_secs"`
+	WorktreeBase        string   `json:"worktree_base"`
+	DefaultBudget       string   `json:"default_budget"`
+	DataRef             string   `json:"data_ref"`
+	DefaultBranch       string   `json:"default_branch"`
+	TrustedReviewers    []string `json:"trusted_reviewers"`
+	ReviewWaitSecs      int      `json:"review_wait_secs"`
+	RequireApproval     *bool    `json:"require_approval,omitempty"`
+	AutoMergeOnApproval *bool    `json:"auto_merge_on_approval,omitempty"`
+}
+
+// RequiresApproval returns true if approval is required before merging.
+// Defaults to true if not configured.
+func (c *Config) RequiresApproval() bool {
+	if c.RequireApproval == nil {
+		return true
+	}
+	return *c.RequireApproval
+}
+
+// AutoMergesOnApproval returns true if PRs should be automatically merged
+// upon approval. Defaults to false if not configured.
+func (c *Config) AutoMergesOnApproval() bool {
+	if c.AutoMergeOnApproval == nil {
+		return false
+	}
+	return *c.AutoMergeOnApproval
 }
 
 // Defaults returns a Config with default values.
@@ -239,6 +259,7 @@ klaus launch --repo owner/repo "<prompt>"  # override per launch
 - Clean up finished runs: ` + "`klaus cleanup <run-id>`" + `
 - Set default target repo: ` + "`klaus target owner/repo`" + ` or ` + "`klaus target <project-name>`" + `
 - Show current target: ` + "`klaus target`" + `
+- Approve PRs for merging: ` + "`klaus approve <pr-number> [<pr-number>...]`" + `
 - Merge PRs sequentially: ` + "`klaus merge <pr-number> [<pr-number>...]`" + `
 - Open live dashboard: ` + "`klaus dashboard`" + `
 {{if .Projects}}

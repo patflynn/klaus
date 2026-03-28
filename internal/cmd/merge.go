@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
@@ -19,6 +21,7 @@ import (
 // Fields are functions to allow testing with mocks.
 type mergeRunner struct {
 	out                 io.Writer
+	in                  io.Reader
 	getPRTitle          func(string, string) string
 	getPRCI             func(string, string) string
 	getPRConflicts      func(string, string) string
@@ -28,11 +31,15 @@ type mergeRunner struct {
 	pollCI              func(string, string) error
 	markMerged          func(prNumber string)
 	resolveRepo         func(prNumber string) string
+	checkApproval       func(prNumber string) bool
+	forceApproval       bool
+	yesFlag             bool
 }
 
-func newMergeRunner(out io.Writer, store run.StateStore, repoFlag string) *mergeRunner {
+func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag string) *mergeRunner {
 	r := &mergeRunner{
 		out: out,
+		in:  in,
 		getPRTitle: func(pr, repo string) string {
 			return getPRTitle(pr, repo)
 		},
@@ -48,7 +55,8 @@ func newMergeRunner(out io.Writer, store run.StateStore, repoFlag string) *merge
 		rebaseAndPush: rebaseAndPush,
 		mergePR:       mergePRExec,
 		pollCI:        defaultPollCI,
-		markMerged: markRunsMerged(store),
+		markMerged:    markRunsMerged(store),
+		checkApproval: buildApprovalChecker(store),
 	}
 	r.resolveRepo = buildRepoResolver(store, repoFlag)
 	return r
@@ -92,6 +100,36 @@ func buildRepoResolver(store run.StateStore, repoFlag string) func(string) strin
 		}
 		// 4. Empty string — gh will use the current git repo
 		return ""
+	}
+}
+
+// buildApprovalChecker returns a function that checks if a PR number
+// has been approved in the run state. Returns true if approved.
+func buildApprovalChecker(store run.StateStore) func(string) bool {
+	return func(prNumber string) bool {
+		if store == nil {
+			// Try scanning all sessions
+			states, _, err := listStatesFromEnvOrAll()
+			if err != nil {
+				return false
+			}
+			for _, s := range states {
+				if extractPRNumber(s) == prNumber && s.Approved != nil && *s.Approved {
+					return true
+				}
+			}
+			return false
+		}
+		states, err := store.List()
+		if err != nil {
+			return false
+		}
+		for _, s := range states {
+			if extractPRNumber(s) == prNumber && s.Approved != nil && *s.Approved {
+				return true
+			}
+		}
+		return false
 	}
 }
 
@@ -139,6 +177,8 @@ the repo is auto-detected from run state.`,
 		mergeMethod, _ := cmd.Flags().GetString("merge-method")
 		noDeleteBranch, _ := cmd.Flags().GetBool("no-delete-branch")
 		repoFlag, _ := cmd.Flags().GetString("repo")
+		force, _ := cmd.Flags().GetBool("force")
+		yes, _ := cmd.Flags().GetBool("yes")
 
 		if err := validateMergeMethod(mergeMethod); err != nil {
 			return err
@@ -149,7 +189,16 @@ the repo is auto-detected from run state.`,
 		// markMerged will be a no-op.
 		store, _ := sessionStore()
 
-		runner := newMergeRunner(os.Stdout, store, repoFlag)
+		runner := newMergeRunner(os.Stdout, os.Stdin, store, repoFlag)
+		runner.forceApproval = force
+		runner.yesFlag = yes
+
+		// Load config to check require_approval setting
+		repoRoot, _ := git.RepoRoot()
+		cfg, _ := config.Load(repoRoot)
+		if !cfg.RequiresApproval() {
+			runner.forceApproval = true // approval not required by config
+		}
 
 		if dryRun {
 			return runner.dryRun(args)
@@ -344,6 +393,7 @@ func (r *mergeRunner) dryRun(prNumbers []string) error {
 
 // run merges PRs sequentially.
 func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch bool) error {
+	scanner := bufio.NewScanner(r.in)
 	for i, prNum := range prNumbers {
 		repo := r.resolveRepo(prNum)
 		repoLabel := formatRepoLabel(repo)
@@ -358,6 +408,30 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 
 		fmt.Fprintf(r.out, "  CI: %s | Conflicts: %s | Review: %s\n",
 			ci, conflicts, review)
+
+		// Check approval gate
+		if !r.forceApproval && r.checkApproval != nil && !r.checkApproval(prNum) {
+			if r.yesFlag {
+				fmt.Fprintf(r.out, "  Skipping PR #%s: not approved\n", prNum)
+				continue
+			}
+			// Interactive prompt
+			fmt.Fprintf(r.out, "  PR #%s is not approved. Approve and merge? [y/n/s(kip)] ", prNum)
+			if scanner.Scan() {
+				answer := strings.ToLower(strings.TrimSpace(scanner.Text()))
+				switch answer {
+				case "y", "yes":
+					// Continue with merge
+				case "s", "skip":
+					fmt.Fprintf(r.out, "  Skipped PR #%s\n", prNum)
+					continue
+				default:
+					return r.stopQueue(prNum, "not approved", prNumbers[i+1:])
+				}
+			} else {
+				return r.stopQueue(prNum, "merge not confirmed", prNumbers[i+1:])
+			}
+		}
 
 		// Unfixable blocker: changes requested
 		if strings.EqualFold(review, "CHANGES_REQUESTED") {
@@ -422,5 +496,7 @@ func init() {
 	mergeCmd.Flags().String("merge-method", "squash", "Merge method: squash, merge, or rebase")
 	mergeCmd.Flags().Bool("no-delete-branch", false, "Skip --delete-branch on gh pr merge")
 	mergeCmd.Flags().String("repo", "", "Default target repo (owner/repo) for all PRs")
+	mergeCmd.Flags().Bool("force", false, "Bypass approval check")
+	mergeCmd.Flags().BoolP("yes", "y", false, "Skip interactive prompts (skips unapproved PRs with a warning)")
 	rootCmd.AddCommand(mergeCmd)
 }
