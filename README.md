@@ -78,6 +78,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus project set-dir <path>` | Set the default projects directory |
 | `klaus new <project-name>` | Scaffold a new project using principles-based generation |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
+| `klaus approve <pr>...` | Approve PRs for merging |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
 
@@ -148,17 +149,31 @@ Live TUI that monitors all active agents and their PR statuses. Groups runs by r
 
 Keyboard shortcuts: `q` quit, `r` force refresh.
 
+### `klaus approve`
+
+Mark PRs as approved for merging. By default, `klaus merge` requires approval before merging.
+
+```bash
+klaus approve 42 43                  # approve specific PRs
+klaus approve --all                  # approve all merge-ready PRs
+klaus approve --run 20260328-1603-a3f2  # approve by run ID
+```
+
 ### `klaus merge`
 
 Sequentially merges a list of PRs. Handles conflicts by rebasing onto main, verifying the build, and force-pushing. Waits for CI to pass before merging (up to 10 min).
+
+By default, PRs must be approved with `klaus approve` before merging. Unapproved PRs trigger an interactive prompt (or are skipped with `--yes`).
 
 ```bash
 klaus merge 42 43 44
 klaus merge --dry-run 42
 klaus merge --merge-method rebase --no-delete-branch 42
+klaus merge --force 42               # bypass approval check
+klaus merge --yes 42 43              # skip unapproved PRs without prompting
 ```
 
-Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`.
+Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`, `--force` (bypass approval), `--yes` (skip unapproved).
 
 ### `klaus project`
 
@@ -192,7 +207,9 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
   "default_branch": "main",
-  "trusted_reviewers": ["gemini-code-assist[bot]"]
+  "trusted_reviewers": ["gemini-code-assist[bot]"],
+  "require_approval": true,
+  "auto_merge_on_approval": false
 }
 ```
 

@@ -740,6 +740,62 @@ func TestRenderPromptEmptyRepoRoot(t *testing.T) {
 	}
 }
 
+func TestRequiresApprovalDefault(t *testing.T) {
+	cfg := Defaults()
+	if !cfg.RequiresApproval() {
+		t.Error("RequiresApproval() should default to true")
+	}
+}
+
+func TestRequiresApprovalExplicit(t *testing.T) {
+	f := false
+	cfg := Config{RequireApproval: &f}
+	if cfg.RequiresApproval() {
+		t.Error("RequiresApproval() should return false when set to false")
+	}
+
+	tr := true
+	cfg2 := Config{RequireApproval: &tr}
+	if !cfg2.RequiresApproval() {
+		t.Error("RequiresApproval() should return true when set to true")
+	}
+}
+
+func TestAutoMergesOnApprovalDefault(t *testing.T) {
+	cfg := Defaults()
+	if cfg.AutoMergesOnApproval() {
+		t.Error("AutoMergesOnApproval() should default to false")
+	}
+}
+
+func TestAutoMergesOnApprovalExplicit(t *testing.T) {
+	tr := true
+	cfg := Config{AutoMergeOnApproval: &tr}
+	if !cfg.AutoMergesOnApproval() {
+		t.Error("AutoMergesOnApproval() should return true when set to true")
+	}
+}
+
+func TestLoadApprovalConfig(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	os.MkdirAll(klausDir, 0o755)
+
+	os.WriteFile(filepath.Join(klausDir, "config.json"),
+		[]byte(`{"require_approval": false, "auto_merge_on_approval": true}`), 0o644)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.RequiresApproval() {
+		t.Error("RequiresApproval() should be false from config")
+	}
+	if !cfg.AutoMergesOnApproval() {
+		t.Error("AutoMergesOnApproval() should be true from config")
+	}
+}
+
 func TestInitGlobal(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

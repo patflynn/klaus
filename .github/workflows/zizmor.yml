@@ -30,6 +30,6 @@ jobs:
           nix_path: nixpkgs=channel:nixos-unstable
 
       - name: Run zizmor
-        run: nix run nixpkgs#zizmor -- . --format github
+        run: nix run nixpkgs#zizmor -- --config .zizmor.yml . --format github
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

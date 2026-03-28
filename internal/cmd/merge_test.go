@@ -15,6 +15,7 @@ import (
 func testMergeRunner(out *bytes.Buffer) *mergeRunner {
 	return &mergeRunner{
 		out:                 out,
+		in:                  strings.NewReader(""),
 		getPRTitle:          func(string, string) string { return "Test PR" },
 		getPRCI:             func(string, string) string { return "passing" },
 		getPRConflicts:      func(string, string) string { return "none" },
@@ -23,6 +24,7 @@ func testMergeRunner(out *bytes.Buffer) *mergeRunner {
 		pollCI:              func(string, string) error { return nil },
 		mergePR:             func(string, string, bool, string) error { return nil },
 		resolveRepo:         func(string) string { return "" },
+		forceApproval:       true, // default to bypassing approval in tests
 	}
 }
 
@@ -355,7 +357,6 @@ func TestRunStopsOnRebaseFailure(t *testing.T) {
 		t.Errorf("error should mention rebase: %v", err)
 	}
 
-	// PR 1 should have been merged, but not 2 or 3
 	if !reflect.DeepEqual(merged, []string{"1"}) {
 		t.Errorf("merged = %v, want [1]", merged)
 	}
@@ -487,15 +488,12 @@ func TestRunMergeFailure(t *testing.T) {
 }
 
 func TestRunUpdatesStateAfterMerge(t *testing.T) {
-	// Use a real HomeDirStore backed by a temp directory to verify
-	// state files are written to disk after merge.
 	tmpDir := t.TempDir()
 	store := run.NewHomeDirStoreFromPath(tmpDir)
 	if err := store.EnsureDirs(); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
 
-	// Create run states: two with PRs that will be merged, one unrelated.
 	prURL42 := "https://github.com/owner/repo/pull/42"
 	prURL99 := "https://github.com/owner/repo/pull/99"
 	prURL7 := "https://github.com/owner/repo/pull/7"
@@ -520,7 +518,6 @@ func TestRunUpdatesStateAfterMerge(t *testing.T) {
 		t.Fatalf("run() error = %v", err)
 	}
 
-	// Reload states from disk and verify MergedAt was set for PRs 42 and 99.
 	s42, err := store.Load("20260101-0000-aaaa")
 	if err != nil {
 		t.Fatalf("Load aaaa: %v", err)
@@ -537,7 +534,6 @@ func TestRunUpdatesStateAfterMerge(t *testing.T) {
 		t.Error("PR #99 state should have MergedAt set after merge")
 	}
 
-	// PR #7 was not merged — MergedAt should remain nil.
 	s7, err := store.Load("20260101-0000-cccc")
 	if err != nil {
 		t.Fatalf("Load cccc: %v", err)
@@ -577,7 +573,6 @@ func TestRunDoesNotUpdateStateOnMergeFailure(t *testing.T) {
 }
 
 func TestMarkRunsMergedNilStore(t *testing.T) {
-	// markRunsMerged with nil store should not panic.
 	fn := markRunsMerged(nil)
 	fn("42") // Should be a no-op.
 }
@@ -603,15 +598,12 @@ func TestBuildRepoResolverFromRunState(t *testing.T) {
 
 	resolver := buildRepoResolver(store, "")
 
-	// PR 42 should resolve to acme/widgets from run state
 	if got := resolver("42"); got != "acme/widgets" {
 		t.Errorf("resolver(42) = %q, want %q", got, "acme/widgets")
 	}
-	// PR 99 should resolve to acme/gadgets from run state
 	if got := resolver("99"); got != "acme/gadgets" {
 		t.Errorf("resolver(99) = %q, want %q", got, "acme/gadgets")
 	}
-	// Unknown PR should return ""
 	if got := resolver("7"); got != "" {
 		t.Errorf("resolver(7) = %q, want empty", got)
 	}
@@ -620,7 +612,6 @@ func TestBuildRepoResolverFromRunState(t *testing.T) {
 func TestBuildRepoResolverFallsBackToFlag(t *testing.T) {
 	resolver := buildRepoResolver(nil, "flag/repo")
 
-	// No run state match, should fall back to --repo flag
 	if got := resolver("42"); got != "flag/repo" {
 		t.Errorf("resolver(42) = %q, want %q", got, "flag/repo")
 	}
@@ -641,11 +632,9 @@ func TestBuildRepoResolverRunStateTakesPriority(t *testing.T) {
 
 	resolver := buildRepoResolver(store, "flag/repo")
 
-	// PR 42 has a run state match — should use that over the flag
 	if got := resolver("42"); got != "state/repo" {
 		t.Errorf("resolver(42) = %q, want %q", got, "state/repo")
 	}
-	// PR 99 has no run state — should fall back to flag
 	if got := resolver("99"); got != "flag/repo" {
 		t.Errorf("resolver(99) = %q, want %q", got, "flag/repo")
 	}
@@ -669,5 +658,125 @@ func TestRepoFromPRURLMerge(t *testing.T) {
 				t.Errorf("repoFromPRURL(%q) = %q, want %q", tt.url, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestMergeSkipsUnapprovedWithYesFlag(t *testing.T) {
+	var buf bytes.Buffer
+	merged := []string{}
+	runner := testMergeRunner(&buf)
+	runner.forceApproval = false
+	runner.yesFlag = true
+	runner.checkApproval = func(pr string) bool {
+		return pr == "1" // Only PR 1 is approved
+	}
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2", "3"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	// Only PR 1 should be merged; 2 and 3 should be skipped
+	if len(merged) != 1 || merged[0] != "1" {
+		t.Errorf("merged = %v, want [1]", merged)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Skipping PR #2: not approved") {
+		t.Error("should show skip message for PR #2")
+	}
+	if !strings.Contains(output, "Skipping PR #3: not approved") {
+		t.Error("should show skip message for PR #3")
+	}
+}
+
+func TestMergePromptsForUnapprovedInteractive(t *testing.T) {
+	var buf bytes.Buffer
+	merged := []string{}
+	// Simulate user typing "y" then "s"
+	runner := testMergeRunner(&buf)
+	runner.in = strings.NewReader("y\ns\n")
+	runner.forceApproval = false
+	runner.checkApproval = func(string) bool { return false }
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	// PR 1: user said "y" -> merged; PR 2: user said "s" -> skipped
+	if len(merged) != 1 || merged[0] != "1" {
+		t.Errorf("merged = %v, want [1]", merged)
+	}
+}
+
+func TestMergeForceBypassesApproval(t *testing.T) {
+	var buf bytes.Buffer
+	merged := []string{}
+	runner := testMergeRunner(&buf)
+	runner.forceApproval = true
+	runner.checkApproval = func(string) bool { return false }
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if len(merged) != 2 {
+		t.Errorf("merged = %v, want [1 2]", merged)
+	}
+}
+
+func TestMergeApprovedPRsPassThrough(t *testing.T) {
+	var buf bytes.Buffer
+	merged := []string{}
+	runner := testMergeRunner(&buf)
+	runner.forceApproval = false
+	runner.checkApproval = func(string) bool { return true }
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if len(merged) != 2 {
+		t.Errorf("merged = %v, want [1 2]", merged)
+	}
+}
+
+func TestMergeEOFStopsQueue(t *testing.T) {
+	var buf bytes.Buffer
+	// Empty reader simulates EOF/Ctrl+D
+	runner := testMergeRunner(&buf)
+	runner.in = strings.NewReader("")
+	runner.forceApproval = false
+	runner.checkApproval = func(string) bool { return false }
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		t.Fatal("merge should not be called on EOF")
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2"}, "squash", true)
+	if err == nil {
+		t.Fatal("expected error on EOF")
+	}
+	if !strings.Contains(err.Error(), "merge not confirmed") {
+		t.Errorf("error should mention 'merge not confirmed': %v", err)
 	}
 }

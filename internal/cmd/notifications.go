@@ -179,13 +179,6 @@ type completedInfo struct {
 	cost float64
 }
 
-func shortID(id string) string {
-	if len(id) > 4 {
-		return id[len(id)-4:]
-	}
-	return id
-}
-
 func prNumberFromURL(url string) string {
 	n := extractPRNumberFromURL(url)
 	if n == "" {
