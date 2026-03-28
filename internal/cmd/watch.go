@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
@@ -204,6 +205,14 @@ Must be run inside a tmux session.`,
 			return fmt.Errorf("saving state: %w", err)
 		}
 
+		// Emit agent:started event for watch agent
+		if hds, ok := store.(*run.HomeDirStore); ok {
+			emitEvent(hds.BaseDir(), id, event.AgentStarted, map[string]interface{}{
+				"id":     id,
+				"prompt": prompt,
+			})
+		}
+
 		fmt.Printf("  pane:     %s\n", paneID)
 		fmt.Printf("  budget:   $%s\n", budget)
 		fmt.Printf("  log:      %s\n", logFile)
@@ -253,21 +262,43 @@ func getPRBranch(prNumber string, repo ...string) (string, error) {
 }
 
 // buildWatchPaneCommand constructs the shell command run inside the tmux pane.
-// It wraps the agent in a loop: after each agent run, it polls for new review
-// comments and re-enters the loop if any are found within the wait period.
+// It wraps the agent in a loop: after each agent run, it checks CI status
+// (emitting events), polls for new review comments, and re-enters the loop
+// if any are found within the wait period.
 func buildWatchPaneCommand(envPrefix, worktree, claudeCmd, logFile, selfBin, id, prNumber, baselineFile string, reviewWait int) string {
 	waitStr := strconv.Itoa(reviewWait)
+	qID := shellQuote(id)
+	qPR := shellQuote(prNumber)
+
+	// After each agent cycle, check CI and emit events via _event.
+	// gh pr checks exits 0 when all checks pass and non-zero otherwise.
+	ciCheck := fmt.Sprintf(
+		"PR_URL=$(gh pr view %s --json url -q .url 2>/dev/null); "+
+			"if gh pr checks %s --fail-fast 2>/dev/null; then "+
+			"%s _event --run-id %s --type agent:ci-passed --data '{\"id\":\"%s\",\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
+			"%s _event --run-id %s --type pr:awaiting-approval --data '{\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
+			"else "+
+			"%s _event --run-id %s --type agent:ci-failed --data '{\"id\":\"%s\",\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
+			"fi",
+		qPR,
+		qPR,
+		selfBin, qID, id,
+		selfBin, qID,
+		selfBin, qID, id,
+	)
 
 	// The loop:
 	// 1. Save current review comment IDs as baseline
 	// 2. Run the Claude agent
-	// 3. Poll for new review comments (exits 0 if found, non-zero if timeout)
-	// 4. If new comments found, update baseline and loop; otherwise break
+	// 3. Check CI status and emit events
+	// 4. Poll for new review comments (exits 0 if found, non-zero if timeout)
+	// 5. If new comments found, update baseline and loop; otherwise break
 	return fmt.Sprintf(
 		"%scd %s && "+
 			"%s _save-review-baseline %s %s; "+
 			"while true; do "+
 			"%s | tee %s | %s _format-stream; "+
+			"%s; "+
 			"%s _poll-reviews %s %s --wait %s || break; "+
 			"%s _save-review-baseline %s %s; "+
 			"done; "+
@@ -275,15 +306,17 @@ func buildWatchPaneCommand(envPrefix, worktree, claudeCmd, logFile, selfBin, id,
 		envPrefix,
 		shellQuote(worktree),
 		// Initial baseline save
-		selfBin, shellQuote(prNumber), shellQuote(baselineFile),
+		selfBin, qPR, shellQuote(baselineFile),
 		// Agent loop body
 		claudeCmd, shellQuote(logFile), selfBin,
+		// CI status check + event emission
+		ciCheck,
 		// Poll for new reviews
-		selfBin, shellQuote(prNumber), shellQuote(baselineFile), waitStr,
+		selfBin, qPR, shellQuote(baselineFile), waitStr,
 		// Update baseline for next iteration
-		selfBin, shellQuote(prNumber), shellQuote(baselineFile),
+		selfBin, qPR, shellQuote(baselineFile),
 		// Finalize
-		selfBin, shellQuote(id),
+		selfBin, qID,
 	)
 }
 

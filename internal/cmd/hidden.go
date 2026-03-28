@@ -10,6 +10,7 @@ import (
 	"regexp"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/scan"
@@ -48,6 +49,29 @@ var finalizeCmd = &cobra.Command{
 		if state.LogFile != nil {
 			if err := finalizeFromLog(store, state); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: finalize: %v\n", err)
+			}
+		}
+
+		// Emit events for completed run
+		if hds, ok := store.(*run.HomeDirStore); ok {
+			baseDir := hds.BaseDir()
+
+			completedData := map[string]interface{}{"id": id}
+			if state.CostUSD != nil {
+				completedData["cost_usd"] = *state.CostUSD
+			}
+			if state.DurationMS != nil {
+				completedData["duration_ms"] = *state.DurationMS
+			}
+			emitEvent(baseDir, id, event.AgentCompleted, completedData)
+
+			if state.PRURL != nil && *state.PRURL != "" {
+				prNum := extractPRNumberFromURL(*state.PRURL)
+				emitEvent(baseDir, id, event.AgentPRCreated, map[string]interface{}{
+					"id":        id,
+					"pr_url":    *state.PRURL,
+					"pr_number": prNum,
+				})
 			}
 		}
 

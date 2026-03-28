@@ -1,0 +1,7 @@
+rules:
+  secrets-outside-env:
+    ignore:
+      # Both workflows already use dedicated environments (release / production).
+      # zizmor v1.23+ flags these as false positives.
+      - nightly-release.yml
+      - notify-cosmo.yml
