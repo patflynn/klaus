@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -117,13 +118,8 @@ func TestBuildArgsLockPaneTitle(t *testing.T) {
 	args := BuildArgs("set-option", "-p", "-t", "%3", "allow-rename", "off")
 	want := []string{"set-option", "-p", "-t", "%3", "allow-rename", "off"}
 
-	if len(args) != len(want) {
-		t.Fatalf("len(args) = %d, want %d", len(args), len(want))
-	}
-	for i := range want {
-		if args[i] != want[i] {
-			t.Errorf("args[%d] = %q, want %q", i, args[i], want[i])
-		}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("BuildArgs() got = %q, want %q", args, want)
 	}
 }
 
