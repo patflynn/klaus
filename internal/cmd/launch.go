@@ -30,7 +30,12 @@ matches a registered project (no owner/ prefix), the project's local path is
 used directly. Otherwise, the repo is cloned from GitHub.
 
 Use --pr to push fixes to an existing PR's branch instead of creating a new
-PR. The agent will commit and push to the PR branch directly.`,
+PR. The agent will commit and push to the PR branch directly.
+
+When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
+via SSH on the sandbox host. The worktree is synced before launch and results
+are synced back after completion. Use --local to force local execution, or
+--host to override the configured sandbox host.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prompt := args[0]
@@ -38,6 +43,8 @@ PR. The agent will commit and push to the PR branch directly.`,
 		budget, _ := cmd.Flags().GetString("budget")
 		repoRef, _ := cmd.Flags().GetString("repo")
 		prNumber, _ := cmd.Flags().GetString("pr")
+		forceLocal, _ := cmd.Flags().GetBool("local")
+		hostOverride, _ := cmd.Flags().GetString("host")
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
@@ -246,8 +253,37 @@ PR. The agent will commit and push to the PR branch directly.`,
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
 		noWatch, _ := cmd.Flags().GetBool("no-watch")
-		// PR-fix runs always skip auto-watch since we're already on the PR branch
-		paneCmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
+
+		// Determine sandbox host: --host flag > config sandbox_host
+		sandboxHost := hostCfg.SandboxHost
+		if hostOverride != "" {
+			sandboxHost = hostOverride
+		}
+
+		// Attempt sandbox execution unless --local is set
+		var useSandbox bool
+		var sandboxHostName string
+		if sandboxHost != "" && !forceLocal {
+			if CheckSandboxReachable(sandboxHost) {
+				useSandbox = true
+				sandboxHostName = sandboxHost
+				// Sync worktree to sandbox before launching
+				if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
+					useSandbox = false
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: sandbox %s unreachable, falling back to local execution\n", sandboxHost)
+			}
+		}
+
+		var paneCmd string
+		if useSandbox {
+			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
+		} else {
+			// PR-fix runs always skip auto-watch since we're already on the PR branch
+			paneCmd = buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
+		}
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
@@ -280,6 +316,11 @@ PR. The agent will commit and push to the PR branch directly.`,
 		// canonical name in the dashboard.
 		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
 
+		var hostPtr *string
+		if useSandbox {
+			hostPtr = &sandboxHostName
+		}
+
 		state := &run.State{
 			ID:         id,
 			Prompt:     prompt,
@@ -291,6 +332,7 @@ PR. The agent will commit and push to the PR branch directly.`,
 			Budget:     budgetPtr,
 			LogFile:    logFilePtr,
 			CreatedAt:  createdAt,
+			Host:       hostPtr,
 			TargetRepo: normalizedTarget,
 			CloneDir:   cloneDirPtr,
 		}
@@ -321,6 +363,11 @@ PR. The agent will commit and push to the PR branch directly.`,
 		}
 
 		fmt.Printf("  pane:     %s\n", paneID)
+		if useSandbox {
+			fmt.Printf("  host:     %s (sandbox)\n", sandboxHostName)
+		} else {
+			fmt.Printf("  host:     local\n")
+		}
 		fmt.Printf("  budget:   $%s\n", budget)
 		fmt.Printf("  log:      %s\n", logFile)
 		fmt.Println()
@@ -469,11 +516,61 @@ func getPRURL(prNumber string) (string, error) {
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// CheckSandboxReachable tests whether a sandbox host is reachable via SSH.
+func CheckSandboxReachable(host string) bool {
+	cmd := exec.Command("ssh", "-o", "ConnectTimeout=3", "-o", "BatchMode=yes", host, "true")
+	return cmd.Run() == nil
+}
+
+// syncWorktreeToSandbox syncs a local worktree to a sandbox host via rsync.
+func syncWorktreeToSandbox(host, worktree string) error {
+	// Create remote directory
+	mkdirCmd := exec.Command("ssh", host, fmt.Sprintf("mkdir -p %s", shellQuote(worktree)))
+	if out, err := mkdirCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("creating remote dir: %w: %s", err, string(out))
+	}
+
+	// Sync worktree contents
+	rsyncCmd := exec.Command("rsync", "-az", "--delete", worktree+"/", fmt.Sprintf("%s:%s/", host, worktree))
+	if out, err := rsyncCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("rsync to sandbox: %w: %s", err, string(out))
+	}
+
+	return nil
+}
+
+func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
+	autoWatch := ""
+	if !noWatch {
+		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
+	}
+	// Run claude on sandbox via SSH, pipe output locally through tee + formatter,
+	// then finalize locally, rsync results back, and optionally auto-watch.
+	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
+		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
+	return fmt.Sprintf(
+		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s; %s%s",
+		tmuxSessionEnvPrefix(),
+		shellQuote(host),
+		shellQuote(worktree),
+		claudeCmd,
+		shellQuote(logFile),
+		selfBin,
+		finalizePrefix,
+		selfBin,
+		shellQuote(id),
+		rsyncBack,
+		autoWatch,
+	)
+}
+
 func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
+	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
+	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	rootCmd.AddCommand(launchCmd)
 }

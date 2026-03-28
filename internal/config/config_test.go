@@ -776,6 +776,30 @@ func TestAutoMergesOnApprovalExplicit(t *testing.T) {
 	}
 }
 
+func TestLoadSandboxHostConfig(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	os.MkdirAll(klausDir, 0o755)
+
+	os.WriteFile(filepath.Join(klausDir, "config.json"),
+		[]byte(`{"sandbox_host": "klaus-worker-0"}`), 0o644)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SandboxHost != "klaus-worker-0" {
+		t.Errorf("SandboxHost = %q, want %q", cfg.SandboxHost, "klaus-worker-0")
+	}
+}
+
+func TestSandboxHostDefaultEmpty(t *testing.T) {
+	cfg := Defaults()
+	if cfg.SandboxHost != "" {
+		t.Errorf("SandboxHost default should be empty, got %q", cfg.SandboxHost)
+	}
+}
+
 func TestLoadApprovalConfig(t *testing.T) {
 	dir := t.TempDir()
 	klausDir := filepath.Join(dir, ".klaus")

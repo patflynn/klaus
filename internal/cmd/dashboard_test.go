@@ -583,6 +583,170 @@ func TestRightAlignPad(t *testing.T) {
 	}
 }
 
+func TestHostFieldRoundTrip(t *testing.T) {
+	host := "klaus-worker-0"
+	s := run.State{
+		ID:        "20260328-1915-e4b3",
+		Prompt:    "test",
+		Branch:    "agent/test",
+		Worktree:  "/tmp/worktree",
+		CreatedAt: "2026-03-28T19:15:00Z",
+		Host:      &host,
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var loaded run.State
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if loaded.Host == nil {
+		t.Fatal("Host should not be nil after round-trip")
+	}
+	if *loaded.Host != "klaus-worker-0" {
+		t.Errorf("Host = %q, want %q", *loaded.Host, "klaus-worker-0")
+	}
+}
+
+func TestHostFieldOmittedWhenNil(t *testing.T) {
+	s := run.State{
+		ID:        "20260328-1915-e4b3",
+		Prompt:    "test",
+		Branch:    "agent/test",
+		Worktree:  "/tmp/worktree",
+		CreatedAt: "2026-03-28T19:15:00Z",
+	}
+
+	data, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if strings.Contains(string(data), `"host"`) {
+		t.Error("host field should be omitted when nil")
+	}
+}
+
+func TestRenderBareAgentLineWithHost(t *testing.T) {
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+		Host:     &host,
+	}
+
+	line := renderBareAgentLine(s)
+	if !strings.Contains(line, "[sandbox]") {
+		t.Error("bare agent with Host set should show [sandbox], got:", line)
+	}
+}
+
+func TestRenderBareAgentLineWithoutHost(t *testing.T) {
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+	}
+
+	line := renderBareAgentLine(s)
+	if strings.Contains(line, "[sandbox]") {
+		t.Error("bare agent without Host should not show [sandbox], got:", line)
+	}
+}
+
+func TestRenderAgentSublineWithHost(t *testing.T) {
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260328-1915-e4b3",
+		Prompt:   "fix tests",
+		TmuxPane: strPtr("%5"),
+		Host:     &host,
+	}
+
+	line := renderAgentSubline(s)
+	if !strings.Contains(line, "[sandbox]") {
+		t.Error("agent subline with Host set should show [sandbox], got:", line)
+	}
+}
+
+func TestSandboxTag(t *testing.T) {
+	t.Run("with host", func(t *testing.T) {
+		host := "klaus-worker-0"
+		s := &run.State{Host: &host}
+		tag := sandboxTag(s)
+		if !strings.Contains(tag, "[sandbox]") {
+			t.Errorf("sandboxTag with host should contain [sandbox], got %q", tag)
+		}
+	})
+
+	t.Run("without host", func(t *testing.T) {
+		s := &run.State{}
+		tag := sandboxTag(s)
+		if tag != "" {
+			t.Errorf("sandboxTag without host should be empty, got %q", tag)
+		}
+	})
+}
+
+func TestRenderSandboxStatus(t *testing.T) {
+	t.Run("empty hosts returns empty", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{})
+		if got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("reachable host shows checkmark", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{"myhost": true})
+		if !strings.Contains(got, "sandbox myhost: ✓") {
+			t.Errorf("expected checkmark for reachable host, got %q", got)
+		}
+	})
+
+	t.Run("unreachable host shows X", func(t *testing.T) {
+		got := renderSandboxStatus(map[string]bool{"myhost": false})
+		if !strings.Contains(got, "sandbox myhost: ✗") {
+			t.Errorf("expected X for unreachable host, got %q", got)
+		}
+	})
+}
+
+func TestDashboardViewWithSandboxAgent(t *testing.T) {
+	host := "klaus-worker-0"
+	states := []*run.State{
+		{
+			ID:         "20260328-1915-e4b3",
+			Prompt:     "sandbox test",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("testowner/testrepo"),
+			TmuxPane:   strPtr("%5"),
+			Host:       &host,
+		},
+	}
+
+	m := dashboardModel{
+		states:       states,
+		ghStatus:     map[string]*prStatus{},
+		sandboxHosts: map[string]bool{"klaus-worker-0": true},
+		width:        80,
+		height:       24,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "[sandbox]") {
+		t.Error("view should show [sandbox] for agent with Host set")
+	}
+	if !strings.Contains(view, "sandbox klaus-worker-0: ✓") {
+		t.Error("view should show sandbox reachability in header")
+	}
+}
+
 // Helper functions for tests.
 
 func float64Ptr(f float64) *float64 {

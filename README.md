@@ -115,6 +115,23 @@ Launch an agent against a different GitHub repository. The repo is cloned (or fe
 klaus launch --repo owner/repo "Fix the bug in their API"
 ```
 
+### Sandbox (remote execution)
+
+When `sandbox_host` is set in `~/.klaus/config.json`, agents run remotely via SSH on the sandbox host instead of locally. The worktree is synced to the sandbox before launch, and results are synced back after completion. Log streaming, formatting, and finalization still happen locally.
+
+```json
+{"sandbox_host": "klaus-worker-0"}
+```
+
+If the sandbox is unreachable, execution falls back to local automatically. Use `--local` to force local execution, or `--host <name>` to override the configured sandbox host.
+
+```bash
+klaus launch --local "Run this locally"
+klaus launch --host my-sandbox "Run on a specific host"
+```
+
+The dashboard shows `[sandbox]` tags on remotely-executed agents and displays sandbox reachability status in the header. The `status` command includes a HOST column.
+
 ### `klaus target`
 
 Set a session-level default target repo. When the coordinator session is not inside a git repo, this avoids needing `--repo` on every `klaus launch`. Accepts a registered project name or `owner/repo`.
