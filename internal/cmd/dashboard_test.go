@@ -583,6 +583,155 @@ func TestRightAlignPad(t *testing.T) {
 	}
 }
 
+func TestRenderBareAgentLineWithHost(t *testing.T) {
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260307-0900-aaaa",
+		Prompt:   "fix tests",
+		Type:     "launch",
+		TmuxPane: strPtr("%1"),
+		Host:     &host,
+	}
+	line := renderBareAgentLine(s)
+	if !strings.Contains(line, "klaus-worker-0") {
+		t.Error("bare agent line should contain host tag when Host is set")
+	}
+	if !strings.Contains(line, "RUNNING") {
+		t.Error("running agent should show RUNNING")
+	}
+}
+
+func TestRenderAgentSublineWithHost(t *testing.T) {
+	host := "klaus-worker-0"
+	s := &run.State{
+		ID:       "20260307-0900-aaaa",
+		Prompt:   "fix tests",
+		Type:     "launch",
+		TmuxPane: strPtr("%1"),
+		Host:     &host,
+	}
+	line := renderAgentSubline(s)
+	if !strings.Contains(line, "klaus-worker-0") {
+		t.Error("agent subline should contain host tag when Host is set")
+	}
+}
+
+func TestCountAgentsWithHost(t *testing.T) {
+	host := "klaus-worker-0"
+	states := []*run.State{
+		{ID: "1", Type: "launch", TmuxPane: strPtr("%1"), Host: &host},
+		{ID: "2", Type: "launch", TmuxPane: strPtr("%2")},
+		{ID: "3", Type: "session"},
+	}
+	running, total := countAgents(states)
+	if total != 2 {
+		t.Errorf("total = %d, want 2", total)
+	}
+	if running != 2 {
+		t.Errorf("running = %d, want 2", running)
+	}
+}
+
+func TestSandboxStatusMsgUpdate(t *testing.T) {
+	m := dashboardModel{
+		states:   []*run.State{},
+		ghStatus: map[string]*prStatus{},
+		width:    80,
+		height:   24,
+	}
+
+	msg := sandboxStatusMsg{statuses: map[string]bool{"worker-0": true, "worker-1": false}}
+	updated, _ := m.Update(msg)
+	dm := updated.(dashboardModel)
+	if dm.sandboxHosts == nil {
+		t.Fatal("sandboxHosts should be set after sandboxStatusMsg")
+	}
+	if !dm.sandboxHosts["worker-0"] {
+		t.Error("worker-0 should be reachable")
+	}
+	if dm.sandboxHosts["worker-1"] {
+		t.Error("worker-1 should be unreachable")
+	}
+}
+
+func TestRenderSandboxStatus(t *testing.T) {
+	// No hosts — empty string
+	if got := renderSandboxStatus(nil); got != "" {
+		t.Errorf("nil hosts should return empty, got %q", got)
+	}
+	if got := renderSandboxStatus(map[string]bool{}); got != "" {
+		t.Errorf("empty hosts should return empty, got %q", got)
+	}
+
+	// With hosts
+	hosts := map[string]bool{"worker-0": true, "worker-1": false}
+	got := renderSandboxStatus(hosts)
+	if !strings.Contains(got, "sandbox") {
+		t.Error("should contain 'sandbox' label")
+	}
+	if !strings.Contains(got, "worker-0") {
+		t.Error("should contain worker-0")
+	}
+	if !strings.Contains(got, "worker-1") {
+		t.Error("should contain worker-1")
+	}
+	if !strings.Contains(got, "✓") {
+		t.Error("should contain check mark for reachable host")
+	}
+	if !strings.Contains(got, "✗") {
+		t.Error("should contain cross mark for unreachable host")
+	}
+}
+
+func TestDashboardViewRenderWithSandbox(t *testing.T) {
+	host := "klaus-worker-0"
+	states := []*run.State{
+		{
+			ID:         "20260307-0900-aaaa",
+			Prompt:     "fix sandbox tests",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("testowner/testrepo"),
+			TmuxPane:   strPtr("%5"),
+			Host:       &host,
+		},
+	}
+
+	m := dashboardModel{
+		states:       states,
+		ghStatus:     map[string]*prStatus{},
+		sandboxHosts: map[string]bool{"klaus-worker-0": true},
+		width:        80,
+		height:       24,
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "sandbox") {
+		t.Error("view should contain sandbox status line")
+	}
+	if !strings.Contains(view, "klaus-worker-0") {
+		t.Error("view should contain the sandbox host name")
+	}
+}
+
+func TestCollectUniqueHosts(t *testing.T) {
+	host1 := "worker-0"
+	host2 := "worker-1"
+	states := []*run.State{
+		{Host: &host1},
+		{Host: &host2},
+		{Host: &host1}, // duplicate
+		{},              // no host
+	}
+	hosts := collectUniqueHosts(states)
+	if len(hosts) != 2 {
+		t.Fatalf("expected 2 unique hosts, got %d", len(hosts))
+	}
+	if hosts[0] != "worker-0" || hosts[1] != "worker-1" {
+		t.Errorf("hosts = %v, want [worker-0 worker-1]", hosts)
+	}
+}
+
 // Helper functions for tests.
 
 func float64Ptr(f float64) *float64 {

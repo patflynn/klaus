@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -61,6 +62,10 @@ type fsEventMsg struct{}
 
 type tickMsg struct{}
 
+type sandboxStatusMsg struct {
+	statuses map[string]bool // hostname -> reachable
+}
+
 type errMsg struct {
 	err error
 }
@@ -83,13 +88,14 @@ type repoGroup struct {
 
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
-	store    run.StateStore
-	states   []*run.State
-	ghStatus map[string]*prStatus // keyed by PR number
-	width    int
-	height   int
-	err      error
-	watcher  *fsnotify.Watcher
+	store        run.StateStore
+	states       []*run.State
+	ghStatus     map[string]*prStatus // keyed by PR number
+	sandboxHosts map[string]bool      // hostname -> reachable
+	width        int
+	height       int
+	err          error
+	watcher      *fsnotify.Watcher
 }
 
 func newDashboardModel(store run.StateStore) dashboardModel {
@@ -129,12 +135,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statesLoadedMsg:
 		m.states = msg.states
-		return m, fetchGHStatusCmd(m.states)
+		return m, tea.Batch(fetchGHStatusCmd(m.states), checkSandboxCmd(m.states))
 
 	case ghStatusMsg:
 		for k, v := range msg.statuses {
 			m.ghStatus[k] = v
 		}
+
+	case sandboxStatusMsg:
+		m.sandboxHosts = msg.statuses
 
 	case fsEventMsg:
 		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher))
@@ -142,6 +151,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m, tea.Batch(
 			fetchGHStatusCmd(m.states),
+			checkSandboxCmd(m.states),
 			tickAfterCmd(),
 		)
 
@@ -190,7 +200,14 @@ func (m dashboardModel) View() string {
 		rightAlignPad(fmt.Sprintf("Session: %s | Cost: $%.2f", formatDuration(sessionDur), totalCost), m.width-18),
 	))
 	b.WriteString(header)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Sandbox status line (only if any runs have a Host set)
+	if sandboxLine := renderSandboxStatus(m.sandboxHosts); sandboxLine != "" {
+		b.WriteString(sandboxLine)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	if len(groups) == 0 {
 		b.WriteString(dimStyle.Render("  No runs found."))
@@ -319,7 +336,11 @@ func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) s
 func renderAgentSubline(s *run.State) string {
 	shortID := shortRunID(s.ID)
 	prompt := truncate(s.Prompt, 20)
-	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...", shortID, prompt))
+	line := yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...", shortID, prompt))
+	if s.Host != nil && *s.Host != "" {
+		line += " " + sandboxStyle.Render(fmt.Sprintf("[%s]", *s.Host))
+	}
+	return line
 }
 
 func renderBareAgentLine(s *run.State) string {
@@ -327,11 +348,15 @@ func renderBareAgentLine(s *run.State) string {
 	status := agentStatusLabel(s)
 	cost := formatCost(s)
 	prompt := truncate(s.Prompt, 20)
+	hostTag := ""
+	if s.Host != nil && *s.Host != "" {
+		hostTag = " " + sandboxStyle.Render(fmt.Sprintf("[%s]", *s.Host))
+	}
 
 	if isAgentRunning(s) {
-		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost))
+		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost)) + hostTag
 	}
-	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost))
+	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost)) + hostTag
 }
 
 // Commands for the bubbletea event loop.
@@ -412,6 +437,59 @@ func watchFSCmd(w *fsnotify.Watcher) tea.Cmd {
 			}
 		}
 	}
+}
+
+// collectUniqueHosts returns the set of unique non-empty Host values from states.
+func collectUniqueHosts(states []*run.State) []string {
+	seen := make(map[string]bool)
+	var hosts []string
+	for _, s := range states {
+		if s.Host != nil && *s.Host != "" && !seen[*s.Host] {
+			seen[*s.Host] = true
+			hosts = append(hosts, *s.Host)
+		}
+	}
+	sort.Strings(hosts)
+	return hosts
+}
+
+// checkSandboxCmd probes each unique sandbox host for reachability via SSH.
+func checkSandboxCmd(states []*run.State) tea.Cmd {
+	hosts := collectUniqueHosts(states)
+	if len(hosts) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		statuses := make(map[string]bool, len(hosts))
+		for _, h := range hosts {
+			cmd := exec.Command("ssh", "-o", "ConnectTimeout=2", "-o", "BatchMode=yes", h, "true")
+			statuses[h] = cmd.Run() == nil
+		}
+		return sandboxStatusMsg{statuses: statuses}
+	}
+}
+
+// renderSandboxStatus returns a header line showing sandbox host reachability.
+// Returns "" if there are no sandbox hosts.
+func renderSandboxStatus(hosts map[string]bool) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	var parts []string
+	// Sort keys for deterministic output
+	keys := make([]string, 0, len(hosts))
+	for k := range hosts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, h := range keys {
+		if hosts[h] {
+			parts = append(parts, greenStyle.Render(fmt.Sprintf("%s: ✓", h)))
+		} else {
+			parts = append(parts, redStyle.Render(fmt.Sprintf("%s: ✗", h)))
+		}
+	}
+	return dimStyle.Render("  sandbox ") + strings.Join(parts, "  ")
 }
 
 // fetchPRStatus queries GitHub for a single PR's status.
@@ -586,7 +664,8 @@ var (
 	greenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	yellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	sandboxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
 func stateLabel(state string) string {

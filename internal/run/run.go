@@ -29,6 +29,7 @@ type State struct {
 	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
 	Approved       *bool    `json:"approved,omitempty"`
 	ApprovedAt     *string  `json:"approved_at,omitempty"`
+	Host           *string  `json:"host,omitempty"`
 }
 
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.

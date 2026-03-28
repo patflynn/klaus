@@ -38,6 +38,7 @@ PR. The agent will commit and push to the PR branch directly.`,
 		budget, _ := cmd.Flags().GetString("budget")
 		repoRef, _ := cmd.Flags().GetString("repo")
 		prNumber, _ := cmd.Flags().GetString("pr")
+		host, _ := cmd.Flags().GetString("host")
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
@@ -294,6 +295,9 @@ PR. The agent will commit and push to the PR branch directly.`,
 			TargetRepo: normalizedTarget,
 			CloneDir:   cloneDirPtr,
 		}
+		if host != "" {
+			state.Host = &host
+		}
 		if isPRFix {
 			state.Type = "pr-fix"
 			if prURL != "" {
@@ -475,5 +479,6 @@ func init() {
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
+	launchCmd.Flags().String("host", "", "Remote host to run the agent on (e.g. klaus-worker-0)")
 	rootCmd.AddCommand(launchCmd)
 }
