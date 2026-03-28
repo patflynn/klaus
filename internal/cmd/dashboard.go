@@ -61,6 +61,10 @@ type fsEventMsg struct{}
 
 type tickMsg struct{}
 
+type sandboxStatusMsg struct {
+	hosts map[string]bool // host -> reachable
+}
+
 type errMsg struct {
 	err error
 }
@@ -83,19 +87,21 @@ type repoGroup struct {
 
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
-	store    run.StateStore
-	states   []*run.State
-	ghStatus map[string]*prStatus // keyed by PR number
-	width    int
-	height   int
-	err      error
-	watcher  *fsnotify.Watcher
+	store        run.StateStore
+	states       []*run.State
+	ghStatus     map[string]*prStatus // keyed by PR number
+	sandboxHosts map[string]bool      // host -> reachable
+	width        int
+	height       int
+	err          error
+	watcher      *fsnotify.Watcher
 }
 
 func newDashboardModel(store run.StateStore) dashboardModel {
 	return dashboardModel{
-		store:    store,
-		ghStatus: make(map[string]*prStatus),
+		store:        store,
+		ghStatus:     make(map[string]*prStatus),
+		sandboxHosts: make(map[string]bool),
 	}
 }
 
@@ -139,9 +145,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fsEventMsg:
 		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher))
 
+	case sandboxStatusMsg:
+		for k, v := range msg.hosts {
+			m.sandboxHosts[k] = v
+		}
+
 	case tickMsg:
 		return m, tea.Batch(
 			fetchGHStatusCmd(m.states),
+			checkSandboxCmd(m.states),
 			tickAfterCmd(),
 		)
 
@@ -185,12 +197,19 @@ func (m dashboardModel) View() string {
 	var b strings.Builder
 
 	// Header
+	headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f", formatDuration(sessionDur), totalCost)
 	header := headerStyle.Render(fmt.Sprintf(
 		" klaus dashboard%s",
-		rightAlignPad(fmt.Sprintf("Session: %s | Cost: $%.2f", formatDuration(sessionDur), totalCost), m.width-18),
+		rightAlignPad(headerRight, m.width-18),
 	))
 	b.WriteString(header)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Sandbox status line (only if any runs have a Host set)
+	if sandboxLine := renderSandboxStatus(m.sandboxHosts); sandboxLine != "" {
+		b.WriteString(sandboxLine)
+	}
+	b.WriteString("\n")
 
 	if len(groups) == 0 {
 		b.WriteString(dimStyle.Render("  No runs found."))
@@ -319,7 +338,8 @@ func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) s
 func renderAgentSubline(s *run.State) string {
 	shortID := shortRunID(s.ID)
 	prompt := truncate(s.Prompt, 20)
-	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...", shortID, prompt))
+	hostTag := sandboxTag(s)
+	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...%s", shortID, prompt, hostTag))
 }
 
 func renderBareAgentLine(s *run.State) string {
@@ -327,11 +347,20 @@ func renderBareAgentLine(s *run.State) string {
 	status := agentStatusLabel(s)
 	cost := formatCost(s)
 	prompt := truncate(s.Prompt, 20)
+	hostTag := sandboxTag(s)
 
 	if isAgentRunning(s) {
-		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost))
+		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost)) + hostTag
 	}
-	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost))
+	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost)) + hostTag
+}
+
+// sandboxTag returns a styled "[sandbox]" tag if the agent ran on a sandbox host.
+func sandboxTag(s *run.State) string {
+	if s.Host != nil {
+		return " " + sandboxStyle.Render("[sandbox]")
+	}
+	return ""
 }
 
 // Commands for the bubbletea event loop.
@@ -412,6 +441,39 @@ func watchFSCmd(w *fsnotify.Watcher) tea.Cmd {
 			}
 		}
 	}
+}
+
+func checkSandboxCmd(states []*run.State) tea.Cmd {
+	return func() tea.Msg {
+		hosts := make(map[string]bool)
+		for _, s := range states {
+			if s.Host != nil && *s.Host != "" {
+				if _, ok := hosts[*s.Host]; !ok {
+					hosts[*s.Host] = CheckSandboxReachable(*s.Host)
+				}
+			}
+		}
+		if len(hosts) == 0 {
+			return nil
+		}
+		return sandboxStatusMsg{hosts: hosts}
+	}
+}
+
+func renderSandboxStatus(hosts map[string]bool) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	var parts []string
+	for host, reachable := range hosts {
+		if reachable {
+			parts = append(parts, greenStyle.Render(fmt.Sprintf("  sandbox %s: ✓", host)))
+		} else {
+			parts = append(parts, redStyle.Render(fmt.Sprintf("  sandbox %s: ✗", host)))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "  ") + "\n"
 }
 
 // fetchPRStatus queries GitHub for a single PR's status.
@@ -581,12 +643,13 @@ func formatDuration(d time.Duration) string {
 // Styling.
 
 var (
-	headerStyle = lipgloss.NewStyle().Bold(true)
-	repoStyle   = lipgloss.NewStyle().Bold(true)
-	greenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	yellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	dimStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	headerStyle  = lipgloss.NewStyle().Bold(true)
+	repoStyle    = lipgloss.NewStyle().Bold(true)
+	greenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	redStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	sandboxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 )
 
 func stateLabel(state string) string {

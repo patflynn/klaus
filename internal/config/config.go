@@ -21,6 +21,7 @@ type Config struct {
 	RequireApproval     *bool            `json:"require_approval,omitempty"`
 	AutoMergeOnApproval *bool            `json:"auto_merge_on_approval,omitempty"`
 	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
+	SandboxHost         string           `json:"sandbox_host,omitempty"`
 }
 
 // PreReviewConfig configures the pre-PR review checks.

@@ -414,6 +414,86 @@ func TestResolveRepoTarget_NilRegistry(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxPaneCommand(t *testing.T) {
+	host := "klaus-worker-0"
+	worktree := "/tmp/klaus-sessions/repo/abc123"
+	claudeCmd := "claude -p 'do stuff'"
+	logFile := "/tmp/logs/abc123.jsonl"
+	selfBin := "klaus"
+	id := "20260328-1915-e4b3"
+
+	t.Run("wraps claude in SSH", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, false)
+		if !strings.Contains(cmd, "ssh 'klaus-worker-0'") {
+			t.Error("expected ssh to sandbox host, got:", cmd)
+		}
+		if !strings.Contains(cmd, "cd '/tmp/klaus-sessions/repo/abc123'") {
+			t.Error("expected cd to worktree on remote, got:", cmd)
+		}
+	})
+
+	t.Run("tee and format run locally", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
+		if !strings.Contains(cmd, "| tee") {
+			t.Error("expected tee in local pipeline, got:", cmd)
+		}
+		if !strings.Contains(cmd, "_format-stream") {
+			t.Error("expected _format-stream in local pipeline, got:", cmd)
+		}
+		if !strings.Contains(cmd, "_finalize") {
+			t.Error("expected _finalize in local pipeline, got:", cmd)
+		}
+	})
+
+	t.Run("rsyncs results back after finalize", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
+		if !strings.Contains(cmd, "rsync -az") {
+			t.Error("expected rsync back in command, got:", cmd)
+		}
+		// rsync should reference host:worktree/ -> worktree/
+		if !strings.Contains(cmd, "'klaus-worker-0':'/tmp/klaus-sessions/repo/abc123'/") {
+			t.Error("expected rsync from host:worktree, got:", cmd)
+		}
+	})
+
+	t.Run("includes auto-watch by default", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, false)
+		if !strings.Contains(cmd, "_auto-watch") {
+			t.Error("expected _auto-watch in sandbox command, got:", cmd)
+		}
+	})
+
+	t.Run("no-watch excludes auto-watch", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
+		if strings.Contains(cmd, "_auto-watch") {
+			t.Error("expected no _auto-watch with noWatch=true, got:", cmd)
+		}
+	})
+}
+
+func TestLaunchCmdHasSandboxFlags(t *testing.T) {
+	f := launchCmd.Flags().Lookup("local")
+	if f == nil {
+		t.Fatal("expected --local flag to be registered on launch command")
+	}
+	if f.DefValue != "false" {
+		t.Errorf("--local default value should be 'false', got %q", f.DefValue)
+	}
+
+	h := launchCmd.Flags().Lookup("host")
+	if h == nil {
+		t.Fatal("expected --host flag to be registered on launch command")
+	}
+	if h.DefValue != "" {
+		t.Errorf("--host default value should be empty, got %q", h.DefValue)
+	}
+}
+
 func TestLaunchCmdHasPRFlag(t *testing.T) {
 	// Verify the --pr flag is registered on the launch command
 	f := launchCmd.Flags().Lookup("pr")

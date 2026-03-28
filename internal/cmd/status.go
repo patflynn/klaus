@@ -26,10 +26,10 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-6s  %-10s  %-10s  %-10s  %s\n",
-			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "PR", "CI", "CONFLICTS", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-6s  %-10s  %-10s  %-10s  %s\n",
-			"------", "------", "----", "-----", "----", "--", "--", "---------", "-----", "------")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
+			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "MERGE", "PROMPT")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
+			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "-----", "------")
 
 		for _, s := range states {
 			status := determineStatus(s)
@@ -41,6 +41,10 @@ var statusCmd = &cobra.Command{
 			repo := "-"
 			if s.TargetRepo != nil {
 				repo = truncate(*s.TargetRepo, 20)
+			}
+			host := "-"
+			if s.Host != nil {
+				host = *s.Host
 			}
 			pr := formatPR(s)
 			prompt := truncate(s.Prompt, 40)
@@ -61,8 +65,8 @@ var statusCmd = &cobra.Command{
 				}
 			}
 
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-6s  %-10s  %-10s  %-10s  %s\n",
-				s.ID, status, cost, issue, repo, pr, ci, conflicts, merge, prompt)
+			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
+				s.ID, status, cost, issue, repo, host, pr, ci, conflicts, merge, prompt)
 		}
 
 		return nil

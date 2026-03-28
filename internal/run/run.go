@@ -25,6 +25,7 @@ type State struct {
 	Type       string   `json:"type,omitempty"`
 	TargetRepo *string  `json:"target_repo,omitempty"`
 	CloneDir   *string  `json:"clone_dir,omitempty"`
+	Host           *string  `json:"host,omitempty"`
 	MergedAt       *string  `json:"merged_at,omitempty"`
 	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
 	Approved       *bool    `json:"approved,omitempty"`
