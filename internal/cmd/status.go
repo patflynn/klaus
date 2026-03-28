@@ -140,13 +140,19 @@ func extractPRRef(s *run.State) string {
 
 // ghPRChecksArgs returns the arguments for "gh pr checks" with correct flag placement.
 // prRef can be a PR number or a full PR URL.
-func ghPRChecksArgs(prRef string) []string {
-	return []string{"pr", "checks", "--", prRef}
+// If repo is non-empty, --repo is added so the command works outside the target repo.
+func ghPRChecksArgs(prRef string, repo ...string) []string {
+	args := []string{"pr", "checks"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prRef)
+	return args
 }
 
 // getPRCI checks CI status by running "gh pr checks" and summarizing pass/fail/pending.
-func getPRCI(prRef string) string {
-	cmd := exec.Command("gh", ghPRChecksArgs(prRef)...)
+func getPRCI(prRef string, repo ...string) string {
+	cmd := exec.Command("gh", ghPRChecksArgs(prRef, repo...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	err := cmd.Run()
@@ -185,13 +191,18 @@ func getPRCI(prRef string) string {
 
 // ghPRConflictsArgs returns the arguments for "gh pr view" to check merge conflicts.
 // prRef can be a PR number or a full PR URL.
-func ghPRConflictsArgs(prRef string) []string {
-	return []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", prRef}
+func ghPRConflictsArgs(prRef string, repo ...string) []string {
+	args := []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prRef)
+	return args
 }
 
 // getPRConflicts checks if a PR has merge conflicts.
-func getPRConflicts(prRef string) string {
-	cmd := exec.Command("gh", ghPRConflictsArgs(prRef)...)
+func getPRConflicts(prRef string, repo ...string) string {
+	cmd := exec.Command("gh", ghPRConflictsArgs(prRef, repo...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -206,13 +217,18 @@ func getPRConflicts(prRef string) string {
 
 // ghPRReviewDecisionArgs returns the arguments for "gh pr view" to fetch review decision.
 // prRef can be a PR number or a full PR URL.
-func ghPRReviewDecisionArgs(prRef string) []string {
-	return []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", prRef}
+func ghPRReviewDecisionArgs(prRef string, repo ...string) []string {
+	args := []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prRef)
+	return args
 }
 
 // getPRReviewDecision fetches the review decision for a PR.
-func getPRReviewDecision(prRef string) string {
-	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prRef)...)
+func getPRReviewDecision(prRef string, repo ...string) string {
+	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prRef, repo...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -223,13 +239,18 @@ func getPRReviewDecision(prRef string) string {
 
 // ghPRStateArgs returns the arguments for "gh pr view" to fetch PR state.
 // prRef can be a PR number or a full PR URL.
-func ghPRStateArgs(prRef string) []string {
-	return []string{"pr", "view", "--json", "state", "-q", ".state", "--", prRef}
+func ghPRStateArgs(prRef string, repo ...string) []string {
+	args := []string{"pr", "view", "--json", "state", "-q", ".state"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prRef)
+	return args
 }
 
 // getPRState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED") by calling gh.
-func getPRState(prRef string) string {
-	cmd := exec.Command("gh", ghPRStateArgs(prRef)...)
+func getPRState(prRef string, repo ...string) string {
+	cmd := exec.Command("gh", ghPRStateArgs(prRef, repo...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

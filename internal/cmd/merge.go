@@ -19,27 +19,83 @@ import (
 // Fields are functions to allow testing with mocks.
 type mergeRunner struct {
 	out                 io.Writer
-	getPRTitle          func(string) string
-	getPRCI             func(string) string
-	getPRConflicts      func(string) string
-	getPRReviewDecision func(string) string
-	rebaseAndPush       func(string) error
-	mergePR             func(string, string, bool) error
-	pollCI              func(string) error
+	getPRTitle          func(string, string) string
+	getPRCI             func(string, string) string
+	getPRConflicts      func(string, string) string
+	getPRReviewDecision func(string, string) string
+	rebaseAndPush       func(string, string) error
+	mergePR             func(string, string, bool, string) error
+	pollCI              func(string, string) error
 	markMerged          func(prNumber string)
+	resolveRepo         func(prNumber string) string
 }
 
-func newMergeRunner(out io.Writer, store run.StateStore) *mergeRunner {
-	return &mergeRunner{
-		out:                 out,
-		getPRTitle:          getPRTitle,
-		getPRCI:             getPRCI,
-		getPRConflicts:      getPRConflicts,
-		getPRReviewDecision: getPRReviewDecision,
-		rebaseAndPush:       rebaseAndPush,
-		mergePR:             mergePRExec,
-		pollCI:              defaultPollCI,
-		markMerged:          markRunsMerged(store),
+func newMergeRunner(out io.Writer, store run.StateStore, repoFlag string) *mergeRunner {
+	r := &mergeRunner{
+		out: out,
+		getPRTitle: func(pr, repo string) string {
+			return getPRTitle(pr, repo)
+		},
+		getPRCI: func(pr, repo string) string {
+			return getPRCI(pr, repo)
+		},
+		getPRConflicts: func(pr, repo string) string {
+			return getPRConflicts(pr, repo)
+		},
+		getPRReviewDecision: func(pr, repo string) string {
+			return getPRReviewDecision(pr, repo)
+		},
+		rebaseAndPush: func(pr, repo string) error {
+			return rebaseAndPush(pr, repo)
+		},
+		mergePR: mergePRExec,
+		pollCI: func(pr, repo string) error {
+			return defaultPollCI(pr, repo)
+		},
+		markMerged: markRunsMerged(store),
+	}
+	r.resolveRepo = buildRepoResolver(store, repoFlag)
+	return r
+}
+
+// buildRepoResolver returns a function that resolves the target repo for a given PR number.
+// Priority: run state pr_url match > --repo flag > session target > "" (existing behavior).
+func buildRepoResolver(store run.StateStore, repoFlag string) func(string) string {
+	// Pre-load states and session target once.
+	var states []*run.State
+	if store != nil {
+		states, _ = store.List()
+	}
+	if len(states) == 0 {
+		states, _, _ = listStatesFromEnvOrAll()
+	}
+
+	var sessionTarget string
+	if s, err := sessionStore(); err == nil {
+		if hds, ok := s.(*run.HomeDirStore); ok {
+			sessionTarget, _ = run.LoadTarget(hds.BaseDir())
+		}
+	}
+
+	return func(prNumber string) string {
+		// 1. Check run states for matching pr_url
+		for _, s := range states {
+			if extractPRNumber(s) == prNumber && s.PRURL != nil {
+				if repo := repoFromPRURL(*s.PRURL); repo != "" && repo != "(unknown)" {
+					return repo
+				}
+			}
+		}
+		// 2. --repo flag
+		if repoFlag != "" {
+			return repoFlag
+		}
+		// 3. Session target
+		if sessionTarget != "" {
+			return sessionTarget
+		}
+		// 4. Empty string — gh will use the current git repo
+		return ""
 	}
 }
 
@@ -70,17 +126,23 @@ var mergeCmd = &cobra.Command{
 	Short: "Merge PRs sequentially with automatic rebasing",
 	Long: `Merges a list of PRs in the given order. For each PR:
 
-1. Checks merge readiness (CI, conflicts, review approval)
-2. If conflicts exist, rebases onto main and re-pushes
-3. Merges with the specified method (default: squash)
-4. Moves to the next PR
+1. Resolves the target repo (from run state, --repo flag, or session target)
+2. Checks merge readiness (CI, conflicts, review approval)
+3. If conflicts exist, rebases onto main and re-pushes
+4. Merges with the specified method (default: squash)
+5. Moves to the next PR
 
-If a rebase fails or CI times out, stops and reports the stuck PR.`,
+If a rebase fails or CI times out, stops and reports the stuck PR.
+
+Use --repo to specify the target repository when running outside a git repo
+(e.g. from a klaus session workspace). If PRs were created by klaus agents,
+the repo is auto-detected from run state.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		mergeMethod, _ := cmd.Flags().GetString("merge-method")
 		noDeleteBranch, _ := cmd.Flags().GetBool("no-delete-branch")
+		repoFlag, _ := cmd.Flags().GetString("repo")
 
 		if err := validateMergeMethod(mergeMethod); err != nil {
 			return err
@@ -91,7 +153,7 @@ If a rebase fails or CI times out, stops and reports the stuck PR.`,
 		// markMerged will be a no-op.
 		store, _ := sessionStore()
 
-		runner := newMergeRunner(os.Stdout, store)
+		runner := newMergeRunner(os.Stdout, store, repoFlag)
 
 		if dryRun {
 			return runner.dryRun(args)
@@ -110,13 +172,18 @@ func validateMergeMethod(method string) error {
 }
 
 // ghPRTitleArgs returns arguments for fetching a PR title.
-func ghPRTitleArgs(prNumber string) []string {
-	return []string{"pr", "view", "--json", "title", "-q", ".title", "--", prNumber}
+func ghPRTitleArgs(prNumber string, repo ...string) []string {
+	args := []string{"pr", "view", "--json", "title", "-q", ".title"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prNumber)
+	return args
 }
 
 // getPRTitle fetches the title of a PR using the gh CLI.
-func getPRTitle(prNumber string) string {
-	cmd := exec.Command("gh", ghPRTitleArgs(prNumber)...)
+func getPRTitle(prNumber string, repo ...string) string {
+	cmd := exec.Command("gh", ghPRTitleArgs(prNumber, repo...)...)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
@@ -131,7 +198,7 @@ func getPRTitle(prNumber string) string {
 }
 
 // ghPRMergeArgs returns arguments for merging a PR.
-func ghPRMergeArgs(prNumber, mergeMethod string, deleteBranch bool) []string {
+func ghPRMergeArgs(prNumber, mergeMethod string, deleteBranch bool, repo string) []string {
 	args := []string{"pr", "merge"}
 	switch mergeMethod {
 	case "squash":
@@ -144,13 +211,16 @@ func ghPRMergeArgs(prNumber, mergeMethod string, deleteBranch bool) []string {
 	if deleteBranch {
 		args = append(args, "--delete-branch")
 	}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
 	args = append(args, "--", prNumber)
 	return args
 }
 
 // mergePRExec merges a PR using the gh CLI.
-func mergePRExec(prNumber, mergeMethod string, deleteBranch bool) error {
-	args := ghPRMergeArgs(prNumber, mergeMethod, deleteBranch)
+func mergePRExec(prNumber, mergeMethod string, deleteBranch bool, repo string) error {
+	args := ghPRMergeArgs(prNumber, mergeMethod, deleteBranch, repo)
 	cmd := exec.Command("gh", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -162,8 +232,8 @@ func mergePRExec(prNumber, mergeMethod string, deleteBranch bool) error {
 
 // rebaseAndPush rebases a PR branch onto origin/main, verifies compilation,
 // and force-pushes using a temporary worktree.
-func rebaseAndPush(prNumber string) error {
-	branch, err := getPRBranch(prNumber)
+func rebaseAndPush(prNumber string, repo string) error {
+	branch, err := getPRBranch(prNumber, repo)
 	if err != nil {
 		return fmt.Errorf("getting branch: %w", err)
 	}
@@ -229,13 +299,13 @@ func rebaseAndPush(prNumber string) error {
 }
 
 // defaultPollCI polls CI checks until they pass or timeout.
-func defaultPollCI(prNumber string) error {
+func defaultPollCI(prNumber string, repo string) error {
 	timeout := 10 * time.Minute
 	interval := 30 * time.Second
 	deadline := time.Now().Add(timeout)
 
 	for {
-		ci := getPRCI(prNumber)
+		ci := getPRCI(prNumber, repo)
 		switch ci {
 		case "passing":
 			return nil
@@ -253,13 +323,18 @@ func defaultPollCI(prNumber string) error {
 func (r *mergeRunner) dryRun(prNumbers []string) error {
 	fmt.Fprintf(r.out, "Merge plan (dry run):\n\n")
 	for i, prNum := range prNumbers {
-		title := r.getPRTitle(prNum)
-		ci := r.getPRCI(prNum)
-		conflicts := r.getPRConflicts(prNum)
-		review := r.getPRReviewDecision(prNum)
+		repo := r.resolveRepo(prNum)
+		title := r.getPRTitle(prNum, repo)
+		ci := r.getPRCI(prNum, repo)
+		conflicts := r.getPRConflicts(prNum, repo)
+		review := r.getPRReviewDecision(prNum, repo)
 		status := computeMergeStatus(ci, conflicts, review)
 
-		fmt.Fprintf(r.out, "  %d. PR #%s: %s\n", i+1, prNum, title)
+		repoLabel := "(local)"
+		if repo != "" {
+			repoLabel = repo
+		}
+		fmt.Fprintf(r.out, "  %d. PR #%s [%s]: %s\n", i+1, prNum, repoLabel, title)
 		fmt.Fprintf(r.out, "     CI: %s | Conflicts: %s | Review: %s | Merge: %s\n",
 			ci, conflicts, review, status)
 	}
@@ -269,14 +344,19 @@ func (r *mergeRunner) dryRun(prNumbers []string) error {
 // run merges PRs sequentially.
 func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch bool) error {
 	for i, prNum := range prNumbers {
-		fmt.Fprintf(r.out, "\n[%d/%d] PR #%s\n", i+1, len(prNumbers), prNum)
+		repo := r.resolveRepo(prNum)
+		repoLabel := "(local)"
+		if repo != "" {
+			repoLabel = repo
+		}
+		fmt.Fprintf(r.out, "\n[%d/%d] PR #%s [%s]\n", i+1, len(prNumbers), prNum, repoLabel)
 
-		title := r.getPRTitle(prNum)
+		title := r.getPRTitle(prNum, repo)
 		fmt.Fprintf(r.out, "  Title: %s\n", title)
 
-		ci := r.getPRCI(prNum)
-		conflicts := r.getPRConflicts(prNum)
-		review := r.getPRReviewDecision(prNum)
+		ci := r.getPRCI(prNum, repo)
+		conflicts := r.getPRConflicts(prNum, repo)
+		review := r.getPRReviewDecision(prNum, repo)
 
 		fmt.Fprintf(r.out, "  CI: %s | Conflicts: %s | Review: %s\n",
 			ci, conflicts, review)
@@ -289,11 +369,11 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 		// Handle conflicts via rebase
 		if conflicts == "yes" {
 			fmt.Fprintf(r.out, "  Rebasing onto main...\n")
-			if err := r.rebaseAndPush(prNum); err != nil {
+			if err := r.rebaseAndPush(prNum, repo); err != nil {
 				return r.stopQueue(prNum, fmt.Sprintf("rebase failed: %v", err), prNumbers[i+1:])
 			}
 			fmt.Fprintf(r.out, "  Waiting for CI after rebase...\n")
-			if err := r.pollCI(prNum); err != nil {
+			if err := r.pollCI(prNum, repo); err != nil {
 				return r.stopQueue(prNum, fmt.Sprintf("CI after rebase: %v", err), prNumbers[i+1:])
 			}
 		} else if ci == "failing" {
@@ -302,13 +382,13 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 		} else if ci != "passing" {
 			// CI pending or unknown — wait
 			fmt.Fprintf(r.out, "  Waiting for CI...\n")
-			if err := r.pollCI(prNum); err != nil {
+			if err := r.pollCI(prNum, repo); err != nil {
 				return r.stopQueue(prNum, fmt.Sprintf("CI: %v", err), prNumbers[i+1:])
 			}
 		}
 
 		fmt.Fprintf(r.out, "  Merging (%s)...\n", mergeMethod)
-		if err := r.mergePR(prNum, mergeMethod, deleteBranch); err != nil {
+		if err := r.mergePR(prNum, mergeMethod, deleteBranch, repo); err != nil {
 			return r.stopQueue(prNum, fmt.Sprintf("merge failed: %v", err), prNumbers[i+1:])
 		}
 		fmt.Fprintf(r.out, "  Merged PR #%s.\n", prNum)
@@ -343,5 +423,6 @@ func init() {
 	mergeCmd.Flags().Bool("dry-run", false, "Print the merge plan without executing")
 	mergeCmd.Flags().String("merge-method", "squash", "Merge method: squash, merge, or rebase")
 	mergeCmd.Flags().Bool("no-delete-branch", false, "Skip --delete-branch on gh pr merge")
+	mergeCmd.Flags().String("repo", "", "Default target repo (owner/repo) for all PRs")
 	rootCmd.AddCommand(mergeCmd)
 }

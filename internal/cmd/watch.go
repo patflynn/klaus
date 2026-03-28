@@ -224,8 +224,13 @@ func buildTrustedSet(cfg config.Config, owner, repo string) map[string]bool {
 }
 
 // getPRBranch returns the head branch name for a PR using the gh CLI.
-func getPRBranch(prNumber string) (string, error) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "headRefName", "-q", ".headRefName", "--", prNumber)
+func getPRBranch(prNumber string, repo ...string) (string, error) {
+	args := []string{"pr", "view", "--json", "headRefName", "-q", ".headRefName"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prNumber)
+	cmd := exec.Command("gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
