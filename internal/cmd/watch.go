@@ -273,16 +273,18 @@ func buildWatchPaneCommand(envPrefix, worktree, claudeCmd, logFile, selfBin, id,
 	// After each agent cycle, check CI and emit events via _event.
 	// gh pr checks exits 0 when all checks pass and non-zero otherwise.
 	ciCheck := fmt.Sprintf(
-		"if gh pr checks %s --fail-fast 2>/dev/null; then "+
-			"%s _event --run-id %s --type agent:ci-passed --data '{\"id\":\"%s\",\"pr_url\":\"'$(gh pr view %s --json url -q .url 2>/dev/null)'\"}'; "+
-			"%s _event --run-id %s --type pr:awaiting-approval --data '{\"pr_url\":\"'$(gh pr view %s --json url -q .url 2>/dev/null)'\"}'; "+
+		"PR_URL=$(gh pr view %s --json url -q .url 2>/dev/null); "+
+			"if gh pr checks %s --fail-fast 2>/dev/null; then "+
+			"%s _event --run-id %s --type agent:ci-passed --data '{\"id\":\"%s\",\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
+			"%s _event --run-id %s --type pr:awaiting-approval --data '{\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
 			"else "+
-			"%s _event --run-id %s --type agent:ci-failed --data '{\"id\":\"%s\",\"pr_url\":\"'$(gh pr view %s --json url -q .url 2>/dev/null)'\"}'; "+
+			"%s _event --run-id %s --type agent:ci-failed --data '{\"id\":\"%s\",\"pr_url\":\"'\"$PR_URL\"'\"}'; "+
 			"fi",
 		qPR,
-		selfBin, qID, id, qPR,
-		selfBin, qID, qPR,
-		selfBin, qID, id, qPR,
+		qPR,
+		selfBin, qID, id,
+		selfBin, qID,
+		selfBin, qID, id,
 	)
 
 	// The loop:

@@ -95,26 +95,50 @@ func printSummary(events []event.Event) {
 		id := shortID(evt.RunID)
 		switch evt.Type {
 		case event.AgentCompleted:
-			cost, _ := evt.Data["cost_usd"].(float64)
+			cost, ok := evt.Data["cost_usd"].(float64)
+			if !ok {
+				cost = 0
+			}
 			completed = append(completed, completedInfo{id: id, cost: cost})
 		case event.AgentPRCreated:
-			prURL, _ := evt.Data["pr_url"].(string)
+			prURL, ok := evt.Data["pr_url"].(string)
+			if !ok {
+				prURL = ""
+			}
 			prCreated = append(prCreated, fmt.Sprintf("#%s (%s)", prNumberFromURL(prURL), id))
 		case event.AgentCIPassed:
-			prURL, _ := evt.Data["pr_url"].(string)
+			prURL, ok := evt.Data["pr_url"].(string)
+			if !ok {
+				prURL = ""
+			}
 			ciPassed = append(ciPassed, fmt.Sprintf("#%s (%s)", prNumberFromURL(prURL), id))
 		case event.AgentCIFailed:
-			prURL, _ := evt.Data["pr_url"].(string)
-			attempt, _ := evt.Data["attempt"].(float64)
+			prURL, ok := evt.Data["pr_url"].(string)
+			if !ok {
+				prURL = ""
+			}
+			attempt, ok := evt.Data["attempt"].(float64)
+			if !ok {
+				attempt = 0
+			}
 			ciFailed = append(ciFailed, fmt.Sprintf("#%s attempt %.0f (%s)", prNumberFromURL(prURL), attempt, id))
 		case event.AgentNeedsAttention:
-			reason, _ := evt.Data["reason"].(string)
+			reason, ok := evt.Data["reason"].(string)
+			if !ok {
+				reason = "unknown"
+			}
 			needsAttention = append(needsAttention, fmt.Sprintf("%s — %s", id, reason))
 		case event.PRAwaitingApproval:
-			prURL, _ := evt.Data["pr_url"].(string)
+			prURL, ok := evt.Data["pr_url"].(string)
+			if !ok {
+				prURL = ""
+			}
 			prsReady = append(prsReady, fmt.Sprintf("#%s (%s)", prNumberFromURL(prURL), id))
 		case event.PRMerged:
-			prURL, _ := evt.Data["pr_url"].(string)
+			prURL, ok := evt.Data["pr_url"].(string)
+			if !ok {
+				prURL = ""
+			}
 			prMerged = append(prMerged, fmt.Sprintf("#%s", prNumberFromURL(prURL)))
 		}
 	}
@@ -179,7 +203,9 @@ func loadMarker(baseDir string) string {
 }
 
 func saveMarker(baseDir, marker string) {
-	_ = os.WriteFile(filepath.Join(baseDir, markerFile), []byte(marker+"\n"), 0o644)
+	if err := os.WriteFile(filepath.Join(baseDir, markerFile), []byte(marker+"\n"), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save notification marker: %v\n", err)
+	}
 }
 
 // readAllSessionEvents reads events from all session directories.

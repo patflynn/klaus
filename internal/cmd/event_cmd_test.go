@@ -90,10 +90,13 @@ func TestNotificationsCmdShowsEvents(t *testing.T) {
 	rootCmd.SetArgs([]string{"notifications", "--all", "--json"})
 	// Capture stdout
 	oldStdout := os.Stdout
-	r, w, _ := os.Pipe()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe failed: %v", err)
+	}
 	os.Stdout = w
 
-	err := rootCmd.Execute()
+	err = rootCmd.Execute()
 	w.Close()
 	os.Stdout = oldStdout
 

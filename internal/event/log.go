@@ -99,16 +99,47 @@ func (l *Log) ReadSince(marker string) ([]Event, string, error) {
 		}
 	}
 
-	all, err := l.Read()
+	f, err := os.Open(l.Path())
 	if err != nil {
-		return nil, "", err
+		if os.IsNotExist(err) {
+			return nil, "0", nil
+		}
+		return nil, "", fmt.Errorf("opening event log: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+
+	// Skip lines before the offset without parsing them.
+	lineNum := 0
+	for lineNum < offset && scanner.Scan() {
+		lineNum++
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, "", fmt.Errorf("scanning event log: %w", err)
 	}
 
-	if offset > len(all) {
-		offset = len(all)
+	// Parse only the lines after the offset.
+	var events []Event
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			lineNum++
+			continue
+		}
+		var evt Event
+		if err := json.Unmarshal(line, &evt); err != nil {
+			lineNum++
+			continue // skip malformed lines
+		}
+		events = append(events, evt)
+		lineNum++
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, "", fmt.Errorf("scanning event log: %w", err)
 	}
 
-	newEvents := all[offset:]
-	newMarker := strconv.Itoa(len(all))
-	return newEvents, newMarker, nil
+	newMarker := strconv.Itoa(lineNum)
+	return events, newMarker, nil
 }
