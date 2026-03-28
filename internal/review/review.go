@@ -49,9 +49,12 @@ func modelID(name string) anthropic.Model {
 // Haiku has 200k context; we cap the diff well under that.
 const maxDiffBytes = 80_000
 
-// ReviewDiff runs a peer review on the diff between the current branch and main.
-func ReviewDiff(dir string, cfg ReviewConfig) (*ReviewResult, error) {
-	diff, err := getDiff(dir)
+// ReviewDiff runs a peer review on the diff between the current branch and the given base branch.
+func ReviewDiff(dir string, cfg ReviewConfig, baseBranch string) (*ReviewResult, error) {
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	diff, err := getDiff(dir, baseBranch)
 	if err != nil {
 		return nil, fmt.Errorf("getting diff: %w", err)
 	}
@@ -67,8 +70,8 @@ func ReviewDiff(dir string, cfg ReviewConfig) (*ReviewResult, error) {
 	return callReviewAPI(diff, cfg)
 }
 
-func getDiff(dir string) (string, error) {
-	cmd := exec.Command("git", "diff", "main...HEAD")
+func getDiff(dir, baseBranch string) (string, error) {
+	cmd := exec.Command("git", "diff", baseBranch+"...HEAD")
 	cmd.Dir = dir
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -148,9 +151,7 @@ func parseReviewResponse(text string) (*ReviewResult, error) {
 
 	var result ReviewResult
 	if err := json.Unmarshal([]byte(text), &result); err != nil {
-		return &ReviewResult{
-			Summary: "Failed to parse review response: " + text,
-		}, nil
+		return nil, fmt.Errorf("failed to parse review response: %w; response text: %q", err, text)
 	}
 
 	// Normalize severity values

@@ -80,7 +80,7 @@ var preReviewCmd = &cobra.Command{
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Model:        cfg.PreReviewModel(),
 			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
-		})
+		}, cfg.DefaultBranch)
 		if err != nil {
 			return fmt.Errorf("running peer review: %w", err)
 		}
@@ -90,11 +90,10 @@ var preReviewCmd = &cobra.Command{
 		} else {
 			for _, f := range result.Findings {
 				sev := strings.ToUpper(f.Severity)
-				padding := strings.Repeat(" ", max(1, 9-len(sev)))
 				if f.Line > 0 {
 					fmt.Printf("  %-8s %s:%d — %s\n", sev, f.File, f.Line, f.Description)
 				} else {
-					fmt.Printf("  %-8s %s%s— %s\n", sev, f.File, padding, f.Description)
+					fmt.Printf("  %-8s %s — %s\n", sev, f.File, f.Description)
 				}
 			}
 		}

@@ -64,15 +64,11 @@ func TestParseReviewResponse_noFindings(t *testing.T) {
 func TestParseReviewResponse_malformed(t *testing.T) {
 	input := "this is not json at all"
 	result, err := parseReviewResponse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON input")
 	}
-	// Should return a result with error info in summary, not crash
-	if result.Summary == "" {
-		t.Error("expected non-empty summary for malformed input")
-	}
-	if len(result.Findings) != 0 {
-		t.Error("expected no findings for malformed input")
+	if result != nil {
+		t.Errorf("expected nil result, got %v", result)
 	}
 }
 

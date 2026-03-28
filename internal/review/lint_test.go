@@ -110,8 +110,14 @@ func TestRunLinters_commandNotFound(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")
 	}
-	_, err := RunLinters(t.TempDir(), []string{"nonexistent-command-xyz"})
-	if err == nil {
-		t.Fatal("expected error for missing command")
+	results, err := RunLinters(t.TempDir(), []string{"nonexistent-command-xyz"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Passed {
+		t.Error("expected command to fail")
 	}
 }

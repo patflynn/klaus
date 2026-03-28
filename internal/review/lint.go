@@ -37,12 +37,11 @@ func RunLinters(dir string, commands []string) ([]LintResult, error) {
 }
 
 func runLintCommand(dir, cmdStr string) (LintResult, error) {
-	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
+	if strings.TrimSpace(cmdStr) == "" {
 		return LintResult{Command: cmdStr, Passed: true}, nil
 	}
 
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = dir
 
 	var stdout, stderr bytes.Buffer
