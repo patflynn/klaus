@@ -177,6 +177,8 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	tmux.SetPaneTitle(paneID, FormatPaneTitle(id, "", "new "+name))
+	tmux.SetWindowOption(paneID, "automatic-rename", "off")
+	tmux.LockPaneTitle(paneID)
 	if err := tmux.RebalanceLayout(currentPane); err != nil {
 		return fmt.Errorf("rebalancing tmux layout: %w", err)
 	}

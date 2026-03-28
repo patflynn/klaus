@@ -256,6 +256,8 @@ PR. The agent will commit and push to the PR branch directly.`,
 		}
 
 		tmux.SetPaneTitle(paneID, FormatPaneTitle(id, issue, prompt))
+		tmux.SetWindowOption(paneID, "automatic-rename", "off")
+		tmux.LockPaneTitle(paneID)
 		if err := tmux.RebalanceLayout(currentPane); err != nil {
 			return fmt.Errorf("rebalancing tmux layout: %w", err)
 		}
