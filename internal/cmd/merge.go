@@ -45,13 +45,9 @@ func newMergeRunner(out io.Writer, store run.StateStore, repoFlag string) *merge
 		getPRReviewDecision: func(pr, repo string) string {
 			return getPRReviewDecision(pr, repo)
 		},
-		rebaseAndPush: func(pr, repo string) error {
-			return rebaseAndPush(pr, repo)
-		},
-		mergePR: mergePRExec,
-		pollCI: func(pr, repo string) error {
-			return defaultPollCI(pr, repo)
-		},
+		rebaseAndPush: rebaseAndPush,
+		mergePR:       mergePRExec,
+		pollCI:        defaultPollCI,
 		markMerged: markRunsMerged(store),
 	}
 	r.resolveRepo = buildRepoResolver(store, repoFlag)
@@ -319,6 +315,14 @@ func defaultPollCI(prNumber string, repo string) error {
 	}
 }
 
+// formatRepoLabel returns the repo string for display, defaulting to "(local)".
+func formatRepoLabel(repo string) string {
+	if repo == "" {
+		return "(local)"
+	}
+	return repo
+}
+
 // dryRun prints the merge plan without executing.
 func (r *mergeRunner) dryRun(prNumbers []string) error {
 	fmt.Fprintf(r.out, "Merge plan (dry run):\n\n")
@@ -330,10 +334,7 @@ func (r *mergeRunner) dryRun(prNumbers []string) error {
 		review := r.getPRReviewDecision(prNum, repo)
 		status := computeMergeStatus(ci, conflicts, review)
 
-		repoLabel := "(local)"
-		if repo != "" {
-			repoLabel = repo
-		}
+		repoLabel := formatRepoLabel(repo)
 		fmt.Fprintf(r.out, "  %d. PR #%s [%s]: %s\n", i+1, prNum, repoLabel, title)
 		fmt.Fprintf(r.out, "     CI: %s | Conflicts: %s | Review: %s | Merge: %s\n",
 			ci, conflicts, review, status)
@@ -345,10 +346,7 @@ func (r *mergeRunner) dryRun(prNumbers []string) error {
 func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch bool) error {
 	for i, prNum := range prNumbers {
 		repo := r.resolveRepo(prNum)
-		repoLabel := "(local)"
-		if repo != "" {
-			repoLabel = repo
-		}
+		repoLabel := formatRepoLabel(repo)
 		fmt.Fprintf(r.out, "\n[%d/%d] PR #%s [%s]\n", i+1, len(prNumbers), prNum, repoLabel)
 
 		title := r.getPRTitle(prNum, repo)
