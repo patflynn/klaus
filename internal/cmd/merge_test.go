@@ -10,6 +10,22 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
+// testMergeRunner creates a mergeRunner with sensible defaults for tests.
+// All functions ignore the repo parameter since tests don't exercise real gh.
+func testMergeRunner(out *bytes.Buffer) *mergeRunner {
+	return &mergeRunner{
+		out:                 out,
+		getPRTitle:          func(string, string) string { return "Test PR" },
+		getPRCI:             func(string, string) string { return "passing" },
+		getPRConflicts:      func(string, string) string { return "none" },
+		getPRReviewDecision: func(string, string) string { return "APPROVED" },
+		rebaseAndPush:       func(string, string) error { return nil },
+		pollCI:              func(string, string) error { return nil },
+		mergePR:             func(string, string, bool, string) error { return nil },
+		resolveRepo:         func(string) string { return "" },
+	}
+}
+
 func TestValidateMergeMethod(t *testing.T) {
 	tests := []struct {
 		method  string
@@ -42,6 +58,7 @@ func TestGHPRMergeArgs(t *testing.T) {
 		prNumber     string
 		mergeMethod  string
 		deleteBranch bool
+		repo         string
 		want         []string
 	}{
 		{
@@ -65,11 +82,19 @@ func TestGHPRMergeArgs(t *testing.T) {
 			deleteBranch: true,
 			want:         []string{"pr", "merge", "--rebase", "--delete-branch", "--", "7"},
 		},
+		{
+			name:         "with repo flag",
+			prNumber:     "42",
+			mergeMethod:  "squash",
+			deleteBranch: true,
+			repo:         "owner/repo",
+			want:         []string{"pr", "merge", "--squash", "--delete-branch", "--repo", "owner/repo", "--", "42"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ghPRMergeArgs(tt.prNumber, tt.mergeMethod, tt.deleteBranch)
+			got := ghPRMergeArgs(tt.prNumber, tt.mergeMethod, tt.deleteBranch, tt.repo)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("ghPRMergeArgs() = %v, want %v", got, tt.want)
 			}
@@ -99,6 +124,13 @@ func TestGHPRTitleArgs(t *testing.T) {
 	want := []string{"pr", "view", "--json", "title", "-q", ".title", "--", "99"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ghPRTitleArgs(99) = %v, want %v", got, want)
+	}
+
+	// With repo
+	got = ghPRTitleArgs("99", "owner/repo")
+	want = []string{"pr", "view", "--json", "title", "-q", ".title", "--repo", "owner/repo", "--", "99"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ghPRTitleArgs(99, owner/repo) = %v, want %v", got, want)
 	}
 
 	// Verify flags before separator
@@ -141,15 +173,10 @@ func TestFormatPRList(t *testing.T) {
 
 func TestDryRun(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out: &buf,
-		getPRTitle: func(pr string) string {
-			titles := map[string]string{"1": "Fix bug", "2": "Add feature"}
-			return titles[pr]
-		},
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
+	runner := testMergeRunner(&buf)
+	runner.getPRTitle = func(pr, repo string) string {
+		titles := map[string]string{"1": "Fix bug", "2": "Add feature"}
+		return titles[pr]
 	}
 
 	err := runner.dryRun([]string{"1", "2"})
@@ -161,10 +188,13 @@ func TestDryRun(t *testing.T) {
 	if !strings.Contains(output, "Merge plan (dry run)") {
 		t.Error("missing header")
 	}
-	if !strings.Contains(output, "PR #1: Fix bug") {
+	if !strings.Contains(output, "PR #1") {
 		t.Error("missing PR #1")
 	}
-	if !strings.Contains(output, "PR #2: Add feature") {
+	if !strings.Contains(output, "Fix bug") {
+		t.Error("missing PR #1 title")
+	}
+	if !strings.Contains(output, "PR #2") {
 		t.Error("missing PR #2")
 	}
 	if !strings.Contains(output, "Merge: ready") {
@@ -174,13 +204,11 @@ func TestDryRun(t *testing.T) {
 
 func TestDryRunShowsBlockedStatus(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Blocked PR" },
-		getPRCI:             func(string) string { return "failing" },
-		getPRConflicts:      func(string) string { return "yes" },
-		getPRReviewDecision: func(string) string { return "CHANGES_REQUESTED" },
-	}
+	runner := testMergeRunner(&buf)
+	runner.getPRTitle = func(string, string) string { return "Blocked PR" }
+	runner.getPRCI = func(string, string) string { return "failing" }
+	runner.getPRConflicts = func(string, string) string { return "yes" }
+	runner.getPRReviewDecision = func(string, string) string { return "CHANGES_REQUESTED" }
 
 	err := runner.dryRun([]string{"5"})
 	if err != nil {
@@ -193,21 +221,53 @@ func TestDryRunShowsBlockedStatus(t *testing.T) {
 	}
 }
 
+func TestDryRunShowsRepo(t *testing.T) {
+	var buf bytes.Buffer
+	runner := testMergeRunner(&buf)
+	runner.resolveRepo = func(pr string) string {
+		if pr == "1" {
+			return "owner/repo-a"
+		}
+		return "owner/repo-b"
+	}
+
+	err := runner.dryRun([]string{"1", "2"})
+	if err != nil {
+		t.Fatalf("dryRun() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "[owner/repo-a]") {
+		t.Errorf("should show repo-a, got: %s", output)
+	}
+	if !strings.Contains(output, "[owner/repo-b]") {
+		t.Errorf("should show repo-b, got: %s", output)
+	}
+}
+
+func TestDryRunShowsLocalWhenNoRepo(t *testing.T) {
+	var buf bytes.Buffer
+	runner := testMergeRunner(&buf)
+	runner.resolveRepo = func(string) string { return "" }
+
+	err := runner.dryRun([]string{"1"})
+	if err != nil {
+		t.Fatalf("dryRun() error = %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "(local)") {
+		t.Errorf("should show (local) when no repo, got: %s", output)
+	}
+}
+
 func TestRunAllSuccess(t *testing.T) {
 	var buf bytes.Buffer
 	merged := []string{}
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR: func(pr, method string, del bool) error {
-			merged = append(merged, pr)
-			return nil
-		},
+	runner := testMergeRunner(&buf)
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
 	}
 
 	err := runner.run([]string{"1", "2", "3"}, "squash", true)
@@ -226,19 +286,12 @@ func TestRunAllSuccess(t *testing.T) {
 func TestRunPassesMergeMethodAndDeleteBranch(t *testing.T) {
 	var gotMethod string
 	var gotDelete bool
-	runner := &mergeRunner{
-		out:                 &bytes.Buffer{},
-		getPRTitle:          func(string) string { return "Test" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR: func(pr, method string, del bool) error {
-			gotMethod = method
-			gotDelete = del
-			return nil
-		},
+	runner := testMergeRunner(&bytes.Buffer{})
+	runner.getPRReviewDecision = func(string, string) string { return "" }
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		gotMethod = method
+		gotDelete = del
+		return nil
 	}
 
 	runner.run([]string{"1"}, "rebase", false)
@@ -251,28 +304,44 @@ func TestRunPassesMergeMethodAndDeleteBranch(t *testing.T) {
 	}
 }
 
+func TestRunPassesRepoToMergePR(t *testing.T) {
+	var gotRepos []string
+	runner := testMergeRunner(&bytes.Buffer{})
+	runner.resolveRepo = func(pr string) string {
+		return "owner/repo-" + pr
+	}
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		gotRepos = append(gotRepos, repo)
+		return nil
+	}
+
+	err := runner.run([]string{"1", "2"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	want := []string{"owner/repo-1", "owner/repo-2"}
+	if !reflect.DeepEqual(gotRepos, want) {
+		t.Errorf("repos passed to mergePR = %v, want %v", gotRepos, want)
+	}
+}
+
 func TestRunStopsOnRebaseFailure(t *testing.T) {
 	var buf bytes.Buffer
 	merged := []string{}
-	runner := &mergeRunner{
-		out:        &buf,
-		getPRTitle: func(string) string { return "Test PR" },
-		getPRCI:    func(string) string { return "passing" },
-		getPRConflicts: func(pr string) string {
-			if pr == "2" {
-				return "yes"
-			}
-			return "none"
-		},
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush: func(string) error {
-			return fmt.Errorf("conflict in main.go")
-		},
-		pollCI: func(string) error { return nil },
-		mergePR: func(pr, method string, del bool) error {
-			merged = append(merged, pr)
-			return nil
-		},
+	runner := testMergeRunner(&buf)
+	runner.getPRConflicts = func(pr, repo string) string {
+		if pr == "2" {
+			return "yes"
+		}
+		return "none"
+	}
+	runner.rebaseAndPush = func(string, string) error {
+		return fmt.Errorf("conflict in main.go")
+	}
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
 	}
 
 	err := runner.run([]string{"1", "2", "3"}, "squash", true)
@@ -299,17 +368,10 @@ func TestRunStopsOnRebaseFailure(t *testing.T) {
 
 func TestRunStopsOnCITimeout(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "pending" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI: func(string) error {
-			return fmt.Errorf("CI timed out after 10m0s")
-		},
-		mergePR: func(string, string, bool) error { return nil },
+	runner := testMergeRunner(&buf)
+	runner.getPRCI = func(string, string) string { return "pending" }
+	runner.pollCI = func(string, string) error {
+		return fmt.Errorf("CI timed out after 10m0s")
 	}
 
 	err := runner.run([]string{"1", "2"}, "squash", true)
@@ -331,21 +393,15 @@ func TestRunHandlesConflictsWithRebase(t *testing.T) {
 	var buf bytes.Buffer
 	rebaseCalled := false
 	pollCICalled := false
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "yes" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush: func(string) error {
-			rebaseCalled = true
-			return nil
-		},
-		pollCI: func(string) error {
-			pollCICalled = true
-			return nil
-		},
-		mergePR: func(string, string, bool) error { return nil },
+	runner := testMergeRunner(&buf)
+	runner.getPRConflicts = func(string, string) string { return "yes" }
+	runner.rebaseAndPush = func(string, string) error {
+		rebaseCalled = true
+		return nil
+	}
+	runner.pollCI = func(string, string) error {
+		pollCICalled = true
+		return nil
 	}
 
 	err := runner.run([]string{"1"}, "squash", true)
@@ -365,16 +421,8 @@ func TestRunHandlesConflictsWithRebase(t *testing.T) {
 
 func TestRunStopsOnChangesRequested(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "CHANGES_REQUESTED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR:             func(string, string, bool) error { return nil },
-	}
+	runner := testMergeRunner(&buf)
+	runner.getPRReviewDecision = func(string, string) string { return "CHANGES_REQUESTED" }
 
 	err := runner.run([]string{"1", "2"}, "squash", true)
 	if err == nil {
@@ -390,16 +438,8 @@ func TestRunStopsOnChangesRequested(t *testing.T) {
 
 func TestRunStopsOnCIFailing(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "failing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR:             func(string, string, bool) error { return nil },
-	}
+	runner := testMergeRunner(&buf)
+	runner.getPRCI = func(string, string) string { return "failing" }
 
 	err := runner.run([]string{"1"}, "squash", true)
 	if err == nil {
@@ -412,17 +452,10 @@ func TestRunStopsOnCIFailing(t *testing.T) {
 
 func TestRunCIFailsAfterRebase(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "yes" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI: func(string) error {
-			return fmt.Errorf("CI checks failed")
-		},
-		mergePR: func(string, string, bool) error { return nil },
+	runner := testMergeRunner(&buf)
+	runner.getPRConflicts = func(string, string) string { return "yes" }
+	runner.pollCI = func(string, string) error {
+		return fmt.Errorf("CI checks failed")
 	}
 
 	err := runner.run([]string{"1", "2"}, "squash", true)
@@ -439,17 +472,9 @@ func TestRunCIFailsAfterRebase(t *testing.T) {
 
 func TestRunMergeFailure(t *testing.T) {
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR: func(string, string, bool) error {
-			return fmt.Errorf("gh pr merge: exit status 1")
-		},
+	runner := testMergeRunner(&buf)
+	runner.mergePR = func(string, string, bool, string) error {
+		return fmt.Errorf("gh pr merge: exit status 1")
 	}
 
 	err := runner.run([]string{"1"}, "squash", true)
@@ -487,17 +512,8 @@ func TestRunUpdatesStateAfterMerge(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR:             func(string, string, bool) error { return nil },
-		markMerged:          markRunsMerged(store),
-	}
+	runner := testMergeRunner(&buf)
+	runner.markMerged = markRunsMerged(store)
 
 	err := runner.run([]string{"42", "99"}, "squash", true)
 	if err != nil {
@@ -545,17 +561,9 @@ func TestRunDoesNotUpdateStateOnMergeFailure(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	runner := &mergeRunner{
-		out:                 &buf,
-		getPRTitle:          func(string) string { return "Test PR" },
-		getPRCI:             func(string) string { return "passing" },
-		getPRConflicts:      func(string) string { return "none" },
-		getPRReviewDecision: func(string) string { return "APPROVED" },
-		rebaseAndPush:       func(string) error { return nil },
-		pollCI:              func(string) error { return nil },
-		mergePR:             func(string, string, bool) error { return fmt.Errorf("merge failed") },
-		markMerged:          markRunsMerged(store),
-	}
+	runner := testMergeRunner(&buf)
+	runner.mergePR = func(string, string, bool, string) error { return fmt.Errorf("merge failed") }
+	runner.markMerged = markRunsMerged(store)
 
 	_ = runner.run([]string{"42"}, "squash", true)
 
@@ -572,4 +580,94 @@ func TestMarkRunsMergedNilStore(t *testing.T) {
 	// markRunsMerged with nil store should not panic.
 	fn := markRunsMerged(nil)
 	fn("42") // Should be a no-op.
+}
+
+func TestBuildRepoResolverFromRunState(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	prURL42 := "https://github.com/acme/widgets/pull/42"
+	prURL99 := "https://github.com/acme/gadgets/pull/99"
+	states := []*run.State{
+		{ID: "20260101-0000-aaaa", Prompt: "fix", Branch: "b1", PRURL: &prURL42, CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "20260101-0000-bbbb", Prompt: "add", Branch: "b2", PRURL: &prURL99, CreatedAt: "2026-01-01T00:01:00Z"},
+	}
+	for _, s := range states {
+		if err := store.Save(s); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+	}
+
+	resolver := buildRepoResolver(store, "")
+
+	// PR 42 should resolve to acme/widgets from run state
+	if got := resolver("42"); got != "acme/widgets" {
+		t.Errorf("resolver(42) = %q, want %q", got, "acme/widgets")
+	}
+	// PR 99 should resolve to acme/gadgets from run state
+	if got := resolver("99"); got != "acme/gadgets" {
+		t.Errorf("resolver(99) = %q, want %q", got, "acme/gadgets")
+	}
+	// Unknown PR should return ""
+	if got := resolver("7"); got != "" {
+		t.Errorf("resolver(7) = %q, want empty", got)
+	}
+}
+
+func TestBuildRepoResolverFallsBackToFlag(t *testing.T) {
+	resolver := buildRepoResolver(nil, "flag/repo")
+
+	// No run state match, should fall back to --repo flag
+	if got := resolver("42"); got != "flag/repo" {
+		t.Errorf("resolver(42) = %q, want %q", got, "flag/repo")
+	}
+}
+
+func TestBuildRepoResolverRunStateTakesPriority(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	prURL42 := "https://github.com/state/repo/pull/42"
+	s := &run.State{ID: "20260101-0000-aaaa", Prompt: "fix", Branch: "b1", PRURL: &prURL42, CreatedAt: "2026-01-01T00:00:00Z"}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	resolver := buildRepoResolver(store, "flag/repo")
+
+	// PR 42 has a run state match — should use that over the flag
+	if got := resolver("42"); got != "state/repo" {
+		t.Errorf("resolver(42) = %q, want %q", got, "state/repo")
+	}
+	// PR 99 has no run state — should fall back to flag
+	if got := resolver("99"); got != "flag/repo" {
+		t.Errorf("resolver(99) = %q, want %q", got, "flag/repo")
+	}
+}
+
+func TestRepoFromPRURLMerge(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/owner/repo/pull/42", "owner/repo"},
+		{"https://github.com/acme/widgets/pull/123", "acme/widgets"},
+		{"http://github.com/acme/widgets/pull/1", "acme/widgets"},
+		{"not a url", "(unknown)"},
+		{"https://github.com/incomplete", "(unknown)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.url, func(t *testing.T) {
+			got := repoFromPRURL(tt.url)
+			if got != tt.want {
+				t.Errorf("repoFromPRURL(%q) = %q, want %q", tt.url, got, tt.want)
+			}
+		})
+	}
 }

@@ -169,7 +169,7 @@ func TestGHCommandArgOrder(t *testing.T) {
 	// are treated as positional arguments by gh.
 	tests := []struct {
 		name string
-		fn   func(string) []string
+		fn   func(string, ...string) []string
 		want []string
 	}{
 		{
@@ -227,7 +227,7 @@ func TestGHCommandArgsAcceptURL(t *testing.T) {
 	url := "https://github.com/owner/repo/pull/42"
 	fns := []struct {
 		name string
-		fn   func(string) []string
+		fn   func(string, ...string) []string
 	}{
 		{"ghPRStateArgs", ghPRStateArgs},
 		{"ghPRChecksArgs", ghPRChecksArgs},
