@@ -182,43 +182,27 @@ func TestBuildPaneCommand(t *testing.T) {
 	selfBin := "klaus"
 	id := "20260306-1720-176a"
 
-	t.Run("includes auto-watch by default", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
-		if !strings.Contains(cmd, "_auto-watch") {
-			t.Error("expected _auto-watch in pipeline, got:", cmd)
-		}
+	t.Run("includes finalize", func(t *testing.T) {
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "_finalize") {
 			t.Error("expected _finalize in pipeline, got:", cmd)
 		}
-	})
-
-	t.Run("no-watch excludes auto-watch", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, true)
 		if strings.Contains(cmd, "_auto-watch") {
-			t.Error("expected no _auto-watch in pipeline with --no-watch, got:", cmd)
-		}
-		if !strings.Contains(cmd, "_finalize") {
-			t.Error("expected _finalize still present in pipeline, got:", cmd)
+			t.Error("expected no _auto-watch in pipeline, got:", cmd)
 		}
 	})
 
-	t.Run("cross-repo includes finalize prefix for auto-watch", func(t *testing.T) {
+	t.Run("cross-repo includes finalize prefix", func(t *testing.T) {
 		prefix := "cd '/host/repo' && "
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id, false)
-		// Should have the prefix before both _finalize and _auto-watch
-		parts := strings.Split(cmd, "_auto-watch")
-		if len(parts) < 2 {
-			t.Fatal("expected _auto-watch in pipeline")
-		}
-		// The part before _auto-watch should contain the prefix
-		if !strings.Contains(parts[0], "cd '/host/repo'") {
-			t.Error("expected finalize prefix before _auto-watch, got:", cmd)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id)
+		if !strings.Contains(cmd, "cd '/host/repo' && klaus _finalize") {
+			t.Error("expected finalize prefix before _finalize, got:", cmd)
 		}
 	})
 
 	t.Run("exports KLAUS_SESSION_ID via tmuxSessionEnvPrefix", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "session-20260306-1720-abc1")
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "export KLAUS_SESSION_ID='session-20260306-1720-abc1'") {
 			t.Error("expected KLAUS_SESSION_ID export in pane command, got:", cmd)
 		}
@@ -226,28 +210,11 @@ func TestBuildPaneCommand(t *testing.T) {
 
 	t.Run("no KLAUS_SESSION_ID export when env unset", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, false)
+		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
 		if strings.Contains(cmd, "KLAUS_SESSION_ID") {
 			t.Error("expected no KLAUS_SESSION_ID export when session ID is empty, got:", cmd)
 		}
 	})
-}
-
-func TestBuildPaneCommandPRFixSkipsAutoWatch(t *testing.T) {
-	// When noWatch is true (as set for pr-fix runs), auto-watch is excluded
-	worktree := "/tmp/worktrees/repo/abc123"
-	claudeCmd := "claude -p 'fix stuff'"
-	logFile := "/tmp/logs/abc123.jsonl"
-	selfBin := "klaus"
-	id := "20260312-1820-abcd"
-
-	cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id, true)
-	if strings.Contains(cmd, "_auto-watch") {
-		t.Error("pr-fix pane command should not contain _auto-watch, got:", cmd)
-	}
-	if !strings.Contains(cmd, "_finalize") {
-		t.Error("pr-fix pane command should still contain _finalize, got:", cmd)
-	}
 }
 
 func TestPRFixPromptInstructsPushOnly(t *testing.T) {
@@ -424,7 +391,7 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 
 	t.Run("wraps claude in SSH", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, false)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "ssh 'klaus-worker-0'") {
 			t.Error("expected ssh to sandbox host, got:", cmd)
 		}
@@ -435,7 +402,7 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 
 	t.Run("tee and format run locally", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "| tee") {
 			t.Error("expected tee in local pipeline, got:", cmd)
 		}
@@ -449,7 +416,7 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 
 	t.Run("rsyncs results back after finalize", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "rsync -az") {
 			t.Error("expected rsync back in command, got:", cmd)
 		}
@@ -459,21 +426,6 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		}
 	})
 
-	t.Run("includes auto-watch by default", func(t *testing.T) {
-		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, false)
-		if !strings.Contains(cmd, "_auto-watch") {
-			t.Error("expected _auto-watch in sandbox command, got:", cmd)
-		}
-	})
-
-	t.Run("no-watch excludes auto-watch", func(t *testing.T) {
-		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id, true)
-		if strings.Contains(cmd, "_auto-watch") {
-			t.Error("expected no _auto-watch with noWatch=true, got:", cmd)
-		}
-	})
 }
 
 func TestLaunchCmdHasSandboxFlags(t *testing.T) {
