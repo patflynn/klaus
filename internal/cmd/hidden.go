@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 
 	"github.com/patflynn/klaus/internal/config"
@@ -199,81 +197,6 @@ func extractPRNumberFromURL(prURL string) string {
 	return matches[1]
 }
 
-var autoWatchCmd = &cobra.Command{
-	Use:    "_auto-watch <run-id>",
-	Short:  "Auto-launch watch agent if run created a PR",
-	Hidden: true,
-	Args:   cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		id := args[0]
-
-		store, err := sessionStore()
-		if err != nil {
-			return fmt.Errorf("auto-watch: %w", err)
-		}
-
-		state, err := store.Load(filepath.Base(id))
-		if err != nil {
-			return fmt.Errorf("auto-watch: failed to load state for run %s: %w", id, err)
-		}
-
-		// No PR created — nothing to do
-		if state.PRURL == nil || *state.PRURL == "" {
-			return nil
-		}
-
-		prNumber := extractPRNumberFromURL(*state.PRURL)
-		if prNumber == "" {
-			fmt.Fprintf(os.Stderr, "warning: auto-watch: could not extract PR number from %s\n", *state.PRURL)
-			return nil
-		}
-
-		// Determine the main repo root for worktree/branch cleanup.
-		// We must use CommonDir (not RepoRoot) because RepoRoot returns the
-		// worktree path when run from a worktree — and we're about to remove
-		// that worktree, which would leave us in a deleted directory.
-		commonDir, err := git.CommonDir()
-		if err != nil {
-			return fmt.Errorf("auto-watch: not inside a git repository")
-		}
-		gitRoot := filepath.Dir(commonDir)
-		if state.CloneDir != nil {
-			gitRoot = *state.CloneDir
-		}
-
-		// Move to a directory that survives worktree removal
-		watchDir := gitRoot
-		if err := os.Chdir(watchDir); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: auto-watch: chdir to %s: %v\n", watchDir, err)
-		}
-
-		// Clean up agent worktree and branch so watch can use the PR branch
-		if state.Worktree != "" {
-			if err := git.WorktreeRemove(gitRoot, state.Worktree); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: auto-watch: removing worktree: %v\n", err)
-			}
-		}
-		if state.Branch != "" {
-			if err := git.BranchDelete(gitRoot, state.Branch); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: auto-watch: deleting branch: %v\n", err)
-			}
-		}
-
-		fmt.Printf("\nAgent created PR #%s — launching watch agent...\n", prNumber)
-
-		proc := exec.Command("klaus", "watch", prNumber)
-		proc.Dir = watchDir
-		proc.Stdout = os.Stdout
-		proc.Stderr = os.Stderr
-		proc.Stdin = os.Stdin
-		if err := proc.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "error: auto-watch: launching watch: %v\n", err)
-		}
-
-		return nil
-	},
-}
-
 func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
@@ -312,5 +235,4 @@ func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *
 func init() {
 	rootCmd.AddCommand(formatStreamCmd)
 	rootCmd.AddCommand(finalizeCmd)
-	rootCmd.AddCommand(autoWatchCmd)
 }
