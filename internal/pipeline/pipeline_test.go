@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -314,6 +315,27 @@ func TestExtractAgentID(t *testing.T) {
 	}
 }
 
+func TestTruncateError(t *testing.T) {
+	tests := []struct {
+		input  string
+		maxLen int
+		want   string
+	}{
+		{"short error", 50, "short error"},
+		{"line one\nline two\nline three", 50, "line one"},
+		{"some error\n\nUsage:\n  klaus launch [flags]", 50, "some error"},
+		{"before Usage: after", 50, "before"},
+		{strings.Repeat("x", 200), 50, strings.Repeat("x", 49) + "…"},
+		{"", 50, ""},
+	}
+	for _, tt := range tests {
+		got := truncateError(tt.input, tt.maxLen)
+		if got != tt.want {
+			t.Errorf("truncateError(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.want)
+		}
+	}
+}
+
 func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
 	c, _ := newTestController(t)
 
@@ -328,13 +350,19 @@ func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
 	}
 
 	// First failure: should NOT go to stalled (retry 1 of 2).
-	c.HandleGHStatus(context.Background(), statuses, nil)
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
 	state := c.PipelineStates()["42"]
 	if state.Stage == StageStalled {
 		t.Error("expected pipeline to retry, not stall on first failure")
 	}
 	if launchCount != 1 {
 		t.Errorf("expected 1 launch attempt, got %d", launchCount)
+	}
+	// No error action on retryable failure.
+	for _, a := range actions {
+		if a.Type == "error" {
+			t.Error("expected no error action while retries remain")
+		}
 	}
 
 	// Simulate backoff elapsed by resetting LastFailedAt.
@@ -354,11 +382,23 @@ func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
 	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
 	c.mu.Unlock()
 
-	// Third failure: retries exhausted, should stall.
-	c.HandleGHStatus(context.Background(), statuses, nil)
+	// Third failure: retries exhausted, should stall and return error action.
+	actions = c.HandleGHStatus(context.Background(), statuses, nil)
 	state = c.PipelineStates()["42"]
 	if state.Stage != StageStalled {
 		t.Errorf("expected stalled after retries exhausted, got %s", state.Stage)
+	}
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" {
+			hasError = true
+			if a.Error == "" {
+				t.Error("expected non-empty Error field on error action")
+			}
+		}
+	}
+	if !hasError {
+		t.Error("expected error action when retries exhausted and pipeline stalls")
 	}
 }
 

@@ -54,8 +54,9 @@ type PRPipelineState struct {
 
 // Action describes a side-effect the controller wants the dashboard to perform.
 type Action struct {
-	Type    string // "launch" or "merge"
-	Detail  string // human-readable description
+	Type   string // "launch", "merge", or "error"
+	Detail string // human-readable description
+	Error  string // non-empty if action represents a failure
 }
 
 // Controller manages the PR pipeline lifecycle.
@@ -216,6 +217,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					c.logger.Error("failed to dispatch CI fix agent", "pr", ps.PRNumber, "err", err)
 					if !c.handleLaunchRetry(ps) {
 						ps.Stage = StageStalled
+						return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)}}
 					}
 					return nil
 				}
@@ -255,6 +257,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				if err != nil {
 					c.logger.Error("auto-merge failed", "pr", ps.PRNumber, "err", err)
 					ps.Stage = StageStalled
+					actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
 				} else {
 					ps.Stage = StageMerged
 					c.emitEvent(ps.PRNumber, event.PRMerged, map[string]interface{}{
@@ -279,6 +282,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					c.logger.Error("failed to dispatch review fix agent", "pr", ps.PRNumber, "err", err)
 					if !c.handleLaunchRetry(ps) {
 						ps.Stage = StageStalled
+						actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
 					}
 					return actions
 				}
@@ -466,6 +470,24 @@ func isRunning(s *run.State) bool {
 		return false
 	}
 	return true
+}
+
+// truncateError returns a short, single-line version of an error message.
+// It strips cobra "Usage:" help text and truncates to maxLen.
+func truncateError(s string, maxLen int) string {
+	// Strip everything from "Usage:" onward (cobra help text).
+	if idx := strings.Index(s, "Usage:"); idx > 0 {
+		s = strings.TrimSpace(s[:idx])
+	}
+	// Take only the first line.
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > maxLen {
+		return s[:maxLen-1] + "…"
+	}
+	return s
 }
 
 // StageLabel returns a human-readable label for dashboard display.
