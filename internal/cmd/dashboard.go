@@ -398,7 +398,7 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 		if len(agents) == 0 {
 			continue
 		}
-		b.WriteString(m.renderPRLine(prNum, agents[0], g.PRMap[prNum]))
+		b.WriteString(m.renderPRLine(prNum, agents, g.PRMap[prNum]))
 		b.WriteString("\n")
 		for _, s := range agents {
 			if isAgentRunning(s) {
@@ -417,7 +417,8 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 	return b.String()
 }
 
-func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) string {
+func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prStatus) string {
+	s := agents[0]
 	prLabel := fmt.Sprintf("  #%-5s", prNum)
 	prompt := truncate(s.Prompt, 20)
 
@@ -444,12 +445,28 @@ func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) s
 		}
 	}
 
+	// Show klaus-internal approval if any run for this PR is approved.
+	if state == "OPEN" && isAnyRunApproved(agents) {
+		parts = append(parts, cyanStyle.Render("✓ approved"))
+	}
+
 	// Append pipeline stage if available.
 	if pps, ok := m.pipelineStates[prNum]; ok {
 		parts = append(parts, dimStyle.Render(pipeline.StageLabel(pps.Stage)))
 	}
 
 	return fmt.Sprintf("%s  %-20s  %s", prLabel, prompt, strings.Join(parts, "  "))
+}
+
+// isAnyRunApproved returns true if any of the given run states has been
+// approved via `klaus approve`.
+func isAnyRunApproved(states []*run.State) bool {
+	for _, s := range states {
+		if s.Approved != nil && *s.Approved {
+			return true
+		}
+	}
+	return false
 }
 
 func renderAgentSubline(s *run.State) string {
@@ -777,6 +794,7 @@ var (
 	redStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	cyanStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	sandboxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	dimRedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Faint(true)
 )

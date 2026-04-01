@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -512,7 +513,7 @@ func TestRenderPRLine(t *testing.T) {
 	}
 
 	// Without GitHub status
-	line := m.renderPRLine("42", s, nil)
+	line := m.renderPRLine("42", []*run.State{s},nil)
 	if !strings.Contains(line, "#42") {
 		t.Error("should contain PR number")
 	}
@@ -530,7 +531,7 @@ func TestRenderPRLine(t *testing.T) {
 		CI:        "passing",
 		Conflicts: "yes",
 	}
-	line = m.renderPRLine("42", s, ps)
+	line = m.renderPRLine("42", []*run.State{s},ps)
 	if !strings.Contains(line, "CI ✓") {
 		t.Error("should show passing CI")
 	}
@@ -540,9 +541,55 @@ func TestRenderPRLine(t *testing.T) {
 
 	// Merged PR
 	ps.State = "MERGED"
-	line = m.renderPRLine("42", s, ps)
+	line = m.renderPRLine("42", []*run.State{s}, ps)
 	if !strings.Contains(line, "MERGED") {
 		t.Error("should show MERGED")
+	}
+}
+
+func TestRenderPRLineApproval(t *testing.T) {
+	m := dashboardModel{
+		width:          80,
+		pipelineStates: map[string]*pipeline.PRPipelineState{},
+	}
+
+	approved := true
+	notApproved := false
+
+	base := &run.State{
+		ID:     "run-1",
+		Prompt: "fix bug",
+		Branch: "fix-bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/10"),
+	}
+
+	// No approval — should not show indicator
+	line := m.renderPRLine("10", []*run.State{base}, &prStatus{State: "OPEN"})
+	if strings.Contains(line, "approved") {
+		t.Error("should not show approved when not approved")
+	}
+
+	// Single run approved
+	approvedRun := *base
+	approvedRun.Approved = &approved
+	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "OPEN"})
+	if !strings.Contains(line, "approved") {
+		t.Error("should show approved indicator")
+	}
+
+	// Multiple runs, only second is approved
+	notApprovedRun := *base
+	notApprovedRun.Approved = &notApproved
+	line = m.renderPRLine("10", []*run.State{&notApprovedRun, &approvedRun}, &prStatus{State: "OPEN"})
+	if !strings.Contains(line, "approved") {
+		t.Error("should show approved when any run is approved")
+	}
+
+	// Approved but MERGED — should not show indicator
+	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "MERGED"})
+	if strings.Contains(line, "approved") {
+		t.Error("should not show approved for merged PRs")
 	}
 }
 
