@@ -155,9 +155,13 @@ are synced back after completion. Use --local to force local execution, or
 
 		worktree := filepath.Join(hostCfg.WorktreeBase, repoName, id)
 
-		// Fetch all refs from origin so the worktree starts from latest state
-		if err := git.FetchAll(repoRoot); err != nil {
-			return fmt.Errorf("fetching origin: %w", err)
+		// Fetch all refs so the worktree starts from the latest state.
+		// Skip when EnsureClone was already called — it fetches with the
+		// same flags (--prune --tags), so a second fetch is redundant.
+		if repoRef == "" || projectLocalPath != "" {
+			if err := git.FetchAll(repoRoot); err != nil {
+				return fmt.Errorf("fetching origin: %w", err)
+			}
 		}
 
 		// When --pr is set, track the PR's branch instead of creating a new one
