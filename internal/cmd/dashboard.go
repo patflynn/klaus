@@ -79,11 +79,12 @@ type errMsg struct {
 
 // prStatus holds the GitHub-fetched status for a single PR.
 type prStatus struct {
-	PRNumber       string
-	State          string // OPEN, MERGED, CLOSED
-	CI             string // passing, failing, pending, unknown
-	Conflicts      string // yes, none, unknown
-	ReviewDecision string // APPROVED, CHANGES_REQUESTED, etc.
+	PRNumber              string
+	State                 string // OPEN, MERGED, CLOSED
+	CI                    string // passing, failing, pending, unknown
+	Conflicts             string // yes, none, unknown
+	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
+	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
 }
 
 // repoGroup is a set of runs and PRs belonging to the same repository.
@@ -164,11 +165,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		pStatuses := make(map[string]*pipeline.PRStatus, len(msg.statuses))
 		for k, v := range msg.statuses {
 			ps := &pipeline.PRStatus{
-				PRNumber:       v.PRNumber,
-				State:          v.State,
-				CI:             v.CI,
-				Conflicts:      v.Conflicts,
-				ReviewDecision: v.ReviewDecision,
+				PRNumber:              v.PRNumber,
+				State:                 v.State,
+				CI:                    v.CI,
+				Conflicts:             v.Conflicts,
+				ReviewDecision:        v.ReviewDecision,
+				HasNewTrustedComments: v.HasNewTrustedComments,
 			}
 			// Find the PR URL and target repo from run states.
 			for _, s := range m.states {
@@ -547,6 +549,16 @@ func fetchPRStatus(prNumber, prRef string) *prStatus {
 	ps.CI = getPRCI(prRef)
 	ps.Conflicts = getPRConflicts(prRef)
 	ps.ReviewDecision = getPRReviewDecision(prRef)
+
+	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
+	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.
+	if !strings.EqualFold(ps.ReviewDecision, "CHANGES_REQUESTED") &&
+		!strings.EqualFold(ps.ReviewDecision, "APPROVED") {
+		ownerRepo := ownerRepoFromPRURL(prRef)
+		if ownerRepo != "" {
+			ps.HasNewTrustedComments = hasUnaddressedTrustedComments(ownerRepo, prNumber)
+		}
+	}
 	return ps
 }
 

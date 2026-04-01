@@ -30,13 +30,14 @@ const (
 
 // PRStatus holds the GitHub-fetched status for a single PR, passed from the dashboard.
 type PRStatus struct {
-	PRNumber       string
-	PRURL          string
-	State          string // OPEN, MERGED, CLOSED
-	CI             string // passing, failing, pending, unknown
-	Conflicts      string // yes, none, unknown
-	ReviewDecision string // APPROVED, CHANGES_REQUESTED, etc.
-	TargetRepo     string // owner/repo for dispatch context
+	PRNumber               string
+	PRURL                  string
+	State                  string // OPEN, MERGED, CLOSED
+	CI                     string // passing, failing, pending, unknown
+	Conflicts              string // yes, none, unknown
+	ReviewDecision         string // APPROVED, CHANGES_REQUESTED, etc.
+	TargetRepo             string // owner/repo for dispatch context
+	HasNewTrustedComments  bool   // unaddressed comments from trusted reviewers
 }
 
 // PRPipelineState tracks per-PR pipeline state.
@@ -275,8 +276,25 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)})
 			}
 		} else {
-			// CI passed, waiting for review.
-			if ps.Stage != StageApproved && ps.Stage != StageMerging {
+			// CI passed, no explicit CHANGES_REQUESTED or APPROVED.
+			if status.HasNewTrustedComments && !ps.AgentRunning {
+				// Trusted reviewer left unaddressed comments — dispatch fix agent.
+				prompt := fmt.Sprintf(
+					"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. Check the review comments with: gh api repos/%s/pulls/%s/comments",
+					ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber,
+				)
+				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+				if err != nil {
+					c.logger.Error("failed to dispatch trusted review fix agent", "pr", ps.PRNumber, "err", err)
+					ps.Stage = StageStalled
+					return actions
+				}
+				ps.LastAgentID = agentID
+				ps.AgentRunning = true
+				ps.Stage = StageReviewPending
+				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)})
+			} else if ps.Stage != StageApproved && ps.Stage != StageMerging && !ps.AgentRunning {
+				// Waiting for review.
 				ps.Stage = StageCIPassed
 				c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
 					"pr_number": ps.PRNumber,
