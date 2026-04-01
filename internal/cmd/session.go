@@ -233,15 +233,12 @@ func waitForAgents(store run.StateStore) {
 
 		var stillActive []*run.State
 		for _, s := range active {
-			if !tmux.PaneExists(*s.TmuxPane) {
-				fmt.Printf("  agent %s finished\n", s.ID)
-				continue
+			// Reload state to check for finalized cost/duration
+			if updated, err := store.Load(s.ID); err == nil {
+				s = updated
 			}
 
-			// Check if the pane's command has completed. An idle pane
-			// means the agent's pipeline has finished and the pane is
-			// either dead or left at a shell prompt.
-			if tmux.PaneIsIdle(*s.TmuxPane) {
+			if !s.IsAgentRunning() {
 				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
 				tmux.KillPane(*s.TmuxPane)
 				continue

@@ -13,6 +13,19 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
+func init() {
+	// Mock tmux functions in run package for tests.
+	run.PaneExists = func(paneID string) bool {
+		return strings.HasPrefix(paneID, "%")
+	}
+	run.PaneIsIdle = func(paneID string) bool {
+		return true
+	}
+	run.PaneIsDead = func(paneID string) bool {
+		return false
+	}
+}
+
 func TestGroupByRepo(t *testing.T) {
 	states := []*run.State{
 		{ID: "1", TargetRepo: strPtr("owner/repoA"), Type: "launch"},

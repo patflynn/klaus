@@ -134,21 +134,27 @@ func RenameWindow(target, name string) error {
 	return err
 }
 
+// PaneIsDead checks if a tmux pane's command has exited.
+// Only returns true when remain-on-exit is set and the process is gone.
+func PaneIsDead(paneID string) bool {
+	out, err := runTmux("display-message", "-t", paneID, "-p", "#{pane_dead}")
+	return err == nil && strings.TrimSpace(out) == "1"
+}
+
 // PaneIsIdle checks if a tmux pane's command has finished running.
 // Returns true when the pane is dead (command exited) or the only
 // running foreground process is a shell — which indicates the
-// command pipeline has completed.
+// command pipeline has likely completed. Note that this may return
+// true for active agents that are currently executing shell scripts.
 func PaneIsIdle(paneID string) bool {
-	// Check if the pane is marked dead (command exited, remain-on-exit set)
-	out, err := runTmux("display-message", "-t", paneID, "-p", "#{pane_dead}")
-	if err == nil && strings.TrimSpace(out) == "1" {
+	if PaneIsDead(paneID) {
 		return true
 	}
 
 	// Check the current foreground command in the pane. While the agent's
 	// command pipeline is active, pane_current_command will be "claude",
 	// "tee", "klaus", etc. Once finished, only the shell remains.
-	out, err = runTmux("display-message", "-t", paneID, "-p", "#{pane_current_command}")
+	out, err := runTmux("display-message", "-t", paneID, "-p", "#{pane_current_command}")
 	if err != nil {
 		return false
 	}

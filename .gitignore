@@ -1,0 +1,17 @@
+# Binaries
+klaus
+
+# Nix / Direnv
+.direnv/
+result
+
+# Logs
+*.log
+*.jsonl
+
+# State
+.session/
+.runs/
+
+# macOS
+.DS_Store

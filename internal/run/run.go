@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"github.com/patflynn/klaus/internal/tmux"
 )
 
 // State represents the persistent state of a single agent run.
@@ -30,6 +32,30 @@ type State struct {
 	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
 	Approved       *bool    `json:"approved,omitempty"`
 	ApprovedAt     *string  `json:"approved_at,omitempty"`
+}
+
+// Tmux dependency injection for testing.
+var (
+	PaneExists = tmux.PaneExists
+	PaneIsIdle = tmux.PaneIsIdle
+	PaneIsDead = tmux.PaneIsDead
+)
+
+// IsAgentRunning checks if the agent's tmux pane is still active and
+// executing its command pipeline.
+func (s *State) IsAgentRunning() bool {
+	if s.TmuxPane == nil || !PaneExists(*s.TmuxPane) {
+		return false
+	}
+
+	// Finalized runs (cost/duration set) are running only if their pane
+	// is not idle (e.g. still showing output before the user closes it).
+	if s.CostUSD != nil || s.DurationMS != nil {
+		return !PaneIsIdle(*s.TmuxPane)
+	}
+
+	// Active (unfinalized) runs are running unless the pane is explicitly dead.
+	return !PaneIsDead(*s.TmuxPane)
 }
 
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.
