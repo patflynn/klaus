@@ -427,6 +427,109 @@ func TestReviewFixLaunchRetry(t *testing.T) {
 	}
 }
 
+func TestTrustedCommentDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var launchedPrompt string
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchedPrompt = prompt
+		return "agent-trusted", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "", // empty — not CHANGES_REQUESTED
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchedPrompt == "" {
+		t.Error("expected agent dispatch for trusted reviewer comments")
+	}
+	if len(actions) != 1 || actions[0].Type != "launch" {
+		t.Errorf("expected 1 launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageReviewPending {
+		t.Errorf("expected stage review_pending, got %s", states["42"].Stage)
+	}
+}
+
+func TestNoDispatchWithoutTrustedComments(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: false,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent dispatch without trusted comments, got %d launches", launchCount)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageCIPassed {
+		t.Errorf("expected stage ci_passed, got %s", states["42"].Stage)
+	}
+}
+
+func TestNoDoubleDispatchOnTrustedComments(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "agent-trusted", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+		},
+	}
+
+	// First call dispatches.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Simulate agent still running.
+	runStates := []*run.State{
+		{ID: "agent-trusted", TmuxPane: strPtr("%1")},
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 1 {
+		t.Errorf("expected no duplicate launch while agent running, got %d total", launchCount)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
