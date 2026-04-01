@@ -299,7 +299,7 @@ will create a PR when done. You are the planner and researcher; agents are the b
 - Implement code changes yourself — delegate to agents
 - Launch agents with vague one-line prompts — research first, then write rich prompts
 - Monitor agent status manually — the dashboard handles visibility
-- Manage the PR merge pipeline — the event bus handles that
+- Manage the PR merge pipeline — the pipeline controller handles CI monitoring, review comment detection, and auto-dispatch of fix agents
 
 ## Launching agents
 
@@ -353,9 +353,57 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 - ` + "`klaus target [owner/repo | project-name]`" + ` — get/set default target repo
 - ` + "`klaus approve <pr-number> [...]`" + ` — approve PRs for merging
 - ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially
-- ` + "`klaus track <pr-number> [--repo <repo>]`" + ` — track existing PRs on the dashboard
+- ` + "`klaus track <pr-number> [--repo <repo>]`" + ` — add existing PR to dashboard for pipeline monitoring
 - ` + "`klaus untrack <pr-number>`" + ` — stop tracking a PR
 - ` + "`klaus dashboard`" + ` — open live dashboard
+
+## How the pipeline works
+
+The dashboard runs a pipeline controller that automatically:
+- Monitors CI status for all tracked PRs (every 30s)
+- Dispatches fix agents when CI fails (via ` + "`klaus launch --pr`" + `)
+- Dispatches fix agents when trusted reviewers (e.g. gemini-code-assist) leave comments
+- Auto-merges PRs when CI passes + approved + no conflicts (if ` + "`auto_merge_on_approval`" + ` is configured)
+- Tracks pipeline stages per PR: ci_pending → ci_failed → ci_passed → review_pending → approved → merging → merged
+
+You do NOT need to manually monitor CI or dispatch fix agents — the pipeline handles routine failures. Focus on:
+- Initial research and agent dispatch for new work
+- Reviewing agent output when the pipeline stalls
+- Approving PRs that are ready (` + "`klaus approve`" + `)
+
+## State and tracking
+
+- Each agent run creates a state file at ` + "`~/.klaus/sessions/{session-id}/runs/{run-id}.json`" + `
+- The dashboard watches this directory via fsnotify — new/modified files appear instantly
+- To add an existing PR without launching an agent, use ` + "`klaus track <pr-number> --repo <repo>`" + `
+- Run states track: ID, prompt, branch, worktree, PR URL, type, target repo, cost, duration, approval/merge status
+- State types: ` + "`session`" + ` (coordinator), ` + "`launch`" + ` (agent), ` + "`pr-fix`" + ` (fix agent), ` + "`track`" + ` (monitored PR)
+
+## Approval and merge workflow
+
+- PRs require approval before merging (configurable via ` + "`require_approval`" + ` in .klaus/config.json)
+- ` + "`klaus approve <pr-number>`" + ` — mark a PR ready for merge
+- ` + "`klaus approve --all`" + ` — approve all merge-ready PRs
+- ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially with auto-rebase
+- Merge handles: CI check, conflict detection, automatic rebase if needed, 10-min CI poll timeout
+- The pipeline can auto-merge approved PRs if ` + "`auto_merge_on_approval`" + ` is enabled in config
+
+## Agent lifecycle
+
+What happens after ` + "`klaus launch`" + `:
+1. Creates an isolated git worktree and tmux pane
+2. Agent runs Claude Code in the pane, working on the branch
+3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
+4. Events are emitted (agent:completed, agent:pr-created)
+5. Dashboard detects state change and updates display
+6. Pipeline evaluates the PR and manages CI/review/merge cycle
+
+## Gotchas and common issues
+
+- **Worktree conflicts**: When using --pr to push fixes to an existing PR, the PR's branch cannot be checked out in the main repo clone. If you get a worktree error, switch the main repo to main first.
+- **Repo resolution**: Outside a git repo, always use --repo or set a target. Priority: explicit --repo flag > session target > current git repo.
+- **Agent prompts are the only context**: Agents have access to the repo but NO conversation history. Everything the agent needs must be in the prompt — file paths, function names, acceptance criteria, constraints.
+- **State from other sessions**: Run states from previous sessions are NOT visible in the current session's dashboard. To track a PR from a previous session, use ` + "`klaus track`" + `.
 {{if .Projects}}
 ## Registered projects
 
