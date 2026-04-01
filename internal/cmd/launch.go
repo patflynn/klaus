@@ -591,21 +591,16 @@ func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finali
 // pane in the window. This is called after RebalanceLayout which may have
 // moved the dashboard out of position.
 func pinDashboardToBottom(currentPane string, store run.StateStore) {
-	// Find the dashboard pane from the session state
-	states, err := store.List()
-	if err != nil {
+	// Load the session state directly via KLAUS_SESSION_ID
+	sessionID := os.Getenv("KLAUS_SESSION_ID")
+	if sessionID == "" {
 		return
 	}
-	var dashPane string
-	for _, s := range states {
-		if s.Type == "session" && s.DashboardPane != nil {
-			dashPane = *s.DashboardPane
-			break
-		}
-	}
-	if dashPane == "" || !tmux.PaneExists(dashPane) {
+	s, err := store.Load(sessionID)
+	if err != nil || s.Type != "session" || s.DashboardPane == nil {
 		return
 	}
+	dashPane := *s.DashboardPane
 
 	panes, err := tmux.ListWindowPanes(currentPane)
 	if err != nil || len(panes) < 2 {
@@ -615,6 +610,18 @@ func pinDashboardToBottom(currentPane string, store run.StateStore) {
 	lastPane := panes[len(panes)-1]
 	if lastPane == dashPane {
 		return // already at the bottom
+	}
+
+	// Ensure the dashboard is actually in this window before swapping
+	var found bool
+	for _, p := range panes {
+		if p == dashPane {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
 	}
 
 	if err := tmux.SwapPane(dashPane, lastPane); err != nil {
