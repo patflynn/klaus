@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -20,6 +21,12 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
+
+// dashboardError holds a pipeline error for TUI display.
+type dashboardError struct {
+	Time    time.Time
+	Message string
+}
 
 var dashboardCmd = &cobra.Command{
 	Use:   "dashboard",
@@ -103,6 +110,7 @@ type dashboardModel struct {
 	sandboxHosts   map[string]bool      // host -> reachable
 	pipelineCtrl   *pipeline.Controller
 	pipelineStates map[string]*pipeline.PRPipelineState
+	recentErrors   []dashboardError // last N pipeline errors shown in TUI
 	width          int
 	height         int
 	err            error
@@ -111,10 +119,15 @@ type dashboardModel struct {
 
 func newDashboardModel(store run.StateStore) dashboardModel {
 	var eventLog *event.Log
+	var logWriter io.Writer = io.Discard
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
+		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
+		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+			logWriter = f
+		}
 	}
-	logger := slog.Default()
+	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	ctrl := pipeline.New(store, eventLog, logger)
 
 	return dashboardModel{
@@ -197,6 +210,22 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case pipelineActionMsg:
+		// Capture any error actions for TUI display.
+		for _, a := range msg.actions {
+			if a.Error != "" {
+				errMsg := a.Detail
+				if a.Error != "" {
+					errMsg += " — " + a.Error
+				}
+				m.recentErrors = append(m.recentErrors, dashboardError{
+					Time:    time.Now(),
+					Message: errMsg,
+				})
+				if len(m.recentErrors) > 3 {
+					m.recentErrors = m.recentErrors[len(m.recentErrors)-3:]
+				}
+			}
+		}
 		// Pipeline dispatched agents or merged PRs — refresh state.
 		return m, loadStatesCmd(m.store)
 
@@ -209,6 +238,16 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
+		// Expire errors older than 3 minutes.
+		cutoff := time.Now().Add(-3 * time.Minute)
+		filtered := m.recentErrors[:0]
+		for _, e := range m.recentErrors {
+			if e.Time.After(cutoff) {
+				filtered = append(filtered, e)
+			}
+		}
+		m.recentErrors = filtered
+
 		return m, tea.Batch(
 			fetchGHStatusCmd(m.states),
 			checkSandboxCmd(m.states),
@@ -276,6 +315,17 @@ func (m dashboardModel) View() string {
 
 	for _, g := range groups {
 		b.WriteString(m.renderGroup(g))
+		b.WriteString("\n")
+	}
+
+	// Pipeline errors
+	if len(m.recentErrors) > 0 {
+		for _, e := range m.recentErrors {
+			ts := e.Time.Format("15:04")
+			line := fmt.Sprintf("  %s ✗ %s", ts, e.Message)
+			b.WriteString(dimRedStyle.Render(truncate(line, clamp(m.width-2, 20, 120))))
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 	}
 
@@ -724,6 +774,7 @@ var (
 	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	sandboxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimRedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Faint(true)
 )
 
 func stateLabel(state string) string {
