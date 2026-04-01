@@ -115,16 +115,19 @@ type dashboardModel struct {
 	height         int
 	err            error
 	watcher        *fsnotify.Watcher
+	logFile        *os.File
 }
 
 func newDashboardModel(store run.StateStore) dashboardModel {
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
+	var logFile *os.File
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
 		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 			logWriter = f
+			logFile = f
 		}
 	}
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
@@ -136,6 +139,7 @@ func newDashboardModel(store run.StateStore) dashboardModel {
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
 		pipelineStates: make(map[string]*pipeline.PRPipelineState),
+		logFile:        logFile,
 	}
 }
 
@@ -154,6 +158,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			if m.watcher != nil {
 				m.watcher.Close()
+			}
+			if m.logFile != nil {
+				m.logFile.Close()
 			}
 			return m, tea.Quit
 		case "r":
@@ -213,10 +220,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Capture any error actions for TUI display.
 		for _, a := range msg.actions {
 			if a.Error != "" {
-				errMsg := a.Detail
-				if a.Error != "" {
-					errMsg += " — " + a.Error
-				}
+				errMsg := a.Detail + " — " + a.Error
 				m.recentErrors = append(m.recentErrors, dashboardError{
 					Time:    time.Now(),
 					Message: errMsg,
