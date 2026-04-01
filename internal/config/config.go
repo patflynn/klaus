@@ -353,6 +353,8 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 - ` + "`klaus target [owner/repo | project-name]`" + ` — get/set default target repo
 - ` + "`klaus approve <pr-number> [...]`" + ` — approve PRs for merging
 - ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially
+- ` + "`klaus track <pr-number> [--repo <repo>]`" + ` — track existing PRs on the dashboard
+- ` + "`klaus untrack <pr-number>`" + ` — stop tracking a PR
 - ` + "`klaus dashboard`" + ` — open live dashboard
 {{if .Projects}}
 ## Registered projects
