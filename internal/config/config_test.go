@@ -214,58 +214,6 @@ func TestRenderSessionPromptCustomTemplate(t *testing.T) {
 	}
 }
 
-func TestRenderWatchPromptDefault(t *testing.T) {
-	dir := t.TempDir() // no .klaus/watch-prompt.md
-
-	vars := PromptVars{
-		RunID:  "watch-20260210-1430-a3f2",
-		Branch: "agent/watch-20260210-1430-a3f2",
-		PR:     "99",
-	}
-
-	prompt, err := RenderWatchPrompt(dir, vars)
-	if err != nil {
-		t.Fatalf("RenderWatchPrompt() error: %v", err)
-	}
-
-	if !strings.Contains(prompt, "PR #99") {
-		t.Error("prompt should contain PR number")
-	}
-	if !strings.Contains(prompt, "gh pr checks 99") {
-		t.Error("prompt should contain gh pr checks command with PR number")
-	}
-	if !strings.Contains(prompt, "watch-20260210-1430-a3f2") {
-		t.Error("prompt should contain run ID")
-	}
-	if !strings.Contains(prompt, "## Testing") {
-		t.Error("prompt should contain testing section")
-	}
-}
-
-func TestRenderWatchPromptCustomTemplate(t *testing.T) {
-	dir := t.TempDir()
-	klausDir := filepath.Join(dir, ".klaus")
-	os.MkdirAll(klausDir, 0o755)
-
-	tmpl := "Watch PR #{{.PR}} run {{.RunID}}"
-	os.WriteFile(filepath.Join(klausDir, "watch-prompt.md"), []byte(tmpl), 0o644)
-
-	vars := PromptVars{
-		RunID: "watch-abc",
-		PR:    "55",
-	}
-
-	prompt, err := RenderWatchPrompt(dir, vars)
-	if err != nil {
-		t.Fatalf("RenderWatchPrompt() error: %v", err)
-	}
-
-	want := "Watch PR #55 run watch-abc"
-	if prompt != want {
-		t.Errorf("prompt = %q, want %q", prompt, want)
-	}
-}
-
 func TestRenderPRFixPromptDefault(t *testing.T) {
 	dir := t.TempDir() // no .klaus/pr-fix-prompt.md
 

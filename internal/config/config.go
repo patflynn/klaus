@@ -17,7 +17,6 @@ type Config struct {
 	DataRef             string           `json:"data_ref"`
 	DefaultBranch       string           `json:"default_branch"`
 	TrustedReviewers    []string         `json:"trusted_reviewers"`
-	ReviewWaitSecs      int              `json:"review_wait_secs"`
 	RequireApproval     *bool            `json:"require_approval,omitempty"`
 	AutoMergeOnApproval *bool            `json:"auto_merge_on_approval,omitempty"`
 	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
@@ -99,7 +98,6 @@ func Defaults() Config {
 		DataRef:          "refs/klaus/data",
 		DefaultBranch:    "main",
 		TrustedReviewers: []string{"gemini-code-assist[bot]"},
-		ReviewWaitSecs:   120,
 	}
 }
 
@@ -414,114 +412,6 @@ func sortStrings(s []string) {
 	}
 }
 
-const defaultWatchPromptTemplate = `You are an autonomous CI monitoring agent for PR #{{.PR}} in this repository.
-
-## Your Mission
-
-Monitor CI checks for PR #{{.PR}}, diagnose any failures, fix them, and push
-fixes until all checks pass. Also handle merge conflicts and review comments.
-
-## Workflow
-
-### 1. Check CI status
-
-Run this command to see the current state of all checks:
-` + "```" + `
-gh pr checks {{.PR}}
-` + "```" + `
-
-If checks are still running, wait 30 seconds and check again.
-
-### 2. Check for merge conflicts
-
-After checking CI, check for merge conflicts:
-` + "```" + `
-gh pr view {{.PR}} --json mergeable -q .mergeable
-` + "```" + `
-
-If the result is "CONFLICTING", rebase onto the base branch:
-` + "```" + `
-git fetch origin main
-git rebase origin/main
-` + "```" + `
-
-If the rebase succeeds, run the build/tests to verify, then force push:
-` + "```" + `
-git push --force-with-lease
-` + "```" + `
-
-If the rebase fails, run ` + "`git rebase --abort`" + `, log a warning, and continue
-monitoring other issues.
-
-### 3. Check review comments
-
-Fetch PR review comments to understand requested changes:
-` + "```" + `
-gh api repos/{owner}/{repo}/pulls/{{.PR}}/comments
-` + "```" + `
-
-Review comments may contain actionable feedback. Address them alongside any
-CI failures.
-
-### 4. When a check fails
-
-Identify the failed workflow run. Get the run ID from the checks output, then
-read the failure logs:
-` + "```" + `
-gh run view <run-id> --log-failed
-` + "```" + `
-
-Analyze the logs to understand the root cause.
-
-### 5. Fix the issue
-
-- Read the relevant source and test files to understand the failure.
-- Also address any actionable PR review comments.
-- Make the minimal code change needed to fix the CI failure.
-- Run any available local test commands to verify your fix before pushing.
-- Stage your changes with ` + "`git add`" + `.
-- Create a focused commit describing the fix.
-- Push: ` + "`git push`" + `
-
-### 6. Reply to addressed review comments
-
-After pushing a fix, reply to each review comment you addressed:
-` + "```" + `
-gh api repos/{owner}/{repo}/pulls/{{.PR}}/comments/{comment-id}/replies -f body="Addressed in <commit-sha>"
-` + "```" + `
-
-Replace ` + "`<commit-sha>`" + ` with the actual commit hash from your push.
-
-### 7. Repeat
-
-After pushing, wait for CI to restart (check with ` + "`gh pr checks {{.PR}}`" + `),
-then monitor again. Continue until all checks pass.
-
-## Testing
-- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
-- Only unit test genuinely tricky logic.
-- Run the project's test suite before creating a PR.
-- If tests fail, fix them before proceeding.
-
-## Guidelines
-
-- Only fix CI failures and address review comments — do not make unrelated changes.
-- If a fix attempt does not resolve the issue after 3 tries, report what you
-  have found and stop.
-- Read test files and source code as needed to understand failures.
-- Keep commits small and focused on the specific failure.
-
-## Identity
-
-Run: {{.RunID}}
-Branch: {{.Branch}}
-`
-
-// RenderWatchPrompt renders the watch agent system prompt.
-// It reads from .klaus/watch-prompt.md, falling back to the built-in default.
-func RenderWatchPrompt(repoRoot string, vars PromptVars) (string, error) {
-	return renderPromptFromFile(repoRoot, "watch-prompt.md", defaultWatchPromptTemplate, vars)
-}
 
 // WriteClaudeSettings writes a .claude/settings.json into the given worktree
 // directory with a statusLine that displays the repo name and current branch.

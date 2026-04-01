@@ -194,7 +194,7 @@ func TestCountAgents(t *testing.T) {
 	states := []*run.State{
 		{ID: "1", Type: "launch"},                                                           // not running (no pane)
 		{ID: "2", Type: "launch", TmuxPane: strPtr("%2"), CostUSD: float64Ptr(1.0)},         // finished
-		{ID: "3", Type: "watch", TmuxPane: strPtr("%3")},                                    // running
+		{ID: "3", Type: "pr-fix", TmuxPane: strPtr("%3")},                                    // running
 		{ID: "4", Type: "session"},                                                          // excluded
 		{ID: "5", Type: "launch", TmuxPane: strPtr("%5"), DurationMS: int64Ptr(5000)},       // finished
 		{ID: "6", Type: "launch", TmuxPane: strPtr("%6")},                                   // running

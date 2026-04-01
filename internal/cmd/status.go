@@ -294,6 +294,27 @@ func truncate(s string, max int) string {
 	return s[:max] + "..."
 }
 
+// getPRBranch returns the head branch name for a PR using the gh CLI.
+func getPRBranch(prNumber string, repo ...string) (string, error) {
+	args := []string{"pr", "view", "--json", "headRefName", "-q", ".headRefName"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prNumber)
+	cmd := exec.Command("gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	branch := strings.TrimSpace(stdout.String())
+	if branch == "" {
+		return "", fmt.Errorf("could not determine branch for PR #%s", prNumber)
+	}
+	return branch, nil
+}
+
 func init() {
 	rootCmd.AddCommand(statusCmd)
 }
