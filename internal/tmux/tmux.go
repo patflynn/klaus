@@ -73,6 +73,28 @@ func RebalanceLayout(targetPane string) error {
 	return err
 }
 
+// SwapPane swaps two tmux panes.
+func SwapPane(src, dst string) error {
+	_, err := runTmux("swap-pane", "-s", src, "-t", dst)
+	return err
+}
+
+// ListWindowPanes returns the pane IDs for the window containing targetPane, in layout order (top to bottom).
+func ListWindowPanes(targetPane string) ([]string, error) {
+	out, err := runTmux("list-panes", "-t", targetPane, "-F", "#{pane_id}")
+	if err != nil {
+		return nil, fmt.Errorf("list-panes: %w", err)
+	}
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			panes = append(panes, line)
+		}
+	}
+	return panes, nil
+}
+
 // PaneExists checks if a tmux pane is still alive.
 func PaneExists(paneID string) bool {
 	out, err := runTmux("list-panes", "-a", "-F", "#{pane_id}")

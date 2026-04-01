@@ -307,6 +307,12 @@ are synced back after completion. Use --local to force local execution, or
 			return fmt.Errorf("rebalancing tmux layout: %w", err)
 		}
 
+		// Keep the dashboard pane pinned at the bottom. RebalanceLayout uses
+		// even-vertical which treats all panes equally, so the dashboard may
+		// end up in the middle. Load the session state to find the dashboard
+		// pane, then swap it to the last position if needed.
+		pinDashboardToBottom(currentPane, store)
+
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
 		issuePtr := stringPtr(issue)
@@ -579,6 +585,48 @@ func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finali
 		shellQuote(id),
 		rsyncBack,
 	)
+}
+
+// pinDashboardToBottom ensures the dashboard pane is the last (bottom-most)
+// pane in the window. This is called after RebalanceLayout which may have
+// moved the dashboard out of position.
+func pinDashboardToBottom(currentPane string, store run.StateStore) {
+	// Load the session state directly via KLAUS_SESSION_ID
+	sessionID := os.Getenv("KLAUS_SESSION_ID")
+	if sessionID == "" {
+		return
+	}
+	s, err := store.Load(sessionID)
+	if err != nil || s.Type != "session" || s.DashboardPane == nil {
+		return
+	}
+	dashPane := *s.DashboardPane
+
+	panes, err := tmux.ListWindowPanes(currentPane)
+	if err != nil || len(panes) < 2 {
+		return
+	}
+
+	lastPane := panes[len(panes)-1]
+	if lastPane == dashPane {
+		return // already at the bottom
+	}
+
+	// Ensure the dashboard is actually in this window before swapping
+	var found bool
+	for _, p := range panes {
+		if p == dashPane {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return
+	}
+
+	if err := tmux.SwapPane(dashPane, lastPane); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not pin dashboard to bottom: %v\n", err)
+	}
 }
 
 func init() {

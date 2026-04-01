@@ -123,6 +123,24 @@ func TestBuildArgsLockPaneTitle(t *testing.T) {
 	}
 }
 
+func TestBuildArgsSwapPane(t *testing.T) {
+	args := BuildArgs("swap-pane", "-s", "%3", "-t", "%5")
+	want := []string{"swap-pane", "-s", "%3", "-t", "%5"}
+
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("BuildArgs() got = %q, want %q", args, want)
+	}
+}
+
+func TestBuildArgsListPanes(t *testing.T) {
+	args := BuildArgs("list-panes", "-t", "%0", "-F", "#{pane_id}")
+	want := []string{"list-panes", "-t", "%0", "-F", "#{pane_id}"}
+
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("BuildArgs() got = %q, want %q", args, want)
+	}
+}
+
 func TestInSessionOutsideTmux(t *testing.T) {
 	// When running tests outside tmux, TMUX env var is typically not set
 	// This test documents the behavior — it may pass or fail depending on env
