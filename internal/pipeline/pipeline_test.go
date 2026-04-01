@@ -644,6 +644,48 @@ func TestIdlePaneCleanupSkipsFinalized(t *testing.T) {
 	}
 }
 
+func TestIdlePaneCleanupSkipsRecentRuns(t *testing.T) {
+	c, _ := newTestController(t)
+
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-001", nil
+	})
+
+	// Track which runs the cleanup tries to act on.
+	var checkedRuns []string
+	c.SetCleanIdlePanes(func(runStates []*run.State) {
+		for _, s := range runStates {
+			if s.TmuxPane == nil || s.CostUSD != nil || s.DurationMS != nil {
+				continue
+			}
+			// Grace period: skip runs created less than 2 minutes ago.
+			if created, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
+				if time.Since(created) < 2*time.Minute {
+					continue
+				}
+			}
+			checkedRuns = append(checkedRuns, s.ID)
+		}
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	recentTime := time.Now().Add(-30 * time.Second).Format(time.RFC3339)
+	oldTime := time.Now().Add(-5 * time.Minute).Format(time.RFC3339)
+	runStates := []*run.State{
+		{ID: "agent-new", TmuxPane: strPtr("%new"), CreatedAt: recentTime},  // recent, should be skipped
+		{ID: "agent-old", TmuxPane: strPtr("%old"), CreatedAt: oldTime},     // old, should be checked
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if len(checkedRuns) != 1 || checkedRuns[0] != "agent-old" {
+		t.Errorf("expected only agent-old to be checked, got %v", checkedRuns)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

@@ -394,6 +394,15 @@ func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
 		if s.CostUSD != nil || s.DurationMS != nil {
 			continue
 		}
+		// Grace period: skip runs created less than 2 minutes ago. Newly
+		// launched panes briefly show a shell as the foreground process
+		// while the command pipeline starts up, which PaneIsIdle would
+		// misidentify as idle.
+		if created, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
+			if time.Since(created) < 2*time.Minute {
+				continue
+			}
+		}
 		if !tmux.PaneExists(*s.TmuxPane) {
 			continue
 		}
