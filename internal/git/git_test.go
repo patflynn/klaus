@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -366,6 +367,163 @@ func TestParseRepoRefSSH(t *testing.T) {
 	want := "git@github.com:patflynn/cosmo.git"
 	if url != want {
 		t.Errorf("url = %q, want %q", url, want)
+	}
+}
+
+func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt-hook")
+
+	if err := WorktreeAdd(repo, wtPath, "hook-test", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(repo, wtPath)
+
+	if err := InstallCommitMsgHook(wtPath); err != nil {
+		t.Fatalf("InstallCommitMsgHook: %v", err)
+	}
+
+	// Create a file and commit with a Co-Authored-By trailer
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"git", "-C", wtPath, "add", "file.txt"},
+		{"git", "-C", wtPath, "commit", "-m", "add file\n\nCo-Authored-By: Claude Sonnet 4 <noreply@anthropic.com>"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Verify the Co-Authored-By line was stripped
+	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if strings.Contains(msg, "Co-Authored-By") {
+		t.Errorf("commit message should not contain Co-Authored-By, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "add file") {
+		t.Errorf("commit message should still contain the original message, got:\n%s", msg)
+	}
+}
+
+func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt-hook-human")
+
+	if err := WorktreeAdd(repo, wtPath, "hook-human-test", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(repo, wtPath)
+
+	if err := InstallCommitMsgHook(wtPath); err != nil {
+		t.Fatalf("InstallCommitMsgHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"git", "-C", wtPath, "add", "file.txt"},
+		{"git", "-C", wtPath, "commit", "-m", "add file\n\nCo-Authored-By: Alice Smith <alice@example.com>"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(msg, "Co-Authored-By: Alice Smith") {
+		t.Errorf("commit message should preserve human Co-Authored-By, got:\n%s", msg)
+	}
+}
+
+func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt-hook-clean")
+
+	if err := WorktreeAdd(repo, wtPath, "hook-clean-test", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(repo, wtPath)
+
+	if err := InstallCommitMsgHook(wtPath); err != nil {
+		t.Fatalf("InstallCommitMsgHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"git", "-C", wtPath, "add", "file.txt"},
+		{"git", "-C", wtPath, "commit", "-m", "just a normal commit message"},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(msg, "just a normal commit message") {
+		t.Errorf("commit message should be unchanged, got:\n%s", msg)
+	}
+}
+
+func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "wt-hook-multi")
+
+	if err := WorktreeAdd(repo, wtPath, "hook-multi-test", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(repo, wtPath)
+
+	if err := InstallCommitMsgHook(wtPath); err != nil {
+		t.Fatalf("InstallCommitMsgHook: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commitMsg := "fix bug\n\nCo-Authored-By: Claude Opus 4 (1M context) <noreply@anthropic.com>\n🤖 Generated with Claude Code"
+
+	for _, args := range [][]string{
+		{"git", "-C", wtPath, "add", "file.txt"},
+		{"git", "-C", wtPath, "commit", "-m", commitMsg},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if strings.Contains(msg, "Co-Authored-By") {
+		t.Errorf("should strip Co-Authored-By, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "Claude") {
+		t.Errorf("should strip Claude references, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "fix bug") {
+		t.Errorf("should preserve original message, got:\n%s", msg)
 	}
 }
 
