@@ -527,6 +527,121 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 	}
 }
 
+func TestWorktreeAdd_PrunesStaleAndRetries(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create a worktree, then delete its directory to make it stale
+	stalePath := filepath.Join(t.TempDir(), "stale-wt")
+	if err := WorktreeAdd(repo, stalePath, "stale-branch", "main"); err != nil {
+		t.Fatalf("WorktreeAdd (setup): %v", err)
+	}
+	// Remove the worktree directory without telling git — makes it stale
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatalf("removing stale worktree dir: %v", err)
+	}
+
+	// Now try to create a new worktree on the same branch — should auto-prune and succeed
+	newPath := filepath.Join(t.TempDir(), "new-wt")
+	if err := WorktreeAdd(repo, newPath, "stale-branch", "main"); err != nil {
+		t.Fatalf("WorktreeAdd should recover from stale worktree: %v", err)
+	}
+	defer WorktreeRemove(repo, newPath)
+
+	// Verify the new worktree exists
+	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
+		t.Errorf("new worktree should contain README.md: %v", err)
+	}
+}
+
+func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create a local bare repo as "origin" with a feature branch
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	cmd := exec.Command("git", "clone", "--bare", repo, bareDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bare clone: %v\n%s", err, out)
+	}
+	if _, err := runGit(repo, "remote", "add", "origin", bareDir); err != nil {
+		runGit(repo, "remote", "set-url", "origin", bareDir)
+	}
+
+	// Create and push a feature branch
+	if _, err := runGit(repo, "branch", "feature-x"); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	if _, err := runGit(repo, "push", "origin", "feature-x"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// Create a worktree tracking origin/feature-x, then make it stale
+	stalePath := filepath.Join(t.TempDir(), "stale-track")
+	if err := WorktreeAddTrack(repo, stalePath, "feature-x"); err != nil {
+		t.Fatalf("WorktreeAddTrack (setup): %v", err)
+	}
+	if err := os.RemoveAll(stalePath); err != nil {
+		t.Fatalf("removing stale worktree dir: %v", err)
+	}
+
+	// Retry should prune and succeed
+	newPath := filepath.Join(t.TempDir(), "new-track")
+	if err := WorktreeAddTrack(repo, newPath, "feature-x"); err != nil {
+		t.Fatalf("WorktreeAddTrack should recover from stale worktree: %v", err)
+	}
+	defer WorktreeRemove(repo, newPath)
+
+	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
+		t.Errorf("new worktree should contain README.md: %v", err)
+	}
+}
+
+func TestWorktreeAdd_LiveWorktreeReturnsError(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create a worktree that's still live (directory exists)
+	livePath := filepath.Join(t.TempDir(), "live-wt")
+	if err := WorktreeAdd(repo, livePath, "live-branch", "main"); err != nil {
+		t.Fatalf("WorktreeAdd (setup): %v", err)
+	}
+	defer WorktreeRemove(repo, livePath)
+
+	// Try to create another worktree on the same branch — should fail with a clear error
+	otherPath := filepath.Join(t.TempDir(), "other-wt")
+	err := WorktreeAdd(repo, otherPath, "live-branch", "main")
+	if err == nil {
+		t.Fatal("WorktreeAdd should fail when branch is in a live worktree")
+	}
+	if !strings.Contains(err.Error(), "already checked out in active worktree") {
+		t.Errorf("error should mention active worktree, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), livePath) {
+		t.Errorf("error should mention the conflicting path %q, got: %v", livePath, err)
+	}
+}
+
+func TestWorktreePrune(t *testing.T) {
+	repo := initTestRepo(t)
+
+	// Create a worktree, delete its directory, then prune
+	wtPath := filepath.Join(t.TempDir(), "prune-wt")
+	if err := WorktreeAdd(repo, wtPath, "prune-branch", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	os.RemoveAll(wtPath)
+
+	if err := WorktreePrune(repo); err != nil {
+		t.Fatalf("WorktreePrune: %v", err)
+	}
+
+	// After prune, creating a worktree on the same branch should work
+	// (using -B since the branch ref still exists after prune)
+	newPath := filepath.Join(t.TempDir(), "after-prune")
+	_, err := runGit(repo, "worktree", "add", newPath, "-B", "prune-branch", "main", "--quiet")
+	if err != nil {
+		t.Fatalf("worktree add after prune should succeed: %v", err)
+	}
+}
+
 func containsLine(output, target string) bool {
 	for _, line := range splitLines(output) {
 		if line == target {

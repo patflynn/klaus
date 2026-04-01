@@ -37,9 +37,18 @@ func FetchBranch(repoDir, branch string) error {
 }
 
 // WorktreeAdd creates a new worktree at path on a new branch based on startPoint.
+// If the branch is already checked out in a stale worktree, it prunes and retries once.
 func WorktreeAdd(repoDir, path, branch, startPoint string) error {
 	_, err := runGit(repoDir, "worktree", "add", path, "-b", branch, startPoint, "--quiet")
-	return err
+	if err == nil {
+		return nil
+	}
+	return retryAfterPrune(repoDir, branch, err, func() error {
+		// Use -B on retry: after pruning a stale worktree the branch ref remains,
+		// so -b (create new) would fail with "branch already exists".
+		_, e := runGit(repoDir, "worktree", "add", path, "-B", branch, startPoint, "--quiet")
+		return e
+	})
 }
 
 // WorktreeRemove removes a worktree. repoDir is the main repo directory.
@@ -50,9 +59,69 @@ func WorktreeRemove(repoDir, path string) error {
 
 // WorktreeAddTrack creates a worktree tracking an existing remote branch.
 // It uses -B to force-create/reset the local branch to match origin/<branch>.
+// If the branch is already checked out in a stale worktree, it prunes and retries once.
 func WorktreeAddTrack(repoDir, path, branch string) error {
 	_, err := runGit(repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+	if err == nil {
+		return nil
+	}
+	return retryAfterPrune(repoDir, branch, err, func() error {
+		_, e := runGit(repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+		return e
+	})
+}
+
+// WorktreePrune removes stale worktree tracking information.
+func WorktreePrune(repoDir string) error {
+	_, err := runGit(repoDir, "worktree", "prune")
 	return err
+}
+
+// worktreePathForBranch returns the worktree path that has the given branch
+// checked out, or "" if not found.
+func worktreePathForBranch(repoDir, branch string) string {
+	out, err := runGit(repoDir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return ""
+	}
+	var currentPath string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "worktree ") {
+			currentPath = strings.TrimPrefix(line, "worktree ")
+		}
+		if strings.HasPrefix(line, "branch ") {
+			ref := strings.TrimPrefix(line, "branch ")
+			// branch ref looks like "refs/heads/<branch>"
+			if ref == "refs/heads/"+branch {
+				return currentPath
+			}
+		}
+	}
+	return ""
+}
+
+// retryAfterPrune handles "already used by worktree" errors. If the conflicting
+// worktree is stale (path no longer exists on disk), it prunes and retries.
+// If the worktree is still live, it returns a clear error.
+func retryAfterPrune(repoDir, branch string, origErr error, retry func() error) error {
+	// Check whether this branch is recorded in any worktree.
+	wtPath := worktreePathForBranch(repoDir, branch)
+	if wtPath == "" {
+		// Branch is not in any worktree — nothing to prune; return the original error.
+		return origErr
+	}
+
+	// If the worktree directory still exists, the worktree is live — don't touch it.
+	if _, err := os.Stat(wtPath); err == nil {
+		return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
+	}
+
+	// Worktree directory is gone — prune stale entries and retry.
+	if err := WorktreePrune(repoDir); err != nil {
+		return fmt.Errorf("pruning stale worktrees: %w (original error: %v)", err, origErr)
+	}
+	return retry()
 }
 
 // BranchDelete deletes a local branch.
