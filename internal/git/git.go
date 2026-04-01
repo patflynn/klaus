@@ -77,18 +77,6 @@ func WorktreePrune(repoDir string) error {
 	return err
 }
 
-// isWorktreeBranchConflict returns true if the error indicates the branch is
-// already checked out in another worktree, or the branch already exists (which
-// happens with -b when a stale worktree left the branch ref behind).
-func isWorktreeBranchConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "is already used by worktree") ||
-		strings.Contains(msg, "a branch named") && strings.Contains(msg, "already exists")
-}
-
 // worktreePathForBranch returns the worktree path that has the given branch
 // checked out, or "" if not found.
 func worktreePathForBranch(repoDir, branch string) string {
@@ -98,6 +86,7 @@ func worktreePathForBranch(repoDir, branch string) string {
 	}
 	var currentPath string
 	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "worktree ") {
 			currentPath = strings.TrimPrefix(line, "worktree ")
 		}
@@ -116,18 +105,19 @@ func worktreePathForBranch(repoDir, branch string) string {
 // worktree is stale (path no longer exists on disk), it prunes and retries.
 // If the worktree is still live, it returns a clear error.
 func retryAfterPrune(repoDir, branch string, origErr error, retry func() error) error {
-	if !isWorktreeBranchConflict(origErr) {
+	// Check whether this branch is recorded in any worktree.
+	wtPath := worktreePathForBranch(repoDir, branch)
+	if wtPath == "" {
+		// Branch is not in any worktree — nothing to prune; return the original error.
 		return origErr
 	}
 
-	wtPath := worktreePathForBranch(repoDir, branch)
-	if wtPath != "" {
-		if _, err := os.Stat(wtPath); err == nil {
-			return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
-		}
+	// If the worktree directory still exists, the worktree is live — don't touch it.
+	if _, err := os.Stat(wtPath); err == nil {
+		return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
 	}
 
-	// Worktree path is gone or unknown — prune stale entries and retry
+	// Worktree directory is gone — prune stale entries and retry.
 	if err := WorktreePrune(repoDir); err != nil {
 		return fmt.Errorf("pruning stale worktrees: %w (original error: %v)", err, origErr)
 	}
