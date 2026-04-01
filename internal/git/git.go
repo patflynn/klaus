@@ -30,6 +30,12 @@ func CommonDir() (string, error) {
 	return abs, nil
 }
 
+// FetchAll fetches all refs from origin, pruning deleted remote branches.
+func FetchAll(repoDir string) error {
+	_, err := runGit(repoDir, "fetch", "origin", "--prune", "--quiet")
+	return err
+}
+
 // FetchBranch fetches a branch from origin.
 func FetchBranch(repoDir, branch string) error {
 	_, err := runGit(repoDir, "fetch", "origin", branch, "--quiet")
