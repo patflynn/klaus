@@ -231,6 +231,52 @@ func PushDataRef(repoDir, dataRef string) error {
 	return err
 }
 
+// commitMsgHookScript is a git commit-msg hook that strips Co-Authored-By
+// trailers referencing Claude or Anthropic, and removes AI attribution lines
+// from commit messages. Legitimate human co-author lines are preserved.
+const commitMsgHookScript = `#!/bin/sh
+# Installed by klaus — strips Claude/Anthropic attribution from commit messages.
+sed -i.bak \
+  -e '/^Co-[Aa]uthored-[Bb]y:.*[Cc]laude/d' \
+  -e '/^Co-[Aa]uthored-[Bb]y:.*[Aa]nthropic/d' \
+  -e '/^[Gg]enerated.*[Cc]laude/d' \
+  -e '/^[Gg]enerated.*[Aa]nthropic/d' \
+  -e '/🤖.*[Cc]laude/d' \
+  "$1"
+rm -f "$1.bak"
+`
+
+// InstallCommitMsgHook installs a commit-msg hook in the given worktree that
+// strips Claude/Anthropic attribution from commit messages.
+func InstallCommitMsgHook(worktreeDir string) error {
+	// Find the git dir for this worktree
+	gitDir, err := runGit(worktreeDir, "rev-parse", "--git-dir")
+	if err != nil {
+		return fmt.Errorf("finding git dir: %w", err)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(worktreeDir, gitDir)
+	}
+
+	hooksDir := filepath.Join(gitDir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return fmt.Errorf("creating hooks dir: %w", err)
+	}
+
+	hookPath := filepath.Join(hooksDir, "commit-msg")
+	if err := os.WriteFile(hookPath, []byte(commitMsgHookScript), 0o755); err != nil {
+		return fmt.Errorf("writing commit-msg hook: %w", err)
+	}
+
+	// Worktrees use the main repo's hooks by default. Point this worktree
+	// at its own hooks directory so our commit-msg hook actually runs.
+	if _, err := runGit(worktreeDir, "config", "core.hooksPath", hooksDir); err != nil {
+		return fmt.Errorf("setting core.hooksPath: %w", err)
+	}
+
+	return nil
+}
+
 // runGit executes a git command and returns trimmed stdout.
 func runGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
