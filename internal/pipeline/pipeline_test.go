@@ -530,6 +530,80 @@ func TestNoDoubleDispatchOnTrustedComments(t *testing.T) {
 	}
 }
 
+func TestIdlePaneCleanupDuringPoll(t *testing.T) {
+	c, _ := newTestController(t)
+
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-001", nil
+	})
+
+	// Track which panes were cleaned up.
+	var killedPanes []string
+	c.SetCleanIdlePanes(func(runStates []*run.State) {
+		for _, s := range runStates {
+			if s.TmuxPane == nil {
+				continue
+			}
+			if s.CostUSD != nil || s.DurationMS != nil {
+				continue
+			}
+			// Simulate: pane %idle is idle, pane %busy is still running.
+			if *s.TmuxPane == "%idle" {
+				killedPanes = append(killedPanes, *s.TmuxPane)
+			}
+		}
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	runStates := []*run.State{
+		{ID: "agent-idle", TmuxPane: strPtr("%idle")},  // idle pane, should be cleaned
+		{ID: "agent-busy", TmuxPane: strPtr("%busy")},  // busy pane, should not be cleaned
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if len(killedPanes) != 1 || killedPanes[0] != "%idle" {
+		t.Errorf("expected cleanup of %%idle pane, got %v", killedPanes)
+	}
+}
+
+func TestIdlePaneCleanupSkipsFinalized(t *testing.T) {
+	c, _ := newTestController(t)
+
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-001", nil
+	})
+
+	var cleanupCalled bool
+	c.SetCleanIdlePanes(func(runStates []*run.State) {
+		for _, s := range runStates {
+			if s.TmuxPane == nil || s.CostUSD != nil || s.DurationMS != nil {
+				continue
+			}
+			// No non-finalized runs should reach here.
+			cleanupCalled = true
+		}
+	})
+
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-done", TmuxPane: strPtr("%done"), CostUSD: &cost},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if cleanupCalled {
+		t.Error("cleanup should skip finalized runs")
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
