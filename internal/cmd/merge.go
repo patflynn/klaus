@@ -13,6 +13,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -41,19 +42,21 @@ func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag 
 		out: out,
 		in:  in,
 		getPRTitle: func(pr, repo string) string {
-			return getPRTitle(pr, repo)
+			return gh.NewPRClient(repo).GetTitle(pr)
 		},
 		getPRCI: func(pr, repo string) string {
-			return getPRCI(pr, repo)
+			return gh.NewPRClient(repo).GetCI(pr)
 		},
 		getPRConflicts: func(pr, repo string) string {
-			return getPRConflicts(pr, repo)
+			return gh.NewPRClient(repo).GetConflicts(pr)
 		},
 		getPRReviewDecision: func(pr, repo string) string {
-			return getPRReviewDecision(pr, repo)
+			return gh.NewPRClient(repo).GetReviewDecision(pr)
 		},
 		rebaseAndPush: rebaseAndPush,
-		mergePR:       mergePRExec,
+		mergePR: func(prNumber, mergeMethod string, deleteBranch bool, repo string) error {
+			return gh.NewPRClient(repo).Merge(prNumber, mergeMethod, deleteBranch)
+		},
 		pollCI:        defaultPollCI,
 		markMerged:    markRunsMerged(store),
 		checkApproval: buildApprovalChecker(store),
@@ -219,69 +222,11 @@ func validateMergeMethod(method string) error {
 	}
 }
 
-// ghPRTitleArgs returns arguments for fetching a PR title.
-func ghPRTitleArgs(prNumber string, repo ...string) []string {
-	args := []string{"pr", "view", "--json", "title", "-q", ".title"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prNumber)
-	return args
-}
-
-// getPRTitle fetches the title of a PR using the gh CLI.
-func getPRTitle(prNumber string, repo ...string) string {
-	cmd := exec.Command("gh", ghPRTitleArgs(prNumber, repo...)...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to get title for PR #%s: %v\n", prNumber, err)
-		return "(unknown)"
-	}
-	title := strings.TrimSpace(stdout.String())
-	if title == "" {
-		return "(unknown)"
-	}
-	return title
-}
-
-// ghPRMergeArgs returns arguments for merging a PR.
-func ghPRMergeArgs(prNumber, mergeMethod string, deleteBranch bool, repo string) []string {
-	args := []string{"pr", "merge"}
-	switch mergeMethod {
-	case "squash":
-		args = append(args, "--squash")
-	case "merge":
-		args = append(args, "--merge")
-	case "rebase":
-		args = append(args, "--rebase")
-	}
-	if deleteBranch {
-		args = append(args, "--delete-branch")
-	}
-	if repo != "" {
-		args = append(args, "--repo", repo)
-	}
-	args = append(args, "--", prNumber)
-	return args
-}
-
-// mergePRExec merges a PR using the gh CLI.
-func mergePRExec(prNumber, mergeMethod string, deleteBranch bool, repo string) error {
-	args := ghPRMergeArgs(prNumber, mergeMethod, deleteBranch, repo)
-	cmd := exec.Command("gh", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh pr merge: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
-}
 
 // rebaseAndPush rebases a PR branch onto origin/main, verifies compilation,
 // and force-pushes using a temporary worktree.
 func rebaseAndPush(prNumber string, repo string) error {
-	branch, err := getPRBranch(prNumber, repo)
+	branch, err := gh.NewPRClient(repo).GetBranch(prNumber)
 	if err != nil {
 		return fmt.Errorf("getting branch: %w", err)
 	}
@@ -351,9 +296,10 @@ func defaultPollCI(prNumber string, repo string) error {
 	timeout := 10 * time.Minute
 	interval := 30 * time.Second
 	deadline := time.Now().Add(timeout)
+	client := gh.NewPRClient(repo)
 
 	for {
-		ci := getPRCI(prNumber, repo)
+		ci := client.GetCI(prNumber)
 		switch ci {
 		case "passing":
 			return nil
