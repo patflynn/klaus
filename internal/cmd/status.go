@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -51,7 +50,8 @@ var statusCmd = &cobra.Command{
 
 			ci, conflicts, merge := "-", "-", "-"
 			if prRef := extractPRRef(s); prRef != "" {
-				prState := getPRState(prRef)
+				client := gh.NewPRClient("") // full URL in prRef handles repo resolution
+				prState := client.GetState(prRef)
 				switch prState {
 				case "MERGED":
 					status = "merged"
@@ -59,9 +59,9 @@ var statusCmd = &cobra.Command{
 				case "CLOSED":
 					status = "closed"
 				default:
-					ci = getPRCI(prRef)
-					conflicts = getPRConflicts(prRef)
-					merge = computeMergeStatus(ci, conflicts, getPRReviewDecision(prRef))
+					ci = client.GetCI(prRef)
+					conflicts = client.GetConflicts(prRef)
+					merge = computeMergeStatus(ci, conflicts, client.GetReviewDecision(prRef))
 				}
 			}
 
@@ -149,131 +149,6 @@ func extractPRRef(s *run.State) string {
 	return *s.PRURL
 }
 
-// ghPRChecksArgs returns the arguments for "gh pr checks" with correct flag placement.
-// prRef can be a PR number or a full PR URL.
-// If repo is non-empty, --repo is added so the command works outside the target repo.
-func ghPRChecksArgs(prRef string, repo ...string) []string {
-	args := []string{"pr", "checks"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prRef)
-	return args
-}
-
-// getPRCI checks CI status by running "gh pr checks" and summarizing pass/fail/pending.
-func getPRCI(prRef string, repo ...string) string {
-	cmd := exec.Command("gh", ghPRChecksArgs(prRef, repo...)...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	err := cmd.Run()
-	output := stdout.String()
-
-	if err != nil && output == "" {
-		return "unknown"
-	}
-
-	var passing, failing, pending int
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		if line == "" {
-			continue
-		}
-		lower := strings.ToLower(line)
-		if strings.Contains(lower, "pass") {
-			passing++
-		} else if strings.Contains(lower, "fail") {
-			failing++
-		} else {
-			pending++
-		}
-	}
-
-	if failing > 0 {
-		return "failing"
-	}
-	if pending > 0 {
-		return "pending"
-	}
-	if passing > 0 {
-		return "passing"
-	}
-	return "unknown"
-}
-
-// ghPRConflictsArgs returns the arguments for "gh pr view" to check merge conflicts.
-// prRef can be a PR number or a full PR URL.
-func ghPRConflictsArgs(prRef string, repo ...string) []string {
-	args := []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prRef)
-	return args
-}
-
-// getPRConflicts checks if a PR has merge conflicts.
-func getPRConflicts(prRef string, repo ...string) string {
-	cmd := exec.Command("gh", ghPRConflictsArgs(prRef, repo...)...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "unknown"
-	}
-	val := strings.TrimSpace(stdout.String())
-	if strings.EqualFold(val, "CONFLICTING") {
-		return "yes"
-	}
-	return "none"
-}
-
-// ghPRReviewDecisionArgs returns the arguments for "gh pr view" to fetch review decision.
-// prRef can be a PR number or a full PR URL.
-func ghPRReviewDecisionArgs(prRef string, repo ...string) []string {
-	args := []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prRef)
-	return args
-}
-
-// getPRReviewDecision fetches the review decision for a PR.
-func getPRReviewDecision(prRef string, repo ...string) string {
-	cmd := exec.Command("gh", ghPRReviewDecisionArgs(prRef, repo...)...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "unknown"
-	}
-	return strings.TrimSpace(stdout.String())
-}
-
-// ghPRStateArgs returns the arguments for "gh pr view" to fetch PR state.
-// prRef can be a PR number or a full PR URL.
-func ghPRStateArgs(prRef string, repo ...string) []string {
-	args := []string{"pr", "view", "--json", "state", "-q", ".state"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prRef)
-	return args
-}
-
-// getPRState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED") by calling gh.
-func getPRState(prRef string, repo ...string) string {
-	cmd := exec.Command("gh", ghPRStateArgs(prRef, repo...)...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	if err := cmd.Run(); err != nil {
-		return "UNKNOWN"
-	}
-	val := strings.TrimSpace(stdout.String())
-	if val == "" {
-		return "UNKNOWN"
-	}
-	return strings.ToUpper(val)
-}
-
 // computeMergeStatus determines overall merge readiness.
 func computeMergeStatus(ci, conflicts, reviewDecision string) string {
 	if conflicts == "yes" {
@@ -299,27 +174,6 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "..."
-}
-
-// getPRBranch returns the head branch name for a PR using the gh CLI.
-func getPRBranch(prNumber string, repo ...string) (string, error) {
-	args := []string{"pr", "view", "--json", "headRefName", "-q", ".headRefName"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prNumber)
-	cmd := exec.Command("gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	branch := strings.TrimSpace(stdout.String())
-	if branch == "" {
-		return "", fmt.Errorf("could not determine branch for PR #%s", prNumber)
-	}
-	return branch, nil
 }
 
 func init() {

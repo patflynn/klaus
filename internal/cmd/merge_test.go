@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -96,9 +97,9 @@ func TestGHPRMergeArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ghPRMergeArgs(tt.prNumber, tt.mergeMethod, tt.deleteBranch, tt.repo)
+			got := gh.MergeArgs(tt.prNumber, tt.mergeMethod, tt.deleteBranch, tt.repo)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("ghPRMergeArgs() = %v, want %v", got, tt.want)
+				t.Errorf("MergeArgs() = %v, want %v", got, tt.want)
 			}
 
 			// Verify flags before "--" separator
@@ -122,17 +123,19 @@ func TestGHPRMergeArgs(t *testing.T) {
 }
 
 func TestGHPRTitleArgs(t *testing.T) {
-	got := ghPRTitleArgs("99")
+	client := gh.NewPRClient("")
+	got := client.ViewTitleArgs("99")
 	want := []string{"pr", "view", "--json", "title", "-q", ".title", "--", "99"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ghPRTitleArgs(99) = %v, want %v", got, want)
+		t.Errorf("ViewTitleArgs(99) = %v, want %v", got, want)
 	}
 
 	// With repo
-	got = ghPRTitleArgs("99", "owner/repo")
+	clientWithRepo := gh.NewPRClient("owner/repo")
+	got = clientWithRepo.ViewTitleArgs("99")
 	want = []string{"pr", "view", "--json", "title", "-q", ".title", "--repo", "owner/repo", "--", "99"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("ghPRTitleArgs(99, owner/repo) = %v, want %v", got, want)
+		t.Errorf("ViewTitleArgs(99) with repo = %v, want %v", got, want)
 	}
 
 	// Verify flags before separator

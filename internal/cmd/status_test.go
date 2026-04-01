@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -167,29 +168,30 @@ func TestGHCommandArgOrder(t *testing.T) {
 	// Verify that all gh command builders place flags BEFORE the "--" separator
 	// and the PR ref AFTER it. This prevents the bug where flags after "--"
 	// are treated as positional arguments by gh.
+	client := gh.NewPRClient("")
 	tests := []struct {
 		name string
-		fn   func(string, ...string) []string
+		fn   func(string) []string
 		want []string
 	}{
 		{
 			name: "getPRState args with number",
-			fn:   ghPRStateArgs,
+			fn:   client.ViewStateArgs,
 			want: []string{"pr", "view", "--json", "state", "-q", ".state", "--", "42"},
 		},
 		{
 			name: "getPRCI args with number",
-			fn:   ghPRChecksArgs,
+			fn:   client.ChecksArgs,
 			want: []string{"pr", "checks", "--", "42"},
 		},
 		{
 			name: "getPRConflicts args with number",
-			fn:   ghPRConflictsArgs,
+			fn:   client.ViewConflictsArgs,
 			want: []string{"pr", "view", "--json", "mergeable", "-q", ".mergeable", "--", "42"},
 		},
 		{
 			name: "getPRReviewDecision args with number",
-			fn:   ghPRReviewDecisionArgs,
+			fn:   client.ViewReviewDecisionArgs,
 			want: []string{"pr", "view", "--json", "reviewDecision", "-q", ".reviewDecision", "--", "42"},
 		},
 	}
@@ -225,14 +227,15 @@ func TestGHCommandArgsAcceptURL(t *testing.T) {
 	// Verify that gh command builders work with full PR URLs, which allows
 	// gh to resolve PRs regardless of the current working directory.
 	url := "https://github.com/owner/repo/pull/42"
+	client := gh.NewPRClient("")
 	fns := []struct {
 		name string
-		fn   func(string, ...string) []string
+		fn   func(string) []string
 	}{
-		{"ghPRStateArgs", ghPRStateArgs},
-		{"ghPRChecksArgs", ghPRChecksArgs},
-		{"ghPRConflictsArgs", ghPRConflictsArgs},
-		{"ghPRReviewDecisionArgs", ghPRReviewDecisionArgs},
+		{"ViewStateArgs", client.ViewStateArgs},
+		{"ChecksArgs", client.ChecksArgs},
+		{"ViewConflictsArgs", client.ViewConflictsArgs},
+		{"ViewReviewDecisionArgs", client.ViewReviewDecisionArgs},
 	}
 	for _, tt := range fns {
 		t.Run(tt.name, func(t *testing.T) {

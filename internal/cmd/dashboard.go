@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/event"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -541,14 +542,15 @@ func renderSandboxStatus(hosts map[string]bool) string {
 // fetchPRStatus queries GitHub for a single PR's status.
 // prRef should be a full PR URL so gh can resolve it from any directory.
 func fetchPRStatus(prNumber, prRef string) *prStatus {
+	client := gh.NewPRClient("") // full URL in prRef handles repo resolution
 	ps := &prStatus{PRNumber: prNumber}
-	ps.State = getPRState(prRef)
+	ps.State = client.GetState(prRef)
 	if ps.State == "MERGED" || ps.State == "CLOSED" {
 		return ps
 	}
-	ps.CI = getPRCI(prRef)
-	ps.Conflicts = getPRConflicts(prRef)
-	ps.ReviewDecision = getPRReviewDecision(prRef)
+	ps.CI = client.GetCI(prRef)
+	ps.Conflicts = client.GetConflicts(prRef)
+	ps.ReviewDecision = client.GetReviewDecision(prRef)
 
 	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
 	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.

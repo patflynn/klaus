@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +11,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -171,7 +171,8 @@ are synced back after completion. Use --local to force local execution, or
 
 		if prNumber != "" {
 			ghRepo := resolveGHRepo(repoRef, repoRoot)
-			prBranch, err := getPRBranch(prNumber, ghRepo)
+			prClient := gh.NewPRClient(ghRepo)
+			prBranch, err := prClient.GetBranch(prNumber)
 			if err != nil {
 				return fmt.Errorf("getting PR branch: %w", err)
 			}
@@ -179,7 +180,7 @@ are synced back after completion. Use --local to force local execution, or
 			isPRFix = true
 
 			// Look up the PR URL for state tracking
-			prURL, err = getPRURL(prNumber, ghRepo)
+			prURL, err = prClient.GetURL(prNumber)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}
@@ -524,23 +525,6 @@ func resolveGHRepo(repoRef, repoRoot string) string {
 		}
 	}
 	return ""
-}
-
-// getPRURL returns the HTML URL for a PR using the gh CLI.
-func getPRURL(prNumber string, repo ...string) (string, error) {
-	args := []string{"pr", "view", "--json", "url", "-q", ".url"}
-	if len(repo) > 0 && repo[0] != "" {
-		args = append(args, "--repo", repo[0])
-	}
-	args = append(args, "--", prNumber)
-	cmd := exec.Command("gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("gh pr view: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return strings.TrimSpace(stdout.String()), nil
 }
 
 // CheckSandboxReachable tests whether a sandbox host is reachable via SSH.
