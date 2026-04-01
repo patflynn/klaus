@@ -66,18 +66,20 @@ func cleanupAll(root string, store run.StateStore, force bool) error {
 	return nil
 }
 
-// isRunActive reports whether the run has a live tmux pane or is the current session.
+// isRunActive reports whether the run has a live, non-idle tmux pane or is the current session.
 var isRunActive = func(state *run.State) bool {
-	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
-		return true
-	}
-	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
-		return true
-	}
 	if state.Type == "session" {
 		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
 			return true
 		}
+	}
+
+	if state.IsAgentRunning() {
+		return true
+	}
+
+	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+		return true
 	}
 	return false
 }

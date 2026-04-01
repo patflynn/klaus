@@ -610,21 +610,22 @@ func TestIdlePaneCleanupDuringPoll(t *testing.T) {
 	}
 }
 
-func TestIdlePaneCleanupSkipsFinalized(t *testing.T) {
+func TestIdlePaneCleanupHandlesFinalized(t *testing.T) {
 	c, _ := newTestController(t)
 
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
 		return "agent-001", nil
 	})
 
-	var cleanupCalled bool
+	var cleanedUpDone bool
 	c.SetCleanIdlePanes(func(runStates []*run.State) {
 		for _, s := range runStates {
-			if s.TmuxPane == nil || s.CostUSD != nil || s.DurationMS != nil {
+			if s.TmuxPane == nil {
 				continue
 			}
-			// No non-finalized runs should reach here.
-			cleanupCalled = true
+			if s.ID == "agent-done" && (s.CostUSD != nil || s.DurationMS != nil) {
+				cleanedUpDone = true
+			}
 		}
 	})
 
@@ -639,12 +640,12 @@ func TestIdlePaneCleanupSkipsFinalized(t *testing.T) {
 
 	c.HandleGHStatus(context.Background(), statuses, runStates)
 
-	if cleanupCalled {
-		t.Error("cleanup should skip finalized runs")
+	if !cleanedUpDone {
+		t.Error("cleanup should now handle finalized runs")
 	}
 }
 
-func TestIdlePaneCleanupSkipsRecentRuns(t *testing.T) {
+func TestIdlePaneCleanupDoesNotSkipRecentRuns(t *testing.T) {
 	c, _ := newTestController(t)
 
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
@@ -655,14 +656,8 @@ func TestIdlePaneCleanupSkipsRecentRuns(t *testing.T) {
 	var checkedRuns []string
 	c.SetCleanIdlePanes(func(runStates []*run.State) {
 		for _, s := range runStates {
-			if s.TmuxPane == nil || s.CostUSD != nil || s.DurationMS != nil {
+			if s.TmuxPane == nil {
 				continue
-			}
-			// Grace period: skip runs created less than 2 minutes ago.
-			if created, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
-				if time.Since(created) < 2*time.Minute {
-					continue
-				}
 			}
 			checkedRuns = append(checkedRuns, s.ID)
 		}
@@ -673,16 +668,14 @@ func TestIdlePaneCleanupSkipsRecentRuns(t *testing.T) {
 	}
 
 	recentTime := time.Now().Add(-30 * time.Second).Format(time.RFC3339)
-	oldTime := time.Now().Add(-5 * time.Minute).Format(time.RFC3339)
 	runStates := []*run.State{
-		{ID: "agent-new", TmuxPane: strPtr("%new"), CreatedAt: recentTime},  // recent, should be skipped
-		{ID: "agent-old", TmuxPane: strPtr("%old"), CreatedAt: oldTime},     // old, should be checked
+		{ID: "agent-new", TmuxPane: strPtr("%new"), CreatedAt: recentTime},
 	}
 
 	c.HandleGHStatus(context.Background(), statuses, runStates)
 
-	if len(checkedRuns) != 1 || checkedRuns[0] != "agent-old" {
-		t.Errorf("expected only agent-old to be checked, got %v", checkedRuns)
+	if len(checkedRuns) != 1 || checkedRuns[0] != "agent-new" {
+		t.Errorf("expected agent-new to be checked, got %v", checkedRuns)
 	}
 }
 

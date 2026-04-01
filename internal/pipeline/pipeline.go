@@ -387,27 +387,12 @@ func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.Sta
 // defaultCleanIdlePanes kills tmux panes for agent runs whose processes have finished.
 func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
 	for _, s := range runStates {
-		if s.TmuxPane == nil {
+		if s.TmuxPane == nil || !tmux.PaneExists(*s.TmuxPane) {
 			continue
 		}
-		// Only check runs that still appear active (no finalized cost/duration).
-		if s.CostUSD != nil || s.DurationMS != nil {
-			continue
-		}
-		// Grace period: skip runs created less than 2 minutes ago. Newly
-		// launched panes briefly show a shell as the foreground process
-		// while the command pipeline starts up, which PaneIsIdle would
-		// misidentify as idle.
-		if created, err := time.Parse(time.RFC3339, s.CreatedAt); err == nil {
-			if time.Since(created) < 2*time.Minute {
-				continue
-			}
-		}
-		if !tmux.PaneExists(*s.TmuxPane) {
-			continue
-		}
-		if tmux.PaneIsIdle(*s.TmuxPane) {
-			c.logger.Info("closing idle agent pane", "run", s.ID, "pane", *s.TmuxPane)
+
+		if !s.IsAgentRunning() {
+			c.logger.Info("closing completed agent pane", "run", s.ID, "pane", *s.TmuxPane)
 			tmux.KillPane(*s.TmuxPane)
 		}
 	}

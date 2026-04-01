@@ -746,16 +746,7 @@ func computeSessionDuration(states []*run.State) time.Duration {
 
 // isAgentRunning checks if a run's agent is currently active in tmux.
 func isAgentRunning(s *run.State) bool {
-	if s.TmuxPane == nil {
-		return false
-	}
-	// Check if the pane still exists by stat'ing the worktree as a proxy.
-	// In production, we use tmux.PaneExists, but for testability we check
-	// whether cost/duration have been set (finalized agents have these set).
-	if s.CostUSD != nil || s.DurationMS != nil {
-		return false
-	}
-	return true
+	return s.IsAgentRunning()
 }
 
 // agentStatusLabel returns a display label for a non-running agent.
