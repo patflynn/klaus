@@ -252,8 +252,6 @@ are synced back after completion. Use --local to force local execution, or
 		if targetRepo != nil && hostRoot != "" {
 			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
 		}
-		noWatch, _ := cmd.Flags().GetBool("no-watch")
-
 		// Determine sandbox host: --host flag > config sandbox_host
 		sandboxHost := hostCfg.SandboxHost
 		if hostOverride != "" {
@@ -279,10 +277,9 @@ are synced back after completion. Use --local to force local execution, or
 
 		var paneCmd string
 		if useSandbox {
-			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
+			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id)
 		} else {
-			// PR-fix runs always skip auto-watch since we're already on the PR branch
-			paneCmd = buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id, noWatch || isPRFix)
+			paneCmd = buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id)
 		}
 
 		// Launch in tmux pane, targeting the pane that ran this command
@@ -376,13 +373,9 @@ are synced back after completion. Use --local to force local execution, or
 	},
 }
 
-func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
-	autoWatch := ""
-	if !noWatch {
-		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
-	}
+func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
-		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s%s",
+		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
 		tmuxSessionEnvPrefix(),
 		shellQuote(worktree),
 		claudeCmd,
@@ -391,7 +384,6 @@ func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id 
 		finalizePrefix,
 		selfBin,
 		shellQuote(id),
-		autoWatch,
 	)
 }
 
@@ -539,17 +531,13 @@ func syncWorktreeToSandbox(host, worktree string) error {
 	return nil
 }
 
-func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string, noWatch bool) string {
-	autoWatch := ""
-	if !noWatch {
-		autoWatch = fmt.Sprintf("; %s%s _auto-watch %s", finalizePrefix, selfBin, shellQuote(id))
-	}
+func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
 	// Run claude on sandbox via SSH, pipe output locally through tee + formatter,
-	// then finalize locally, rsync results back, and optionally auto-watch.
+	// then finalize locally and rsync results back.
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
 	return fmt.Sprintf(
-		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s; %s%s",
+		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s; %s",
 		tmuxSessionEnvPrefix(),
 		shellQuote(host),
 		shellQuote(worktree),
@@ -560,7 +548,6 @@ func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finali
 		selfBin,
 		shellQuote(id),
 		rsyncBack,
-		autoWatch,
 	)
 }
 
@@ -569,7 +556,6 @@ func init() {
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
-	launchCmd.Flags().Bool("no-watch", false, "Don't auto-launch a watch agent when a PR is created")
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	rootCmd.AddCommand(launchCmd)

@@ -101,9 +101,7 @@ func TestCommonDirFromWorktree(t *testing.T) {
 		t.Errorf("filepath.Dir(CommonDir()) = %q, expected main repo %q", mainRoot, repo)
 	}
 
-	// The main repo root survives worktree removal — this is critical for
-	// auto-watch, which removes the worktree then launches watch from the
-	// main repo root.
+	// The main repo root survives worktree removal.
 	if err := WorktreeRemove(repo, wtPath); err != nil {
 		t.Fatalf("WorktreeRemove: %v", err)
 	}

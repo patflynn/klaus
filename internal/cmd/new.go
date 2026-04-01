@@ -158,7 +158,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
 	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
 
-	// Build pane command — no finalize prefix, no auto-watch (new repo, no state ref setup)
+	// Build pane command — no finalize prefix (new repo, no state ref setup)
 	selfBin := "klaus"
 	paneCmd := fmt.Sprintf(
 		"cd %s && %s | tee %s | %s _format-stream; echo ''; echo \"Scaffolding %s complete. Press Enter to close.\"; read",
