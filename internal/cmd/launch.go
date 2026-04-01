@@ -155,6 +155,15 @@ are synced back after completion. Use --local to force local execution, or
 
 		worktree := filepath.Join(hostCfg.WorktreeBase, repoName, id)
 
+		// Fetch all refs so the worktree starts from the latest state.
+		// Skip when EnsureClone was already called — it fetches with the
+		// same flags (--prune --tags), so a second fetch is redundant.
+		if repoRef == "" || projectLocalPath != "" {
+			if err := git.FetchAll(repoRoot); err != nil {
+				return fmt.Errorf("fetching origin: %w", err)
+			}
+		}
+
 		// When --pr is set, track the PR's branch instead of creating a new one
 		var branch string
 		var isPRFix bool
@@ -180,11 +189,6 @@ are synced back after completion. Use --local to force local execution, or
 				fmt.Printf("  target:   %s\n", *targetRepo)
 			}
 
-			// Fetch the PR branch
-			if err := git.FetchBranch(repoRoot, prBranch); err != nil {
-				return fmt.Errorf("fetching %s: %w", prBranch, err)
-			}
-
 			// Create worktree tracking the PR branch
 			if err := git.WorktreeAddTrack(repoRoot, worktree, prBranch); err != nil {
 				return fmt.Errorf("creating worktree: %w", err)
@@ -195,11 +199,6 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Printf("Launching agent %s...\n", id)
 			if targetRepo != nil {
 				fmt.Printf("  target:   %s\n", *targetRepo)
-			}
-
-			// Fetch latest default branch
-			if err := git.FetchBranch(repoRoot, defaultBranch); err != nil {
-				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
 			}
 
 			// Create worktree

@@ -30,6 +30,12 @@ func CommonDir() (string, error) {
 	return abs, nil
 }
 
+// FetchAll fetches all branches and tags from origin, pruning deleted remote branches.
+func FetchAll(repoDir string) error {
+	_, err := runGit(repoDir, "fetch", "origin", "--prune", "--tags", "--quiet")
+	return err
+}
+
 // FetchBranch fetches a branch from origin.
 func FetchBranch(repoDir, branch string) error {
 	_, err := runGit(repoDir, "fetch", "origin", branch, "--quiet")
@@ -282,7 +288,7 @@ func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
 // If it already exists, fetches the latest from origin.
 func EnsureClone(cloneURL, destDir string) error {
 	if _, err := os.Stat(filepath.Join(destDir, ".git")); err == nil {
-		_, fetchErr := runGit(destDir, "fetch", "origin", "--quiet")
+		_, fetchErr := runGit(destDir, "fetch", "origin", "--prune", "--tags", "--quiet")
 		return fetchErr
 	}
 
