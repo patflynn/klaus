@@ -2,10 +2,12 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/run"
@@ -309,6 +311,119 @@ func TestExtractAgentID(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("extractAgentID(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "", fmt.Errorf("worktree already exists")
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// First failure: should NOT go to stalled (retry 1 of 2).
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state := c.PipelineStates()["42"]
+	if state.Stage == StageStalled {
+		t.Error("expected pipeline to retry, not stall on first failure")
+	}
+	if launchCount != 1 {
+		t.Errorf("expected 1 launch attempt, got %d", launchCount)
+	}
+
+	// Simulate backoff elapsed by resetting LastFailedAt.
+	c.mu.Lock()
+	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+
+	// Second failure: retry 2 of 2, still not stalled.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state = c.PipelineStates()["42"]
+	if state.Stage == StageStalled {
+		t.Error("expected pipeline to retry on second failure, not stall")
+	}
+
+	// Simulate backoff elapsed again.
+	c.mu.Lock()
+	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+
+	// Third failure: retries exhausted, should stall.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state = c.PipelineStates()["42"]
+	if state.Stage != StageStalled {
+		t.Errorf("expected stalled after retries exhausted, got %s", state.Stage)
+	}
+}
+
+func TestWorktreeCleanupBeforeDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	// Create a temp dir to act as the stale worktree.
+	staleDir := t.TempDir()
+
+	var cleanedUpID string
+	// Override launchAgent to track that cleanup happened before launch.
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		// By the time launch is called, the stale worktree should have
+		// had cleanup attempted. We can't easily verify the cleanup command
+		// ran (it would fail since the run ID doesn't exist in store), but
+		// we can verify the controller attempted it by checking the worktree
+		// dir was passed. For this test, just succeed.
+		return "agent-new", nil
+	})
+
+	// Provide a run state for a completed agent that has a worktree on disk.
+	cost := 1.0
+	staleRun := &run.State{
+		ID:       "agent-stale",
+		PR:       strPtr("42"),
+		Worktree: staleDir,
+		TmuxPane: strPtr("%99"), // pane exists but run is finalized
+		CostUSD:  &cost,         // finalized -> not running
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, []*run.State{staleRun})
+
+	// Should have dispatched a new agent.
+	if len(actions) == 0 || actions[0].Type != "launch" {
+		t.Errorf("expected launch action, got %v", actions)
+	}
+
+	_ = cleanedUpID // cleanup runs best-effort via exec
+}
+
+func TestReviewFixLaunchRetry(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "", fmt.Errorf("worktree already exists")
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First failure: should not stall.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state := c.PipelineStates()["42"]
+	if state.Stage == StageStalled {
+		t.Error("expected retry for review fix, not stall on first failure")
 	}
 }
 

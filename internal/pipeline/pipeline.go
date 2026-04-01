@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/run"
@@ -44,6 +46,8 @@ type PRPipelineState struct {
 	LastAgentID    string // run ID of last dispatched agent
 	AgentRunning   bool   // whether the dispatched agent is still active
 	SeenCommentIDs map[int64]bool
+	RetryCount     int       // number of launch retries after failure
+	LastFailedAt   time.Time // when the last launch failure occurred
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -132,7 +136,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		}
 
 		prevStage := ps.Stage
-		actions = append(actions, c.evaluate(ctx, ps, status)...)
+		actions = append(actions, c.evaluate(ctx, ps, status, runStates)...)
 
 		if ps.Stage != prevStage {
 			c.logger.Info("pipeline transition",
@@ -171,14 +175,23 @@ func (c *Controller) getOrCreateState(prNum string) *PRPipelineState {
 	return ps
 }
 
+// maxLaunchRetries is the maximum number of agent launch retries before going to StageStalled.
+const maxLaunchRetries = 2
+
+// retryBackoff is the minimum time between launch retries.
+const retryBackoff = 60 * time.Second
+
 // evaluate checks the current GH status and determines transitions + dispatches.
-func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *PRStatus) []Action {
+func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *PRStatus, runStates []*run.State) []Action {
 	var actions []Action
 
 	switch {
 	case status.CI == "failing":
 		if ps.Stage != StageCIFailed || !ps.AgentRunning {
 			if !ps.AgentRunning {
+				// Clean up stale worktrees for this PR before dispatching.
+				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+
 				// Dispatch fix agent for CI failure.
 				prompt := fmt.Sprintf(
 					"CI is failing on PR #%s. Diagnose the failures and push fixes. Check `gh pr checks %s` for details and `gh run view <run-id> --log-failed` for error output.",
@@ -187,9 +200,12 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
 				if err != nil {
 					c.logger.Error("failed to dispatch CI fix agent", "pr", ps.PRNumber, "err", err)
-					ps.Stage = StageStalled
+					if !c.handleLaunchRetry(ps) {
+						ps.Stage = StageStalled
+					}
 					return nil
 				}
+				ps.RetryCount = 0
 				ps.LastAgentID = agentID
 				ps.AgentRunning = true
 				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("CI fix agent for PR #%s", ps.PRNumber)})
@@ -237,6 +253,9 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		} else if strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED") {
 			// Review comments need addressing.
 			if !ps.AgentRunning {
+				// Clean up stale worktrees for this PR before dispatching.
+				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+
 				prompt := fmt.Sprintf(
 					"PR #%s has changes requested by reviewers. Address the review comments and push fixes. Check `gh api repos/{owner}/{repo}/pulls/%s/comments` for comment details.",
 					ps.PRNumber, ps.PRNumber,
@@ -244,9 +263,12 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
 				if err != nil {
 					c.logger.Error("failed to dispatch review fix agent", "pr", ps.PRNumber, "err", err)
-					ps.Stage = StageStalled
+					if !c.handleLaunchRetry(ps) {
+						ps.Stage = StageStalled
+					}
 					return actions
 				}
+				ps.RetryCount = 0
 				ps.LastAgentID = agentID
 				ps.AgentRunning = true
 				ps.Stage = StageReviewPending
@@ -271,6 +293,60 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 	}
 
 	return actions
+}
+
+// handleLaunchRetry checks whether the pipeline state is eligible for retry.
+// Returns true if the retry was accepted (caller should NOT go to StageStalled).
+func (c *Controller) handleLaunchRetry(ps *PRPipelineState) bool {
+	if ps.RetryCount >= maxLaunchRetries {
+		return false
+	}
+	if !ps.LastFailedAt.IsZero() && time.Since(ps.LastFailedAt) < retryBackoff {
+		// Too soon to retry — stay in current stage but don't stall yet.
+		return true
+	}
+	ps.RetryCount++
+	ps.LastFailedAt = time.Now()
+	c.logger.Info("agent launch failed, will retry",
+		"pr", ps.PRNumber,
+		"retry", ps.RetryCount,
+		"max", maxLaunchRetries,
+	)
+	return true
+}
+
+// cleanupStaleWorktrees removes worktrees from completed runs that match the given PR number.
+// This prevents "worktree already exists" errors when re-dispatching agents.
+func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.State) {
+	for _, s := range runStates {
+		if s.PR == nil || *s.PR != prNumber {
+			continue
+		}
+		if isRunning(s) {
+			continue
+		}
+		if s.Worktree == "" {
+			continue
+		}
+		// Check if the worktree directory still exists on disk.
+		if _, err := os.Stat(s.Worktree); err != nil {
+			continue
+		}
+		// Run klaus cleanup for this stale run.
+		c.logger.Info("cleaning up stale worktree before dispatch",
+			"pr", prNumber,
+			"run", s.ID,
+			"worktree", s.Worktree,
+		)
+		cmd := exec.Command("klaus", "cleanup", s.ID)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			c.logger.Error("stale worktree cleanup failed",
+				"run", s.ID,
+				"err", err,
+				"output", string(out),
+			)
+		}
+	}
 }
 
 func (c *Controller) emitEvent(prNumber, eventType string, data map[string]interface{}) {

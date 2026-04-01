@@ -161,7 +161,8 @@ are synced back after completion. Use --local to force local execution, or
 		var prURL string
 
 		if prNumber != "" {
-			prBranch, err := getPRBranch(prNumber)
+			ghRepo := resolveGHRepo(repoRef, repoRoot)
+			prBranch, err := getPRBranch(prNumber, ghRepo)
 			if err != nil {
 				return fmt.Errorf("getting PR branch: %w", err)
 			}
@@ -169,7 +170,7 @@ are synced back after completion. Use --local to force local execution, or
 			isPRFix = true
 
 			// Look up the PR URL for state tracking
-			prURL, err = getPRURL(prNumber)
+			prURL, err = getPRURL(prNumber, ghRepo)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}
@@ -496,9 +497,34 @@ func resolveRepoTarget(repoFlag, sessionTarget string, reg *project.Registry) (r
 	return repoRef, projectLocalPath
 }
 
+// resolveGHRepo returns an owner/repo string suitable for --repo flags on gh CLI calls.
+// If repoRef already contains '/' (owner/repo format), it is returned directly.
+// Otherwise, it extracts owner/repo from the git remote of repoRoot.
+func resolveGHRepo(repoRef, repoRoot string) string {
+	if strings.Contains(repoRef, "/") {
+		return repoRef
+	}
+	if repoRoot != "" {
+		remote := gitRemoteURL(repoRoot)
+		if remote != "" {
+			// Parse owner/repo from remote URL (e.g. git@github.com:owner/repo.git or https://...)
+			owner, repo, _, err := git.ParseRepoRef(remote)
+			if err == nil {
+				return owner + "/" + repo
+			}
+		}
+	}
+	return ""
+}
+
 // getPRURL returns the HTML URL for a PR using the gh CLI.
-func getPRURL(prNumber string) (string, error) {
-	cmd := exec.Command("gh", "pr", "view", "--json", "url", "-q", ".url", "--", prNumber)
+func getPRURL(prNumber string, repo ...string) (string, error) {
+	args := []string{"pr", "view", "--json", "url", "-q", ".url"}
+	if len(repo) > 0 && repo[0] != "" {
+		args = append(args, "--repo", repo[0])
+	}
+	args = append(args, "--", prNumber)
+	cmd := exec.Command("gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
