@@ -39,8 +39,9 @@ func (c *PRClient) ghArgs(base []string, prRef string) []string {
 func (c *PRClient) GetCI(prRef string) string {
 	args := c.ghArgs([]string{"pr", "checks"}, prRef)
 	cmd := exec.Command("gh", args...)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	err := cmd.Run()
 	output := stdout.String()
 
@@ -88,7 +89,10 @@ func (c *PRClient) GetConflicts(prRef string) string {
 	if strings.EqualFold(val, "CONFLICTING") {
 		return "yes"
 	}
-	return "none"
+	if strings.EqualFold(val, "MERGEABLE") {
+		return "none"
+	}
+	return "unknown"
 }
 
 // GetReviewDecision fetches the review decision for a PR.
