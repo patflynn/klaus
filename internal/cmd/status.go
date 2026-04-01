@@ -81,6 +81,13 @@ func determineStatus(s *run.State) string {
 		return "ended"
 	}
 
+	if s.Type == "track" {
+		if s.MergedAt != nil {
+			return "merged"
+		}
+		return "tracking"
+	}
+
 	if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
 		return "running"
 	}
