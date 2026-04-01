@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
+	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
@@ -65,6 +69,10 @@ type sandboxStatusMsg struct {
 	hosts map[string]bool // host -> reachable
 }
 
+type pipelineActionMsg struct {
+	actions []pipeline.Action
+}
+
 type errMsg struct {
 	err error
 }
@@ -87,21 +95,32 @@ type repoGroup struct {
 
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
-	store        run.StateStore
-	states       []*run.State
-	ghStatus     map[string]*prStatus // keyed by PR number
-	sandboxHosts map[string]bool      // host -> reachable
-	width        int
-	height       int
-	err          error
-	watcher      *fsnotify.Watcher
+	store          run.StateStore
+	states         []*run.State
+	ghStatus       map[string]*prStatus // keyed by PR number
+	sandboxHosts   map[string]bool      // host -> reachable
+	pipelineCtrl   *pipeline.Controller
+	pipelineStates map[string]*pipeline.PRPipelineState
+	width          int
+	height         int
+	err            error
+	watcher        *fsnotify.Watcher
 }
 
 func newDashboardModel(store run.StateStore) dashboardModel {
+	var eventLog *event.Log
+	if hds, ok := store.(*run.HomeDirStore); ok {
+		eventLog = event.NewLog(hds.BaseDir())
+	}
+	logger := slog.Default()
+	ctrl := pipeline.New(store, eventLog, logger)
+
 	return dashboardModel{
-		store:        store,
-		ghStatus:     make(map[string]*prStatus),
-		sandboxHosts: make(map[string]bool),
+		store:          store,
+		ghStatus:       make(map[string]*prStatus),
+		sandboxHosts:   make(map[string]bool),
+		pipelineCtrl:   ctrl,
+		pipelineStates: make(map[string]*pipeline.PRPipelineState),
 	}
 }
 
@@ -141,6 +160,42 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for k, v := range msg.statuses {
 			m.ghStatus[k] = v
 		}
+		// Feed statuses to pipeline controller.
+		pStatuses := make(map[string]*pipeline.PRStatus, len(msg.statuses))
+		for k, v := range msg.statuses {
+			ps := &pipeline.PRStatus{
+				PRNumber:       v.PRNumber,
+				State:          v.State,
+				CI:             v.CI,
+				Conflicts:      v.Conflicts,
+				ReviewDecision: v.ReviewDecision,
+			}
+			// Find the PR URL and target repo from run states.
+			for _, s := range m.states {
+				prNum := extractPRNumber(s)
+				if prNum == k {
+					if s.PRURL != nil {
+						ps.PRURL = *s.PRURL
+					}
+					if s.TargetRepo != nil {
+						ps.TargetRepo = *s.TargetRepo
+					}
+					break
+				}
+			}
+			pStatuses[k] = ps
+		}
+		actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
+		m.pipelineStates = m.pipelineCtrl.PipelineStates()
+		if len(actions) > 0 {
+			return m, func() tea.Msg {
+				return pipelineActionMsg{actions: actions}
+			}
+		}
+
+	case pipelineActionMsg:
+		// Pipeline dispatched agents or merged PRs — refresh state.
+		return m, loadStatesCmd(m.store)
 
 	case fsEventMsg:
 		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher))
@@ -330,6 +385,11 @@ func (m dashboardModel) renderPRLine(prNum string, s *run.State, ps *prStatus) s
 		} else if strings.EqualFold(rd, "CHANGES_REQUESTED") {
 			parts = append(parts, redStyle.Render("changes requested"))
 		}
+	}
+
+	// Append pipeline stage if available.
+	if pps, ok := m.pipelineStates[prNum]; ok {
+		parts = append(parts, dimStyle.Render(pipeline.StageLabel(pps.Stage)))
 	}
 
 	return fmt.Sprintf("%s  %-20s  %s", prLabel, prompt, strings.Join(parts, "  "))

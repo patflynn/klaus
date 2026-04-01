@@ -67,7 +67,6 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
 | `klaus target owner/repo` | Set session-level default target repo |
-| `klaus watch <pr-number>` | Monitor CI for a PR and fix failures autonomously |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
@@ -82,20 +81,6 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
 
-### `klaus watch`
-
-Monitor CI checks for an existing PR. When a check fails, the watch agent reads the failure logs, diagnoses the issue, pushes a fix, and repeats until all checks pass. It also handles merge conflicts and addresses review comments from trusted reviewers.
-
-After all CI checks pass, the agent waits for new review comments (default 2 minutes) before exiting. If new comments arrive during the wait, it addresses them and re-enters the CI monitoring loop.
-
-```bash
-klaus watch 42
-klaus watch 42 --review-wait 300   # wait up to 5 minutes for reviews
-klaus watch 42 --review-wait 0     # exit immediately when CI passes
-```
-
-The wait duration can also be set via `review_wait_secs` in `.klaus/config.json`.
-
 ### `klaus launch --pr`
 
 Push fixes to an existing PR's branch instead of creating a new PR. The agent checks out the PR's branch, makes changes, and pushes directly — the PR updates automatically. Useful for addressing review comments or fixing CI failures on an existing PR.
@@ -105,7 +90,7 @@ klaus launch --pr 42 "Address the review comments"
 klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 ```
 
-The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits). Auto-watch is skipped since the agent is already working on the PR branch.
+The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
 
 ### `klaus launch --repo`
 
@@ -163,6 +148,12 @@ The status dashboard shows these columns for each run:
 ### `klaus dashboard`
 
 Live TUI that monitors all active agents and their PR statuses. Groups runs by repository, auto-refreshes via filesystem watching for local state and GitHub polling every 30s.
+
+The dashboard includes an event-driven PR pipeline that automatically:
+- Dispatches fix agents when CI fails
+- Dispatches agents to address review comments when changes are requested
+- Auto-merges PRs that are approved with passing CI and no conflicts
+- Shows pipeline stage per PR (e.g., "CI pending", "CI failed, fix running", "approved, ready")
 
 Keyboard shortcuts: `q` quit, `r` force refresh.
 
@@ -234,7 +225,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 
 **`.klaus/session-prompt.md`** — Custom prompt for the coordinator session. Same template variables.
 
-**`.klaus/watch-prompt.md`** — Custom prompt for the watch agent. Additional variable: `{{.PR}}`.
+**`.klaus/pr-fix-prompt.md`** — Custom prompt for PR-fix agents. Additional variable: `{{.PR}}`.
 
 ## Under the hood
 
