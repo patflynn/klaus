@@ -213,7 +213,8 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 6. Create a PR. Include the following footer at the bottom of the PR body:
    Run: {{.RunID}}{{if .Issue}}
    Fixes #{{.Issue}}{{end}}
-   Do not include any AI attribution or 'Generated with Claude Code' lines in the PR body.
+
+Do not include any AI attribution or 'Generated with Claude Code' lines in the PR body.
 
 ## Testing
 - Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
