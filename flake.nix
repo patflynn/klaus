@@ -13,7 +13,8 @@
       in
       {
         packages.default = let
-          version = if (self ? rev) then "0.3.3-${builtins.substring 0 7 self.rev}" else "0.3.3-dirty";
+          baseVersion = pkgs.lib.strings.trim (builtins.readFile ./VERSION);
+          version = if (self ? rev) then "${baseVersion}-${builtins.substring 0 7 self.rev}" else "${baseVersion}-dirty";
         in pkgs.buildGoModule {
           pname = "klaus";
           inherit version;

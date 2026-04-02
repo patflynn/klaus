@@ -2,9 +2,12 @@
 
 BINARY := klaus
 BUILD_DIR := bin
+VERSION := $(shell cat VERSION)
+GIT_SHA := $(shell git rev-parse --short HEAD 2>/dev/null || echo "dirty")
+LDFLAGS := -ldflags "-X github.com/patflynn/klaus/internal/cmd.version=$(VERSION)-$(GIT_SHA)"
 
 build:
-	go build -o $(BUILD_DIR)/$(BINARY) ./cmd/klaus/
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY) ./cmd/klaus/
 
 test:
 	go test ./...
