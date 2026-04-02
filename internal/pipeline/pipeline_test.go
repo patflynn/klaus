@@ -251,8 +251,11 @@ func TestAutoMergeBlockedByConflicts(t *testing.T) {
 		mergeCount++
 		return nil
 	})
+
+	var launchedPrompt string
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
-		return "agent-001", nil
+		launchedPrompt = prompt
+		return "agent-rebase", nil
 	})
 
 	statuses := map[string]*PRStatus{
@@ -262,15 +265,32 @@ func TestAutoMergeBlockedByConflicts(t *testing.T) {
 		},
 	}
 
-	c.HandleGHStatus(context.Background(), statuses, nil)
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
 
 	if mergeCount != 0 {
 		t.Error("should not merge when conflicts exist")
 	}
 
+	if launchedPrompt == "" {
+		t.Error("expected rebase agent dispatch when conflicts detected")
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
 	states := c.PipelineStates()
-	if states["42"].Stage != StageApproved {
-		t.Errorf("expected stage approved (blocked by conflicts), got %s", states["42"].Stage)
+	if states["42"].Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", states["42"].Stage)
 	}
 }
 
@@ -284,6 +304,7 @@ func TestStageLabelCoverage(t *testing.T) {
 		{StageCIPassed, "CI passed, reviewing"},
 		{StageReviewPending, "review fix running"},
 		{StageApproved, "approved, ready"},
+		{StageNeedsRebase, "rebasing"},
 		{StageMerging, "merging"},
 		{StageMerged, "merged"},
 		{StageStalled, "stalled"},
@@ -676,6 +697,233 @@ func TestIdlePaneCleanupDoesNotSkipRecentRuns(t *testing.T) {
 
 	if len(checkedRuns) != 1 || checkedRuns[0] != "agent-new" {
 		t.Errorf("expected agent-new to be checked, got %v", checkedRuns)
+	}
+}
+
+func TestNeedsRebaseTransitionsToMergeAfterConflictsResolved(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Step 1: Approved with conflicts → dispatches rebase agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageNeedsRebase {
+		t.Fatalf("expected needs_rebase, got %s", c.PipelineStates()["42"].Stage)
+	}
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Step 2: Rebase agent completes, CI passes, conflicts resolved → should merge.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost}, // completed
+	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge after rebase resolved conflicts")
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge call, got %d", mergeCount)
+	}
+}
+
+func TestNeedsRebaseTransitionsToCIFailedIfCIFails(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Step 1: Approved with conflicts → rebase agent dispatched.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if c.PipelineStates()["42"].Stage != StageNeedsRebase {
+		t.Fatalf("expected needs_rebase, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Step 2: Rebase agent completes but CI fails.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo",
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageCIFailed {
+		t.Errorf("expected ci_failed after rebase + CI failure, got %s", state.Stage)
+	}
+	// Should have dispatched a CI fix agent (launch 2).
+	if launchCount != 2 {
+		t.Errorf("expected 2 launches (rebase + CI fix), got %d", launchCount)
+	}
+}
+
+func TestNeedsRebaseNoDoubleDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First call dispatches rebase agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	// Agent still running — should not re-dispatch.
+	runStates := []*run.State{
+		{ID: "agent-rebase", TmuxPane: strPtr("%1")},
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 1 {
+		t.Errorf("expected no duplicate rebase dispatch, got %d total", launchCount)
+	}
+}
+
+func TestRebaseDispatchRetryOnFailure(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "", fmt.Errorf("worktree already exists")
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First failure: should retry, not stall.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state := c.PipelineStates()["42"]
+	if state.Stage == StageStalled {
+		t.Error("expected retry on first rebase dispatch failure, not stall")
+	}
+
+	// Simulate backoff elapsed.
+	c.mu.Lock()
+	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+
+	// Second failure.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	state = c.PipelineStates()["42"]
+	if state.Stage == StageStalled {
+		t.Error("expected retry on second failure")
+	}
+
+	// Simulate backoff elapsed.
+	c.mu.Lock()
+	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+
+	// Third failure: should stall.
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+	state = c.PipelineStates()["42"]
+	if state.Stage != StageStalled {
+		t.Errorf("expected stalled after retries exhausted, got %s", state.Stage)
+	}
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error action when rebase retries exhausted")
+	}
+}
+
+func TestApprovedNoConflictsMerges(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for conflict-free merge, got %d", launchCount)
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge, got %d", mergeCount)
+	}
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action")
 	}
 }
 
