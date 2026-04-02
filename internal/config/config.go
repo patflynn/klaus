@@ -214,6 +214,8 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
    Run: {{.RunID}}{{if .Issue}}
    Fixes #{{.Issue}}{{end}}
 
+Do not include any AI attribution or 'Generated with Claude Code' lines in the PR body.
+
 ## Testing
 - Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
 - Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
