@@ -24,6 +24,7 @@ const (
 	StageCIPassed      Stage = "ci_passed"
 	StageReviewPending Stage = "review_pending"
 	StageApproved      Stage = "approved"
+	StageNeedsRebase   Stage = "needs_rebase"
 	StageMerging       Stage = "merging"
 	StageMerged        Stage = "merged"
 	StageStalled       Stage = "stalled"
@@ -234,7 +235,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		}
 
 	case status.CI == "passing":
-		if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending {
+		if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending || ps.Stage == StageNeedsRebase {
 			c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
 				"pr_number": ps.PRNumber,
 				"pr_url":    status.PRURL,
@@ -242,7 +243,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		}
 
 		if strings.EqualFold(status.ReviewDecision, "APPROVED") {
-			if ps.Stage != StageApproved && ps.Stage != StageMerging {
+			if ps.Stage != StageApproved && ps.Stage != StageMerging && ps.Stage != StageNeedsRebase {
 				ps.Stage = StageApproved
 				c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
 					"pr_number": ps.PRNumber,
@@ -250,21 +251,46 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				})
 			}
 
-			// Auto-merge: CI passing + approved + no conflicts.
-			if status.Conflicts != "yes" && ps.Stage == StageApproved {
-				ps.Stage = StageMerging
-				err := c.mergePRs(ctx, status.TargetRepo, []string{ps.PRNumber})
-				if err != nil {
-					c.logger.Error("auto-merge failed", "pr", ps.PRNumber, "err", err)
-					ps.Stage = StageStalled
-					actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
+			if ps.Stage == StageApproved || ps.Stage == StageNeedsRebase {
+				if status.Conflicts == "yes" {
+					// Conflicts detected — dispatch rebase agent.
+					if !ps.AgentRunning {
+						c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+						prompt := fmt.Sprintf(
+							"PR #%s has merge conflicts with the base branch. Rebase onto main, resolve all conflicts, and push. Run tests after resolving.",
+							ps.PRNumber,
+						)
+						agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+						if err != nil {
+							c.logger.Error("failed to dispatch rebase agent", "pr", ps.PRNumber, "err", err)
+							if !c.handleLaunchRetry(ps) {
+								ps.Stage = StageStalled
+								return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: rebase dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)}}
+							}
+							return actions
+						}
+						ps.RetryCount = 0
+						ps.Stage = StageNeedsRebase
+						ps.LastAgentID = agentID
+						ps.AgentRunning = true
+						actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)})
+					}
 				} else {
-					ps.Stage = StageMerged
-					c.emitEvent(ps.PRNumber, event.PRMerged, map[string]interface{}{
-						"pr_number": ps.PRNumber,
-						"pr_url":    status.PRURL,
-					})
-					actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", ps.PRNumber)})
+					// No conflicts — proceed with merge.
+					ps.Stage = StageMerging
+					err := c.mergePRs(ctx, status.TargetRepo, []string{ps.PRNumber})
+					if err != nil {
+						c.logger.Error("auto-merge failed", "pr", ps.PRNumber, "err", err)
+						ps.Stage = StageStalled
+						actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
+					} else {
+						ps.Stage = StageMerged
+						c.emitEvent(ps.PRNumber, event.PRMerged, map[string]interface{}{
+							"pr_number": ps.PRNumber,
+							"pr_url":    status.PRURL,
+						})
+						actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", ps.PRNumber)})
+					}
 				}
 			}
 		} else if strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED") {
@@ -497,6 +523,8 @@ func StageLabel(stage Stage) string {
 		return "review fix running"
 	case StageApproved:
 		return "approved, ready"
+	case StageNeedsRebase:
+		return "rebasing"
 	case StageMerging:
 		return "merging"
 	case StageMerged:
