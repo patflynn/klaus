@@ -91,8 +91,37 @@ var finalizeCmd = &cobra.Command{
 		}
 
 		syncRunToDataRef(syncRoot, store, cfg.DataRef, state)
+
+		cleanupWorktree(store, state)
+
 		return nil
 	},
+}
+
+// cleanupWorktree removes the agent's worktree and local branch after
+// completion. The state file and logs are preserved. It is idempotent —
+// if the worktree is already gone, the state is still cleared.
+func cleanupWorktree(store run.StateStore, state *run.State) {
+	if state.Worktree == "" {
+		return
+	}
+	gitRoot := ""
+	if state.CloneDir != nil {
+		gitRoot = *state.CloneDir
+	} else {
+		gitRoot, _ = git.RepoRoot()
+	}
+	if gitRoot == "" {
+		return
+	}
+	if err := git.WorktreeRemove(gitRoot, state.Worktree); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
+	}
+	if state.Branch != "" {
+		_ = git.BranchDelete(gitRoot, state.Branch)
+	}
+	state.Worktree = ""
+	_ = store.Save(state)
 }
 
 func finalizeFromLog(store run.StateStore, state *run.State) error {
