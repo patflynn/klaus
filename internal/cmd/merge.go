@@ -117,23 +117,28 @@ func buildApprovalChecker(store run.StateStore) func(string) bool {
 		} else {
 			states, _ = store.List()
 		}
+
+		repo := ""
+		isApproved := false
 		for _, s := range states {
-			if extractPRNumber(s) == prNumber && s.Approved != nil && *s.Approved {
-				return true
+			if extractPRNumber(s) == prNumber {
+				if s.Approved != nil && *s.Approved {
+					isApproved = true
+				}
+				if repo == "" && s.PRURL != nil {
+					repo = repoFromPRURL(*s.PRURL)
+					if repo == "(unknown)" {
+						repo = ""
+					}
+				}
 			}
 		}
 
-		// Fall back to checking GitHub review decision.
-		repo := ""
-		for _, s := range states {
-			if extractPRNumber(s) == prNumber && s.PRURL != nil {
-				repo = repoFromPRURL(*s.PRURL)
-				if repo == "(unknown)" {
-					repo = ""
-				}
-				break
-			}
+		if isApproved {
+			return true
 		}
+
+		// Fall back to checking GitHub review decision.
 		decision := gh.NewPRClient(repo).GetReviewDecision(prNumber)
 		if strings.EqualFold(decision, "APPROVED") {
 			// Persist the approval into run state so future checks are fast.

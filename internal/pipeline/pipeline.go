@@ -431,6 +431,7 @@ func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
 // markRunStatesApproved sets Approved=true on run states matching the given PR number
 // that are not already approved, and persists the change via the store.
 func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.State) {
+	now := time.Now().UTC().Format(time.RFC3339)
 	for _, s := range runStates {
 		if s.PR == nil || *s.PR != prNumber {
 			// Also check PR URL for tracked PRs that store the number in the URL.
@@ -443,7 +444,6 @@ func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.Sta
 		}
 		approved := true
 		s.Approved = &approved
-		now := time.Now().UTC().Format(time.RFC3339)
 		s.ApprovedAt = &now
 		if c.store != nil {
 			if err := c.store.Save(s); err != nil {
