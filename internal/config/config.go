@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/template"
 )
 
@@ -21,6 +23,7 @@ type Config struct {
 	AutoMergeOnApproval *bool            `json:"auto_merge_on_approval,omitempty"`
 	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
 	SandboxHost         string           `json:"sandbox_host,omitempty"`
+	PRReviewer          string           `json:"pr_reviewer,omitempty"`
 }
 
 // PreReviewConfig configures the pre-PR review checks.
@@ -90,6 +93,29 @@ func (c *Config) PreReviewBlockOn() string {
 	return c.PreReview.BlockOn
 }
 
+var (
+	ghUserOnce  sync.Once
+	ghUserLogin string
+)
+
+// PRReviewerOrDefault returns the configured PR reviewer. If empty, it shells
+// out to `gh api user -q .login` to get the authenticated user's login and
+// caches the result.
+func (c *Config) PRReviewerOrDefault() string {
+	if c.PRReviewer != "" {
+		return c.PRReviewer
+	}
+	ghUserOnce.Do(func() {
+		cmd := exec.Command("gh", "api", "user", "-q", ".login")
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err == nil {
+			ghUserLogin = strings.TrimSpace(stdout.String())
+		}
+	})
+	return ghUserLogin
+}
+
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
@@ -141,6 +167,7 @@ type PromptVars struct {
 	Branch   string
 	RepoName string
 	PR       string
+	Reviewer string // GitHub user to request review from
 	Projects string // Formatted list of registered projects for session prompt
 }
 
@@ -213,7 +240,9 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 6. Create a PR. Include the following footer at the bottom of the PR body:
    Run: {{.RunID}}{{if .Issue}}
    Fixes #{{.Issue}}{{end}}
-
+{{if .Reviewer}}
+Use --reviewer {{.Reviewer}} when creating the PR.
+{{end}}
 Do not include any AI attribution or 'Generated with Claude Code' lines in the PR body.
 
 ## Testing

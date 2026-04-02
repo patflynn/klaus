@@ -251,6 +251,10 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				})
 			}
 
+			// Mark internal run state as approved so that `klaus status`
+			// and the dashboard reflect the GitHub approval.
+			c.markRunStatesApproved(ps.PRNumber, runStates)
+
 			if ps.Stage == StageApproved || ps.Stage == StageNeedsRebase {
 				if status.Conflicts == "yes" {
 					// Conflicts detected — dispatch rebase agent.
@@ -420,6 +424,32 @@ func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
 		if !s.IsAgentRunning() {
 			c.logger.Info("closing completed agent pane", "run", s.ID, "pane", *s.TmuxPane)
 			tmux.KillPane(*s.TmuxPane)
+		}
+	}
+}
+
+// markRunStatesApproved sets Approved=true on run states matching the given PR number
+// that are not already approved, and persists the change via the store.
+func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.State) {
+	for _, s := range runStates {
+		if s.PR == nil || *s.PR != prNumber {
+			// Also check PR URL for tracked PRs that store the number in the URL.
+			if s.PRURL == nil || !strings.HasSuffix(*s.PRURL, "/"+prNumber) {
+				continue
+			}
+		}
+		if s.Approved != nil && *s.Approved {
+			continue
+		}
+		approved := true
+		s.Approved = &approved
+		now := time.Now().UTC().Format(time.RFC3339)
+		s.ApprovedAt = &now
+		if c.store != nil {
+			if err := c.store.Save(s); err != nil {
+				c.logger.Error("failed to persist GitHub approval to run state",
+					"pr", prNumber, "run", s.ID, "err", err)
+			}
 		}
 	}
 }

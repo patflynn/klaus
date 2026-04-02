@@ -233,11 +233,13 @@ are synced back after completion. Use --local to force local execution, or
 				RepoName: repoName,
 			})
 		} else {
+			reviewer := hostCfg.PRReviewerOrDefault()
 			sysPrompt, err = config.RenderPrompt(repoRoot, config.PromptVars{
 				RunID:    id,
 				Issue:    issue,
 				Branch:   branch,
 				RepoName: repoName,
+				Reviewer: reviewer,
 			})
 		}
 		if err != nil {

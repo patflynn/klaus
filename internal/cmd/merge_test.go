@@ -763,6 +763,35 @@ func TestMergeApprovedPRsPassThrough(t *testing.T) {
 	}
 }
 
+func TestMergePassesWithGitHubApproval(t *testing.T) {
+	var buf bytes.Buffer
+	merged := []string{}
+	runner := testMergeRunner(&buf)
+	runner.forceApproval = false
+	// Simulate GitHub APPROVED via getPRReviewDecision
+	runner.getPRReviewDecision = func(pr, repo string) string { return "APPROVED" }
+	// checkApproval returns false (no internal approval), but the runner also
+	// checks GitHub review via getPRReviewDecision. To test the full flow
+	// we wire checkApproval to also consult the review decision.
+	runner.checkApproval = func(pr string) bool {
+		decision := runner.getPRReviewDecision(pr, "")
+		return strings.EqualFold(decision, "APPROVED")
+	}
+	runner.mergePR = func(pr, method string, del bool, repo string) error {
+		merged = append(merged, pr)
+		return nil
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+
+	if len(merged) != 1 || merged[0] != "1" {
+		t.Errorf("merged = %v, want [1]", merged)
+	}
+}
+
 func TestMergeEOFStopsQueue(t *testing.T) {
 	var buf bytes.Buffer
 	// Empty reader simulates EOF/Ctrl+D

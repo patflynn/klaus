@@ -927,6 +927,103 @@ func TestApprovedNoConflictsMerges(t *testing.T) {
 	}
 }
 
+func TestGitHubApprovalMarksRunStateApproved(t *testing.T) {
+	c, dir := newTestController(t)
+
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		return nil
+	})
+
+	// Create a run state for PR #42 in the store.
+	stateDir := filepath.Join(dir, "klaus")
+	store := run.NewGitDirStore(stateDir)
+	pr := "42"
+	s := &run.State{
+		ID:        "20260401-0000-test",
+		Prompt:    "fix something",
+		Branch:    "agent/test",
+		PR:        &pr,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Simulate GitHub APPROVED status.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:       "42",
+			State:          "OPEN",
+			CI:             "passing",
+			ReviewDecision: "APPROVED",
+			Conflicts:      "none",
+			TargetRepo:     "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, []*run.State{s})
+
+	// Reload from store and verify approval was persisted.
+	reloaded, err := store.Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.Approved == nil || !*reloaded.Approved {
+		t.Error("expected run state to be marked as approved after GitHub APPROVED")
+	}
+	if reloaded.ApprovedAt == nil || *reloaded.ApprovedAt == "" {
+		t.Error("expected ApprovedAt to be set")
+	}
+}
+
+func TestGitHubApprovalDoesNotOverwriteExisting(t *testing.T) {
+	c, dir := newTestController(t)
+
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		return nil
+	})
+
+	stateDir := filepath.Join(dir, "klaus")
+	store := run.NewGitDirStore(stateDir)
+	pr := "42"
+	approved := true
+	existingTime := "2026-03-01T00:00:00Z"
+	s := &run.State{
+		ID:         "20260401-0000-test2",
+		Prompt:     "fix something",
+		Branch:     "agent/test",
+		PR:         &pr,
+		CreatedAt:  time.Now().Format(time.RFC3339),
+		Approved:   &approved,
+		ApprovedAt: &existingTime,
+	}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:       "42",
+			State:          "OPEN",
+			CI:             "passing",
+			ReviewDecision: "APPROVED",
+			Conflicts:      "none",
+			TargetRepo:     "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, []*run.State{s})
+
+	reloaded, err := store.Load(s.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// Should still be approved with the original timestamp.
+	if reloaded.ApprovedAt == nil || *reloaded.ApprovedAt != existingTime {
+		t.Errorf("ApprovedAt = %v, want %q (should not overwrite)", reloaded.ApprovedAt, existingTime)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
