@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"os/exec"
 	"strings"
 	"sync"
@@ -620,8 +621,8 @@ func (c *Controller) defaultSnapshotThreads(repo, prNumber string) ([]string, er
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid repo format: %s", repo)
 	}
-	prNum := 0
-	if _, err := fmt.Sscanf(prNumber, "%d", &prNum); err != nil {
+	prNum, err := strconv.Atoi(prNumber)
+	if err != nil {
 		return nil, fmt.Errorf("invalid PR number: %s", prNumber)
 	}
 	threads, err := ghutil.FetchReviewThreads(parts[0], parts[1], prNum)
