@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/event"
+	ghutil "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 )
@@ -44,13 +45,14 @@ type PRStatus struct {
 
 // PRPipelineState tracks per-PR pipeline state.
 type PRPipelineState struct {
-	PRNumber       string
-	Stage          Stage
-	LastAgentID    string // run ID of last dispatched agent
-	AgentRunning   bool   // whether the dispatched agent is still active
-	SeenCommentIDs map[int64]bool
-	RetryCount     int       // number of launch retries after failure
-	LastFailedAt   time.Time // when the last launch failure occurred
+	PRNumber                string
+	Stage                   Stage
+	LastAgentID             string // run ID of last dispatched agent
+	AgentRunning            bool   // whether the dispatched agent is still active
+	SeenCommentIDs          map[int64]bool
+	PendingResolveThreadIDs []string  // GraphQL thread IDs to resolve after agent completes
+	RetryCount              int       // number of launch retries after failure
+	LastFailedAt            time.Time // when the last launch failure occurred
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -69,9 +71,11 @@ type Controller struct {
 	mu       sync.Mutex
 
 	// Injectable runners for testing.
-	launchAgent    func(ctx context.Context, prNumber, repo, prompt string) (string, error)
-	mergePRs       func(ctx context.Context, repo string, prNumbers []string) error
-	cleanIdlePanes func(runStates []*run.State)
+	launchAgent     func(ctx context.Context, prNumber, repo, prompt string) (string, error)
+	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
+	cleanIdlePanes  func(runStates []*run.State)
+	snapshotThreads func(repo, prNumber string) ([]string, error)
+	resolveThread   func(threadID string) error
 }
 
 // New creates a new pipeline controller.
@@ -85,6 +89,8 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
 	c.cleanIdlePanes = c.defaultCleanIdlePanes
+	c.snapshotThreads = c.defaultSnapshotThreads
+	c.resolveThread = ghutil.ResolveReviewThread
 	return c
 }
 
@@ -107,6 +113,20 @@ func (c *Controller) SetCleanIdlePanes(fn func(runStates []*run.State)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cleanIdlePanes = fn
+}
+
+// SetSnapshotThreads overrides thread snapshot fetching (for testing).
+func (c *Controller) SetSnapshotThreads(fn func(repo, prNumber string) ([]string, error)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.snapshotThreads = fn
+}
+
+// SetResolveThread overrides thread resolution (for testing).
+func (c *Controller) SetResolveThread(fn func(threadID string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.resolveThread = fn
 }
 
 // HandleGHStatus is called by the dashboard on each GH poll with fresh PR statuses.
@@ -147,8 +167,14 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		ps := c.getOrCreateState(prNum)
 
 		// Update agent running status.
+		wasRunning := ps.AgentRunning
 		if ps.LastAgentID != "" {
 			ps.AgentRunning = runningAgents[ps.LastAgentID]
+		}
+
+		// Resolve review threads when a fix agent completes.
+		if wasRunning && !ps.AgentRunning && len(ps.PendingResolveThreadIDs) > 0 {
+			c.resolvePendingThreads(ps)
 		}
 
 		prevStage := ps.Stage
@@ -303,6 +329,9 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				// Clean up stale worktrees for this PR before dispatching.
 				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
 
+				// Snapshot unresolved threads before dispatching fix agent.
+				c.snapshotUnresolvedThreads(ps, status.TargetRepo)
+
 				prompt := fmt.Sprintf(
 					"PR #%s has changes requested by reviewers. Address the review comments and push fixes. Check `gh api repos/{owner}/{repo}/pulls/%s/comments` for comment details.",
 					ps.PRNumber, ps.PRNumber,
@@ -325,6 +354,9 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		} else {
 			// CI passed, no explicit CHANGES_REQUESTED or APPROVED.
 			if status.HasNewTrustedComments && !ps.AgentRunning {
+				// Snapshot unresolved threads before dispatching fix agent.
+				c.snapshotUnresolvedThreads(ps, status.TargetRepo)
+
 				// Trusted reviewer left unaddressed comments — dispatch fix agent.
 				prompt := fmt.Sprintf(
 					"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. Check the review comments with: gh api repos/%s/pulls/%s/comments",
@@ -538,6 +570,71 @@ func truncateError(s string, maxLen int) string {
 		return s[:maxLen-1] + "…"
 	}
 	return s
+}
+
+// snapshotUnresolvedThreads fetches and stores unresolved review thread IDs
+// so they can be resolved after the fix agent completes.
+func (c *Controller) snapshotUnresolvedThreads(ps *PRPipelineState, repo string) {
+	threadIDs, err := c.snapshotThreads(repo, ps.PRNumber)
+	if err != nil {
+		c.logger.Warn("failed to snapshot review threads", "pr", ps.PRNumber, "err", err)
+		ps.PendingResolveThreadIDs = nil
+		return
+	}
+	ps.PendingResolveThreadIDs = threadIDs
+	if len(threadIDs) > 0 {
+		c.logger.Info("snapshotted unresolved review threads",
+			"pr", ps.PRNumber,
+			"count", len(threadIDs),
+		)
+	}
+}
+
+// resolvePendingThreads resolves all pending review threads for a PR.
+func (c *Controller) resolvePendingThreads(ps *PRPipelineState) {
+	resolved := 0
+	for _, threadID := range ps.PendingResolveThreadIDs {
+		if err := c.resolveThread(threadID); err != nil {
+			c.logger.Warn("failed to resolve review thread",
+				"pr", ps.PRNumber,
+				"thread", threadID,
+				"err", err,
+			)
+			continue
+		}
+		resolved++
+	}
+	if resolved > 0 {
+		c.logger.Info("resolved review threads after agent completion",
+			"pr", ps.PRNumber,
+			"resolved", resolved,
+			"total", len(ps.PendingResolveThreadIDs),
+		)
+	}
+	ps.PendingResolveThreadIDs = nil
+}
+
+// defaultSnapshotThreads fetches unresolved review thread IDs from GitHub.
+func (c *Controller) defaultSnapshotThreads(repo, prNumber string) ([]string, error) {
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid repo format: %s", repo)
+	}
+	prNum := 0
+	if _, err := fmt.Sscanf(prNumber, "%d", &prNum); err != nil {
+		return nil, fmt.Errorf("invalid PR number: %s", prNumber)
+	}
+	threads, err := ghutil.FetchReviewThreads(parts[0], parts[1], prNum)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, t := range threads {
+		if !t.IsResolved {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
 }
 
 // StageLabel returns a human-readable label for dashboard display.

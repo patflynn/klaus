@@ -82,6 +82,87 @@ func ReplyToReviewComment(owner, repo, prNumber string, commentID int64, body st
 	return APIPost(path, map[string]string{"body": body})
 }
 
+// ReviewThread represents a GitHub PR review thread with its GraphQL node ID.
+type ReviewThread struct {
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+}
+
+// FetchReviewThreads fetches review threads for a PR using the GraphQL API.
+// Returns threads with their GraphQL node IDs and resolved status.
+func FetchReviewThreads(owner, repo string, prNumber int) ([]ReviewThread, error) {
+	query := fmt.Sprintf(`{ repository(owner:%q, name:%q) { pullRequest(number: %d) { reviewThreads(first: 100) { nodes { id isResolved } } } } }`, owner, repo, prNumber)
+	return fetchReviewThreadsWithRunner(query, defaultGraphQLRunner)
+}
+
+// graphQLRunner abstracts the gh api graphql call for testing.
+type graphQLRunner func(query string) ([]byte, error)
+
+func defaultGraphQLRunner(query string) ([]byte, error) {
+	cmd := exec.Command("gh", "api", "graphql", "-f", "query="+query)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api graphql: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+func fetchReviewThreadsWithRunner(query string, runner graphQLRunner) ([]ReviewThread, error) {
+	data, err := runner(query)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Data struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						Nodes []ReviewThread `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parsing review threads: %w", err)
+	}
+	return result.Data.Repository.PullRequest.ReviewThreads.Nodes, nil
+}
+
+// ResolveReviewThread resolves a review thread by its GraphQL node ID.
+func ResolveReviewThread(threadID string) error {
+	return resolveReviewThreadWithRunner(threadID, defaultGraphQLRunner)
+}
+
+func resolveReviewThreadWithRunner(threadID string, runner graphQLRunner) error {
+	query := fmt.Sprintf(`mutation { resolveReviewThread(input: {threadId: %q}) { thread { isResolved } } }`, threadID)
+	data, err := runner(query)
+	if err != nil {
+		return err
+	}
+	var result struct {
+		Data struct {
+			ResolveReviewThread struct {
+				Thread struct {
+					IsResolved bool `json:"isResolved"`
+				} `json:"thread"`
+			} `json:"resolveReviewThread"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return fmt.Errorf("parsing resolve response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("GraphQL error: %s", result.Errors[0].Message)
+	}
+	return nil
+}
+
 // FetchCollaborators returns the list of collaborator logins for a repo.
 func FetchCollaborators(owner, repo string) ([]string, error) {
 	cmd := exec.Command("gh", "api", fmt.Sprintf("repos/%s/%s/collaborators", owner, repo), "--jq", ".[].login")

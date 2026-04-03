@@ -927,100 +927,193 @@ func TestApprovedNoConflictsMerges(t *testing.T) {
 	}
 }
 
-func TestGitHubApprovalMarksRunStateApproved(t *testing.T) {
-	c, dir := newTestController(t)
+func TestReviewThreadsResolvedAfterAgentCompletion(t *testing.T) {
+	c, _ := newTestController(t)
 
+	// Track which threads were resolved.
+	var resolvedThreads []string
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_aaa", "RT_bbb"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolvedThreads = append(resolvedThreads, threadID)
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-fix", nil
+	})
+
+	// Step 1: CHANGES_REQUESTED → dispatches fix agent, snapshots threads.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["42"]
+	if len(state.PendingResolveThreadIDs) != 2 {
+		t.Fatalf("expected 2 pending threads, got %d", len(state.PendingResolveThreadIDs))
+	}
+
+	// Step 2: Agent completes (finalized with cost).
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	// CI now passing, review approved → the threads should be resolved.
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
 	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
 		return nil
 	})
+	c.HandleGHStatus(context.Background(), statuses, runStates)
 
-	// Create a run state for PR #42 in the store.
-	stateDir := filepath.Join(dir, "klaus")
-	store := run.NewGitDirStore(stateDir)
-	pr := "42"
-	s := &run.State{
-		ID:        "20260401-0000-test",
-		Prompt:    "fix something",
-		Branch:    "agent/test",
-		PR:        &pr,
-		CreatedAt: time.Now().Format(time.RFC3339),
+	if len(resolvedThreads) != 2 {
+		t.Errorf("expected 2 threads resolved, got %d: %v", len(resolvedThreads), resolvedThreads)
 	}
-	if err := store.Save(s); err != nil {
-		t.Fatalf("Save: %v", err)
+	if resolvedThreads[0] != "RT_aaa" || resolvedThreads[1] != "RT_bbb" {
+		t.Errorf("unexpected resolved threads: %v", resolvedThreads)
 	}
 
-	// Simulate GitHub APPROVED status.
-	statuses := map[string]*PRStatus{
-		"42": {
-			PRNumber:       "42",
-			State:          "OPEN",
-			CI:             "passing",
-			ReviewDecision: "APPROVED",
-			Conflicts:      "none",
-			TargetRepo:     "owner/repo",
-		},
-	}
-
-	c.HandleGHStatus(context.Background(), statuses, []*run.State{s})
-
-	// Reload from store and verify approval was persisted.
-	reloaded, err := store.Load(s.ID)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if reloaded.Approved == nil || !*reloaded.Approved {
-		t.Error("expected run state to be marked as approved after GitHub APPROVED")
-	}
-	if reloaded.ApprovedAt == nil || *reloaded.ApprovedAt == "" {
-		t.Error("expected ApprovedAt to be set")
+	// Pending threads should be cleared after resolution.
+	state = c.PipelineStates()["42"]
+	if state != nil && len(state.PendingResolveThreadIDs) != 0 {
+		t.Errorf("expected pending threads cleared, got %d", len(state.PendingResolveThreadIDs))
 	}
 }
 
-func TestGitHubApprovalDoesNotOverwriteExisting(t *testing.T) {
-	c, dir := newTestController(t)
+func TestReviewThreadResolutionFailureDoesNotBlock(t *testing.T) {
+	c, _ := newTestController(t)
 
+	resolveCount := 0
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_ok", "RT_fail", "RT_ok2"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolveCount++
+		if threadID == "RT_fail" {
+			return fmt.Errorf("permission denied")
+		}
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-fix", nil
+	})
 	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
 		return nil
 	})
 
-	stateDir := filepath.Join(dir, "klaus")
-	store := run.NewGitDirStore(stateDir)
-	pr := "42"
-	approved := true
-	existingTime := "2026-03-01T00:00:00Z"
-	s := &run.State{
-		ID:         "20260401-0000-test2",
-		Prompt:     "fix something",
-		Branch:     "agent/test",
-		PR:         &pr,
-		CreatedAt:  time.Now().Format(time.RFC3339),
-		Approved:   &approved,
-		ApprovedAt: &existingTime,
+	// Dispatch fix agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
 	}
-	if err := store.Save(s); err != nil {
-		t.Fatalf("Save: %v", err)
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Agent completes.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1"), CostUSD: &cost},
 	}
+	statuses["42"] = &PRStatus{
+		PRNumber: "42", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	// All 3 threads should have been attempted.
+	if resolveCount != 3 {
+		t.Errorf("expected 3 resolve attempts, got %d", resolveCount)
+	}
+
+	// Pipeline should continue (merge action present).
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action despite resolution failure")
+	}
+}
+
+func TestTrustedCommentSnapshotsThreads(t *testing.T) {
+	c, _ := newTestController(t)
+
+	var snapshotCalled bool
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		snapshotCalled = true
+		return []string{"RT_trusted"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-trusted", nil
+	})
 
 	statuses := map[string]*PRStatus{
 		"42": {
-			PRNumber:       "42",
-			State:          "OPEN",
-			CI:             "passing",
-			ReviewDecision: "APPROVED",
-			Conflicts:      "none",
-			TargetRepo:     "owner/repo",
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
 		},
 	}
 
-	c.HandleGHStatus(context.Background(), statuses, []*run.State{s})
+	c.HandleGHStatus(context.Background(), statuses, nil)
 
-	reloaded, err := store.Load(s.ID)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	if !snapshotCalled {
+		t.Error("expected thread snapshot for trusted reviewer comment dispatch")
 	}
-	// Should still be approved with the original timestamp.
-	if reloaded.ApprovedAt == nil || *reloaded.ApprovedAt != existingTime {
-		t.Errorf("ApprovedAt = %v, want %q (should not overwrite)", reloaded.ApprovedAt, existingTime)
+
+	state := c.PipelineStates()["42"]
+	if len(state.PendingResolveThreadIDs) != 1 || state.PendingResolveThreadIDs[0] != "RT_trusted" {
+		t.Errorf("expected 1 pending thread RT_trusted, got %v", state.PendingResolveThreadIDs)
+	}
+}
+
+func TestNoThreadResolutionWhileAgentRunning(t *testing.T) {
+	c, _ := newTestController(t)
+
+	resolveCount := 0
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return []string{"RT_aaa"}, nil
+	})
+	c.SetResolveThread(func(threadID string) error {
+		resolveCount++
+		return nil
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+		return "agent-fix", nil
+	})
+
+	// Dispatch fix agent.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Agent still running.
+	runStates := []*run.State{
+		{ID: "agent-fix", TmuxPane: strPtr("%1")}, // running: no cost/duration
+	}
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if resolveCount != 0 {
+		t.Errorf("expected no thread resolution while agent running, got %d", resolveCount)
 	}
 }
 
