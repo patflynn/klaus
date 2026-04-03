@@ -14,7 +14,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fsnotify/fsnotify"
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
@@ -132,6 +134,11 @@ func newDashboardModel(store run.StateStore) dashboardModel {
 	}
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	ctrl := pipeline.New(store, eventLog, logger)
+	if repoRoot, err := git.RepoRoot(); err == nil {
+		if cfg, err := config.Load(repoRoot); err == nil {
+			ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
+		}
+	}
 
 	return dashboardModel{
 		store:          store,

@@ -72,6 +72,8 @@ type Controller struct {
 	prStates map[string]*PRPipelineState // keyed by PR number
 	mu       sync.Mutex
 
+	autoMergeOnApproval bool // whether to auto-merge approved PRs
+
 	// Injectable runners for testing.
 	launchAgent     func(ctx context.Context, prNumber, repo, prompt string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
@@ -94,6 +96,13 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	c.snapshotThreads = c.defaultSnapshotThreads
 	c.resolveThread = ghutil.ResolveReviewThread
 	return c
+}
+
+// SetAutoMergeOnApproval controls whether approved PRs are automatically merged.
+func (c *Controller) SetAutoMergeOnApproval(enabled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.autoMergeOnApproval = enabled
 }
 
 // SetLaunchAgent overrides the agent launcher (for testing).
@@ -312,8 +321,8 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 						ps.LastDispatchAt = time.Now()
 						actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)})
 					}
-				} else {
-					// No conflicts — proceed with merge.
+				} else if c.autoMergeOnApproval {
+					// No conflicts and auto-merge enabled — proceed with merge.
 					ps.Stage = StageMerging
 					err := c.mergePRs(ctx, status.TargetRepo, []string{ps.PRNumber})
 					if err != nil {
