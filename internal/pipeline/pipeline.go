@@ -54,6 +54,7 @@ type PRPipelineState struct {
 	PendingResolveThreadIDs []string  // GraphQL thread IDs to resolve after agent completes
 	RetryCount              int       // number of launch retries after failure
 	LastFailedAt            time.Time // when the last launch failure occurred
+	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -224,6 +225,9 @@ const maxLaunchRetries = 2
 // retryBackoff is the minimum time between launch retries.
 const retryBackoff = 60 * time.Second
 
+// dispatchCooldown is the minimum time between agent dispatches for the same PR.
+const dispatchCooldown = 60 * time.Second
+
 // evaluate checks the current GH status and determines transitions + dispatches.
 func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *PRStatus, runStates []*run.State) []Action {
 	var actions []Action
@@ -231,7 +235,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 	switch {
 	case status.CI == "failing":
 		if ps.Stage != StageCIFailed || !ps.AgentRunning {
-			if !ps.AgentRunning {
+			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
 				// Clean up stale worktrees for this PR before dispatching.
 				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
 
@@ -252,6 +256,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				ps.RetryCount = 0
 				ps.LastAgentID = agentID
 				ps.AgentRunning = true
+				ps.LastDispatchAt = time.Now()
 				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("CI fix agent for PR #%s", ps.PRNumber)})
 			}
 			ps.Stage = StageCIFailed
@@ -285,7 +290,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 			if ps.Stage == StageApproved || ps.Stage == StageNeedsRebase {
 				if status.Conflicts == "yes" {
 					// Conflicts detected — dispatch rebase agent.
-					if !ps.AgentRunning {
+					if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
 						c.cleanupStaleWorktrees(ps.PRNumber, runStates)
 						prompt := fmt.Sprintf(
 							"PR #%s has merge conflicts with the base branch. Rebase onto main, resolve all conflicts, and push. Run tests after resolving.",
@@ -304,6 +309,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 						ps.Stage = StageNeedsRebase
 						ps.LastAgentID = agentID
 						ps.AgentRunning = true
+						ps.LastDispatchAt = time.Now()
 						actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)})
 					}
 				} else {
@@ -326,7 +332,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 			}
 		} else if strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED") {
 			// Review comments need addressing.
-			if !ps.AgentRunning {
+			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
 				// Clean up stale worktrees for this PR before dispatching.
 				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
 
@@ -349,12 +355,13 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				ps.RetryCount = 0
 				ps.LastAgentID = agentID
 				ps.AgentRunning = true
+				ps.LastDispatchAt = time.Now()
 				ps.Stage = StageReviewPending
 				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)})
 			}
 		} else {
 			// CI passed, no explicit CHANGES_REQUESTED or APPROVED.
-			if status.HasNewTrustedComments && !ps.AgentRunning {
+			if status.HasNewTrustedComments && !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
 				// Snapshot unresolved threads before dispatching fix agent.
 				c.snapshotUnresolvedThreads(ps, status.TargetRepo)
 
@@ -371,6 +378,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				}
 				ps.LastAgentID = agentID
 				ps.AgentRunning = true
+				ps.LastDispatchAt = time.Now()
 				ps.Stage = StageReviewPending
 				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)})
 			} else if ps.Stage != StageApproved && ps.Stage != StageMerging && !ps.AgentRunning {
