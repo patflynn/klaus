@@ -61,6 +61,7 @@ func TestStateTransition_CIPendingToFailed(t *testing.T) {
 
 func TestStateTransition_CIFailedToPassedToApproved(t *testing.T) {
 	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
@@ -707,6 +708,7 @@ func TestIdlePaneCleanupDoesNotSkipRecentRuns(t *testing.T) {
 
 func TestNeedsRebaseTransitionsToMergeAfterConflictsResolved(t *testing.T) {
 	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
@@ -898,6 +900,7 @@ func TestRebaseDispatchRetryOnFailure(t *testing.T) {
 
 func TestApprovedNoConflictsMerges(t *testing.T) {
 	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
@@ -934,6 +937,35 @@ func TestApprovedNoConflictsMerges(t *testing.T) {
 	}
 	if !hasMerge {
 		t.Error("expected merge action")
+	}
+}
+
+func TestApprovedNoAutoMergeWhenDisabled(t *testing.T) {
+	c, _ := newTestController(t)
+	// autoMergeOnApproval defaults to false — do not set it
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 0 {
+		t.Errorf("expected no merge when auto_merge_on_approval is disabled, got %d", mergeCount)
+	}
+	for _, a := range actions {
+		if a.Type == "merge" {
+			t.Error("unexpected merge action when auto_merge_on_approval is disabled")
+		}
 	}
 }
 
@@ -998,6 +1030,7 @@ func TestReviewThreadsResolvedAfterAgentCompletion(t *testing.T) {
 
 func TestReviewThreadResolutionFailureDoesNotBlock(t *testing.T) {
 	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
 
 	resolveCount := 0
 	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
