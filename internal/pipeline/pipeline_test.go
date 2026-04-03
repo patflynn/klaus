@@ -162,6 +162,11 @@ func TestAgentReDispatchAfterCompletion(t *testing.T) {
 		{ID: "agent-002", TmuxPane: strPtr("%1"), CostUSD: &cost},
 	}
 
+	// Expire the dispatch cooldown so re-dispatch is allowed.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
 	// CI still failing -> should re-dispatch.
 	c.HandleGHStatus(context.Background(), statuses, runStates)
 	if launchCount != 2 {
@@ -777,6 +782,11 @@ func TestNeedsRebaseTransitionsToCIFailedIfCIFails(t *testing.T) {
 		t.Fatalf("expected needs_rebase, got %s", c.PipelineStates()["42"].Stage)
 	}
 
+	// Expire the dispatch cooldown so the CI fix agent can be dispatched.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
 	// Step 2: Rebase agent completes but CI fails.
 	cost := 1.0
 	runStates := []*run.State{
@@ -1115,6 +1125,147 @@ func TestNoThreadResolutionWhileAgentRunning(t *testing.T) {
 	if resolveCount != 0 {
 		t.Errorf("expected no thread resolution while agent running, got %d", resolveCount)
 	}
+}
+
+func TestDispatchCooldownPreventsRapidRedispatch(t *testing.T) {
+	t.Run("CI failing", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+		}
+
+		// First poll dispatches agent.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes immediately.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — should NOT re-dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Simulate cooldown expiry.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll after cooldown — should dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
+
+	t.Run("CHANGES_REQUESTED", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+			},
+		}
+
+		// First poll dispatches.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — blocked.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Expire cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll — allowed.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
+
+	t.Run("trusted comments", func(t *testing.T) {
+		c, _ := newTestController(t)
+
+		launchCount := 0
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+			launchCount++
+			return fmt.Sprintf("agent-%03d", launchCount), nil
+		})
+
+		statuses := map[string]*PRStatus{
+			"42": {
+				PRNumber:              "42",
+				State:                 "OPEN",
+				CI:                    "passing",
+				ReviewDecision:        "",
+				HasNewTrustedComments: true,
+				TargetRepo:            "owner/repo",
+			},
+		}
+
+		// First poll dispatches.
+		c.HandleGHStatus(context.Background(), statuses, nil)
+		if launchCount != 1 {
+			t.Fatalf("expected 1 launch, got %d", launchCount)
+		}
+
+		// Agent completes.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Second poll within cooldown — blocked.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 1 {
+			t.Errorf("expected cooldown to prevent re-dispatch, got %d launches", launchCount)
+		}
+
+		// Expire cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Third poll — allowed.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != 2 {
+			t.Errorf("expected dispatch after cooldown, got %d launches", launchCount)
+		}
+	})
 }
 
 func strPtr(s string) *string {
