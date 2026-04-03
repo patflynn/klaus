@@ -107,30 +107,48 @@ func buildRepoResolver(store run.StateStore, repoFlag string) func(string) strin
 }
 
 // buildApprovalChecker returns a function that checks if a PR number
-// has been approved in the run state. Returns true if approved.
+// has been approved in the run state or via GitHub review. Returns true if approved.
 func buildApprovalChecker(store run.StateStore) func(string) bool {
 	return func(prNumber string) bool {
+		// Check internal approval state first.
+		var states []*run.State
 		if store == nil {
-			// Try scanning all sessions
-			states, _, err := listStatesFromEnvOrAll()
-			if err != nil {
-				return false
-			}
-			for _, s := range states {
-				if extractPRNumber(s) == prNumber && s.Approved != nil && *s.Approved {
-					return true
+			states, _, _ = listStatesFromEnvOrAll()
+		} else {
+			states, _ = store.List()
+		}
+
+		repo := ""
+		isApproved := false
+		for _, s := range states {
+			if extractPRNumber(s) == prNumber {
+				if s.Approved != nil && *s.Approved {
+					isApproved = true
+				}
+				if repo == "" && s.PRURL != nil {
+					repo = repoFromPRURL(*s.PRURL)
+					if repo == "(unknown)" {
+						repo = ""
+					}
 				}
 			}
-			return false
 		}
-		states, err := store.List()
-		if err != nil {
-			return false
+
+		if isApproved {
+			return true
 		}
-		for _, s := range states {
-			if extractPRNumber(s) == prNumber && s.Approved != nil && *s.Approved {
-				return true
+
+		// Fall back to checking GitHub review decision.
+		decision := gh.NewPRClient(repo).GetReviewDecision(prNumber)
+		if strings.EqualFold(decision, "APPROVED") {
+			// Persist the approval into run state so future checks are fast.
+			for _, s := range states {
+				if extractPRNumber(s) == prNumber {
+					markApproved(s, store)
+					break
+				}
 			}
+			return true
 		}
 		return false
 	}

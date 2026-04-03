@@ -748,6 +748,63 @@ func TestSandboxHostDefaultEmpty(t *testing.T) {
 	}
 }
 
+func TestPRReviewerExplicit(t *testing.T) {
+	cfg := Config{PRReviewer: "alice"}
+	if got := cfg.PRReviewerOrDefault(); got != "alice" {
+		t.Errorf("PRReviewerOrDefault() = %q, want %q", got, "alice")
+	}
+}
+
+func TestLoadPRReviewerConfig(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	os.MkdirAll(klausDir, 0o755)
+
+	os.WriteFile(filepath.Join(klausDir, "config.json"),
+		[]byte(`{"pr_reviewer": "bob"}`), 0o644)
+
+	cfg, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.PRReviewer != "bob" {
+		t.Errorf("PRReviewer = %q, want %q", cfg.PRReviewer, "bob")
+	}
+}
+
+func TestRenderPromptWithReviewer(t *testing.T) {
+	dir := t.TempDir()
+	vars := PromptVars{
+		RunID:    "test-123",
+		Reviewer: "alice",
+	}
+
+	prompt, err := RenderPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPrompt() error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "--reviewer alice") {
+		t.Error("prompt should contain --reviewer alice when reviewer is set")
+	}
+}
+
+func TestRenderPromptWithoutReviewer(t *testing.T) {
+	dir := t.TempDir()
+	vars := PromptVars{
+		RunID: "test-123",
+	}
+
+	prompt, err := RenderPrompt(dir, vars)
+	if err != nil {
+		t.Fatalf("RenderPrompt() error: %v", err)
+	}
+
+	if strings.Contains(prompt, "--reviewer") {
+		t.Error("prompt should not contain --reviewer when reviewer is empty")
+	}
+}
+
 func TestLoadApprovalConfig(t *testing.T) {
 	dir := t.TempDir()
 	klausDir := filepath.Join(dir, ".klaus")
