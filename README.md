@@ -40,10 +40,10 @@ Once an agent opens a PR, the dashboard's event-driven pipeline takes over:
 
 ```
 PR created → CI pending → CI passed → Approved → Merged
-                ↓                        ↓
-            CI failed               Conflicts?
-                ↓                        ↓
-           Fix agent              Rebase agent
+                ↓             ↓          ↓
+            CI failed  Changes Req.   Conflicts?
+                ↓             ↓          ↓
+           Fix agent      Fix agent   Rebase agent
 ```
 
 - **CI fails** — a fix agent is dispatched automatically (via `--pr`) to push a correction
