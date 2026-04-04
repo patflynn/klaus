@@ -581,6 +581,7 @@ func TestMarkRunsMergedNilStore(t *testing.T) {
 }
 
 func TestBuildRepoResolverFromRunState(t *testing.T) {
+	t.Setenv("KLAUS_SESSION_ID", "")
 	tmpDir := t.TempDir()
 	store := run.NewHomeDirStoreFromPath(tmpDir)
 	if err := store.EnsureDirs(); err != nil {

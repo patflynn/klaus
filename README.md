@@ -25,12 +25,35 @@ Three new tmux panes appear. Each agent works independently in its own worktree,
 2. Claude Code starts interactively in that workspace
 3. You talk to Claude as usual — it has `klaus` on PATH
 4. When Claude runs `klaus launch`, a new tmux pane splits off with an autonomous agent
-5. `klaus status` gives you and Claude a dashboard of all running agents
-6. When you're done, `klaus cleanup --all` tears everything down
+5. Agents push branches and open PRs — `klaus dashboard` picks them up automatically
+6. The pipeline monitors CI, dispatches fix agents on failure, and auto-merges when approved
+7. Your job shifts from babysitting agents to reviewing and approving PRs
+8. When you're done, `klaus cleanup --all` tears everything down
 
 Klaus is repo-agnostic. You can run it from your home directory and target any repo with `klaus launch --repo owner/repo` or set a session default with `klaus target owner/repo`.
 
-The session is the experience. The other commands are infrastructure.
+The session is the experience. The pipeline handles the rest.
+
+## The PR pipeline
+
+Once an agent opens a PR, the dashboard's event-driven pipeline takes over:
+
+```
+PR created → CI pending → CI passed → Approved → Merged
+                ↓             ↓          ↓
+            CI failed  Changes Req.   Conflicts?
+                ↓             ↓          ↓
+           Fix agent      Fix agent   Rebase agent
+```
+
+- **CI fails** — a fix agent is dispatched automatically (via `--pr`) to push a correction
+- **Review comments** — an agent is dispatched to address requested changes
+- **Approved + CI green + no conflicts** — auto-merge (when `auto_merge_on_approval` is enabled)
+- **Merge conflicts** — a rebase agent resolves them before merging
+
+Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`.
+
+You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
 ## Install
 
@@ -147,15 +170,7 @@ The status dashboard shows these columns for each run:
 
 ### `klaus dashboard`
 
-Live TUI that monitors all active agents and their PR statuses. Groups runs by repository, auto-refreshes via filesystem watching for local state and GitHub polling every 30s.
-
-The dashboard includes an event-driven PR pipeline that automatically:
-- Dispatches fix agents when CI fails
-- Dispatches agents to address review comments when changes are requested
-- Auto-merges PRs that are approved with passing CI and no conflicts
-- Shows pipeline stage per PR (e.g., "CI pending", "CI failed, fix running", "approved, ready")
-
-Keyboard shortcuts: `q` quit, `r` force refresh.
+Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `q` quit, `r` force refresh.
 
 ### `klaus approve`
 
