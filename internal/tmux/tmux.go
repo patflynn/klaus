@@ -54,7 +54,7 @@ func SplitWindowSized(targetPane, dir, command, orientation, size string) (strin
 
 // SetPaneTitle sets the title of a tmux pane.
 func SetPaneTitle(paneID, title string) error {
-	_, err := runTmux("select-pane", "-t", paneID, "-T", title)
+	_, err := runTmux("set-option", "-p", "-t", paneID, "pane-title", title)
 	return err
 }
 

@@ -613,7 +613,15 @@ func TestBuildRepoResolverFromRunState(t *testing.T) {
 }
 
 func TestBuildRepoResolverFallsBackToFlag(t *testing.T) {
-	resolver := buildRepoResolver(nil, "flag/repo")
+	// Use an empty store rather than nil to avoid loading state from the
+	// environment, which makes this test non-deterministic.
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	resolver := buildRepoResolver(store, "flag/repo")
 
 	if got := resolver("42"); got != "flag/repo" {
 		t.Errorf("resolver(42) = %q, want %q", got, "flag/repo")
