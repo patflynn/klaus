@@ -72,15 +72,16 @@ func buildRepoResolver(store run.StateStore, repoFlag string) func(string) strin
 	var states []*run.State
 	if store != nil {
 		states, _ = store.List()
-	}
-	if len(states) == 0 {
+	} else {
 		states, _, _ = listStatesFromEnvOrAll()
 	}
 
 	var sessionTarget string
-	if s, err := sessionStore(); err == nil {
-		if hds, ok := s.(*run.HomeDirStore); ok {
-			sessionTarget, _ = run.LoadTarget(hds.BaseDir())
+	if store == nil {
+		if s, err := sessionStore(); err == nil {
+			if hds, ok := s.(*run.HomeDirStore); ok {
+				sessionTarget, _ = run.LoadTarget(hds.BaseDir())
+			}
 		}
 	}
 
