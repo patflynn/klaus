@@ -446,6 +446,42 @@ func TestLaunchCmdHasSandboxFlags(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeCommand_SessionNaming(t *testing.T) {
+	cmd := buildClaudeCommand("sys prompt", "5", "do stuff", "20260405-1200-abcd", "")
+	if !strings.Contains(cmd, "-n '20260405-1200-abcd'") {
+		t.Errorf("expected -n flag with run ID, got: %s", cmd)
+	}
+	if strings.Contains(cmd, "--resume") {
+		t.Error("expected no --resume flag when resumeSessionName is empty")
+	}
+	if strings.Contains(cmd, "--fork-session") {
+		t.Error("expected no --fork-session flag when resumeSessionName is empty")
+	}
+}
+
+func TestBuildClaudeCommand_WithResume(t *testing.T) {
+	cmd := buildClaudeCommand("sys prompt", "5", "fix CI", "20260405-1200-efgh", "20260405-1100-abcd")
+	if !strings.Contains(cmd, "-n '20260405-1200-efgh'") {
+		t.Errorf("expected -n flag with new run ID, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--resume '20260405-1100-abcd'") {
+		t.Errorf("expected --resume flag with original session name, got: %s", cmd)
+	}
+	if !strings.Contains(cmd, "--fork-session") {
+		t.Errorf("expected --fork-session flag, got: %s", cmd)
+	}
+}
+
+func TestLaunchCmdHasResumeFromFlag(t *testing.T) {
+	f := launchCmd.Flags().Lookup("resume-from")
+	if f == nil {
+		t.Fatal("expected --resume-from flag to be registered on launch command")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--resume-from default value should be empty, got %q", f.DefValue)
+	}
+}
+
 func TestLaunchCmdHasPRFlag(t *testing.T) {
 	// Verify the --pr flag is registered on the launch command
 	f := launchCmd.Flags().Lookup("pr")

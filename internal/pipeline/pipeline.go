@@ -75,7 +75,7 @@ type Controller struct {
 	autoMergeOnApproval bool // whether to auto-merge approved PRs
 
 	// Injectable runners for testing.
-	launchAgent     func(ctx context.Context, prNumber, repo, prompt string) (string, error)
+	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
 	cleanIdlePanes  func(runStates []*run.State)
 	snapshotThreads func(repo, prNumber string) ([]string, error)
@@ -106,7 +106,7 @@ func (c *Controller) SetAutoMergeOnApproval(enabled bool) {
 }
 
 // SetLaunchAgent overrides the agent launcher (for testing).
-func (c *Controller) SetLaunchAgent(fn func(ctx context.Context, prNumber, repo, prompt string) (string, error)) {
+func (c *Controller) SetLaunchAgent(fn func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.launchAgent = fn
@@ -253,7 +253,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					"CI is failing on PR #%s. Diagnose the failures and push fixes. Check `gh pr checks %s` for details and `gh run view <run-id> --log-failed` for error output.",
 					ps.PRNumber, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
 				if err != nil {
 					c.logger.Error("failed to dispatch CI fix agent", "pr", ps.PRNumber, "err", err)
 					if !c.handleLaunchRetry(ps) {
@@ -305,7 +305,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 							"PR #%s has merge conflicts with the base branch. Rebase onto main, resolve all conflicts, and push. Run tests after resolving.",
 							ps.PRNumber,
 						)
-						agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+						agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
 						if err != nil {
 							c.logger.Error("failed to dispatch rebase agent", "pr", ps.PRNumber, "err", err)
 							if !c.handleLaunchRetry(ps) {
@@ -352,7 +352,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					"PR #%s has changes requested by reviewers. Address the review comments and push fixes. Check `gh api repos/{owner}/{repo}/pulls/%s/comments` for comment details.",
 					ps.PRNumber, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
 				if err != nil {
 					c.logger.Error("failed to dispatch review fix agent", "pr", ps.PRNumber, "err", err)
 					if !c.handleLaunchRetry(ps) {
@@ -379,7 +379,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. Check the review comments with: gh api repos/%s/pulls/%s/comments",
 					ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt)
+				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
 				if err != nil {
 					c.logger.Error("failed to dispatch trusted review fix agent", "pr", ps.PRNumber, "err", err)
 					ps.Stage = StageStalled
@@ -514,10 +514,13 @@ func (c *Controller) emitEvent(prNumber, eventType string, data map[string]inter
 	}
 }
 
-func (c *Controller) defaultLaunchAgent(ctx context.Context, prNumber, repo, prompt string) (string, error) {
+func (c *Controller) defaultLaunchAgent(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
 	args := []string{"launch", "--pr", prNumber}
 	if repo != "" {
 		args = append(args, "--repo", repo)
+	}
+	if resumeFrom != "" {
+		args = append(args, "--resume-from", resumeFrom)
 	}
 	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, "klaus", args...)

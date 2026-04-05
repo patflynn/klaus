@@ -156,7 +156,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// Build claude command
 	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
-	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
+	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, "")
 
 	// Build pane command — no finalize prefix (new repo, no state ref setup)
 	selfBin := "klaus"
