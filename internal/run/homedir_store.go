@@ -100,6 +100,34 @@ func listAllSessionsIn(sessionsDir string) ([]*State, error) {
 	return all, nil
 }
 
+// FindMostRecentSession returns the ID of the most recent session directory
+// under the given sessions base dir. Session IDs embed timestamps
+// (session-YYYYMMDD-HHMM-XXXX), so lexicographic sort gives chronological order.
+func FindMostRecentSession(sessionsDir string) (string, error) {
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no sessions found")
+		}
+		return "", fmt.Errorf("reading sessions dir: %w", err)
+	}
+
+	var latest string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if len(name) > len("session-") && name[:8] == "session-" {
+			latest = name
+		}
+	}
+	if latest == "" {
+		return "", fmt.Errorf("no sessions found")
+	}
+	return latest, nil
+}
+
 // FindStateInSessions searches across all session directories for a run with the given ID.
 // Returns the state and its store if found.
 func FindStateInSessions(homeDir string, id string) (*State, StateStore, error) {

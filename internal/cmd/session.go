@@ -36,6 +36,9 @@ from inside the session to target specific repositories.`,
 			return fmt.Errorf("klaus session must be run inside a tmux session")
 		}
 
+		continueFlag, _ := cmd.Flags().GetBool("continue")
+		resumeFlag, _ := cmd.Flags().GetString("resume")
+
 		// Git repo is optional — session can run without one
 		root, _ := git.RepoRoot()
 		inRepo := root != ""
@@ -45,11 +48,40 @@ from inside the session to target specific repositories.`,
 			return err
 		}
 
-		baseID, err := run.GenID()
+		home, err := os.UserHomeDir()
 		if err != nil {
-			return err
+			return fmt.Errorf("resolving home dir: %w", err)
 		}
-		id := "session-" + baseID
+		sessionsDir := filepath.Join(home, ".klaus", "sessions")
+
+		var id string
+		var resuming bool
+		var claudeResumeArgs []string
+
+		switch {
+		case continueFlag:
+			found, err := run.FindMostRecentSession(sessionsDir)
+			if err != nil {
+				return fmt.Errorf("finding most recent session: %w", err)
+			}
+			id = found
+			resuming = true
+			claudeResumeArgs = []string{"--continue"}
+		case resumeFlag != "":
+			id = resumeFlag
+			dir := filepath.Join(sessionsDir, id)
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				return fmt.Errorf("session directory does not exist: %s", id)
+			}
+			resuming = true
+			claudeResumeArgs = []string{"--resume"}
+		default:
+			baseID, err := run.GenID()
+			if err != nil {
+				return err
+			}
+			id = "session-" + baseID
+		}
 
 		store, err := run.NewHomeDirStore(id)
 		if err != nil {
@@ -60,59 +92,84 @@ from inside the session to target specific repositories.`,
 		}
 
 		var branch, repoName, worktree string
+		var state *run.State
 
-		if inRepo {
-			branch = "session/" + id
-			repoName = filepath.Base(root)
-			worktree = filepath.Join(cfg.WorktreeBase, repoName, id)
-			defaultBranch := cfg.DefaultBranch
-
-			fmt.Printf("Creating coordinator session %s...\n", id)
-
-			if err := git.FetchBranch(root, defaultBranch); err != nil {
-				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+		if resuming {
+			// Load existing state for the session being resumed
+			state, err = store.Load(id)
+			if err != nil {
+				return fmt.Errorf("loading session state: %w", err)
+			}
+			branch = state.Branch
+			worktree = state.Worktree
+			if inRepo {
+				repoName = filepath.Base(root)
 			}
 
-			startPoint := "origin/" + defaultBranch
-			if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
-				return fmt.Errorf("creating worktree: %w", err)
+			// Verify worktree still exists
+			if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+				return fmt.Errorf("session worktree no longer exists: %s", worktree)
 			}
+
+			fmt.Printf("Resuming coordinator session %s...\n", id)
 			fmt.Printf("  worktree: %s\n", worktree)
-			fmt.Printf("  branch:   %s\n", branch)
-
-			if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+			if branch != "" {
+				fmt.Printf("  branch:   %s\n", branch)
 			}
-
-			// Set up Nix dev environment if flake.nix exists
-			nix.SetupDevEnvironment(worktree)
 		} else {
-			// No repo — use a scratch workspace
-			worktree = filepath.Join(store.BaseDir(), "workspace")
-			if err := os.MkdirAll(worktree, 0o755); err != nil {
-				return fmt.Errorf("creating scratch workspace: %w", err)
+			if inRepo {
+				branch = "session/" + id
+				repoName = filepath.Base(root)
+				worktree = filepath.Join(cfg.WorktreeBase, repoName, id)
+				defaultBranch := cfg.DefaultBranch
+
+				fmt.Printf("Creating coordinator session %s...\n", id)
+
+				if err := git.FetchBranch(root, defaultBranch); err != nil {
+					return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+				}
+
+				startPoint := "origin/" + defaultBranch
+				if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
+					return fmt.Errorf("creating worktree: %w", err)
+				}
+				fmt.Printf("  worktree: %s\n", worktree)
+				fmt.Printf("  branch:   %s\n", branch)
+
+				if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+				}
+
+				// Set up Nix dev environment if flake.nix exists
+				nix.SetupDevEnvironment(worktree)
+			} else {
+				// No repo — use a scratch workspace
+				worktree = filepath.Join(store.BaseDir(), "workspace")
+				if err := os.MkdirAll(worktree, 0o755); err != nil {
+					return fmt.Errorf("creating scratch workspace: %w", err)
+				}
+
+				fmt.Printf("Creating coordinator session %s (no repo)...\n", id)
+				fmt.Printf("  workspace: %s\n", worktree)
 			}
 
-			fmt.Printf("Creating coordinator session %s (no repo)...\n", id)
-			fmt.Printf("  workspace: %s\n", worktree)
-		}
+			if err := config.PreTrustWorktree(worktree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
+			}
 
-		if err := config.PreTrustWorktree(worktree); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
-		}
-
-		// Write state
-		createdAt := time.Now().Format(time.RFC3339)
-		state := &run.State{
-			ID:        id,
-			Type:      "session",
-			Prompt:    "(interactive session)",
-			Branch:    branch,
-			Worktree:  worktree,
-			CreatedAt: createdAt,
-		}
-		if err := store.Save(state); err != nil {
-			return fmt.Errorf("saving state: %w", err)
+			// Write state
+			createdAt := time.Now().Format(time.RFC3339)
+			state = &run.State{
+				ID:        id,
+				Type:      "session",
+				Prompt:    "(interactive session)",
+				Branch:    branch,
+				Worktree:  worktree,
+				CreatedAt: createdAt,
+			}
+			if err := store.Save(state); err != nil {
+				return fmt.Errorf("saving state: %w", err)
+			}
 		}
 
 		// Load project list for session prompt
@@ -172,7 +229,9 @@ from inside the session to target specific repositories.`,
 		}
 
 		// Run claude interactively in the worktree, passing session ID to children
-		claude := exec.Command("claude", "--dangerously-skip-permissions", "--append-system-prompt", sessionPrompt)
+		claudeArgs := []string{"--dangerously-skip-permissions", "-n", id, "--append-system-prompt", sessionPrompt}
+		claudeArgs = append(claudeArgs, claudeResumeArgs...)
+		claude := exec.Command("claude", claudeArgs...)
 		claude.Dir = worktree
 		claude.Stdin = os.Stdin
 		claude.Stdout = os.Stdout
@@ -253,5 +312,7 @@ func waitForAgents(store run.StateStore) {
 }
 
 func init() {
+	sessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
+	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
 	rootCmd.AddCommand(sessionCmd)
 }
