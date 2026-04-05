@@ -21,6 +21,7 @@ import (
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/webhook"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +39,11 @@ agent runs and their PR statuses. Groups runs by repository and displays
 CI status, merge conflicts, and review decisions.
 
 Local state updates instantly via filesystem watching.
-GitHub state (CI, conflicts, reviews) polls every 30 seconds.
+GitHub state (CI, conflicts, reviews) polls every 30 seconds by default.
+
+When webhook config is present in .klaus/config.json, the dashboard starts
+an HTTP server to receive push events from github-relay instead of polling.
+Set "webhook": {"port": 9800} in config to enable.
 
 Keyboard shortcuts:
   q  quit
@@ -51,7 +56,39 @@ Keyboard shortcuts:
 		if store == nil {
 			return fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
 		}
-		p := tea.NewProgram(newDashboardModel(store), tea.WithAltScreen())
+
+		model := newDashboardModel(store)
+
+		// If webhook config is present, start the webhook server.
+		var cfg config.Config
+		if repoRoot, err := git.RepoRoot(); err == nil {
+			cfg, _ = config.Load(repoRoot)
+		}
+		if cfg.Webhook != nil {
+			ch := make(chan webhook.Event, 64)
+			srv := webhook.NewServer(cfg.Webhook.Port, cfg.Webhook.Path, ch)
+
+			model.webhookCh = ch
+			model.useWebhook = true
+			model.pollEnabled = cfg.Webhook.PollFallback
+
+			go func() {
+				_ = srv.Start()
+			}()
+
+			// Wait briefly for the listener to bind so we can read the address.
+			for i := 0; i < 10; i++ {
+				if addr := srv.Addr(); addr != "" {
+					model.webhookAddr = addr
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		} else {
+			model.pollEnabled = true
+		}
+
+		p := tea.NewProgram(model, tea.WithAltScreen())
 		_, err = p.Run()
 		return err
 	},
@@ -87,6 +124,10 @@ type errMsg struct {
 	err error
 }
 
+type webhookMsg struct {
+	event webhook.Event
+}
+
 // prStatus holds the GitHub-fetched status for a single PR.
 type prStatus struct {
 	PRNumber              string
@@ -118,6 +159,10 @@ type dashboardModel struct {
 	err            error
 	watcher        *fsnotify.Watcher
 	logFile        *os.File
+	webhookCh      <-chan webhook.Event // non-nil when webhook mode is active
+	webhookAddr    string              // e.g. "127.0.0.1:9800"
+	useWebhook     bool                // true when webhook server is running
+	pollEnabled    bool                // true when polling is active (default or poll_fallback)
 }
 
 func newDashboardModel(store run.StateStore) dashboardModel {
@@ -151,11 +196,15 @@ func newDashboardModel(store run.StateStore) dashboardModel {
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		loadStatesCmd(m.store),
 		startWatcherCmd(m.store),
-		tickCmd(),
-	)
+		tickCmd(), // always tick once on startup for initial fetch
+	}
+	if m.webhookCh != nil {
+		cmds = append(cmds, waitForWebhookCmd(m.webhookCh))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -248,6 +297,68 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sandboxHosts[k] = v
 		}
 
+	case webhookMsg:
+		// Convert webhook event to a partial prStatus update.
+		ev := msg.event
+		if ev.PRNumber != "" {
+			existing, ok := m.ghStatus[ev.PRNumber]
+			if !ok {
+				existing = &prStatus{PRNumber: ev.PRNumber}
+				m.ghStatus[ev.PRNumber] = existing
+			}
+			if ev.CI != "" {
+				existing.CI = ev.CI
+			}
+			if ev.State != "" {
+				existing.State = ev.State
+			}
+			if ev.Conflicts != "" {
+				existing.Conflicts = ev.Conflicts
+			}
+			if ev.ReviewDecision != "" {
+				existing.ReviewDecision = ev.ReviewDecision
+			}
+
+			// Feed the updated status to the pipeline controller.
+			pStatuses := make(map[string]*pipeline.PRStatus, 1)
+			ps := &pipeline.PRStatus{
+				PRNumber:       existing.PRNumber,
+				State:          existing.State,
+				CI:             existing.CI,
+				Conflicts:      existing.Conflicts,
+				ReviewDecision: existing.ReviewDecision,
+			}
+			for _, s := range m.states {
+				prNum := extractPRNumber(s)
+				if prNum == ev.PRNumber {
+					if s.PRURL != nil {
+						ps.PRURL = *s.PRURL
+					}
+					if s.TargetRepo != nil {
+						ps.TargetRepo = *s.TargetRepo
+					}
+					break
+				}
+			}
+			pStatuses[ev.PRNumber] = ps
+			actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
+			m.pipelineStates = m.pipelineCtrl.PipelineStates()
+			if len(actions) > 0 {
+				return m, tea.Batch(
+					func() tea.Msg { return pipelineActionMsg{actions: actions} },
+					waitForWebhookCmd(m.webhookCh),
+				)
+			}
+		} else if ev.Repo != "" && ev.Conflicts == "unknown" {
+			// Push to default branch — mark all PRs from this repo for re-check.
+			for _, ps := range m.ghStatus {
+				if ps.State == "OPEN" || ps.State == "" {
+					ps.Conflicts = "unknown"
+				}
+			}
+		}
+		return m, waitForWebhookCmd(m.webhookCh)
+
 	case tickMsg:
 		// Expire errors older than 3 minutes.
 		cutoff := time.Now().Add(-3 * time.Minute)
@@ -259,11 +370,14 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.recentErrors = filtered
 
-		return m, tea.Batch(
-			fetchGHStatusCmd(m.states),
+		cmds := []tea.Cmd{
 			checkSandboxCmd(m.states),
 			tickAfterCmd(),
-		)
+		}
+		if m.pollEnabled {
+			cmds = append(cmds, fetchGHStatusCmd(m.states))
+		}
+		return m, tea.Batch(cmds...)
 
 	case *fsnotify.Watcher:
 		m.watcher = msg
@@ -312,6 +426,23 @@ func (m dashboardModel) View() string {
 	))
 	b.WriteString(header)
 	b.WriteString("\n")
+
+	// Data source status line
+	if m.useWebhook {
+		addr := m.webhookAddr
+		if addr == "" {
+			addr = "starting..."
+		}
+		tag := fmt.Sprintf("  webhook: listening on %s", addr)
+		if m.pollEnabled {
+			tag += " + polling: 30s"
+		}
+		b.WriteString(dimStyle.Render(tag))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(dimStyle.Render("  polling: 30s"))
+		b.WriteString("\n")
+	}
 
 	// Sandbox status line (only if any runs have a Host set)
 	if sandboxLine := renderSandboxStatus(m.sandboxHosts); sandboxLine != "" {
@@ -530,6 +661,19 @@ func fetchGHStatusCmd(states []*run.State) tea.Cmd {
 			statuses[prNum] = fetchPRStatus(prNum, prRef)
 		}
 		return ghStatusMsg{statuses: statuses}
+	}
+}
+
+func waitForWebhookCmd(ch <-chan webhook.Event) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return webhookMsg{event: ev}
 	}
 }
 

@@ -24,6 +24,16 @@ type Config struct {
 	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
 	SandboxHost         string           `json:"sandbox_host,omitempty"`
 	PRReviewer          string           `json:"pr_reviewer,omitempty"`
+	Webhook             *WebhookConfig   `json:"webhook,omitempty"`
+}
+
+// WebhookConfig configures the GitHub webhook receiver. When present, the
+// dashboard starts an HTTP server to receive events from a github-relay
+// instead of (or in addition to) polling the GitHub API.
+type WebhookConfig struct {
+	Port         int    `json:"port"`          // default 9800
+	Path         string `json:"path"`          // default /webhook/github
+	PollFallback bool   `json:"poll_fallback"` // if true, poll even when webhook is active
 }
 
 // PreReviewConfig configures the pre-PR review checks.
@@ -391,7 +401,7 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 ## How the pipeline works
 
 The dashboard runs a pipeline controller that automatically:
-- Monitors CI status for all tracked PRs (every 30s)
+- Monitors PR status via GitHub API polling (every 30s) or webhook events from github-relay
 - Dispatches fix agents when CI fails (via ` + "`klaus launch --pr`" + `)
 - Dispatches fix agents when trusted reviewers (e.g. gemini-code-assist) leave comments
 - Auto-merges PRs when CI passes + approved + no conflicts (if ` + "`auto_merge_on_approval`" + ` is configured)
