@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,28 +63,30 @@ Keyboard shortcuts:
 		// If webhook config is present, start the webhook server.
 		var cfg config.Config
 		if repoRoot, err := git.RepoRoot(); err == nil {
-			cfg, _ = config.Load(repoRoot)
+			if loaded, loadErr := config.Load(repoRoot); loadErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", loadErr)
+			} else {
+				cfg = loaded
+			}
 		}
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
 			srv := webhook.NewServer(cfg.Webhook.Port, cfg.Webhook.Path, ch)
 
+			if err := srv.Listen(); err != nil {
+				return fmt.Errorf("webhook server: %w", err)
+			}
+
 			model.webhookCh = ch
 			model.useWebhook = true
 			model.pollEnabled = cfg.Webhook.PollFallback
+			model.webhookAddr = srv.Addr()
 
 			go func() {
-				_ = srv.Start()
-			}()
-
-			// Wait briefly for the listener to bind so we can read the address.
-			for i := 0; i < 10; i++ {
-				if addr := srv.Addr(); addr != "" {
-					model.webhookAddr = addr
-					break
+				if err := srv.Serve(); err != nil && err != http.ErrServerClosed {
+					fmt.Fprintf(os.Stderr, "webhook server error: %v\n", err)
 				}
-				time.Sleep(5 * time.Millisecond)
-			}
+			}()
 		} else {
 			model.pollEnabled = true
 		}

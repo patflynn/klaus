@@ -55,8 +55,9 @@ func (s *Server) Addr() string {
 	return ""
 }
 
-// Start begins listening and serving. It blocks until the server is shut down.
-func (s *Server) Start() error {
+// Listen binds the server to its port. Call this before Serve so the
+// listener address is available without a data race.
+func (s *Server) Listen() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.path, s.handleWebhook)
 
@@ -69,8 +70,24 @@ func (s *Server) Start() error {
 		return fmt.Errorf("webhook server listen: %w", err)
 	}
 	s.listener = ln
+	return nil
+}
 
-	return s.srv.Serve(ln)
+// Serve starts accepting connections on the already-bound listener.
+// It blocks until the server is shut down. Listen must be called first.
+func (s *Server) Serve() error {
+	if s.listener == nil {
+		return fmt.Errorf("webhook server: Listen must be called before Serve")
+	}
+	return s.srv.Serve(s.listener)
+}
+
+// Start binds the listener and serves. It blocks until the server is shut down.
+func (s *Server) Start() error {
+	if err := s.Listen(); err != nil {
+		return err
+	}
+	return s.Serve()
 }
 
 // Shutdown gracefully stops the server.
@@ -86,6 +103,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	defer r.Body.Close()
 
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType == "" {

@@ -351,6 +351,59 @@ func TestPartialStateMergeNewPR(t *testing.T) {
 	}
 }
 
+func TestServerListenThenServe(t *testing.T) {
+	ch := make(chan Event, 10)
+	srv := NewServer(0, "/webhook/github", ch)
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+
+	// Addr is available immediately after Listen, no race.
+	addr := srv.Addr()
+	if addr == "" {
+		t.Fatal("expected non-empty address after Listen")
+	}
+
+	go func() {
+		_ = srv.Serve()
+	}()
+	defer srv.Shutdown(nil)
+
+	// Send a webhook to the live server.
+	payload := `{
+		"action": "completed",
+		"check_run": {
+			"conclusion": "success",
+			"pull_requests": [{"number": 77}]
+		},
+		"repository": {"full_name": "test/repo"}
+	}`
+	url := "http://" + addr + "/webhook/github"
+	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewBufferString(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Event", "check_run")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+
+	select {
+	case ev := <-ch:
+		if ev.PRNumber != "77" || ev.CI != "passing" {
+			t.Errorf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+}
+
 func TestMapConclusion(t *testing.T) {
 	tests := []struct {
 		conclusion string
