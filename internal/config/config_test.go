@@ -540,6 +540,35 @@ func TestLoadEmptyRepoRoot(t *testing.T) {
 	}
 }
 
+func TestLoadEmptyRepoRootWithGlobalWebhook(t *testing.T) {
+	// Simulate a global config with webhook settings by temporarily overriding HOME.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	klausDir := filepath.Join(home, ".klaus")
+	if err := os.MkdirAll(klausDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgJSON := `{"webhook": {"port": 9800, "path": "/hook"}}`
+	if err := os.WriteFile(filepath.Join(klausDir, "config.json"), []byte(cfgJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\") error: %v", err)
+	}
+	if cfg.Webhook == nil {
+		t.Fatal("expected Webhook config to be loaded from global config, got nil")
+	}
+	if cfg.Webhook.Port != 9800 {
+		t.Errorf("Webhook.Port = %d, want 9800", cfg.Webhook.Port)
+	}
+	if cfg.Webhook.Path != "/hook" {
+		t.Errorf("Webhook.Path = %q, want %q", cfg.Webhook.Path, "/hook")
+	}
+}
+
 func TestRenderSessionPromptNoRepo(t *testing.T) {
 	// When RepoName is empty, the no-repo variant of the session prompt is rendered
 	vars := PromptVars{

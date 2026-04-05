@@ -61,13 +61,10 @@ Keyboard shortcuts:
 		model := newDashboardModel(store)
 
 		// If webhook config is present, start the webhook server.
-		var cfg config.Config
-		if repoRoot, err := git.RepoRoot(); err == nil {
-			if loaded, loadErr := config.Load(repoRoot); loadErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", loadErr)
-			} else {
-				cfg = loaded
-			}
+		repoRoot, _ := git.RepoRoot()
+		cfg, err := config.Load(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", err)
 		}
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
