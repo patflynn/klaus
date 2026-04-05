@@ -58,17 +58,14 @@ Keyboard shortcuts:
 			return fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
 		}
 
-		model := newDashboardModel(store)
-
-		// If webhook config is present, start the webhook server.
-		var cfg config.Config
-		if repoRoot, err := git.RepoRoot(); err == nil {
-			if loaded, loadErr := config.Load(repoRoot); loadErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", loadErr)
-			} else {
-				cfg = loaded
-			}
+		// Load config once — used for both the dashboard model and webhook setup.
+		repoRoot, _ := git.RepoRoot()
+		cfg, err := config.Load(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", err)
 		}
+
+		model := newDashboardModel(store, cfg)
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
 			srv := webhook.NewServer(cfg.Webhook.Port, cfg.Webhook.Path, ch)
@@ -168,7 +165,7 @@ type dashboardModel struct {
 	pollEnabled    bool                // true when polling is active (default or poll_fallback)
 }
 
-func newDashboardModel(store run.StateStore) dashboardModel {
+func newDashboardModel(store run.StateStore, cfg config.Config) dashboardModel {
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
@@ -182,11 +179,7 @@ func newDashboardModel(store run.StateStore) dashboardModel {
 	}
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	ctrl := pipeline.New(store, eventLog, logger)
-	if repoRoot, err := git.RepoRoot(); err == nil {
-		if cfg, err := config.Load(repoRoot); err == nil {
-			ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
-		}
-	}
+	ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
 
 	return dashboardModel{
 		store:          store,
