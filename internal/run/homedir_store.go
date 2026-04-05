@@ -6,6 +6,15 @@ import (
 	"path/filepath"
 )
 
+// SessionsDir returns the base directory for all sessions (~/.klaus/sessions).
+func SessionsDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home dir: %w", err)
+	}
+	return filepath.Join(home, ".klaus", "sessions"), nil
+}
+
 // HomeDirStore implements StateStore using ~/.klaus/sessions/{session-id}/.
 type HomeDirStore struct {
 	baseDir string // e.g. ~/.klaus/sessions/{session-id}
@@ -14,11 +23,11 @@ type HomeDirStore struct {
 // NewHomeDirStore creates a new HomeDirStore for the given session ID.
 // It resolves ~/.klaus via os.UserHomeDir().
 func NewHomeDirStore(sessionID string) (*HomeDirStore, error) {
-	home, err := os.UserHomeDir()
+	dir, err := SessionsDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolving home dir: %w", err)
+		return nil, err
 	}
-	baseDir := filepath.Join(home, ".klaus", "sessions", sessionID)
+	baseDir := filepath.Join(dir, sessionID)
 	return &HomeDirStore{baseDir: baseDir}, nil
 }
 
@@ -69,11 +78,11 @@ func (s *HomeDirStore) Delete(id string) error {
 // ListAllSessions scans ~/.klaus/sessions/ and returns a combined list of
 // all run states across all session directories.
 func ListAllSessions() ([]*State, error) {
-	home, err := os.UserHomeDir()
+	dir, err := SessionsDir()
 	if err != nil {
-		return nil, fmt.Errorf("resolving home dir: %w", err)
+		return nil, err
 	}
-	return listAllSessionsIn(filepath.Join(home, ".klaus", "sessions"))
+	return listAllSessionsIn(dir)
 }
 
 func listAllSessionsIn(sessionsDir string) ([]*State, error) {

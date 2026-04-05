@@ -48,15 +48,13 @@ from inside the session to target specific repositories.`,
 			return err
 		}
 
-		home, err := os.UserHomeDir()
+		sessionsDir, err := run.SessionsDir()
 		if err != nil {
-			return fmt.Errorf("resolving home dir: %w", err)
+			return err
 		}
-		sessionsDir := filepath.Join(home, ".klaus", "sessions")
 
 		var id string
 		var resuming bool
-		var claudeResumeArgs []string
 
 		switch {
 		case continueFlag:
@@ -66,7 +64,6 @@ from inside the session to target specific repositories.`,
 			}
 			id = found
 			resuming = true
-			claudeResumeArgs = []string{"--continue"}
 		case resumeFlag != "":
 			id = resumeFlag
 			dir := filepath.Join(sessionsDir, id)
@@ -74,7 +71,6 @@ from inside the session to target specific repositories.`,
 				return fmt.Errorf("session directory does not exist: %s", id)
 			}
 			resuming = true
-			claudeResumeArgs = []string{"--resume"}
 		default:
 			baseID, err := run.GenID()
 			if err != nil {
@@ -102,7 +98,9 @@ from inside the session to target specific repositories.`,
 			}
 			branch = state.Branch
 			worktree = state.Worktree
-			if inRepo {
+			if branch != "" {
+				repoName = filepath.Base(filepath.Dir(worktree))
+			} else if inRepo {
 				repoName = filepath.Base(root)
 			}
 
@@ -230,7 +228,6 @@ from inside the session to target specific repositories.`,
 
 		// Run claude interactively in the worktree, passing session ID to children
 		claudeArgs := []string{"--dangerously-skip-permissions", "-n", id, "--append-system-prompt", sessionPrompt}
-		claudeArgs = append(claudeArgs, claudeResumeArgs...)
 		claude := exec.Command("claude", claudeArgs...)
 		claude.Dir = worktree
 		claude.Stdin = os.Stdin
