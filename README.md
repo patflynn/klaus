@@ -99,6 +99,8 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus project remove <name>` | Unregister a project |
 | `klaus project set-dir <path>` | Set the default projects directory |
 | `klaus new <project-name>` | Scaffold a new project using principles-based generation |
+| `klaus webhook check` | Check registered projects for GitHub webhook configuration |
+| `klaus webhook setup [project]` | Create missing webhooks for registered projects |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
 | `klaus approve <pr>...` | Approve PRs for merging |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
@@ -210,6 +212,29 @@ klaus project list                        # show all registered projects
 klaus project remove my-tool              # unregister (does not delete the clone)
 klaus project set-dir ~/hack              # set the default clone directory
 ```
+
+### `klaus webhook`
+
+Check and create GitHub webhooks for registered projects. Webhooks let the dashboard receive real-time events (CI status, PR reviews, pushes) instead of relying solely on polling.
+
+```bash
+klaus webhook check                  # show webhook status for all registered projects
+klaus webhook setup                  # create missing webhooks for all projects
+klaus webhook setup my-project       # create a webhook for a specific project
+```
+
+Both commands require `webhook.relay_url` in your config. `setup` also requires `webhook.secret_file` — a path to a file containing the HMAC secret used to verify incoming payloads.
+
+```json
+{
+  "webhook": {
+    "relay_url": "https://your-relay.example.com",
+    "secret_file": "/path/to/webhook-secret"
+  }
+}
+```
+
+The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, and `pull_request_review` events.
 
 ### `klaus new`
 
