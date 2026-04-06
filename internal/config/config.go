@@ -34,6 +34,8 @@ type WebhookConfig struct {
 	Port         int    `json:"port"`          // default 9800
 	Path         string `json:"path"`          // default /webhook/github
 	PollFallback bool   `json:"poll_fallback"` // if true, poll even when webhook is active
+	RelayURL     string `json:"relay_url"`     // public URL of github-relay (e.g. https://example.ts.net)
+	SecretFile   string `json:"secret_file"`   // path to file containing the webhook secret
 }
 
 // PreReviewConfig configures the pre-PR review checks.

@@ -50,6 +50,39 @@ func APIPost(path string, fields map[string]string) error {
 	return nil
 }
 
+// APIPostJSON runs gh api with POST method and a raw JSON body via --input.
+func APIPostJSON(path string, body interface{}) ([]byte, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling request body: %w", err)
+	}
+	cmd := exec.Command("gh", "api", path, "-X", "POST", "--input", "-")
+	cmd.Stdin = bytes.NewReader(payload)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api POST %s: %w: %s", path, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// GetRepoOwnerAndNameFromDir returns owner/repo for the git repo at the given directory.
+func GetRepoOwnerAndNameFromDir(dir string) (string, string, error) {
+	cmd := exec.Command("gh", "repo", "view", "--json", "owner,name", "-q", ".owner.login + \"/\" + .name")
+	cmd.Dir = dir
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return "", "", fmt.Errorf("resolving repo for %s: %w", dir, err)
+	}
+	parts := strings.SplitN(strings.TrimSpace(stdout.String()), "/", 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("unexpected repo format for %s", dir)
+	}
+	return parts[0], parts[1], nil
+}
+
 // PRReviewComment represents a single PR review comment from the GitHub API.
 type PRReviewComment struct {
 	ID     int64  `json:"id"`
