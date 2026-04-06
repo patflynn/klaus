@@ -297,6 +297,27 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Convert webhook event to a partial prStatus update.
 		ev := msg.event
 		if ev.PRNumber != "" {
+			// check_run/check_suite events signal a CI change but don't
+			// carry reliable aggregate status. Poll GitHub for the real
+			// aggregate CI instead of trusting the individual conclusion.
+			if ev.CheckRunCompleted {
+				// Find the run state that owns this PR so we can build
+				// a targeted fetch for just this PR's aggregate CI.
+				var matchedStates []*run.State
+				for _, s := range m.states {
+					if extractPRNumber(s) == ev.PRNumber {
+						matchedStates = append(matchedStates, s)
+					}
+				}
+				if len(matchedStates) > 0 {
+					return m, tea.Batch(
+						fetchGHStatusCmd(matchedStates),
+						waitForWebhookCmd(m.webhookCh),
+					)
+				}
+				return m, waitForWebhookCmd(m.webhookCh)
+			}
+
 			existing, ok := m.ghStatus[ev.PRNumber]
 			if !ok {
 				existing = &prStatus{PRNumber: ev.PRNumber}

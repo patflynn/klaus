@@ -23,8 +23,14 @@ func TestParseCheckRun(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
-	if events[0].PRNumber != "42" || events[0].CI != "passing" || events[0].Repo != "owner/repo" {
+	if events[0].PRNumber != "42" || events[0].Repo != "owner/repo" {
 		t.Errorf("unexpected event[0]: %+v", events[0])
+	}
+	if !events[0].CheckRunCompleted {
+		t.Error("expected CheckRunCompleted=true for check_run event")
+	}
+	if events[0].CI != "" {
+		t.Errorf("check_run should not set CI directly, got %q", events[0].CI)
 	}
 	if events[1].PRNumber != "43" {
 		t.Errorf("unexpected event[1] PRNumber: %s", events[1].PRNumber)
@@ -45,8 +51,11 @@ func TestParseCheckRunFailure(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].CI != "failing" {
-		t.Errorf("expected CI=failing, got %s", events[0].CI)
+	if !events[0].CheckRunCompleted {
+		t.Error("expected CheckRunCompleted=true")
+	}
+	if events[0].CI != "" {
+		t.Errorf("check_run should not set CI directly, got %q", events[0].CI)
 	}
 }
 
@@ -80,8 +89,14 @@ func TestParseCheckSuite(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].CI != "failing" || events[0].PRNumber != "99" || events[0].Repo != "org/project" {
+	if events[0].PRNumber != "99" || events[0].Repo != "org/project" {
 		t.Errorf("unexpected event: %+v", events[0])
+	}
+	if !events[0].CheckRunCompleted {
+		t.Error("expected CheckRunCompleted=true for check_suite event")
+	}
+	if events[0].CI != "" {
+		t.Errorf("check_suite should not set CI directly, got %q", events[0].CI)
 	}
 }
 
@@ -263,8 +278,11 @@ func TestServerHandleWebhook(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.PRNumber != "55" || ev.CI != "passing" || ev.Repo != "test/repo" {
+		if ev.PRNumber != "55" || ev.Repo != "test/repo" || !ev.CheckRunCompleted {
 			t.Errorf("unexpected event: %+v", ev)
+		}
+		if ev.CI != "" {
+			t.Errorf("check_run should not set CI directly, got %q", ev.CI)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
@@ -320,16 +338,16 @@ func TestPartialStateMerge(t *testing.T) {
 		"42": {PRNumber: "42", CI: "failing", State: "OPEN", Conflicts: "none", ReviewDecision: ""},
 	}
 
-	// A check_run event only updates CI
-	update := Event{PRNumber: "42", Repo: "owner/repo", CI: "passing"}
+	// A pull_request event updates State but preserves other fields.
+	update := Event{PRNumber: "42", Repo: "owner/repo", State: "CLOSED"}
 	MergeEvent(existing, update)
 
 	got := existing["42"]
-	if got.CI != "passing" {
-		t.Errorf("expected CI=passing after merge, got %s", got.CI)
+	if got.State != "CLOSED" {
+		t.Errorf("expected State=CLOSED after merge, got %s", got.State)
 	}
-	if got.State != "OPEN" {
-		t.Errorf("expected State=OPEN preserved, got %s", got.State)
+	if got.CI != "failing" {
+		t.Errorf("expected CI=failing preserved, got %s", got.CI)
 	}
 	if got.Conflicts != "none" {
 		t.Errorf("expected Conflicts=none preserved, got %s", got.Conflicts)
@@ -396,11 +414,93 @@ func TestServerListenThenServe(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.PRNumber != "77" || ev.CI != "passing" {
+		if ev.PRNumber != "77" || !ev.CheckRunCompleted {
 			t.Errorf("unexpected event: %+v", ev)
+		}
+		if ev.CI != "" {
+			t.Errorf("check_run should not set CI directly, got %q", ev.CI)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
+	}
+}
+
+func TestCheckRunDoesNotOverwriteCI(t *testing.T) {
+	// Simulate the scenario from issue #172: a PR has multiple checks.
+	// A failing check completes first, then a passing check completes.
+	// The dashboard should NOT show "passing" — it should re-poll for
+	// aggregate CI status.
+	//
+	// Since check_run events no longer carry CI status, we verify that
+	// multiple check_run events with different conclusions all produce
+	// events with CheckRunCompleted=true and empty CI.
+
+	failPayload := `{
+		"action": "completed",
+		"check_run": {
+			"conclusion": "failure",
+			"pull_requests": [{"number": 42}]
+		},
+		"repository": {"full_name": "owner/repo"}
+	}`
+
+	passPayload := `{
+		"action": "completed",
+		"check_run": {
+			"conclusion": "success",
+			"pull_requests": [{"number": 42}]
+		},
+		"repository": {"full_name": "owner/repo"}
+	}`
+
+	failEvents := parseEvent("check_run", json.RawMessage(failPayload))
+	passEvents := parseEvent("check_run", json.RawMessage(passPayload))
+
+	// Both events should signal a re-poll, not carry CI status.
+	for _, ev := range append(failEvents, passEvents...) {
+		if ev.CI != "" {
+			t.Errorf("check_run event should not set CI, got %q", ev.CI)
+		}
+		if !ev.CheckRunCompleted {
+			t.Error("check_run event should set CheckRunCompleted=true")
+		}
+		if ev.PRNumber != "42" {
+			t.Errorf("expected PRNumber=42, got %s", ev.PRNumber)
+		}
+	}
+
+	// Verify that applying these events via MergeEvent does not change
+	// an existing CI status (since CI is empty on the events).
+	existing := map[string]*Event{
+		"42": {PRNumber: "42", CI: "failing", State: "OPEN"},
+	}
+	for _, ev := range append(failEvents, passEvents...) {
+		MergeEvent(existing, ev)
+	}
+	if existing["42"].CI != "failing" {
+		t.Errorf("CI should remain 'failing' after check_run merges, got %q", existing["42"].CI)
+	}
+}
+
+func TestCheckSuiteDoesNotOverwriteCI(t *testing.T) {
+	payload := `{
+		"action": "completed",
+		"check_suite": {
+			"conclusion": "success",
+			"pull_requests": [{"number": 10}]
+		},
+		"repository": {"full_name": "owner/repo"}
+	}`
+
+	events := parseEvent("check_suite", json.RawMessage(payload))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].CI != "" {
+		t.Errorf("check_suite should not set CI directly, got %q", events[0].CI)
+	}
+	if !events[0].CheckRunCompleted {
+		t.Error("expected CheckRunCompleted=true")
 	}
 }
 

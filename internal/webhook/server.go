@@ -13,12 +13,13 @@ import (
 // Fields are empty strings when the event doesn't carry that information
 // (e.g. a check_run only sets CI, not ReviewDecision).
 type Event struct {
-	PRNumber       string // PR number, e.g. "42"
-	Repo           string // owner/repo
-	CI             string // passing, failing, pending, or ""
-	State          string // OPEN, MERGED, CLOSED, or ""
-	Conflicts      string // yes, none, or ""
-	ReviewDecision string // APPROVED, CHANGES_REQUESTED, or ""
+	PRNumber          string // PR number, e.g. "42"
+	Repo              string // owner/repo
+	CI                string // passing, failing, pending, or ""
+	State             string // OPEN, MERGED, CLOSED, or ""
+	Conflicts         string // yes, none, or ""
+	ReviewDecision    string // APPROVED, CHANGES_REQUESTED, or ""
+	CheckRunCompleted bool   // true when a check_run or check_suite completed; signals the dashboard to re-poll aggregate CI
 }
 
 // Server is an HTTP server that receives GitHub webhook payloads from a relay
@@ -213,13 +214,15 @@ func parseCheckRun(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	ci := mapConclusion(p.CheckRun.Conclusion)
+	// Don't derive aggregate CI from a single check_run — a PR may have
+	// multiple checks and the last one to complete would blindly overwrite
+	// earlier results. Instead, signal the dashboard to re-poll aggregate CI.
 	var events []Event
 	for _, pr := range p.CheckRun.PullRequests {
 		events = append(events, Event{
-			PRNumber: fmt.Sprintf("%d", pr.Number),
-			Repo:     p.Repository.FullName,
-			CI:       ci,
+			PRNumber:          fmt.Sprintf("%d", pr.Number),
+			Repo:              p.Repository.FullName,
+			CheckRunCompleted: true,
 		})
 	}
 	return events
@@ -234,13 +237,15 @@ func parseCheckSuite(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	ci := mapConclusion(p.CheckSuite.Conclusion)
+	// check_suite conclusion is per-suite, not per-workflow — a PR can have
+	// multiple suites so the same last-write-wins bug applies. Signal a
+	// re-poll instead of trusting the individual conclusion.
 	var events []Event
 	for _, pr := range p.CheckSuite.PullRequests {
 		events = append(events, Event{
-			PRNumber: fmt.Sprintf("%d", pr.Number),
-			Repo:     p.Repository.FullName,
-			CI:       ci,
+			PRNumber:          fmt.Sprintf("%d", pr.Number),
+			Repo:              p.Repository.FullName,
+			CheckRunCompleted: true,
 		})
 	}
 	return events
