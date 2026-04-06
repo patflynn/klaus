@@ -252,12 +252,16 @@ are synced back after completion. Use --local to force local execution, or
 		// Validate resume session exists before using it.
 		var resolvedResume string
 		if resumeFrom != "" {
-			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s.SessionName != nil {
-				resolvedResume = *s.SessionName
+			if s, loadErr := store.Load(resumeFrom); loadErr == nil {
+				if s.SessionName != nil {
+					resolvedResume = *s.SessionName
+				} else {
+					// Fall back to using the run ID directly as session name for old runs.
+					resolvedResume = resumeFrom
+				}
 			} else {
-				// Fall back to using the run ID directly as session name.
-				// If the session doesn't exist on disk, claude will start fresh.
-				resolvedResume = resumeFrom
+				// Run not found in store. Start a fresh session.
+				fmt.Fprintf(os.Stderr, "warning: resume target %s not found, starting fresh session\n", resumeFrom)
 			}
 		}
 
