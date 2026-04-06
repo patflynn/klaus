@@ -319,7 +319,10 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 			})
 		}
 
-		if strings.EqualFold(status.ReviewDecision, "APPROVED") {
+		changesRequested := strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED")
+		approved := strings.EqualFold(status.ReviewDecision, "APPROVED") ||
+			(!changesRequested && c.hasKlausApproval(ps.PRNumber, runStates))
+		if approved {
 			if ps.Stage != StageApproved && ps.Stage != StageMerging && ps.Stage != StageNeedsRebase {
 				ps.Stage = StageApproved
 				c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
@@ -375,7 +378,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					}
 				}
 			}
-		} else if strings.EqualFold(status.ReviewDecision, "CHANGES_REQUESTED") {
+		} else if changesRequested {
 			// Review comments need addressing.
 			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
 				// Clean up stale worktrees for this PR before dispatching.
@@ -524,11 +527,8 @@ func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
 func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.State) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, s := range runStates {
-		if s.PR == nil || *s.PR != prNumber {
-			// Also check PR URL for tracked PRs that store the number in the URL.
-			if s.PRURL == nil || !strings.HasSuffix(*s.PRURL, "/"+prNumber) {
-				continue
-			}
+		if !runStateMatchesPR(s, prNumber) {
+			continue
 		}
 		if s.Approved != nil && *s.Approved {
 			continue
@@ -543,6 +543,31 @@ func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.Sta
 			}
 		}
 	}
+}
+
+// runStateMatchesPR reports whether the run state is associated with the given PR number.
+func runStateMatchesPR(s *run.State, prNumber string) bool {
+	if s.PR != nil && *s.PR == prNumber {
+		return true
+	}
+	if s.PRURL != nil && strings.HasSuffix(strings.TrimRight(*s.PRURL, "/"), "/"+prNumber) {
+		return true
+	}
+	return false
+}
+
+// hasKlausApproval returns true if any run state for the given PR has been
+// approved via `klaus approve`.
+func (c *Controller) hasKlausApproval(prNumber string, runStates []*run.State) bool {
+	for _, s := range runStates {
+		if !runStateMatchesPR(s, prNumber) {
+			continue
+		}
+		if s.Approved != nil && *s.Approved {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Controller) emitEvent(prNumber, eventType string, data map[string]interface{}) {
