@@ -45,6 +45,7 @@ are synced back after completion. Use --local to force local execution, or
 		prNumber, _ := cmd.Flags().GetString("pr")
 		forceLocal, _ := cmd.Flags().GetBool("local")
 		hostOverride, _ := cmd.Flags().GetString("host")
+		resumeFrom, _ := cmd.Flags().GetString("resume-from")
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
@@ -248,8 +249,20 @@ are synced back after completion. Use --local to force local execution, or
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
+		// Validate resume session exists before using it.
+		var resolvedResume string
+		if resumeFrom != "" {
+			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s.SessionName != nil {
+				resolvedResume = *s.SessionName
+			} else {
+				// Fall back to using the run ID directly as session name.
+				// If the session doesn't exist on disk, claude will start fresh.
+				resolvedResume = resumeFrom
+			}
+		}
+
 		// Build the claude command
-		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt)
+		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, resolvedResume)
 
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
 		// For cross-repo launches with a host repo, finalize must run from the
@@ -332,19 +345,23 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		state := &run.State{
-			ID:         id,
-			Prompt:     prompt,
-			Issue:      issuePtr,
-			PR:         stringPtr(prNumber),
-			Branch:     branch,
-			Worktree:   worktree,
-			TmuxPane:   &paneID,
-			Budget:     budgetPtr,
-			LogFile:    logFilePtr,
-			CreatedAt:  createdAt,
-			Host:       hostPtr,
-			TargetRepo: normalizedTarget,
-			CloneDir:   cloneDirPtr,
+			ID:          id,
+			Prompt:      prompt,
+			Issue:       issuePtr,
+			PR:          stringPtr(prNumber),
+			Branch:      branch,
+			Worktree:    worktree,
+			TmuxPane:    &paneID,
+			Budget:      budgetPtr,
+			LogFile:     logFilePtr,
+			CreatedAt:   createdAt,
+			Host:        hostPtr,
+			TargetRepo:  normalizedTarget,
+			CloneDir:    cloneDirPtr,
+			SessionName: &id,
+		}
+		if resumeFrom != "" {
+			state.OriginalRunID = &resumeFrom
 		}
 		if isPRFix {
 			state.Type = "pr-fix"
@@ -400,16 +417,22 @@ func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id 
 	)
 }
 
-func buildClaudeCommand(sysPrompt, budget, prompt string) string {
+func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeSessionName string) string {
 	parts := []string{
 		"claude", "-p",
+		"-n", shellQuote(runID),
+	}
+	if resumeSessionName != "" {
+		parts = append(parts, "--resume", shellQuote(resumeSessionName), "--fork-session")
+	}
+	parts = append(parts,
 		"--dangerously-skip-permissions",
 		"--verbose",
 		"--output-format", "stream-json",
 		"--max-budget-usd", shellQuote(budget),
 		"--append-system-prompt", shellQuote(sysPrompt),
 		shellQuote(prompt),
-	}
+	)
 	return strings.Join(parts, " ")
 }
 
@@ -621,5 +644,6 @@ func init() {
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
+	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
 	rootCmd.AddCommand(launchCmd)
 }
