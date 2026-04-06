@@ -1674,6 +1674,69 @@ func TestRunStateMatchesPR(t *testing.T) {
 	}
 }
 
+func TestKlausApprovalWithConflictsDispatchesRebase(t *testing.T) {
+	c, _ := newTestController(t)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	var launchedPrompt string
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchedPrompt = prompt
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	// CI passing, no GitHub review decision, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if mergeCount != 0 {
+		t.Error("should not merge when conflicts exist")
+	}
+
+	if launchCount != 1 {
+		t.Errorf("expected 1 rebase agent launch, got %d", launchCount)
+	}
+	if launchedPrompt == "" {
+		t.Error("expected rebase agent dispatch for klaus-approved PR with conflicts")
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
+	states := c.PipelineStates()
+	if states["42"].Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", states["42"].Stage)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
