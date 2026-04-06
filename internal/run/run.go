@@ -35,6 +35,7 @@ type State struct {
 	SessionName      *string  `json:"session_name,omitempty"`       // claude -n name, same as run ID
 	OriginalRunID    *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
 	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
+	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
 }
 
 // Tmux dependency injection for testing.

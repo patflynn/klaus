@@ -141,31 +141,44 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		// Verify worktree still exists; recreate if cleaned up
 		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
-			if !inRepo || branch == "" {
+			if branch == "" {
 				// Non-repo session: recreate scratch workspace
 				if err := os.MkdirAll(worktree, 0o755); err != nil {
 					return fmt.Errorf("recreating scratch workspace: %w", err)
 				}
 			} else {
-				// Repo session: recreate worktree on the same branch
+				// Repo session: recreate worktree using the original repo root
+				baseRepo := root
+				if state.RepoRoot != nil && *state.RepoRoot != "" {
+					baseRepo = *state.RepoRoot
+				}
+				if baseRepo == "" {
+					return fmt.Errorf("session worktree no longer exists and no repo root available: %s", worktree)
+				}
 				defaultBranch := cfg.DefaultBranch
-				if err := git.FetchBranch(root, defaultBranch); err != nil {
+				if err := git.FetchBranch(baseRepo, defaultBranch); err != nil {
 					return fmt.Errorf("fetching %s: %w", defaultBranch, err)
 				}
 				startPoint := "origin/" + defaultBranch
-				if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
+				if err := git.WorktreeAdd(baseRepo, worktree, branch, startPoint); err != nil {
 					return fmt.Errorf("recreating worktree: %w", err)
 				}
 			}
 			fmt.Printf("Recreated worktree at %s\n", worktree)
 		}
 
-		// Clear stale tmux pane references
+		// Clear stale tmux pane references and persist immediately
+		modified := false
 		if state.TmuxPane != nil && !tmux.PaneExists(*state.TmuxPane) {
 			state.TmuxPane = nil
+			modified = true
 		}
 		if state.DashboardPane != nil && !tmux.PaneExists(*state.DashboardPane) {
 			state.DashboardPane = nil
+			modified = true
+		}
+		if modified {
+			_ = store.Save(state)
 		}
 
 		fmt.Printf("Resuming coordinator session %s...\n", id)
@@ -216,6 +229,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
+		var repoRoot *string
+		if inRepo {
+			repoRoot = &root
+		}
 		state = &run.State{
 			ID:        id,
 			Type:      "session",
@@ -223,6 +240,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			Branch:    branch,
 			Worktree:  worktree,
 			CreatedAt: createdAt,
+			RepoRoot:  repoRoot,
 		}
 		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
@@ -388,8 +406,6 @@ func waitForAgents(store run.StateStore) {
 func init() {
 	sessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
 	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
-	newSessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
-	newSessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
 	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(newSessionCmd)
 }
