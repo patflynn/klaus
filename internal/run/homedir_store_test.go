@@ -136,6 +136,60 @@ func TestHomeDirStore_Paths(t *testing.T) {
 	}
 }
 
+func TestFindMostRecentSession(t *testing.T) {
+	t.Run("returns latest session by lexicographic order", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		// Create session dirs with embedded timestamps (earlier to later)
+		dirs := []string{
+			"session-20260301-0900-aaaa",
+			"session-20260305-1400-bbbb",
+			"session-20260310-1000-cccc",
+		}
+		for _, d := range dirs {
+			if err := os.MkdirAll(filepath.Join(tmpDir, d), 0o755); err != nil {
+				t.Fatalf("MkdirAll: %v", err)
+			}
+		}
+
+		got, err := FindMostRecentSession(tmpDir)
+		if err != nil {
+			t.Fatalf("FindMostRecentSession: %v", err)
+		}
+		if got != "session-20260310-1000-cccc" {
+			t.Errorf("got %q, want session-20260310-1000-cccc", got)
+		}
+	})
+
+	t.Run("skips non-session directories", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		os.MkdirAll(filepath.Join(tmpDir, "not-a-session"), 0o755)
+		os.MkdirAll(filepath.Join(tmpDir, "session-20260301-0900-aaaa"), 0o755)
+
+		got, err := FindMostRecentSession(tmpDir)
+		if err != nil {
+			t.Fatalf("FindMostRecentSession: %v", err)
+		}
+		if got != "session-20260301-0900-aaaa" {
+			t.Errorf("got %q, want session-20260301-0900-aaaa", got)
+		}
+	})
+
+	t.Run("error when no sessions exist", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		_, err := FindMostRecentSession(tmpDir)
+		if err == nil {
+			t.Error("expected error for empty directory")
+		}
+	})
+
+	t.Run("error when directory does not exist", func(t *testing.T) {
+		_, err := FindMostRecentSession("/nonexistent/path")
+		if err == nil {
+			t.Error("expected error for nonexistent directory")
+		}
+	})
+}
+
 func TestFindStateInSessions(t *testing.T) {
 	tmpHome := t.TempDir()
 	sessionsDir := filepath.Join(tmpHome, ".klaus", "sessions")
