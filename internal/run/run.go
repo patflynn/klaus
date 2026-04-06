@@ -32,8 +32,9 @@ type State struct {
 	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
 	Approved       *bool    `json:"approved,omitempty"`
 	ApprovedAt     *string  `json:"approved_at,omitempty"`
-	SessionName    *string  `json:"session_name,omitempty"`   // claude -n name, same as run ID
-	OriginalRunID  *string  `json:"original_run_id,omitempty"` // run ID this was forked from
+	SessionName      *string  `json:"session_name,omitempty"`       // claude -n name, same as run ID
+	OriginalRunID    *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
+	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
 }
 
 // Tmux dependency injection for testing.

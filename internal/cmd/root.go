@@ -18,8 +18,9 @@ var rootCmd = &cobra.Command{
 It launches autonomous agents in isolated worktrees, manages their lifecycle,
 streams and formats their output, and tracks run state.
 
-Running 'klaus' with no arguments starts an interactive coordinator session
-(equivalent to 'klaus session').`,
+Running 'klaus' with no arguments resumes the most recent coordinator session.
+If no session exists, a new one is created. Use 'klaus new' to explicitly start
+a fresh session.`,
 	Version: version,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return sessionCmd.RunE(sessionCmd, args)
