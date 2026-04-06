@@ -165,7 +165,7 @@ func TestNewCmdTypeValidation(t *testing.T) {
 		resolveNewRepoDir = origResolve
 	}()
 
-	cmd := newCmd
+	cmd := scaffoldCmd
 	cmd.SetArgs([]string{"test-proj"})
 
 	// Test invalid type
@@ -182,7 +182,7 @@ func TestNewCmdTypeValidation(t *testing.T) {
 }
 
 func TestNewCmdNameValidation(t *testing.T) {
-	err := runNew(newCmd, []string{"invalid project name"})
+	err := runNew(scaffoldCmd, []string{"invalid project name"})
 	if err == nil {
 		t.Error("expected error for invalid project name with spaces")
 	}

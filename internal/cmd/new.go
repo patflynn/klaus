@@ -20,8 +20,8 @@ import (
 // validProjectName matches valid GitHub repo names: alphanumeric, hyphens, underscores, dots.
 var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
-var newCmd = &cobra.Command{
-	Use:   "new <project-name>",
+var scaffoldCmd = &cobra.Command{
+	Use:   "scaffold <project-name>",
 	Short: "Scaffold a new project using principles-based generation",
 	Long: `Creates a new GitHub repository and launches a Claude agent to scaffold it.
 
@@ -282,8 +282,8 @@ func resolveGitCommonDir(repoDir string) string {
 }
 
 func init() {
-	newCmd.Flags().String("description", "", "What the project does")
-	newCmd.Flags().String("type", "", "Project type: 'web' or 'cli'")
-	newCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
-	rootCmd.AddCommand(newCmd)
+	scaffoldCmd.Flags().String("description", "", "What the project does")
+	scaffoldCmd.Flags().String("type", "", "Project type: 'web' or 'cli'")
+	scaffoldCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
+	rootCmd.AddCommand(scaffoldCmd)
 }

@@ -23,237 +23,332 @@ const (
 
 var sessionCmd = &cobra.Command{
 	Use:   "session",
-	Short: "Start an interactive coordinator session",
-	Long: `Creates an isolated worktree and starts an interactive Claude Code session.
-The coordinator runs here instead of the base repo, keeping the base repo
-clean on the default branch. Must be run inside a tmux session.
+	Short: "Start or resume an interactive coordinator session",
+	Long: `Resumes the most recent coordinator session, or creates a new one if none exists.
+The coordinator runs in an isolated worktree, keeping the base repo clean on
+the default branch. Must be run inside a tmux session.
+
+Use 'klaus new' to explicitly start a fresh session.
 
 If run outside a git repository, creates a scratch workspace and uses
 ~/.klaus/config.json for configuration. Use 'klaus launch --repo owner/repo'
 from inside the session to target specific repositories.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !tmux.InSession() {
-			return fmt.Errorf("klaus session must be run inside a tmux session")
-		}
+		return runSession(cmd, false)
+	},
+}
 
-		continueFlag, _ := cmd.Flags().GetBool("continue")
-		resumeFlag, _ := cmd.Flags().GetString("resume")
+var newSessionCmd = &cobra.Command{
+	Use:   "new",
+	Short: "Start a fresh coordinator session",
+	Long: `Creates a new isolated worktree and starts a fresh interactive Claude Code session
+with no prior conversation context.
 
-		// Git repo is optional — session can run without one
-		root, _ := git.RepoRoot()
-		inRepo := root != ""
+This is the same as the old default behavior of 'klaus' — use this when you
+want to start clean instead of resuming the most recent session.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runSession(cmd, true)
+	},
+}
 
-		cfg, err := config.Load(root)
+func runSession(cmd *cobra.Command, forceNew bool) error {
+	if !tmux.InSession() {
+		return fmt.Errorf("klaus session must be run inside a tmux session")
+	}
+
+	continueFlag, _ := cmd.Flags().GetBool("continue")
+	resumeFlag, _ := cmd.Flags().GetString("resume")
+
+	// Git repo is optional — session can run without one
+	root, _ := git.RepoRoot()
+	inRepo := root != ""
+
+	cfg, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+
+	sessionsDir, err := run.SessionsDir()
+	if err != nil {
+		return err
+	}
+
+	var id string
+	var resuming bool
+
+	switch {
+	case forceNew:
+		// Explicit fresh session via 'klaus new'
+		baseID, err := run.GenID()
 		if err != nil {
 			return err
 		}
-
-		sessionsDir, err := run.SessionsDir()
+		id = "session-" + baseID
+	case continueFlag:
+		found, err := run.FindMostRecentSession(sessionsDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("finding most recent session: %w", err)
 		}
-
-		var id string
-		var resuming bool
-
-		switch {
-		case continueFlag:
-			found, err := run.FindMostRecentSession(sessionsDir)
-			if err != nil {
-				return fmt.Errorf("finding most recent session: %w", err)
-			}
+		id = found
+		resuming = true
+	case resumeFlag != "":
+		id = resumeFlag
+		dir := filepath.Join(sessionsDir, id)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			return fmt.Errorf("session directory does not exist: %s", id)
+		}
+		resuming = true
+	default:
+		// Default: resume most recent session if one exists
+		found, findErr := run.FindMostRecentSession(sessionsDir)
+		if findErr == nil {
 			id = found
 			resuming = true
-		case resumeFlag != "":
-			id = resumeFlag
-			dir := filepath.Join(sessionsDir, id)
-			if _, err := os.Stat(dir); os.IsNotExist(err) {
-				return fmt.Errorf("session directory does not exist: %s", id)
-			}
-			resuming = true
-		default:
+		} else {
+			// No existing session — create a new one
 			baseID, err := run.GenID()
 			if err != nil {
 				return err
 			}
 			id = "session-" + baseID
 		}
+	}
 
-		store, err := run.NewHomeDirStore(id)
+	store, err := run.NewHomeDirStore(id)
+	if err != nil {
+		return err
+	}
+	if err := store.EnsureDirs(); err != nil {
+		return err
+	}
+
+	var branch, repoName, worktree string
+	var state *run.State
+
+	if resuming {
+		// Load existing state for the session being resumed
+		state, err = store.Load(id)
 		if err != nil {
-			return err
+			return fmt.Errorf("loading session state: %w", err)
 		}
-		if err := store.EnsureDirs(); err != nil {
-			return err
+		branch = state.Branch
+		worktree = state.Worktree
+		if branch != "" {
+			repoName = filepath.Base(filepath.Dir(worktree))
+		} else if inRepo {
+			repoName = filepath.Base(root)
 		}
 
-		var branch, repoName, worktree string
-		var state *run.State
-
-		if resuming {
-			// Load existing state for the session being resumed
-			state, err = store.Load(id)
-			if err != nil {
-				return fmt.Errorf("loading session state: %w", err)
-			}
-			branch = state.Branch
-			worktree = state.Worktree
-			if branch != "" {
-				repoName = filepath.Base(filepath.Dir(worktree))
-			} else if inRepo {
-				repoName = filepath.Base(root)
-			}
-
-			// Verify worktree still exists
-			if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
-				return fmt.Errorf("session worktree no longer exists: %s", worktree)
-			}
-
-			fmt.Printf("Resuming coordinator session %s...\n", id)
-			fmt.Printf("  worktree: %s\n", worktree)
-			if branch != "" {
-				fmt.Printf("  branch:   %s\n", branch)
-			}
-		} else {
-			if inRepo {
-				branch = "session/" + id
-				repoName = filepath.Base(root)
-				worktree = filepath.Join(cfg.WorktreeBase, repoName, id)
+		// Verify worktree still exists; recreate if cleaned up
+		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
+			if branch == "" {
+				// Non-repo session: recreate scratch workspace
+				if err := os.MkdirAll(worktree, 0o755); err != nil {
+					return fmt.Errorf("recreating scratch workspace: %w", err)
+				}
+			} else {
+				// Repo session: recreate worktree using the original repo root
+				baseRepo := root
+				if state.RepoRoot != nil && *state.RepoRoot != "" {
+					baseRepo = *state.RepoRoot
+				}
+				if baseRepo == "" {
+					return fmt.Errorf("session worktree no longer exists and no repo root available: %s", worktree)
+				}
 				defaultBranch := cfg.DefaultBranch
-
-				fmt.Printf("Creating coordinator session %s...\n", id)
-
-				if err := git.FetchBranch(root, defaultBranch); err != nil {
+				if err := git.FetchBranch(baseRepo, defaultBranch); err != nil {
 					return fmt.Errorf("fetching %s: %w", defaultBranch, err)
 				}
-
 				startPoint := "origin/" + defaultBranch
-				if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
-					return fmt.Errorf("creating worktree: %w", err)
-				}
-				fmt.Printf("  worktree: %s\n", worktree)
-				fmt.Printf("  branch:   %s\n", branch)
-
-				if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
-				}
-
-				// Set up Nix dev environment if flake.nix exists
-				nix.SetupDevEnvironment(worktree)
-			} else {
-				// No repo — use a scratch workspace
-				worktree = filepath.Join(store.BaseDir(), "workspace")
-				if err := os.MkdirAll(worktree, 0o755); err != nil {
-					return fmt.Errorf("creating scratch workspace: %w", err)
-				}
-
-				fmt.Printf("Creating coordinator session %s (no repo)...\n", id)
-				fmt.Printf("  workspace: %s\n", worktree)
-			}
-
-			if err := config.PreTrustWorktree(worktree); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
-			}
-
-			// Write state
-			createdAt := time.Now().Format(time.RFC3339)
-			state = &run.State{
-				ID:        id,
-				Type:      "session",
-				Prompt:    "(interactive session)",
-				Branch:    branch,
-				Worktree:  worktree,
-				CreatedAt: createdAt,
-			}
-			if err := store.Save(state); err != nil {
-				return fmt.Errorf("saving state: %w", err)
-			}
-		}
-
-		// Load project list for session prompt
-		var projectList string
-		if reg, loadErr := project.Load(); loadErr == nil {
-			projectList = config.FormatProjectList(reg.List())
-		}
-
-		// Render session system prompt
-		sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
-			RunID:    id,
-			Branch:   branch,
-			RepoName: repoName,
-			Projects: projectList,
-		})
-		if err != nil {
-			return fmt.Errorf("rendering session prompt: %w", err)
-		}
-
-		// Configure tmux window for better situational awareness
-		currentPane := os.Getenv("TMUX_PANE")
-		if currentPane != "" {
-			windowTitle := repoName
-			if windowTitle == "" {
-				windowTitle = "klaus"
-			}
-			tmux.SetWindowOption(currentPane, "automatic-rename", "off")
-			tmux.RenameWindow(currentPane, windowTitle)
-			tmux.SetWindowOption(currentPane, "pane-border-status", "top")
-			tmux.SetWindowOption(currentPane, "pane-border-format", "#{pane_title}")
-		}
-
-		fmt.Println()
-		fmt.Println("Starting interactive Claude Code session...")
-		fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
-		fmt.Println()
-
-		// Launch dashboard in a bottom pane before starting Claude.
-		// If a dashboard pane already exists from a prior run, reuse it.
-		var dashPane string
-		if currentPane != "" {
-			if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
-				dashPane = *state.DashboardPane
-			} else {
-				dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
-				paneID, err := tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
-				} else {
-					dashPane = paneID
-					state.DashboardPane = &dashPane
-					if err := store.Save(state); err != nil {
-						fmt.Fprintf(os.Stderr, "warning: could not persist dashboard pane: %v\n", err)
-					}
+				if err := git.WorktreeAdd(baseRepo, worktree, branch, startPoint); err != nil {
+					return fmt.Errorf("recreating worktree: %w", err)
 				}
 			}
+			fmt.Printf("Recreated worktree at %s\n", worktree)
 		}
 
-		// Run claude interactively in the worktree, passing session ID to children
-		claudeArgs := []string{"--dangerously-skip-permissions", "-n", id, "--append-system-prompt", sessionPrompt}
-		claude := exec.Command("claude", claudeArgs...)
-		claude.Dir = worktree
-		claude.Stdin = os.Stdin
-		claude.Stdout = os.Stdout
-		claude.Stderr = os.Stderr
-		claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
-		claude.Run() // ignore error — user may exit normally
-
-		fmt.Println()
-		fmt.Printf("Session %s ended.\n", id)
-
-		// Wait for any running agents to finish, then clean up their panes
-		waitForAgents(store)
-
-		if dashPane != "" {
-			if err := tmux.KillPane(dashPane); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
-			}
+		// Clear stale tmux pane references and persist immediately
+		modified := false
+		if state.TmuxPane != nil && !tmux.PaneExists(*state.TmuxPane) {
+			state.TmuxPane = nil
+			modified = true
+		}
+		if state.DashboardPane != nil && !tmux.PaneExists(*state.DashboardPane) {
+			state.DashboardPane = nil
+			modified = true
+		}
+		if modified {
+			_ = store.Save(state)
 		}
 
+		fmt.Printf("Resuming coordinator session %s...\n", id)
+		fmt.Printf("  worktree: %s\n", worktree)
+		if branch != "" {
+			fmt.Printf("  branch:   %s\n", branch)
+		}
+	} else {
 		if inRepo {
-			fmt.Printf("  Worktree preserved at: %s\n", worktree)
+			branch = "session/" + id
+			repoName = filepath.Base(root)
+			worktree = filepath.Join(cfg.WorktreeBase, repoName, id)
+			defaultBranch := cfg.DefaultBranch
+
+			fmt.Printf("Creating coordinator session %s...\n", id)
+
+			if err := git.FetchBranch(root, defaultBranch); err != nil {
+				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
+			}
+
+			startPoint := "origin/" + defaultBranch
+			if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
+			fmt.Printf("  worktree: %s\n", worktree)
+			fmt.Printf("  branch:   %s\n", branch)
+
+			if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+			}
+
+			// Set up Nix dev environment if flake.nix exists
+			nix.SetupDevEnvironment(worktree)
+		} else {
+			// No repo — use a scratch workspace
+			worktree = filepath.Join(store.BaseDir(), "workspace")
+			if err := os.MkdirAll(worktree, 0o755); err != nil {
+				return fmt.Errorf("creating scratch workspace: %w", err)
+			}
+
+			fmt.Printf("Creating coordinator session %s (no repo)...\n", id)
+			fmt.Printf("  workspace: %s\n", worktree)
 		}
-		fmt.Printf("  To clean up: klaus cleanup %s\n", id)
-		return nil
-	},
+
+		if err := config.PreTrustWorktree(worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
+		}
+
+		// Write state
+		createdAt := time.Now().Format(time.RFC3339)
+		var repoRoot *string
+		if inRepo {
+			repoRoot = &root
+		}
+		state = &run.State{
+			ID:        id,
+			Type:      "session",
+			Prompt:    "(interactive session)",
+			Branch:    branch,
+			Worktree:  worktree,
+			CreatedAt: createdAt,
+			RepoRoot:  repoRoot,
+		}
+		if err := store.Save(state); err != nil {
+			return fmt.Errorf("saving state: %w", err)
+		}
+	}
+
+	// Load project list for session prompt
+	var projectList string
+	if reg, loadErr := project.Load(); loadErr == nil {
+		projectList = config.FormatProjectList(reg.List())
+	}
+
+	// Render session system prompt
+	sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
+		RunID:    id,
+		Branch:   branch,
+		RepoName: repoName,
+		Projects: projectList,
+	})
+	if err != nil {
+		return fmt.Errorf("rendering session prompt: %w", err)
+	}
+
+	// Configure tmux window for better situational awareness
+	currentPane := os.Getenv("TMUX_PANE")
+	if currentPane != "" {
+		windowTitle := repoName
+		if windowTitle == "" {
+			windowTitle = "klaus"
+		}
+		tmux.SetWindowOption(currentPane, "automatic-rename", "off")
+		tmux.RenameWindow(currentPane, windowTitle)
+		tmux.SetWindowOption(currentPane, "pane-border-status", "top")
+		tmux.SetWindowOption(currentPane, "pane-border-format", "#{pane_title}")
+	}
+
+	fmt.Println()
+	fmt.Println("Starting interactive Claude Code session...")
+	fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
+	fmt.Println()
+
+	// Launch dashboard in a bottom pane before starting Claude.
+	// If a dashboard pane already exists from a prior run, reuse it.
+	var dashPane string
+	if currentPane != "" {
+		if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+			dashPane = *state.DashboardPane
+		} else {
+			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
+			paneID, err := tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
+			} else {
+				dashPane = paneID
+				state.DashboardPane = &dashPane
+				if err := store.Save(state); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not persist dashboard pane: %v\n", err)
+				}
+			}
+		}
+	}
+
+	// Run claude interactively in the worktree, passing session ID to children.
+	// Write JSONL output to a log file so we can extract the Claude session UUID.
+	logFile := filepath.Join(store.LogDir(), id+".jsonl")
+	claudeArgs := []string{
+		"--dangerously-skip-permissions",
+		"-n", id,
+		"--output-format", "stream-json",
+		"--output", logFile,
+		"--append-system-prompt", sessionPrompt,
+	}
+	if resuming && state.ClaudeSessionID != nil && *state.ClaudeSessionID != "" {
+		claudeArgs = append(claudeArgs, "--resume", *state.ClaudeSessionID)
+	} else if resuming {
+		claudeArgs = append(claudeArgs, "--continue")
+	}
+	claude := exec.Command("claude", claudeArgs...)
+	claude.Dir = worktree
+	claude.Stdin = os.Stdin
+	claude.Stdout = os.Stdout
+	claude.Stderr = os.Stderr
+	claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
+	claude.Run() // ignore error — user may exit normally
+
+	// Persist Claude session UUID for future resumes
+	if csID := ExtractClaudeSessionID(logFile); csID != "" {
+		state.ClaudeSessionID = &csID
+		_ = store.Save(state)
+	}
+
+	fmt.Println()
+	fmt.Printf("Session %s ended.\n", id)
+
+	// Wait for any running agents to finish, then clean up their panes
+	waitForAgents(store)
+
+	if dashPane != "" {
+		if err := tmux.KillPane(dashPane); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
+		}
+	}
+
+	if inRepo {
+		fmt.Printf("  Worktree preserved at: %s\n", worktree)
+	}
+	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
+	return nil
 }
 
 // waitForAgents polls for active agent panes and waits for them to
@@ -312,4 +407,5 @@ func init() {
 	sessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
 	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
 	rootCmd.AddCommand(sessionCmd)
+	rootCmd.AddCommand(newSessionCmd)
 }
