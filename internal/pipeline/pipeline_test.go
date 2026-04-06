@@ -1552,6 +1552,55 @@ func TestFixAgentCircuitBreakerResetOnNewPush(t *testing.T) {
 	}
 }
 
+func TestKlausApprovalTriggersAutoMerge(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// CI passing, no GitHub review, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch, got %d", launchCount)
+	}
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge from klaus approval, got %d", mergeCount)
+	}
+
+	hasMerge := false
+	for _, a := range actions {
+		if a.Type == "merge" {
+			hasMerge = true
+		}
+	}
+	if !hasMerge {
+		t.Error("expected merge action from klaus internal approval")
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

@@ -319,7 +319,8 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 			})
 		}
 
-		if strings.EqualFold(status.ReviewDecision, "APPROVED") {
+		approved := strings.EqualFold(status.ReviewDecision, "APPROVED") || c.hasKlausApproval(ps.PRNumber, runStates)
+		if approved {
 			if ps.Stage != StageApproved && ps.Stage != StageMerging && ps.Stage != StageNeedsRebase {
 				ps.Stage = StageApproved
 				c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
@@ -543,6 +544,22 @@ func (c *Controller) markRunStatesApproved(prNumber string, runStates []*run.Sta
 			}
 		}
 	}
+}
+
+// hasKlausApproval returns true if any run state for the given PR has been
+// approved via `klaus approve`.
+func (c *Controller) hasKlausApproval(prNumber string, runStates []*run.State) bool {
+	for _, s := range runStates {
+		if s.PR == nil || *s.PR != prNumber {
+			if s.PRURL == nil || !strings.HasSuffix(*s.PRURL, "/"+prNumber) {
+				continue
+			}
+		}
+		if s.Approved != nil && *s.Approved {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Controller) emitEvent(prNumber, eventType string, data map[string]interface{}) {
