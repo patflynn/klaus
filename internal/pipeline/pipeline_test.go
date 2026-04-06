@@ -1381,6 +1381,177 @@ func TestFirstAgentDispatchHasEmptyResume(t *testing.T) {
 	}
 }
 
+func TestFixAgentCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 1: initial fix agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Simulate agent completion (finalized with cost).
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Expire the dispatch cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// CI still failing -> should re-dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Now we've dispatched 3 agents. Simulate agent 3 completing.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// CI still failing -> circuit breaker should trip; no 4th dispatch.
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+
+	// Should have an error action.
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "fix attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error action from circuit breaker, got:", actions)
+	}
+
+	// Stage should be stalled.
+	states := c.PipelineStates()
+	if states["42"].Stage != StageStalled {
+		t.Errorf("expected stalled stage, got %s", states["42"].Stage)
+	}
+}
+
+func TestFixAgentCircuitBreakerResetOnCIPass(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 2 fix agents (below the limit).
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-001", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 2 {
+		t.Fatalf("expected 2 launches, got %d", launchCount)
+	}
+
+	// CI passes — should reset FixAttempts.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "passing", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	states := c.PipelineStates()
+	if states["42"].FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 after CI pass, got %d", states["42"].FixAttempts)
+	}
+}
+
+func TestFixAgentCircuitBreakerResetOnNewPush(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// Dispatch 3 fix agents to trip the circuit breaker.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	for i := 2; i <= 3; i++ {
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", i-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+	}
+
+	// Trip the breaker.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if c.PipelineStates()["42"].Stage != StageStalled {
+		t.Fatalf("expected stalled, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Simulate new push: CI goes to pending.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "pending", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	states := c.PipelineStates()
+	if states["42"].FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 after new push (CI pending), got %d", states["42"].FixAttempts)
+	}
+	if states["42"].Stage != StageCIPending {
+		t.Errorf("expected stage to reset to ci_pending after new push, got %s", states["42"].Stage)
+	}
+
+	// CI fails again — should be able to dispatch again.
+	statuses["42"] = &PRStatus{PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 4 {
+		t.Errorf("expected 4th launch after circuit breaker reset, got %d", launchCount)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

@@ -55,6 +55,7 @@ type PRPipelineState struct {
 	RetryCount              int       // number of launch retries after failure
 	LastFailedAt            time.Time // when the last launch failure occurred
 	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
+	FixAttempts             int       // number of fix agents dispatched that completed without fixing CI
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -231,6 +232,10 @@ func (c *Controller) getOrCreateState(prNum string) *PRPipelineState {
 // maxLaunchRetries is the maximum number of agent launch retries before going to StageStalled.
 const maxLaunchRetries = 2
 
+// maxFixAttempts is the maximum number of fix agents dispatched for a single PR
+// before the pipeline gives up. Reset when the branch is updated or CI passes.
+const maxFixAttempts = 3
+
 // retryBackoff is the minimum time between launch retries.
 const retryBackoff = 60 * time.Second
 
@@ -243,8 +248,36 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 
 	switch {
 	case status.CI == "failing":
+		// Circuit breaker: stop dispatching after too many failed fix attempts.
+		if ps.FixAttempts >= maxFixAttempts && !ps.AgentRunning {
+			if ps.Stage != StageStalled {
+				ps.Stage = StageStalled
+				c.logger.Warn("fix agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.FixAttempts,
+				)
+				return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}
+			}
+			return nil
+		}
+
 		if ps.Stage != StageCIFailed || !ps.AgentRunning {
 			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
+				// Count a failed fix attempt when a previous agent finished but CI is still failing.
+				if ps.Stage == StageCIFailed && ps.LastAgentID != "" {
+					ps.FixAttempts++
+				}
+
+				// Re-check circuit breaker after incrementing.
+				if ps.FixAttempts >= maxFixAttempts {
+					ps.Stage = StageStalled
+					c.logger.Warn("fix agent circuit breaker tripped",
+						"pr", ps.PRNumber,
+						"attempts", ps.FixAttempts,
+					)
+					return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}
+				}
+
 				// Clean up stale worktrees for this PR before dispatching.
 				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
 
@@ -276,6 +309,9 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		}
 
 	case status.CI == "passing":
+		// CI passed — reset fix attempt counter.
+		ps.FixAttempts = 0
+
 		if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending || ps.Stage == StageNeedsRebase {
 			c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
 				"pr_number": ps.PRNumber,
@@ -402,7 +438,12 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 
 	default:
 		// CI pending or unknown — stay in current stage or set to pending.
-		if ps.Stage == "" {
+		// If CI was previously failing and is now pending, a new push likely
+		// triggered a fresh CI run. Reset the fix attempt counter.
+		if ps.Stage == StageCIFailed || ps.Stage == StageStalled {
+			ps.FixAttempts = 0
+		}
+		if ps.Stage == "" || ps.Stage == StageStalled {
 			ps.Stage = StageCIPending
 		}
 	}
