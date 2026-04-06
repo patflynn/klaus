@@ -226,6 +226,38 @@ func extractPRNumberFromURL(prURL string) string {
 	return matches[1]
 }
 
+// ExtractClaudeSessionID parses a Claude stream-json JSONL log file and
+// returns the session_id from the "result" event. Returns empty string if
+// not found or on any error.
+func ExtractClaudeSessionID(logPath string) string {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev struct {
+			Type      string `json:"type"`
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		if ev.Type == "result" && ev.SessionID != "" {
+			return ev.SessionID
+		}
+	}
+	return ""
+}
+
 func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{

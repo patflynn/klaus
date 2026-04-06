@@ -346,6 +346,69 @@ not valid json at all
 	})
 }
 
+func TestExtractClaudeSessionID(t *testing.T) {
+	t.Run("extracts session_id from result event", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Working on it..."}]}}
+{"type":"result","session_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","total_cost_usd":1.5,"duration_ms":30000}
+`
+		logFile := writeTestLog(t, logContent)
+		got := ExtractClaudeSessionID(logFile)
+		if got != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+			t.Errorf("ExtractClaudeSessionID() = %q, want UUID", got)
+		}
+	})
+
+	t.Run("returns empty when no result event", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}]}}
+`
+		logFile := writeTestLog(t, logContent)
+		got := ExtractClaudeSessionID(logFile)
+		if got != "" {
+			t.Errorf("ExtractClaudeSessionID() = %q, want empty", got)
+		}
+	})
+
+	t.Run("returns empty when result has no session_id", func(t *testing.T) {
+		logContent := `{"type":"result","total_cost_usd":0.5,"duration_ms":1000}
+`
+		logFile := writeTestLog(t, logContent)
+		got := ExtractClaudeSessionID(logFile)
+		if got != "" {
+			t.Errorf("ExtractClaudeSessionID() = %q, want empty", got)
+		}
+	})
+
+	t.Run("returns empty for nonexistent file", func(t *testing.T) {
+		got := ExtractClaudeSessionID("/nonexistent/path/log.jsonl")
+		if got != "" {
+			t.Errorf("ExtractClaudeSessionID() = %q, want empty", got)
+		}
+	})
+
+	t.Run("survives malformed lines", func(t *testing.T) {
+		logContent := `not json
+{"truncated":
+{"type":"result","session_id":"deadbeef-1234-5678-9abc-def012345678","total_cost_usd":0.1}
+`
+		logFile := writeTestLog(t, logContent)
+		got := ExtractClaudeSessionID(logFile)
+		if got != "deadbeef-1234-5678-9abc-def012345678" {
+			t.Errorf("ExtractClaudeSessionID() = %q, want UUID", got)
+		}
+	})
+}
+
+func writeTestLog(t *testing.T, content string) string {
+	t.Helper()
+	logFile := filepath.Join(t.TempDir(), "test.jsonl")
+	if err := os.WriteFile(logFile, []byte(content), 0644); err != nil {
+		t.Fatalf("writing log file: %v", err)
+	}
+	return logFile
+}
+
 // setupFinalizeTest creates a temporary log file and state for testing finalizeFromLog.
 func setupFinalizeTest(t *testing.T, logContent string) (*run.State, run.StateStore) {
 	t.Helper()
