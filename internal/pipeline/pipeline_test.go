@@ -1601,6 +1601,79 @@ func TestKlausApprovalTriggersAutoMerge(t *testing.T) {
 	}
 }
 
+func TestChangesRequestedOverridesKlausApproval(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// CI passing, CHANGES_REQUESTED on GitHub, but klaus internal approval is set.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "CHANGES_REQUESTED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	approved := true
+	pr := "42"
+	runStates := []*run.State{
+		{ID: "run-001", PR: &pr, Approved: &approved},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if mergeCount != 0 {
+		t.Errorf("expected no merge when CHANGES_REQUESTED, got %d merges", mergeCount)
+	}
+	if launchCount != 1 {
+		t.Errorf("expected fix agent dispatch for CHANGES_REQUESTED, got %d launches", launchCount)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Error("expected launch action for review fix agent")
+	}
+}
+
+func TestRunStateMatchesPR(t *testing.T) {
+	pr := "42"
+	tests := []struct {
+		name  string
+		state *run.State
+		want  bool
+	}{
+		{"match by PR field", &run.State{PR: &pr}, true},
+		{"match by PRURL", &run.State{PRURL: strPtr("https://github.com/o/r/pull/42")}, true},
+		{"match by PRURL with trailing slash", &run.State{PRURL: strPtr("https://github.com/o/r/pull/42/")}, true},
+		{"no match different PR", &run.State{PRURL: strPtr("https://github.com/o/r/pull/421")}, false},
+		{"no match nil fields", &run.State{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runStateMatchesPR(tt.state, "42")
+			if got != tt.want {
+				t.Errorf("runStateMatchesPR() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
