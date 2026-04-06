@@ -249,7 +249,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 	switch {
 	case status.CI == "failing":
 		// Circuit breaker: stop dispatching after too many failed fix attempts.
-		if ps.FixAttempts >= maxFixAttempts {
+		if ps.FixAttempts >= maxFixAttempts && !ps.AgentRunning {
 			if ps.Stage != StageStalled {
 				ps.Stage = StageStalled
 				c.logger.Warn("fix agent circuit breaker tripped",
@@ -262,12 +262,12 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		}
 
 		if ps.Stage != StageCIFailed || !ps.AgentRunning {
-			// Count a failed fix attempt when a previous agent finished but CI is still failing.
-			if ps.Stage == StageCIFailed && !ps.AgentRunning && ps.LastAgentID != "" {
-				ps.FixAttempts++
-			}
-
 			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
+				// Count a failed fix attempt when a previous agent finished but CI is still failing.
+				if ps.Stage == StageCIFailed && ps.LastAgentID != "" {
+					ps.FixAttempts++
+				}
+
 				// Re-check circuit breaker after incrementing.
 				if ps.FixAttempts >= maxFixAttempts {
 					ps.Stage = StageStalled

@@ -239,14 +239,14 @@ func ExtractClaudeSessionID(logPath string) string {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
+	var ev struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
-		}
-		var ev struct {
-			Type      string `json:"type"`
-			SessionID string `json:"session_id"`
 		}
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
