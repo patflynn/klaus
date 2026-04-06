@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -386,7 +387,7 @@ func TestServerListenThenServe(t *testing.T) {
 	go func() {
 		_ = srv.Serve()
 	}()
-	defer srv.Shutdown(nil)
+	defer srv.Shutdown(context.Background())
 
 	// Send a webhook to the live server.
 	payload := `{

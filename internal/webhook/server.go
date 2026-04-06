@@ -34,9 +34,6 @@ type Server struct {
 
 // NewServer creates a webhook server that sends parsed events to the given channel.
 func NewServer(port int, path string, events chan<- Event) *Server {
-	if port == 0 {
-		port = 9800
-	}
 	if path == "" {
 		path = "/webhook/github"
 	}

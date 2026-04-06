@@ -68,7 +68,11 @@ Keyboard shortcuts:
 		model := newDashboardModel(store, cfg)
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
-			srv := webhook.NewServer(cfg.Webhook.Port, cfg.Webhook.Path, ch)
+			port := cfg.Webhook.Port
+			if port == 0 {
+				port = 9800
+			}
+			srv := webhook.NewServer(port, cfg.Webhook.Path, ch)
 
 			if err := srv.Listen(); err != nil {
 				return fmt.Errorf("webhook server: %w", err)
