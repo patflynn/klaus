@@ -53,8 +53,10 @@ func SplitWindowSized(targetPane, dir, command, orientation, size string) (strin
 }
 
 // SetPaneTitle sets the title of a tmux pane.
+// Uses select-pane -T which correctly handles titles with spaces,
+// unlike set-option -p pane-title which breaks in tmux 3.6+.
 func SetPaneTitle(paneID, title string) error {
-	_, err := runTmux("set-option", "-p", "-t", paneID, "pane-title", title)
+	_, err := runTmux("select-pane", "-t", paneID, "-T", title)
 	return err
 }
 

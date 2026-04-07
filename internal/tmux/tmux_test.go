@@ -114,6 +114,15 @@ func TestBuildArgsSplitWindowSizedHorizontal(t *testing.T) {
 	}
 }
 
+func TestBuildArgsSetPaneTitle(t *testing.T) {
+	args := BuildArgs("select-pane", "-t", "%3", "-T", "#42 fix login page crash")
+	want := []string{"select-pane", "-t", "%3", "-T", "#42 fix login page crash"}
+
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("BuildArgs() got = %q, want %q", args, want)
+	}
+}
+
 func TestBuildArgsLockPaneTitle(t *testing.T) {
 	args := BuildArgs("set-option", "-p", "-t", "%3", "allow-rename", "off")
 	want := []string{"set-option", "-p", "-t", "%3", "allow-rename", "off"}
