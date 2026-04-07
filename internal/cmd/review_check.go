@@ -46,7 +46,10 @@ type ghCommitAuthor struct {
 
 // hasUnaddressedTrustedComments checks whether a PR has review comments from
 // trusted reviewers that haven't been addressed by a subsequent push.
-func hasUnaddressedTrustedComments(ownerRepo, prNumber string) bool {
+// It is a variable so tests can replace the implementation.
+var hasUnaddressedTrustedComments = hasUnaddressedTrustedCommentsImpl
+
+func hasUnaddressedTrustedCommentsImpl(ownerRepo, prNumber string) bool {
 	cfg, err := config.Load("")
 	if err != nil || len(cfg.TrustedReviewers) == 0 {
 		return false
