@@ -132,6 +132,11 @@ type webhookMsg struct {
 	event webhook.Event
 }
 
+type trustedCommentsMsg struct {
+	prNumber             string
+	hasNewTrustedComments bool
+}
+
 // prStatus holds the GitHub-fetched status for a single PR.
 type prStatus struct {
 	PRNumber              string
@@ -340,27 +345,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				existing.ReviewDecision = ev.ReviewDecision
 			}
 
-			// Check for unaddressed trusted reviewer comments, mirroring
-			// the logic in fetchPRStatus.
-			if !strings.EqualFold(existing.ReviewDecision, "CHANGES_REQUESTED") &&
-				!strings.EqualFold(existing.ReviewDecision, "APPROVED") {
-				ownerRepo := ev.Repo
-				if ownerRepo == "" {
-					for _, s := range m.states {
-						if extractPRNumber(s) == ev.PRNumber && s.PRURL != nil {
-							ownerRepo = ownerRepoFromPRURL(*s.PRURL)
-							break
-						}
-					}
-				}
-				if ownerRepo != "" {
-					existing.HasNewTrustedComments = hasUnaddressedTrustedComments(ownerRepo, ev.PRNumber)
-				}
-			} else {
-				existing.HasNewTrustedComments = false
-			}
-
 			// Feed the updated status to the pipeline controller.
+			// Resolve ownerRepo in the same loop to avoid a redundant
+			// second pass over m.states.
 			pStatuses := make(map[string]*pipeline.PRStatus, 1)
 			ps := &pipeline.PRStatus{
 				PRNumber:              existing.PRNumber,
@@ -370,11 +357,15 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ReviewDecision:        existing.ReviewDecision,
 				HasNewTrustedComments: existing.HasNewTrustedComments,
 			}
+			ownerRepo := ev.Repo
 			for _, s := range m.states {
 				prNum := extractPRNumber(s)
 				if prNum == ev.PRNumber {
 					if s.PRURL != nil {
 						ps.PRURL = *s.PRURL
+						if ownerRepo == "" {
+							ownerRepo = ownerRepoFromPRURL(*s.PRURL)
+						}
 					}
 					if s.TargetRepo != nil {
 						ps.TargetRepo = *s.TargetRepo
@@ -382,15 +373,36 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
+
+			// Check for unaddressed trusted reviewer comments
+			// asynchronously to avoid blocking the UI thread.
+			var checkCommentsCmd tea.Cmd
+			if strings.EqualFold(existing.ReviewDecision, "CHANGES_REQUESTED") ||
+				strings.EqualFold(existing.ReviewDecision, "APPROVED") {
+				existing.HasNewTrustedComments = false
+				ps.HasNewTrustedComments = false
+			} else if ownerRepo != "" {
+				repo := ownerRepo
+				prNum := ev.PRNumber
+				checkCommentsCmd = func() tea.Msg {
+					return trustedCommentsMsg{
+						prNumber:              prNum,
+						hasNewTrustedComments: hasUnaddressedTrustedComments(repo, prNum),
+					}
+				}
+			}
+
 			pStatuses[ev.PRNumber] = ps
 			actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
 			m.pipelineStates = m.pipelineCtrl.PipelineStates()
-			if len(actions) > 0 {
-				return m, tea.Batch(
-					func() tea.Msg { return pipelineActionMsg{actions: actions} },
-					waitForWebhookCmd(m.webhookCh),
-				)
+			cmds := []tea.Cmd{waitForWebhookCmd(m.webhookCh)}
+			if checkCommentsCmd != nil {
+				cmds = append(cmds, checkCommentsCmd)
 			}
+			if len(actions) > 0 {
+				cmds = append(cmds, func() tea.Msg { return pipelineActionMsg{actions: actions} })
+			}
+			return m, tea.Batch(cmds...)
 		} else if ev.Repo != "" && ev.Conflicts == "unknown" {
 			// Push to default branch — mark all PRs from this repo for re-check.
 			for _, ps := range m.ghStatus {
@@ -400,6 +412,12 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, waitForWebhookCmd(m.webhookCh)
+
+	case trustedCommentsMsg:
+		existing, ok := m.ghStatus[msg.prNumber]
+		if ok {
+			existing.HasNewTrustedComments = msg.hasNewTrustedComments
+		}
 
 	case tickMsg:
 		// Expire errors older than 3 minutes.

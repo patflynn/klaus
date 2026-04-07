@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
@@ -842,8 +843,39 @@ func TestWebhookMsgSetsHasNewTrustedComments(t *testing.T) {
 		},
 	}
 
-	updated, _ := m.Update(msg)
+	updated, cmd := m.Update(msg)
 	um := updated.(dashboardModel)
+
+	// The trusted comments check is now async via a tea.Cmd.
+	// Execute the batched commands to find and run the check.
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from Update")
+	}
+	// tea.Batch returns a Cmd that yields BatchMsg ([]Cmd).
+	// Recursively execute to find the trustedCommentsMsg.
+	found := false
+	var execCmds func(tea.Cmd)
+	execCmds = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		result := c()
+		if tcMsg, ok := result.(trustedCommentsMsg); ok {
+			found = true
+			updated, _ = um.Update(tcMsg)
+			um = updated.(dashboardModel)
+			return
+		}
+		if bm, ok := result.(tea.BatchMsg); ok {
+			for _, sub := range bm {
+				execCmds(sub)
+			}
+		}
+	}
+	execCmds(cmd)
+	if !found {
+		t.Fatal("expected trustedCommentsMsg in batched commands")
+	}
 
 	ps, ok := um.ghStatus["42"]
 	if !ok {
@@ -920,7 +952,24 @@ func TestWebhookMsgTrustedCommentsFallbackToPRURL(t *testing.T) {
 		},
 	}
 
-	m.Update(msg)
+	_, cmd := m.Update(msg)
+
+	// Execute the async command to trigger the trusted comments check.
+	var execCmds func(tea.Cmd)
+	execCmds = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		result := c()
+		if bm, ok := result.(tea.BatchMsg); ok {
+			for _, sub := range bm {
+				execCmds(sub)
+			}
+		}
+	}
+	if cmd != nil {
+		execCmds(cmd)
+	}
 
 	if capturedOwnerRepo != "fallback/repo" {
 		t.Errorf("expected ownerRepo = %q from PRURL fallback, got %q", "fallback/repo", capturedOwnerRepo)
