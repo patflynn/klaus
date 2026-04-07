@@ -8,9 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/webhook"
 )
 
 func init() {
@@ -804,6 +806,124 @@ func TestDashboardViewWithSandboxAgent(t *testing.T) {
 	}
 	if !strings.Contains(view, "sandbox klaus-worker-0: ✓") {
 		t.Error("view should show sandbox reachability in header")
+	}
+}
+
+func TestWebhookMsgSetsHasNewTrustedComments(t *testing.T) {
+	// Stub hasUnaddressedTrustedComments to return true.
+	orig := hasUnaddressedTrustedComments
+	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
+		return true
+	}
+	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
+
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	m.states = states
+
+	// Send a webhook event with a review decision that is neither
+	// APPROVED nor CHANGES_REQUESTED, so trusted comments are checked.
+	msg := webhookMsg{
+		event: webhook.Event{
+			PRNumber:       "42",
+			Repo:           "owner/repo",
+			ReviewDecision: "REVIEW_REQUIRED",
+		},
+	}
+
+	updated, _ := m.Update(msg)
+	um := updated.(dashboardModel)
+
+	ps, ok := um.ghStatus["42"]
+	if !ok {
+		t.Fatal("expected prStatus for PR 42 to exist")
+	}
+	if !ps.HasNewTrustedComments {
+		t.Error("expected HasNewTrustedComments to be true on webhook path")
+	}
+}
+
+func TestWebhookMsgClearsTrustedCommentsOnApproval(t *testing.T) {
+	// Stub should not be called when review is APPROVED.
+	orig := hasUnaddressedTrustedComments
+	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
+		t.Error("hasUnaddressedTrustedComments should not be called for APPROVED reviews")
+		return true
+	}
+	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	// Pre-populate with a status that has trusted comments.
+	m.ghStatus["42"] = &prStatus{
+		PRNumber:              "42",
+		HasNewTrustedComments: true,
+	}
+
+	msg := webhookMsg{
+		event: webhook.Event{
+			PRNumber:       "42",
+			Repo:           "owner/repo",
+			ReviewDecision: "APPROVED",
+		},
+	}
+
+	updated, _ := m.Update(msg)
+	um := updated.(dashboardModel)
+
+	ps := um.ghStatus["42"]
+	if ps.HasNewTrustedComments {
+		t.Error("expected HasNewTrustedComments to be cleared on APPROVED")
+	}
+}
+
+func TestWebhookMsgTrustedCommentsFallbackToPRURL(t *testing.T) {
+	// Verify that when ev.Repo is empty, ownerRepo is extracted from the run state's PRURL.
+	orig := hasUnaddressedTrustedComments
+	var capturedOwnerRepo string
+	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
+		capturedOwnerRepo = ownerRepo
+		return false
+	}
+	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
+
+	prURL := "https://github.com/fallback/repo/pull/99"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-bbbb",
+			Prompt:     "test",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("fallback/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	m.states = states
+
+	msg := webhookMsg{
+		event: webhook.Event{
+			PRNumber:       "99",
+			Repo:           "", // empty — should fall back to PRURL
+			ReviewDecision: "REVIEW_REQUIRED",
+		},
+	}
+
+	m.Update(msg)
+
+	if capturedOwnerRepo != "fallback/repo" {
+		t.Errorf("expected ownerRepo = %q from PRURL fallback, got %q", "fallback/repo", capturedOwnerRepo)
 	}
 }
 

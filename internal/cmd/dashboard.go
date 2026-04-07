@@ -340,14 +340,35 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				existing.ReviewDecision = ev.ReviewDecision
 			}
 
+			// Check for unaddressed trusted reviewer comments, mirroring
+			// the logic in fetchPRStatus.
+			if !strings.EqualFold(existing.ReviewDecision, "CHANGES_REQUESTED") &&
+				!strings.EqualFold(existing.ReviewDecision, "APPROVED") {
+				ownerRepo := ev.Repo
+				if ownerRepo == "" {
+					for _, s := range m.states {
+						if extractPRNumber(s) == ev.PRNumber && s.PRURL != nil {
+							ownerRepo = ownerRepoFromPRURL(*s.PRURL)
+							break
+						}
+					}
+				}
+				if ownerRepo != "" {
+					existing.HasNewTrustedComments = hasUnaddressedTrustedComments(ownerRepo, ev.PRNumber)
+				}
+			} else {
+				existing.HasNewTrustedComments = false
+			}
+
 			// Feed the updated status to the pipeline controller.
 			pStatuses := make(map[string]*pipeline.PRStatus, 1)
 			ps := &pipeline.PRStatus{
-				PRNumber:       existing.PRNumber,
-				State:          existing.State,
-				CI:             existing.CI,
-				Conflicts:      existing.Conflicts,
-				ReviewDecision: existing.ReviewDecision,
+				PRNumber:              existing.PRNumber,
+				State:                 existing.State,
+				CI:                    existing.CI,
+				Conflicts:             existing.Conflicts,
+				ReviewDecision:        existing.ReviewDecision,
+				HasNewTrustedComments: existing.HasNewTrustedComments,
 			}
 			for _, s := range m.states {
 				prNum := extractPRNumber(s)
