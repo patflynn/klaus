@@ -49,13 +49,18 @@ func (c *PRClient) GetCI(prRef string) string {
 		return "unknown"
 	}
 
+	return ParseCIStatus(output)
+}
+
+// ParseCIStatus categorizes "gh pr checks" output into passing/failing/pending/unknown.
+func ParseCIStatus(output string) string {
 	var passing, failing, pending int
 	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		if line == "" {
 			continue
 		}
 		lower := strings.ToLower(line)
-		if strings.Contains(lower, "pass") {
+		if strings.Contains(lower, "pass") || strings.Contains(lower, "skipping") {
 			passing++
 		} else if strings.Contains(lower, "fail") {
 			failing++

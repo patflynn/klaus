@@ -121,6 +121,59 @@ func TestMergeArgsVariants(t *testing.T) {
 	}
 }
 
+func TestParseCIStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "all passing",
+			output: "Build\tpass\t1m30s\thttps://example.com\nLint\tpass\t30s\thttps://example.com",
+			want:   "passing",
+		},
+		{
+			name:   "one failing",
+			output: "Build\tpass\t1m30s\thttps://example.com\nLint\tfail\t30s\thttps://example.com",
+			want:   "failing",
+		},
+		{
+			name:   "one pending",
+			output: "Build\tpass\t1m30s\thttps://example.com\nDeploy\t\t0\thttps://example.com",
+			want:   "pending",
+		},
+		{
+			name:   "skipped checks treated as passing",
+			output: "E2E Tests\tpass\t2m\thttps://example.com\nDispatch Preview Cleanup\tskipping\t0\thttps://example.com",
+			want:   "passing",
+		},
+		{
+			name:   "all skipped",
+			output: "Dispatch Preview Cleanup\tskipping\t0\thttps://example.com",
+			want:   "passing",
+		},
+		{
+			name:   "skipped with failure",
+			output: "Build\tfail\t1m\thttps://example.com\nCleanup\tskipping\t0\thttps://example.com",
+			want:   "failing",
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   "unknown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseCIStatus(tt.output)
+			if got != tt.want {
+				t.Errorf("ParseCIStatus() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestArgsAcceptFullURL(t *testing.T) {
 	url := "https://github.com/owner/repo/pull/42"
 	client := NewPRClient("")
