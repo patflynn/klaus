@@ -632,13 +632,7 @@ func extractAgentID(output string) string {
 
 // isRunning checks if a run is still active (has tmux pane, not finalized).
 func isRunning(s *run.State) bool {
-	if s.TmuxPane == nil {
-		return false
-	}
-	if s.CostUSD != nil || s.DurationMS != nil {
-		return false
-	}
-	return true
+	return s.IsAgentRunning()
 }
 
 // truncateError returns a short, single-line version of an error message.
