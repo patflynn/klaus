@@ -1,6 +1,8 @@
 package github
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -158,9 +160,9 @@ func TestParseCIStatus(t *testing.T) {
 			want:   "failing",
 		},
 		{
-			name:   "empty output",
+			name:   "empty output (no checks configured)",
 			output: "",
-			want:   "unknown",
+			want:   "passing",
 		},
 	}
 
@@ -196,5 +198,42 @@ func TestArgsAcceptFullURL(t *testing.T) {
 				t.Errorf("last arg = %q, want %q", last, url)
 			}
 		})
+	}
+}
+
+func TestGetCI_NoChecksConfigured(t *testing.T) {
+	// Create a fake "gh" that exits 1 with no stdout (simulates no CI checks).
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"no checks reported on the 'main' branch\" >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Prepend our fake gh to PATH so exec.Command("gh", ...) finds it first.
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+
+	client := NewPRClient("")
+	got := client.GetCI("42")
+	if got != "passing" {
+		t.Errorf("GetCI() with no checks configured = %q, want %q", got, "passing")
+	}
+}
+
+func TestGetCI_GhCommandFails(t *testing.T) {
+	// Create a fake "gh" that exits 1 with a non-"no checks" error on stderr.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"authentication required\" >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+
+	client := NewPRClient("")
+	got := client.GetCI("42")
+	if got != "unknown" {
+		t.Errorf("GetCI() with gh failure = %q, want %q", got, "unknown")
 	}
 }
