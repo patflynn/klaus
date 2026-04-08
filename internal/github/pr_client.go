@@ -46,7 +46,10 @@ func (c *PRClient) GetCI(prRef string) string {
 	output := stdout.String()
 
 	if err != nil && output == "" {
-		return "passing" // no checks configured — nothing to fail
+		if strings.Contains(stderr.String(), "no checks reported") {
+			return "passing" // no checks configured — nothing to fail
+		}
+		return "unknown"
 	}
 
 	return ParseCIStatus(output)

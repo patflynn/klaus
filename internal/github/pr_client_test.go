@@ -205,7 +205,7 @@ func TestGetCI_NoChecksConfigured(t *testing.T) {
 	// Create a fake "gh" that exits 1 with no stdout (simulates no CI checks).
 	dir := t.TempDir()
 	script := filepath.Join(dir, "gh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"no checks reported on the 'main' branch\" >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -217,5 +217,23 @@ func TestGetCI_NoChecksConfigured(t *testing.T) {
 	got := client.GetCI("42")
 	if got != "passing" {
 		t.Errorf("GetCI() with no checks configured = %q, want %q", got, "passing")
+	}
+}
+
+func TestGetCI_GhCommandFails(t *testing.T) {
+	// Create a fake "gh" that exits 1 with a non-"no checks" error on stderr.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho \"authentication required\" >&2\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+
+	client := NewPRClient("")
+	got := client.GetCI("42")
+	if got != "unknown" {
+		t.Errorf("GetCI() with gh failure = %q, want %q", got, "unknown")
 	}
 }
