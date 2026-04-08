@@ -2,18 +2,15 @@ package review
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
-
-	"github.com/anthropics/anthropic-sdk-go"
 )
 
 // ReviewConfig configures the peer review agent.
 type ReviewConfig struct {
-	Model        string // e.g. "haiku" — maps to claude-haiku-4-5-20251001
+	Model        string // e.g. "haiku" — passed to claude CLI --model flag
 	MaxFixRounds int    // default 2
 }
 
@@ -29,20 +26,6 @@ type Finding struct {
 type ReviewResult struct {
 	Findings []Finding `json:"findings"`
 	Summary  string    `json:"summary"`
-}
-
-// modelID maps short model names to full Anthropic model IDs.
-func modelID(name string) anthropic.Model {
-	switch strings.ToLower(name) {
-	case "haiku":
-		return "claude-haiku-4-5-20251001"
-	case "sonnet":
-		return "claude-sonnet-4-5-20250514"
-	case "opus":
-		return "claude-opus-4-0-20250514"
-	default:
-		return anthropic.Model(name)
-	}
 }
 
 // maxDiffBytes is the maximum diff size we send to the review model.
@@ -88,33 +71,26 @@ func callReviewAPI(diff string, cfg ReviewConfig) (*ReviewResult, error) {
 		model = "haiku"
 	}
 
-	client := anthropic.NewClient()
-
 	prompt := buildReviewPrompt(diff)
 
-	msg, err := client.Messages.New(context.Background(), anthropic.MessageNewParams{
-		Model:     modelID(model),
-		MaxTokens: 4096,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
-		},
-		System: []anthropic.TextBlockParam{
-			{Text: reviewSystemPrompt},
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("calling Claude API: %w", err)
+	cmd := exec.Command("claude",
+		"-p",
+		"--model", model,
+		"--output-format", "text",
+		"--system-prompt", reviewSystemPrompt,
+		"--no-session-persistence",
+	)
+	cmd.Stdin = strings.NewReader(prompt)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("calling claude CLI: %w; stderr: %s", err, stderr.String())
 	}
 
-	// Extract text from response
-	var responseText string
-	for _, block := range msg.Content {
-		if block.Type == "text" {
-			responseText += block.Text
-		}
-	}
-
-	return parseReviewResponse(responseText)
+	return parseReviewResponse(stdout.String())
 }
 
 const reviewSystemPrompt = `You are a code reviewer. Review the given git diff for issues. Be concise and focus only on real problems.

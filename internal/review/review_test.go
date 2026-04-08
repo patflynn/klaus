@@ -72,25 +72,6 @@ func TestParseReviewResponse_malformed(t *testing.T) {
 	}
 }
 
-func TestModelID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"haiku", "claude-haiku-4-5-20251001"},
-		{"sonnet", "claude-sonnet-4-5-20250514"},
-		{"opus", "claude-opus-4-0-20250514"},
-		{"HAIKU", "claude-haiku-4-5-20251001"},
-		{"claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"},
-	}
-	for _, tt := range tests {
-		got := string(modelID(tt.input))
-		if got != tt.want {
-			t.Errorf("modelID(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestBuildReviewPrompt(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(\"hello\")"
 	prompt := buildReviewPrompt(diff)
