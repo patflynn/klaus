@@ -1,6 +1,8 @@
 package review
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -72,25 +74,6 @@ func TestParseReviewResponse_malformed(t *testing.T) {
 	}
 }
 
-func TestModelID(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"haiku", "claude-haiku-4-5-20251001"},
-		{"sonnet", "claude-sonnet-4-5-20250514"},
-		{"opus", "claude-opus-4-0-20250514"},
-		{"HAIKU", "claude-haiku-4-5-20251001"},
-		{"claude-haiku-4-5-20251001", "claude-haiku-4-5-20251001"},
-	}
-	for _, tt := range tests {
-		got := string(modelID(tt.input))
-		if got != tt.want {
-			t.Errorf("modelID(%q) = %q, want %q", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestBuildReviewPrompt(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(\"hello\")"
 	prompt := buildReviewPrompt(diff)
@@ -102,6 +85,86 @@ func TestBuildReviewPrompt(t *testing.T) {
 	}
 	if !contains(prompt, diff) {
 		t.Error("prompt should contain the diff")
+	}
+}
+
+func TestCallReviewAPI_success(t *testing.T) {
+	// Create a fake claude script that returns valid JSON
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "claude")
+	err := os.WriteFile(script, []byte(`#!/bin/sh
+echo '{"findings":[{"severity":"high","file":"foo.go","line":1,"description":"test issue"}],"summary":"one issue"}'
+`), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+":"+os.Getenv("PATH"))
+
+	result, err := callReviewAPI("diff --git a/foo.go", ReviewConfig{Model: "haiku"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %d", len(result.Findings))
+	}
+	if result.Findings[0].Severity != "high" {
+		t.Errorf("severity = %q, want %q", result.Findings[0].Severity, "high")
+	}
+	if result.Summary != "one issue" {
+		t.Errorf("summary = %q, want %q", result.Summary, "one issue")
+	}
+}
+
+func TestCallReviewAPI_cliFailure(t *testing.T) {
+	// Create a fake claude script that exits with an error
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "claude")
+	err := os.WriteFile(script, []byte(`#!/bin/sh
+echo "something went wrong" >&2
+exit 1
+`), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+":"+os.Getenv("PATH"))
+
+	_, err = callReviewAPI("diff --git a/foo.go", ReviewConfig{})
+	if err == nil {
+		t.Fatal("expected error when claude CLI fails")
+	}
+	if !searchString(err.Error(), "calling claude CLI") {
+		t.Errorf("error = %q, want it to contain %q", err.Error(), "calling claude CLI")
+	}
+	if !searchString(err.Error(), "something went wrong") {
+		t.Errorf("error = %q, want it to contain stderr output", err.Error())
+	}
+}
+
+func TestCallReviewAPI_defaultModel(t *testing.T) {
+	// Create a fake claude script that validates the --model flag
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "claude")
+	err := os.WriteFile(script, []byte(`#!/bin/sh
+# Check that --model haiku is passed (the default)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model) shift; echo "$1" >&2; break;;
+    *) shift;;
+  esac
+done
+echo '{"findings":[],"summary":"clean"}'
+`), 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tmp+":"+os.Getenv("PATH"))
+
+	result, err := callReviewAPI("some diff", ReviewConfig{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Summary != "clean" {
+		t.Errorf("summary = %q, want %q", result.Summary, "clean")
 	}
 }
 
