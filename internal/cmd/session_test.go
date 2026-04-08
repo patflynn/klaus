@@ -147,29 +147,29 @@ func TestClaudeSessionIDInState(t *testing.T) {
 func TestResumeClaudeArgs(t *testing.T) {
 	// Verify that claude args are constructed correctly for different resume scenarios
 	tests := []struct {
-		name           string
-		resuming       bool
+		name            string
+		resuming        bool
 		claudeSessionID string
-		wantContains   string
-		wantNotContain string
+		wantContains    string
+		wantNotContain  string
 	}{
 		{
-			name:           "new session",
+			name:           "new session gets --session-id",
 			resuming:       false,
 			claudeSessionID: "",
-			wantNotContain: "--resume",
+			wantContains:   "--session-id",
 		},
 		{
-			name:           "resume with session ID",
-			resuming:       true,
+			name:            "resume with session ID",
+			resuming:        true,
 			claudeSessionID: "uuid-123",
-			wantContains:   "--resume",
+			wantContains:    "--resume",
 		},
 		{
-			name:           "resume without session ID falls back to --continue",
-			resuming:       true,
+			name:            "resume without session ID falls back to --continue",
+			resuming:        true,
 			claudeSessionID: "",
-			wantContains:   "--continue",
+			wantContains:    "--continue",
 		},
 	}
 
@@ -178,14 +178,17 @@ func TestResumeClaudeArgs(t *testing.T) {
 			args := []string{
 				"--dangerously-skip-permissions",
 				"-n", "test-session",
-				"--output-format", "stream-json",
-				"--output", "/tmp/test.jsonl",
 				"--append-system-prompt", "test prompt",
 			}
 			if tt.resuming && tt.claudeSessionID != "" {
 				args = append(args, "--resume", tt.claudeSessionID)
 			} else if tt.resuming {
 				args = append(args, "--continue")
+			} else {
+				csID := genUUIDv4()
+				if csID != "" {
+					args = append(args, "--session-id", csID)
+				}
 			}
 
 			argsStr := fmt.Sprintf("%v", args)
@@ -209,5 +212,27 @@ func TestResumeClaudeArgs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGenUUIDv4(t *testing.T) {
+	id := genUUIDv4()
+	if len(id) != 36 {
+		t.Fatalf("UUID length = %d, want 36", len(id))
+	}
+	// Version nibble should be '4'
+	if id[14] != '4' {
+		t.Errorf("UUID version nibble = %c, want '4'", id[14])
+	}
+	// Variant nibble should be 8, 9, a, or b
+	v := id[19]
+	if v != '8' && v != '9' && v != 'a' && v != 'b' {
+		t.Errorf("UUID variant nibble = %c, want 8/9/a/b", v)
+	}
+	// Should have dashes in correct positions
+	for _, pos := range []int{8, 13, 18, 23} {
+		if id[pos] != '-' {
+			t.Errorf("UUID[%d] = %c, want '-'", pos, id[pos])
+		}
 	}
 }

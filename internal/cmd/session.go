@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"crypto/rand"
 	"fmt"
 	"os"
 	"os/exec"
@@ -304,19 +305,24 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 
 	// Run claude interactively in the worktree, passing session ID to children.
-	// Write JSONL output to a log file so we can extract the Claude session UUID.
-	logFile := filepath.Join(store.LogDir(), id+".jsonl")
+	// Use --session-id to assign a stable UUID so we can resume later.
 	claudeArgs := []string{
 		"--dangerously-skip-permissions",
 		"-n", id,
-		"--output-format", "stream-json",
-		"--output", logFile,
 		"--append-system-prompt", sessionPrompt,
 	}
 	if resuming && state.ClaudeSessionID != nil && *state.ClaudeSessionID != "" {
 		claudeArgs = append(claudeArgs, "--resume", *state.ClaudeSessionID)
 	} else if resuming {
 		claudeArgs = append(claudeArgs, "--continue")
+	} else {
+		// New session: generate a UUID and pass it so we can resume by ID later
+		csID := genUUIDv4()
+		if csID != "" {
+			claudeArgs = append(claudeArgs, "--session-id", csID)
+			state.ClaudeSessionID = &csID
+			_ = store.Save(state)
+		}
 	}
 	claude := exec.Command("claude", claudeArgs...)
 	claude.Dir = worktree
@@ -325,12 +331,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	claude.Stderr = os.Stderr
 	claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
 	claude.Run() // ignore error — user may exit normally
-
-	// Persist Claude session UUID for future resumes
-	if csID := ExtractClaudeSessionID(logFile); csID != "" {
-		state.ClaudeSessionID = &csID
-		_ = store.Save(state)
-	}
 
 	fmt.Println()
 	fmt.Printf("Session %s ended.\n", id)
@@ -401,6 +401,17 @@ func waitForAgents(store run.StateStore) {
 	}
 
 	fmt.Println("All agents finished.")
+}
+
+// genUUIDv4 returns a random UUID v4 string, or "" on error.
+func genUUIDv4() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 1
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func init() {
