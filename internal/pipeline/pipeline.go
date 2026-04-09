@@ -77,7 +77,6 @@ type Controller struct {
 	// Injectable runners for testing.
 	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
-	cleanIdlePanes  func(runStates []*run.State)
 	snapshotThreads func(repo, prNumber string) ([]string, error)
 	resolveThread   func(threadID string) error
 }
@@ -92,7 +91,6 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	}
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
-	c.cleanIdlePanes = c.defaultCleanIdlePanes
 	c.snapshotThreads = c.defaultSnapshotThreads
 	c.resolveThread = ghutil.ResolveReviewThread
 	return c
@@ -119,13 +117,6 @@ func (c *Controller) SetMergePRs(fn func(ctx context.Context, repo string, prNum
 	c.mergePRs = fn
 }
 
-// SetCleanIdlePanes overrides idle pane cleanup (for testing).
-func (c *Controller) SetCleanIdlePanes(fn func(runStates []*run.State)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cleanIdlePanes = fn
-}
-
 // SetSnapshotThreads overrides thread snapshot fetching (for testing).
 func (c *Controller) SetSnapshotThreads(fn func(repo, prNumber string) ([]string, error)) {
 	c.mu.Lock()
@@ -147,12 +138,6 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 	defer c.mu.Unlock()
 
 	var actions []Action
-
-	// NOTE: pane cleanup is handled by _finalize (which runs at the end of
-	// the agent command pipeline). We intentionally do NOT sweep panes here
-	// because it races with agent startup — the shell is briefly the
-	// foreground process before claude begins, and IsAgentRunning would
-	// incorrectly report the agent as finished.
 
 	// Build a set of running agent run IDs from current run states.
 	runningAgents := make(map[string]bool)
@@ -509,11 +494,6 @@ func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.Sta
 		}
 	}
 }
-
-// defaultCleanIdlePanes is a no-op. Pane cleanup is handled by _finalize
-// which runs at the end of the agent command pipeline. Polling panes from
-// the pipeline controller raced with agent startup (see #147, #192).
-func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {}
 
 // markRunStatesApproved sets Approved=true on run states matching the given PR number
 // that are not already approved, and persists the change via the store.

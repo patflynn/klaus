@@ -597,36 +597,6 @@ func TestNoDoubleDispatchOnTrustedComments(t *testing.T) {
 	}
 }
 
-func TestIdlePaneCleanupDuringPoll(t *testing.T) {
-	c, _ := newTestController(t)
-
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
-		return "agent-001", nil
-	})
-
-	// Verify that cleanIdlePanes is a no-op — pane cleanup is handled by
-	// _finalize, not the pipeline poll loop (see #147, #192).
-	var cleanupCalled bool
-	c.SetCleanIdlePanes(func(runStates []*run.State) {
-		cleanupCalled = true
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
-	}
-
-	runStates := []*run.State{
-		{ID: "agent-idle", TmuxPane: strPtr("%idle")},
-	}
-
-	c.HandleGHStatus(context.Background(), statuses, runStates)
-
-	// cleanIdlePanes is no longer called from HandleGHStatus.
-	if cleanupCalled {
-		t.Error("cleanIdlePanes should not be called from HandleGHStatus")
-	}
-}
-
 func TestNeedsRebaseTransitionsToMergeAfterConflictsResolved(t *testing.T) {
 	c, _ := newTestController(t)
 	c.SetAutoMergeOnApproval(true)
