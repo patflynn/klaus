@@ -14,7 +14,6 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	ghutil "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 // Stage represents the pipeline stage for a PR.
@@ -78,7 +77,6 @@ type Controller struct {
 	// Injectable runners for testing.
 	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
-	cleanIdlePanes  func(runStates []*run.State)
 	snapshotThreads func(repo, prNumber string) ([]string, error)
 	resolveThread   func(threadID string) error
 }
@@ -93,7 +91,6 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	}
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
-	c.cleanIdlePanes = c.defaultCleanIdlePanes
 	c.snapshotThreads = c.defaultSnapshotThreads
 	c.resolveThread = ghutil.ResolveReviewThread
 	return c
@@ -120,13 +117,6 @@ func (c *Controller) SetMergePRs(fn func(ctx context.Context, repo string, prNum
 	c.mergePRs = fn
 }
 
-// SetCleanIdlePanes overrides idle pane cleanup (for testing).
-func (c *Controller) SetCleanIdlePanes(fn func(runStates []*run.State)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.cleanIdlePanes = fn
-}
-
 // SetSnapshotThreads overrides thread snapshot fetching (for testing).
 func (c *Controller) SetSnapshotThreads(fn func(repo, prNumber string) ([]string, error)) {
 	c.mu.Lock()
@@ -148,9 +138,6 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 	defer c.mu.Unlock()
 
 	var actions []Action
-
-	// Clean up idle agent panes before evaluating state.
-	c.cleanIdlePanes(runStates)
 
 	// Build a set of running agent run IDs from current run states.
 	runningAgents := make(map[string]bool)
@@ -504,20 +491,6 @@ func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.Sta
 				"err", err,
 				"output", string(out),
 			)
-		}
-	}
-}
-
-// defaultCleanIdlePanes kills tmux panes for agent runs whose processes have finished.
-func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
-	for _, s := range runStates {
-		if s.TmuxPane == nil || !tmux.PaneExists(*s.TmuxPane) {
-			continue
-		}
-
-		if !s.IsAgentRunning() {
-			c.logger.Info("closing completed agent pane", "run", s.ID, "pane", *s.TmuxPane)
-			tmux.KillPane(*s.TmuxPane)
 		}
 	}
 }
