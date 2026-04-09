@@ -14,7 +14,6 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	ghutil "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 // Stage represents the pipeline stage for a PR.
@@ -149,8 +148,11 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 
 	var actions []Action
 
-	// Clean up idle agent panes before evaluating state.
-	c.cleanIdlePanes(runStates)
+	// NOTE: pane cleanup is handled by _finalize (which runs at the end of
+	// the agent command pipeline). We intentionally do NOT sweep panes here
+	// because it races with agent startup — the shell is briefly the
+	// foreground process before claude begins, and IsAgentRunning would
+	// incorrectly report the agent as finished.
 
 	// Build a set of running agent run IDs from current run states.
 	runningAgents := make(map[string]bool)
@@ -508,19 +510,10 @@ func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.Sta
 	}
 }
 
-// defaultCleanIdlePanes kills tmux panes for agent runs whose processes have finished.
-func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {
-	for _, s := range runStates {
-		if s.TmuxPane == nil || !tmux.PaneExists(*s.TmuxPane) {
-			continue
-		}
-
-		if !s.IsAgentRunning() {
-			c.logger.Info("closing completed agent pane", "run", s.ID, "pane", *s.TmuxPane)
-			tmux.KillPane(*s.TmuxPane)
-		}
-	}
-}
+// defaultCleanIdlePanes is a no-op. Pane cleanup is handled by _finalize
+// which runs at the end of the agent command pipeline. Polling panes from
+// the pipeline controller raced with agent startup (see #147, #192).
+func (c *Controller) defaultCleanIdlePanes(runStates []*run.State) {}
 
 // markRunStatesApproved sets Approved=true on run states matching the given PR number
 // that are not already approved, and persists the change via the store.

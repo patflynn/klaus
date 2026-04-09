@@ -604,21 +604,11 @@ func TestIdlePaneCleanupDuringPoll(t *testing.T) {
 		return "agent-001", nil
 	})
 
-	// Track which panes were cleaned up.
-	var killedPanes []string
+	// Verify that cleanIdlePanes is a no-op — pane cleanup is handled by
+	// _finalize, not the pipeline poll loop (see #147, #192).
+	var cleanupCalled bool
 	c.SetCleanIdlePanes(func(runStates []*run.State) {
-		for _, s := range runStates {
-			if s.TmuxPane == nil {
-				continue
-			}
-			if s.CostUSD != nil || s.DurationMS != nil {
-				continue
-			}
-			// Simulate: pane %idle is idle, pane %busy is still running.
-			if *s.TmuxPane == "%idle" {
-				killedPanes = append(killedPanes, *s.TmuxPane)
-			}
-		}
+		cleanupCalled = true
 	})
 
 	statuses := map[string]*PRStatus{
@@ -626,83 +616,14 @@ func TestIdlePaneCleanupDuringPoll(t *testing.T) {
 	}
 
 	runStates := []*run.State{
-		{ID: "agent-idle", TmuxPane: strPtr("%idle")},  // idle pane, should be cleaned
-		{ID: "agent-busy", TmuxPane: strPtr("%busy")},  // busy pane, should not be cleaned
+		{ID: "agent-idle", TmuxPane: strPtr("%idle")},
 	}
 
 	c.HandleGHStatus(context.Background(), statuses, runStates)
 
-	if len(killedPanes) != 1 || killedPanes[0] != "%idle" {
-		t.Errorf("expected cleanup of %%idle pane, got %v", killedPanes)
-	}
-}
-
-func TestIdlePaneCleanupHandlesFinalized(t *testing.T) {
-	c, _ := newTestController(t)
-
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
-		return "agent-001", nil
-	})
-
-	var cleanedUpDone bool
-	c.SetCleanIdlePanes(func(runStates []*run.State) {
-		for _, s := range runStates {
-			if s.TmuxPane == nil {
-				continue
-			}
-			if s.ID == "agent-done" && (s.CostUSD != nil || s.DurationMS != nil) {
-				cleanedUpDone = true
-			}
-		}
-	})
-
-	cost := 1.0
-	runStates := []*run.State{
-		{ID: "agent-done", TmuxPane: strPtr("%done"), CostUSD: &cost},
-	}
-
-	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
-	}
-
-	c.HandleGHStatus(context.Background(), statuses, runStates)
-
-	if !cleanedUpDone {
-		t.Error("cleanup should now handle finalized runs")
-	}
-}
-
-func TestIdlePaneCleanupDoesNotSkipRecentRuns(t *testing.T) {
-	c, _ := newTestController(t)
-
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
-		return "agent-001", nil
-	})
-
-	// Track which runs the cleanup tries to act on.
-	var checkedRuns []string
-	c.SetCleanIdlePanes(func(runStates []*run.State) {
-		for _, s := range runStates {
-			if s.TmuxPane == nil {
-				continue
-			}
-			checkedRuns = append(checkedRuns, s.ID)
-		}
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
-	}
-
-	recentTime := time.Now().Add(-30 * time.Second).Format(time.RFC3339)
-	runStates := []*run.State{
-		{ID: "agent-new", TmuxPane: strPtr("%new"), CreatedAt: recentTime},
-	}
-
-	c.HandleGHStatus(context.Background(), statuses, runStates)
-
-	if len(checkedRuns) != 1 || checkedRuns[0] != "agent-new" {
-		t.Errorf("expected agent-new to be checked, got %v", checkedRuns)
+	// cleanIdlePanes is no longer called from HandleGHStatus.
+	if cleanupCalled {
+		t.Error("cleanIdlePanes should not be called from HandleGHStatus")
 	}
 }
 
