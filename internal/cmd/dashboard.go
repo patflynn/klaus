@@ -159,6 +159,7 @@ type repoGroup struct {
 type dashboardModel struct {
 	store          run.StateStore
 	ghClient       gh.Client
+	tmuxDeps       run.TmuxDeps
 	states         []*run.State
 	ghStatus       map[string]*prStatus // keyed by PR number
 	sandboxHosts   map[string]bool      // host -> reachable
@@ -195,6 +196,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	return dashboardModel{
 		store:          store,
 		ghClient:       ghClient,
+		tmuxDeps:       run.DefaultTmuxDeps(),
 		ghStatus:       make(map[string]*prStatus),
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
@@ -242,7 +244,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.states = msg.states
 		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
 		for _, s := range m.states {
-			if s.IsStale() {
+			if s.IsStaleWith(m.tmuxDeps) {
 				slog.Info("finalizing stale run", "id", s.ID)
 				markRunFailed(m.store, s)
 			}
@@ -402,7 +404,7 @@ func (m dashboardModel) View() string {
 	}
 
 	totalCost := computeTotalCost(m.states)
-	runningCount, totalCount := countAgents(m.states)
+	runningCount, totalCount := m.countAgents(m.states)
 	sessionDur := computeSessionDuration(m.states)
 
 	var b strings.Builder
@@ -528,7 +530,7 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 		b.WriteString(m.renderPRLine(prNum, agents, g.PRMap[prNum]))
 		b.WriteString("\n")
 		for _, s := range agents {
-			if isAgentRunning(s) {
+			if m.isAgentRunning(s) {
 				b.WriteString(renderAgentSubline(s))
 				b.WriteString("\n")
 			}
@@ -537,7 +539,7 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 
 	// Render bare agents
 	for _, s := range bareAgents {
-		b.WriteString(renderBareAgentLine(s))
+		b.WriteString(m.renderBareAgentLine(s))
 		b.WriteString("\n")
 	}
 
@@ -603,14 +605,14 @@ func renderAgentSubline(s *run.State) string {
 	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...%s", shortID, prompt, hostTag))
 }
 
-func renderBareAgentLine(s *run.State) string {
+func (m *dashboardModel) renderBareAgentLine(s *run.State) string {
 	shortID := shortRunID(s.ID)
 	status := agentStatusLabel(s)
 	cost := formatCost(s)
 	prompt := truncate(s.Prompt, 20)
 	hostTag := sandboxTag(s)
 
-	if isAgentRunning(s) {
+	if m.isAgentRunning(s) {
 		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost)) + hostTag
 	}
 	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost)) + hostTag
@@ -849,14 +851,14 @@ func computeTotalCost(states []*run.State) float64 {
 }
 
 // countAgents returns (running, total) agent counts (excludes sessions).
-func countAgents(states []*run.State) (int, int) {
+func (m *dashboardModel) countAgents(states []*run.State) (int, int) {
 	var running, total int
 	for _, s := range states {
 		if s.Type == "session" {
 			continue
 		}
 		total++
-		if isAgentRunning(s) {
+		if m.isAgentRunning(s) {
 			running++
 		}
 	}
@@ -900,8 +902,8 @@ func markRunFailed(store run.StateStore, s *run.State) {
 }
 
 // isAgentRunning checks if a run's agent is currently active in tmux.
-func isAgentRunning(s *run.State) bool {
-	return s.IsAgentRunning()
+func (m *dashboardModel) isAgentRunning(s *run.State) bool {
+	return s.IsAgentRunningWith(m.tmuxDeps)
 }
 
 // agentStatusLabel returns a display label for a non-running agent.

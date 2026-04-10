@@ -222,14 +222,26 @@ var (
 	ghProtocolSSH  bool
 )
 
-// detectGHProtocol runs "gh config get git_protocol" and returns true if SSH.
-// Exported as a variable so tests can override it.
-var detectGHProtocol = func() bool {
+// DetectGHProtocol runs "gh config get git_protocol" and returns true if SSH.
+var detectGHProtocol = defaultDetectGHProtocol
+
+// defaultDetectGHProtocol is the real implementation.
+func defaultDetectGHProtocol() bool {
 	out, err := exec.Command("gh", "config", "get", "git_protocol").Output()
 	if err != nil {
 		return false
 	}
 	return strings.TrimSpace(string(out)) == "ssh"
+}
+
+// SetDetectGHProtocol overrides the protocol detection function (for testing).
+func SetDetectGHProtocol(fn func() bool) {
+	detectGHProtocol = fn
+}
+
+// ResetDetectGHProtocol restores the default protocol detection function.
+func ResetDetectGHProtocol() {
+	detectGHProtocol = defaultDetectGHProtocol
 }
 
 // useSSHProtocol returns true if the user has configured gh to use SSH.

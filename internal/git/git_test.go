@@ -213,15 +213,14 @@ func resetProtocolCache() {
 }
 
 func TestCloneURL(t *testing.T) {
-	origDetect := detectGHProtocol
 	defer func() {
-		detectGHProtocol = origDetect
+		ResetDetectGHProtocol()
 		resetProtocolCache()
 	}()
 
 	t.Run("https", func(t *testing.T) {
 		resetProtocolCache()
-		detectGHProtocol = func() bool { return false }
+		SetDetectGHProtocol(func() bool { return false })
 		got := CloneURL("owner", "repo")
 		want := "https://github.com/owner/repo.git"
 		if got != want {
@@ -231,7 +230,7 @@ func TestCloneURL(t *testing.T) {
 
 	t.Run("ssh", func(t *testing.T) {
 		resetProtocolCache()
-		detectGHProtocol = func() bool { return true }
+		SetDetectGHProtocol(func() bool { return true })
 		got := CloneURL("owner", "repo")
 		want := "git@github.com:owner/repo.git"
 		if got != want {
@@ -242,13 +241,12 @@ func TestCloneURL(t *testing.T) {
 
 func TestParseRepoRef(t *testing.T) {
 	// Force HTTPS protocol for deterministic test results.
-	origDetect := detectGHProtocol
 	defer func() {
-		detectGHProtocol = origDetect
+		ResetDetectGHProtocol()
 		resetProtocolCache()
 	}()
 	resetProtocolCache()
-	detectGHProtocol = func() bool { return false }
+	SetDetectGHProtocol(func() bool { return false })
 
 	tests := []struct {
 		input     string
@@ -349,13 +347,12 @@ func TestParseRepoRef(t *testing.T) {
 }
 
 func TestParseRepoRefSSH(t *testing.T) {
-	origDetect := detectGHProtocol
 	defer func() {
-		detectGHProtocol = origDetect
+		ResetDetectGHProtocol()
 		resetProtocolCache()
 	}()
 	resetProtocolCache()
-	detectGHProtocol = func() bool { return true }
+	SetDetectGHProtocol(func() bool { return true })
 
 	owner, repo, url, err := ParseRepoRef("patflynn/cosmo")
 	if err != nil {

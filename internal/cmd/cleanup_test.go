@@ -18,12 +18,10 @@ func TestCleanupAllSkipsActiveRuns(t *testing.T) {
 	)
 
 	// Make run-2 active
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	isRunActive = func(s *run.State) bool { return s.ID == "run-2" }
+	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll("", store, false); err != nil {
+		if err := cleanupAll("", store, false, deps); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -51,12 +49,10 @@ func TestCleanupAllForceRemovesActiveRuns(t *testing.T) {
 		&run.State{ID: "run-2", Prompt: "b", Branch: "b2", CreatedAt: "2026-01-01T00:01:00Z"},
 	)
 
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	isRunActive = func(s *run.State) bool { return s.ID == "run-2" }
+	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll("", store, true); err != nil {
+		if err := cleanupAll("", store, true, deps); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -80,12 +76,10 @@ func TestCleanupOneSkipsActiveRun(t *testing.T) {
 		&run.State{ID: "run-1", Prompt: "a", Branch: "b1", CreatedAt: "2026-01-01T00:00:00Z"},
 	)
 
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	isRunActive = func(s *run.State) bool { return true }
+	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupOne("", store, "run-1", false); err != nil {
+		if err := cleanupOne("", store, "run-1", false, deps); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
@@ -103,12 +97,10 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 		&run.State{ID: "run-1", Prompt: "a", Branch: "b1", CreatedAt: "2026-01-01T00:00:00Z"},
 	)
 
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	isRunActive = func(s *run.State) bool { return true }
+	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	captureStdout(t, func() {
-		if err := cleanupOne("", store, "run-1", true); err != nil {
+		if err := cleanupOne("", store, "run-1", true, deps); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
@@ -119,47 +111,38 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 }
 
 func TestIsRunActiveWithSessionEnv(t *testing.T) {
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	// Reset to the real implementation for this test
-	isRunActive = origIsRunActive
-
 	t.Setenv(sessionIDEnv, "sess-123")
 
 	// Session run matching current session ID should be active
 	s := &run.State{ID: "sess-123", Type: "session"}
-	if !isRunActive(s) {
+	if !defaultIsRunActive(s) {
 		t.Error("expected session run matching KLAUS_SESSION_ID to be active")
 	}
 
 	// Different session ID should not be active (no tmux pane)
 	s2 := &run.State{ID: "sess-456", Type: "session"}
-	if isRunActive(s2) {
+	if defaultIsRunActive(s2) {
 		t.Error("expected different session ID to not be active")
 	}
 
 	// Non-session run without tmux pane should not be active
 	s3 := &run.State{ID: "sess-123", Type: "launch"}
-	if isRunActive(s3) {
+	if defaultIsRunActive(s3) {
 		t.Error("expected non-session run without tmux pane to not be active")
 	}
 }
 
 func TestIsRunActiveWithDashboardPane(t *testing.T) {
-	origIsRunActive := isRunActive
-	defer func() { isRunActive = origIsRunActive }()
-	isRunActive = origIsRunActive
-
 	// A run with no panes should not be active
 	s := &run.State{ID: "run-1"}
-	if isRunActive(s) {
+	if defaultIsRunActive(s) {
 		t.Error("expected run without panes to not be active")
 	}
 
 	// A run with a DashboardPane that doesn't exist should not be active
 	fakePaneID := "%999999"
 	s2 := &run.State{ID: "run-2", DashboardPane: &fakePaneID}
-	if isRunActive(s2) {
+	if defaultIsRunActive(s2) {
 		t.Error("expected run with dead dashboard pane to not be active")
 	}
 }

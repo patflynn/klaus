@@ -98,6 +98,8 @@ type Controller struct {
 
 	autoMergeOnApproval bool // whether to auto-merge approved PRs
 
+	tmuxDeps run.TmuxDeps // tmux operations for checking pane state
+
 	// Injectable runners for testing.
 	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
@@ -112,6 +114,7 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 		eventLog: eventLog,
 		logger:   logger,
 		prStates: make(map[string]*PRPipelineState),
+		tmuxDeps: run.DefaultTmuxDeps(),
 	}
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
@@ -120,6 +123,11 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 		return ghutil.NewGHCLIClient("").ResolveReviewThread(context.TODO(), threadID)
 	}
 	return c
+}
+
+// SetTmuxDeps overrides the tmux dependencies used for pane state checks.
+func (c *Controller) SetTmuxDeps(td run.TmuxDeps) {
+	c.tmuxDeps = td
 }
 
 // SetAutoMergeOnApproval controls whether approved PRs are automatically merged.
@@ -176,7 +184,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 	// Build a set of running agent run IDs from current run states.
 	runningAgents := make(map[string]bool)
 	for _, s := range runStates {
-		if isRunning(s) {
+		if c.isRunning(s) {
 			runningAgents[s.ID] = true
 		}
 	}
@@ -597,7 +605,7 @@ func (c *Controller) cleanupStaleWorktrees(prNumber string, runStates []*run.Sta
 		if s.PR == nil || *s.PR != prNumber {
 			continue
 		}
-		if isRunning(s) {
+		if c.isRunning(s) {
 			continue
 		}
 		if s.Worktree == "" {
@@ -733,8 +741,8 @@ func extractAgentID(output string) string {
 }
 
 // isRunning checks if a run is still active (has tmux pane, not finalized).
-func isRunning(s *run.State) bool {
-	return s.IsAgentRunning()
+func (c *Controller) isRunning(s *run.State) bool {
+	return s.IsAgentRunningWith(c.tmuxDeps)
 }
 
 // truncateError returns a short, single-line version of an error message.

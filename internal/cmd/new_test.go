@@ -157,14 +157,6 @@ func TestLoadPrinciplesReadError(t *testing.T) {
 }
 
 func TestNewCmdTypeValidation(t *testing.T) {
-	// Save and restore the GH mock
-	origGH := runGHRepoCreate
-	origResolve := resolveNewRepoDir
-	defer func() {
-		runGHRepoCreate = origGH
-		resolveNewRepoDir = origResolve
-	}()
-
 	cmd := scaffoldCmd
 	cmd.SetArgs([]string{"test-proj"})
 

@@ -17,16 +17,15 @@ import (
 	"github.com/patflynn/klaus/internal/webhook"
 )
 
-func init() {
-	// Mock tmux functions in run package for tests.
-	run.PaneExists = func(paneID string) bool {
-		return strings.HasPrefix(paneID, "%")
-	}
-	run.PaneIsIdle = func(paneID string) bool {
-		return true
-	}
-	run.PaneIsDead = func(paneID string) bool {
-		return false
+// testDashboardTmuxDeps returns TmuxDeps for dashboard tests:
+// panes starting with "%" exist, all are idle (finalized), none dead.
+func testDashboardTmuxDeps() run.TmuxDeps {
+	return run.TmuxDeps{
+		PaneExists: func(paneID string) bool {
+			return strings.HasPrefix(paneID, "%")
+		},
+		PaneIsIdle: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
 	}
 }
 
@@ -209,6 +208,7 @@ func TestComputeTotalCost_Empty(t *testing.T) {
 }
 
 func TestCountAgents(t *testing.T) {
+	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	states := []*run.State{
 		{ID: "1", Type: "launch"},                                                           // not running (no pane)
 		{ID: "2", Type: "launch", TmuxPane: strPtr("%2"), CostUSD: float64Ptr(1.0)},         // finished
@@ -217,7 +217,7 @@ func TestCountAgents(t *testing.T) {
 		{ID: "5", Type: "launch", TmuxPane: strPtr("%5"), DurationMS: int64Ptr(5000)},       // finished
 		{ID: "6", Type: "launch", TmuxPane: strPtr("%6")},                                   // running
 	}
-	running, total := countAgents(states)
+	running, total := m.countAgents(states)
 	if total != 5 {
 		t.Errorf("total = %d, want 5", total)
 	}
@@ -227,6 +227,7 @@ func TestCountAgents(t *testing.T) {
 }
 
 func TestIsAgentRunning(t *testing.T) {
+	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	tests := []struct {
 		name string
 		s    *run.State
@@ -239,7 +240,7 @@ func TestIsAgentRunning(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isAgentRunning(tt.s)
+			got := m.isAgentRunning(tt.s)
 			if got != tt.want {
 				t.Errorf("isAgentRunning() = %v, want %v", got, tt.want)
 			}
@@ -433,6 +434,7 @@ func TestDashboardViewRender(t *testing.T) {
 
 	m := dashboardModel{
 		states:   states,
+		tmuxDeps: testDashboardTmuxDeps(),
 		ghStatus: map[string]*prStatus{},
 		width:    80,
 		height:   24,
@@ -458,6 +460,7 @@ func TestDashboardViewRender(t *testing.T) {
 func TestDashboardViewNoRuns(t *testing.T) {
 	m := dashboardModel{
 		states:   []*run.State{},
+		tmuxDeps: testDashboardTmuxDeps(),
 		ghStatus: map[string]*prStatus{},
 		width:    80,
 		height:   24,
@@ -470,6 +473,7 @@ func TestDashboardViewNoRuns(t *testing.T) {
 
 func TestDashboardViewLoading(t *testing.T) {
 	m := dashboardModel{
+		tmuxDeps: testDashboardTmuxDeps(),
 		ghStatus: map[string]*prStatus{},
 		width:    80,
 		height:   24,
@@ -521,7 +525,7 @@ func TestCILabel(t *testing.T) {
 }
 
 func TestRenderPRLine(t *testing.T) {
-	m := dashboardModel{width: 80, ghStatus: map[string]*prStatus{}}
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
 	s := &run.State{
 		ID:     "20260307-0900-aaaa",
 		Prompt: "fix bug",
@@ -567,6 +571,7 @@ func TestRenderPRLine(t *testing.T) {
 func TestRenderPRLineApproval(t *testing.T) {
 	m := dashboardModel{
 		width:          80,
+		tmuxDeps:       testDashboardTmuxDeps(),
 		pipelineStates: map[string]*pipeline.PRPipelineState{},
 	}
 
@@ -611,7 +616,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 }
 
 func TestRenderGroupCounts(t *testing.T) {
-	m := dashboardModel{width: 80, ghStatus: map[string]*prStatus{}}
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
 	g := repoGroup{
 		Repo: "owner/repo",
 		Runs: []*run.State{
@@ -696,6 +701,7 @@ func TestHostFieldOmittedWhenNil(t *testing.T) {
 }
 
 func TestRenderBareAgentLineWithHost(t *testing.T) {
+	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	host := "klaus-worker-0"
 	s := &run.State{
 		ID:       "20260328-1915-e4b3",
@@ -704,20 +710,21 @@ func TestRenderBareAgentLineWithHost(t *testing.T) {
 		Host:     &host,
 	}
 
-	line := renderBareAgentLine(s)
+	line := m.renderBareAgentLine(s)
 	if !strings.Contains(line, "[sandbox]") {
 		t.Error("bare agent with Host set should show [sandbox], got:", line)
 	}
 }
 
 func TestRenderBareAgentLineWithoutHost(t *testing.T) {
+	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	s := &run.State{
 		ID:       "20260328-1915-e4b3",
 		Prompt:   "fix tests",
 		TmuxPane: strPtr("%5"),
 	}
 
-	line := renderBareAgentLine(s)
+	line := m.renderBareAgentLine(s)
 	if strings.Contains(line, "[sandbox]") {
 		t.Error("bare agent without Host should not show [sandbox], got:", line)
 	}
@@ -796,6 +803,7 @@ func TestDashboardViewWithSandboxAgent(t *testing.T) {
 
 	m := dashboardModel{
 		states:       states,
+		tmuxDeps:     testDashboardTmuxDeps(),
 		ghStatus:     map[string]*prStatus{},
 		sandboxHosts: map[string]bool{"klaus-worker-0": true},
 		width:        80,

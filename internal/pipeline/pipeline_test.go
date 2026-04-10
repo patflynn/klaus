@@ -14,13 +14,13 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
-func TestMain(m *testing.M) {
-	// Mock tmux pane functions so tests don't need a real tmux session.
-	// By default, all panes "exist" and are alive (not dead, not idle).
-	run.PaneExists = func(string) bool { return true }
-	run.PaneIsDead = func(string) bool { return false }
-	run.PaneIsIdle = func(string) bool { return true }
-	os.Exit(m.Run())
+// testTmuxDeps returns TmuxDeps where all panes "exist" and are alive (not dead, idle).
+func testTmuxDeps() run.TmuxDeps {
+	return run.TmuxDeps{
+		PaneExists: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
+		PaneIsIdle: func(string) bool { return true },
+	}
 }
 
 func newTestController(t *testing.T) (*Controller, string) {
@@ -37,6 +37,7 @@ func newTestController(t *testing.T) (*Controller, string) {
 	store := run.NewGitDirStore(stateDir)
 
 	c := New(store, eventLog, logger)
+	c.SetTmuxDeps(testTmuxDeps())
 	return c, dir
 }
 
@@ -1638,33 +1639,35 @@ func TestKlausApprovalWithConflictsDispatchesRebase(t *testing.T) {
 }
 
 func TestIsRunning_DeadPane(t *testing.T) {
+	c, _ := newTestController(t)
 	pane := "dead-pane"
 
 	// Pane does not exist (agent crashed without finalizing).
-	run.PaneExists = func(string) bool { return false }
-	run.PaneIsDead = func(string) bool { return true }
-	t.Cleanup(func() {
-		// Restore TestMain defaults.
-		run.PaneExists = func(string) bool { return true }
-		run.PaneIsDead = func(string) bool { return false }
+	c.SetTmuxDeps(run.TmuxDeps{
+		PaneExists: func(string) bool { return false },
+		PaneIsDead: func(string) bool { return true },
+		PaneIsIdle: func(string) bool { return false },
 	})
 
 	s := &run.State{TmuxPane: &pane}
-	if isRunning(s) {
+	if c.isRunning(s) {
 		t.Error("expected isRunning=false when pane does not exist")
 	}
 
 	// Pane exists and is alive (agent still running).
-	run.PaneExists = func(string) bool { return true }
-	run.PaneIsDead = func(string) bool { return false }
+	c.SetTmuxDeps(run.TmuxDeps{
+		PaneExists: func(string) bool { return true },
+		PaneIsDead: func(string) bool { return false },
+		PaneIsIdle: func(string) bool { return false },
+	})
 
-	if !isRunning(s) {
+	if !c.isRunning(s) {
 		t.Error("expected isRunning=true when pane exists and is alive")
 	}
 
 	// No tmux pane at all.
 	s2 := &run.State{}
-	if isRunning(s2) {
+	if c.isRunning(s2) {
 		t.Error("expected isRunning=false when TmuxPane is nil")
 	}
 }

@@ -117,45 +117,37 @@ func TestMatchHook(t *testing.T) {
 }
 
 func TestWebhookCheck_NoRelayURL(t *testing.T) {
-	orig := webhookLoadConfig
-	defer func() { webhookLoadConfig = orig }()
-
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{}, nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) { return config.Config{}, nil },
 	}
 
 	var buf bytes.Buffer
 	webhookCheckCmd.SetOut(&buf)
 	webhookCheckCmd.SetErr(&buf)
 
-	err := webhookCheckCmd.RunE(webhookCheckCmd, nil)
+	err := runWebhookCheck(webhookCheckCmd, nil, deps)
 	if err == nil || err.Error() != "webhook.relay_url is not configured; add it to your klaus config" {
 		t.Errorf("expected relay_url error, got: %v", err)
 	}
 }
 
 func TestWebhookCheck_NoProjects(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-	}()
-
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{RelayURL: "https://relay.example.com"},
-		}, nil
-	}
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{}}, nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{RelayURL: "https://relay.example.com"},
+			}, nil
+		},
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{}}, nil
+		},
 	}
 
 	var buf bytes.Buffer
 	webhookCheckCmd.SetOut(&buf)
 	webhookCheckCmd.SetErr(&buf)
 
-	if err := webhookCheckCmd.RunE(webhookCheckCmd, nil); err != nil {
+	if err := runWebhookCheck(webhookCheckCmd, nil, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out := buf.String(); out != "No projects registered. Use 'klaus project add' to register one.\n" {
@@ -164,54 +156,45 @@ func TestWebhookCheck_NoProjects(t *testing.T) {
 }
 
 func TestWebhookCheck_MixedStatuses(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	origResolve := webhookResolveRepo
-	origList := webhookListHooks
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-		webhookResolveRepo = origResolve
-		webhookListHooks = origList
-	}()
-
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{RelayURL: "https://relay.example.com"},
-		}, nil
-	}
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{
-			"proj-a": "/tmp/proj-a",
-			"proj-b": "/tmp/proj-b",
-		}}, nil
-	}
-	webhookResolveRepo = func(dir string) (string, string, error) {
-		switch dir {
-		case "/tmp/proj-a":
-			return "owner", "proj-a", nil
-		case "/tmp/proj-b":
-			return "owner", "proj-b", nil
-		}
-		return "", "", nil
-	}
-	webhookListHooks = func(owner, repo string) ([]ghHook, error) {
-		if repo == "proj-a" {
-			return []ghHook{
-				{ID: 42, Config: struct {
-					URL         string `json:"url"`
-					ContentType string `json:"content_type"`
-				}{URL: "https://relay.example.com/webhook"}},
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{RelayURL: "https://relay.example.com"},
 			}, nil
-		}
-		return nil, nil
+		},
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{
+				"proj-a": "/tmp/proj-a",
+				"proj-b": "/tmp/proj-b",
+			}}, nil
+		},
+		ResolveRepo: func(dir string) (string, string, error) {
+			switch dir {
+			case "/tmp/proj-a":
+				return "owner", "proj-a", nil
+			case "/tmp/proj-b":
+				return "owner", "proj-b", nil
+			}
+			return "", "", nil
+		},
+		ListHooks: func(owner, repo string) ([]ghHook, error) {
+			if repo == "proj-a" {
+				return []ghHook{
+					{ID: 42, Config: struct {
+						URL         string `json:"url"`
+						ContentType string `json:"content_type"`
+					}{URL: "https://relay.example.com/webhook"}},
+				}, nil
+			}
+			return nil, nil
+		},
 	}
 
 	var buf bytes.Buffer
 	webhookCheckCmd.SetOut(&buf)
 	webhookCheckCmd.SetErr(&buf)
 
-	if err := webhookCheckCmd.RunE(webhookCheckCmd, nil); err != nil {
+	if err := runWebhookCheck(webhookCheckCmd, nil, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := buf.String()
@@ -224,61 +207,47 @@ func TestWebhookCheck_MixedStatuses(t *testing.T) {
 }
 
 func TestWebhookSetup_CreatesHook(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	origResolve := webhookResolveRepo
-	origList := webhookListHooks
-	origCreate := webhookCreateHook
-	origRead := webhookReadFile
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-		webhookResolveRepo = origResolve
-		webhookListHooks = origList
-		webhookCreateHook = origCreate
-		webhookReadFile = origRead
-	}()
-
 	// Write a temp secret file.
 	tmpDir := t.TempDir()
 	secretPath := filepath.Join(tmpDir, "secret")
 	os.WriteFile(secretPath, []byte("my-secret\n"), 0o644)
 
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{
-				RelayURL:   "https://relay.example.com",
-				SecretFile: secretPath,
-			},
-		}, nil
-	}
-	webhookReadFile = os.ReadFile
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{
-			"myproject": "/tmp/myproject",
-		}}, nil
-	}
-	webhookResolveRepo = func(dir string) (string, string, error) {
-		return "owner", "myproject", nil
-	}
-	webhookListHooks = func(owner, repo string) ([]ghHook, error) {
-		return nil, nil // no existing hooks
-	}
-
 	var createdOwner, createdRepo, createdURL, createdSecret string
-	webhookCreateHook = func(owner, repo, relayURL, secret string) error {
-		createdOwner = owner
-		createdRepo = repo
-		createdURL = relayURL
-		createdSecret = secret
-		return nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{
+					RelayURL:   "https://relay.example.com",
+					SecretFile: secretPath,
+				},
+			}, nil
+		},
+		ReadFile: os.ReadFile,
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{
+				"myproject": "/tmp/myproject",
+			}}, nil
+		},
+		ResolveRepo: func(dir string) (string, string, error) {
+			return "owner", "myproject", nil
+		},
+		ListHooks: func(owner, repo string) ([]ghHook, error) {
+			return nil, nil // no existing hooks
+		},
+		CreateHook: func(owner, repo, relayURL, secret string) error {
+			createdOwner = owner
+			createdRepo = repo
+			createdURL = relayURL
+			createdSecret = secret
+			return nil
+		},
 	}
 
 	var buf bytes.Buffer
 	webhookSetupCmd.SetOut(&buf)
 	webhookSetupCmd.SetErr(&buf)
 
-	if err := webhookSetupCmd.RunE(webhookSetupCmd, nil); err != nil {
+	if err := runWebhookSetup(webhookSetupCmd, nil, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -297,62 +266,48 @@ func TestWebhookSetup_CreatesHook(t *testing.T) {
 }
 
 func TestWebhookSetup_SkipsExisting(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	origResolve := webhookResolveRepo
-	origList := webhookListHooks
-	origCreate := webhookCreateHook
-	origRead := webhookReadFile
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-		webhookResolveRepo = origResolve
-		webhookListHooks = origList
-		webhookCreateHook = origCreate
-		webhookReadFile = origRead
-	}()
-
 	tmpDir := t.TempDir()
 	secretPath := filepath.Join(tmpDir, "secret")
 	os.WriteFile(secretPath, []byte("s3cret"), 0o644)
 
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{
-				RelayURL:   "https://relay.example.com",
-				SecretFile: secretPath,
-			},
-		}, nil
-	}
-	webhookReadFile = os.ReadFile
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{
-			"myproject": "/tmp/myproject",
-		}}, nil
-	}
-	webhookResolveRepo = func(dir string) (string, string, error) {
-		return "owner", "myproject", nil
-	}
-	webhookListHooks = func(owner, repo string) ([]ghHook, error) {
-		return []ghHook{
-			{ID: 100, Config: struct {
-				URL         string `json:"url"`
-				ContentType string `json:"content_type"`
-			}{URL: "https://relay.example.com"}},
-		}, nil
-	}
-
 	createCalled := false
-	webhookCreateHook = func(owner, repo, relayURL, secret string) error {
-		createCalled = true
-		return nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{
+					RelayURL:   "https://relay.example.com",
+					SecretFile: secretPath,
+				},
+			}, nil
+		},
+		ReadFile: os.ReadFile,
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{
+				"myproject": "/tmp/myproject",
+			}}, nil
+		},
+		ResolveRepo: func(dir string) (string, string, error) {
+			return "owner", "myproject", nil
+		},
+		ListHooks: func(owner, repo string) ([]ghHook, error) {
+			return []ghHook{
+				{ID: 100, Config: struct {
+					URL         string `json:"url"`
+					ContentType string `json:"content_type"`
+				}{URL: "https://relay.example.com"}},
+			}, nil
+		},
+		CreateHook: func(owner, repo, relayURL, secret string) error {
+			createCalled = true
+			return nil
+		},
 	}
 
 	var buf bytes.Buffer
 	webhookSetupCmd.SetOut(&buf)
 	webhookSetupCmd.SetErr(&buf)
 
-	if err := webhookSetupCmd.RunE(webhookSetupCmd, nil); err != nil {
+	if err := runWebhookSetup(webhookSetupCmd, nil, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -365,82 +320,63 @@ func TestWebhookSetup_SkipsExisting(t *testing.T) {
 }
 
 func TestWebhookSetup_MissingSecretFile(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRead := webhookReadFile
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookReadFile = origRead
-	}()
-
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{
-				RelayURL:   "https://relay.example.com",
-				SecretFile: "/nonexistent/secret",
-			},
-		}, nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{
+					RelayURL:   "https://relay.example.com",
+					SecretFile: "/nonexistent/secret",
+				},
+			}, nil
+		},
+		ReadFile: os.ReadFile,
 	}
-	webhookReadFile = os.ReadFile
 
-	err := webhookSetupCmd.RunE(webhookSetupCmd, nil)
+	err := runWebhookSetup(webhookSetupCmd, nil, deps)
 	if err == nil || !containsSubstring(err.Error(), "reading webhook secret") {
 		t.Errorf("expected secret file error, got: %v", err)
 	}
 }
 
 func TestWebhookSetup_SpecificProject(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	origResolve := webhookResolveRepo
-	origList := webhookListHooks
-	origCreate := webhookCreateHook
-	origRead := webhookReadFile
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-		webhookResolveRepo = origResolve
-		webhookListHooks = origList
-		webhookCreateHook = origCreate
-		webhookReadFile = origRead
-	}()
-
 	tmpDir := t.TempDir()
 	secretPath := filepath.Join(tmpDir, "secret")
 	os.WriteFile(secretPath, []byte("s3cret"), 0o644)
 
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{
-				RelayURL:   "https://relay.example.com",
-				SecretFile: secretPath,
-			},
-		}, nil
-	}
-	webhookReadFile = os.ReadFile
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{
-			"proj-a": "/tmp/proj-a",
-			"proj-b": "/tmp/proj-b",
-		}}, nil
-	}
-
 	var resolvedDirs []string
-	webhookResolveRepo = func(dir string) (string, string, error) {
-		resolvedDirs = append(resolvedDirs, dir)
-		return "owner", filepath.Base(dir), nil
-	}
-	webhookListHooks = func(owner, repo string) ([]ghHook, error) {
-		return nil, nil
-	}
-	webhookCreateHook = func(owner, repo, relayURL, secret string) error {
-		return nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{
+					RelayURL:   "https://relay.example.com",
+					SecretFile: secretPath,
+				},
+			}, nil
+		},
+		ReadFile: os.ReadFile,
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{
+				"proj-a": "/tmp/proj-a",
+				"proj-b": "/tmp/proj-b",
+			}}, nil
+		},
+		ResolveRepo: func(dir string) (string, string, error) {
+			resolvedDirs = append(resolvedDirs, dir)
+			return "owner", filepath.Base(dir), nil
+		},
+		ListHooks: func(owner, repo string) ([]ghHook, error) {
+			return nil, nil
+		},
+		CreateHook: func(owner, repo, relayURL, secret string) error {
+			return nil
+		},
 	}
 
 	var buf bytes.Buffer
 	webhookSetupCmd.SetOut(&buf)
 	webhookSetupCmd.SetErr(&buf)
 
-	if err := webhookSetupCmd.RunE(webhookSetupCmd, []string{"proj-a"}); err != nil {
+	if err := runWebhookSetup(webhookSetupCmd, []string{"proj-a"}, deps); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -450,35 +386,28 @@ func TestWebhookSetup_SpecificProject(t *testing.T) {
 }
 
 func TestWebhookSetup_UnknownProject(t *testing.T) {
-	origConfig := webhookLoadConfig
-	origRegistry := webhookLoadRegistry
-	origRead := webhookReadFile
-	defer func() {
-		webhookLoadConfig = origConfig
-		webhookLoadRegistry = origRegistry
-		webhookReadFile = origRead
-	}()
-
 	tmpDir := t.TempDir()
 	secretPath := filepath.Join(tmpDir, "secret")
 	os.WriteFile(secretPath, []byte("s3cret"), 0o644)
 
-	webhookLoadConfig = func() (config.Config, error) {
-		return config.Config{
-			Webhook: &config.WebhookConfig{
-				RelayURL:   "https://relay.example.com",
-				SecretFile: secretPath,
-			},
-		}, nil
-	}
-	webhookReadFile = os.ReadFile
-	webhookLoadRegistry = func() (*project.Registry, error) {
-		return &project.Registry{Projects: map[string]string{
-			"proj-a": "/tmp/proj-a",
-		}}, nil
+	deps := WebhookDeps{
+		LoadConfig: func() (config.Config, error) {
+			return config.Config{
+				Webhook: &config.WebhookConfig{
+					RelayURL:   "https://relay.example.com",
+					SecretFile: secretPath,
+				},
+			}, nil
+		},
+		ReadFile: os.ReadFile,
+		LoadRegistry: func() (*project.Registry, error) {
+			return &project.Registry{Projects: map[string]string{
+				"proj-a": "/tmp/proj-a",
+			}}, nil
+		},
 	}
 
-	err := webhookSetupCmd.RunE(webhookSetupCmd, []string{"nonexistent"})
+	err := runWebhookSetup(webhookSetupCmd, []string{"nonexistent"}, deps)
 	if err == nil || err.Error() != `project "nonexistent" is not registered` {
 		t.Errorf("expected not registered error, got: %v", err)
 	}

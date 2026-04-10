@@ -42,17 +42,30 @@ type webhookStatus struct {
 	Error   string // non-empty on failure
 }
 
-// Function variables for testing.
-var (
-	webhookListHooks    = listRepoHooks
-	webhookCreateHook   = createRepoHook
-	webhookResolveRepo  = func(dir string) (string, string, error) {
-		return github.NewGHCLIClient("").GetRepoOwnerAndNameFromDir(context.TODO(), dir)
+// WebhookDeps holds injectable dependencies for webhook commands.
+type WebhookDeps struct {
+	ListHooks    func(owner, repo string) ([]ghHook, error)
+	CreateHook   func(owner, repo, relayURL, secret string) error
+	ResolveRepo  func(dir string) (string, string, error)
+	LoadConfig   func() (config.Config, error)
+	LoadRegistry func() (*project.Registry, error)
+	ReadFile     func(name string) ([]byte, error)
+}
+
+// DefaultWebhookDeps returns WebhookDeps wired to real implementations.
+func DefaultWebhookDeps() WebhookDeps {
+	return WebhookDeps{
+		ListHooks:  listRepoHooks,
+		CreateHook: createRepoHook,
+		ResolveRepo: func(dir string) (string, string, error) {
+			return github.NewGHCLIClient("").GetRepoOwnerAndNameFromDir(context.TODO(), dir)
+		},
+		LoadConfig:   func() (config.Config, error) { return config.Load("") },
+		LoadRegistry: project.Load,
+		ReadFile:     os.ReadFile,
 	}
-	webhookLoadConfig   = func() (config.Config, error) { return config.Load("") }
-	webhookLoadRegistry = project.Load
-	webhookReadFile     = os.ReadFile
-)
+}
+
 
 var webhookCmd = &cobra.Command{
 	Use:   "webhook",
@@ -76,7 +89,9 @@ var webhookCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Check if webhooks are configured for registered projects",
 	Args:  cobra.NoArgs,
-	RunE:  runWebhookCheck,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWebhookCheck(cmd, args, DefaultWebhookDeps())
+	},
 }
 
 var webhookSetupCmd = &cobra.Command{
@@ -89,11 +104,13 @@ that are missing. With a project name, sets up the webhook for that project only
 
 Requires relay_url and secret_file in the webhook config.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: runWebhookSetup,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runWebhookSetup(cmd, args, DefaultWebhookDeps())
+	},
 }
 
-func runWebhookCheck(cmd *cobra.Command, _ []string) error {
-	cfg, err := webhookLoadConfig()
+func runWebhookCheck(cmd *cobra.Command, _ []string, deps WebhookDeps) error {
+	cfg, err := deps.LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -101,7 +118,7 @@ func runWebhookCheck(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("webhook.relay_url is not configured; add it to your klaus config")
 	}
 
-	statuses, err := checkAllProjects(cfg.Webhook.RelayURL)
+	statuses, err := checkAllProjects(cfg.Webhook.RelayURL, deps)
 	if err != nil {
 		return err
 	}
@@ -123,8 +140,8 @@ func runWebhookCheck(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func runWebhookSetup(cmd *cobra.Command, args []string) error {
-	cfg, err := webhookLoadConfig()
+func runWebhookSetup(cmd *cobra.Command, args []string, deps WebhookDeps) error {
+	cfg, err := deps.LoadConfig()
 	if err != nil {
 		return err
 	}
@@ -135,7 +152,7 @@ func runWebhookSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("webhook.secret_file is not configured; add it to your klaus config")
 	}
 
-	secretBytes, err := webhookReadFile(cfg.Webhook.SecretFile)
+	secretBytes, err := deps.ReadFile(cfg.Webhook.SecretFile)
 	if err != nil {
 		return fmt.Errorf("reading webhook secret: %w", err)
 	}
@@ -144,7 +161,7 @@ func runWebhookSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("webhook secret file is empty: %s", cfg.Webhook.SecretFile)
 	}
 
-	reg, err := webhookLoadRegistry()
+	reg, err := deps.LoadRegistry()
 	if err != nil {
 		return err
 	}
@@ -168,14 +185,14 @@ func runWebhookSetup(cmd *cobra.Command, args []string) error {
 	var created, skipped, errored int
 
 	for name, localPath := range projects {
-		owner, repo, err := webhookResolveRepo(localPath)
+		owner, repo, err := deps.ResolveRepo(localPath)
 		if err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s error resolving repo: %v\n", name, err)
 			errored++
 			continue
 		}
 
-		hookID, err := findMatchingHook(owner, repo, relayURL)
+		hookID, err := findMatchingHookWith(deps, owner, repo, relayURL)
 		if err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s/%s  error checking hooks: %v\n", name, owner, repo, err)
 			errored++
@@ -187,7 +204,7 @@ func runWebhookSetup(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		if err := webhookCreateHook(owner, repo, relayURL, secret); err != nil {
+		if err := deps.CreateHook(owner, repo, relayURL, secret); err != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s/%s  error creating webhook: %v\n", name, owner, repo, err)
 			errored++
 			continue
@@ -201,8 +218,8 @@ func runWebhookSetup(cmd *cobra.Command, args []string) error {
 }
 
 // checkAllProjects checks webhook status for all registered projects.
-func checkAllProjects(relayURL string) ([]webhookStatus, error) {
-	reg, err := webhookLoadRegistry()
+func checkAllProjects(relayURL string, deps WebhookDeps) ([]webhookStatus, error) {
+	reg, err := deps.LoadRegistry()
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +229,7 @@ func checkAllProjects(relayURL string) ([]webhookStatus, error) {
 	for name, localPath := range projects {
 		s := webhookStatus{Project: name}
 
-		owner, repo, err := webhookResolveRepo(localPath)
+		owner, repo, err := deps.ResolveRepo(localPath)
 		if err != nil {
 			s.Error = fmt.Sprintf("resolving repo: %v", err)
 			statuses = append(statuses, s)
@@ -221,7 +238,7 @@ func checkAllProjects(relayURL string) ([]webhookStatus, error) {
 		s.Owner = owner
 		s.Repo = repo
 
-		hookID, err := findMatchingHook(owner, repo, relayURL)
+		hookID, err := findMatchingHookWith(deps, owner, repo, relayURL)
 		if err != nil {
 			s.Error = fmt.Sprintf("listing hooks: %v", err)
 			statuses = append(statuses, s)
@@ -233,10 +250,10 @@ func checkAllProjects(relayURL string) ([]webhookStatus, error) {
 	return statuses, nil
 }
 
-// findMatchingHook checks if a repo has a webhook whose URL matches the relay URL.
+// findMatchingHookWith checks if a repo has a webhook whose URL matches the relay URL.
 // Returns the hook ID if found, 0 if not.
-func findMatchingHook(owner, repo, relayURL string) (int64, error) {
-	hooks, err := webhookListHooks(owner, repo)
+func findMatchingHookWith(deps WebhookDeps, owner, repo, relayURL string) (int64, error) {
+	hooks, err := deps.ListHooks(owner, repo)
 	if err != nil {
 		return 0, err
 	}
