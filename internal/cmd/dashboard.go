@@ -306,113 +306,32 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case webhookMsg:
-		// Convert webhook event to a partial prStatus update.
+		// Webhooks are invalidation signals, not data sources. When a
+		// webhook arrives, trigger an immediate re-fetch of PR status
+		// via the same code path that polling uses. This eliminates
+		// the class of bugs where the webhook path diverges from polling.
 		ev := msg.event
 		if ev.PRNumber != "" {
-			// check_run/check_suite events signal a CI change but don't
-			// carry reliable aggregate status. Poll GitHub for the real
-			// aggregate CI instead of trusting the individual conclusion.
-			if ev.CheckRunCompleted {
-				// Find the run state that owns this PR so we can build
-				// a targeted fetch for just this PR's aggregate CI.
-				var matchedStates []*run.State
-				for _, s := range m.states {
-					if extractPRNumber(s) == ev.PRNumber {
-						matchedStates = append(matchedStates, s)
-					}
-				}
-				if len(matchedStates) > 0 {
-					return m, tea.Batch(
-						fetchGHStatusCmd(m.ghClient, matchedStates),
-						waitForWebhookCmd(m.webhookCh),
-					)
-				}
-				return m, waitForWebhookCmd(m.webhookCh)
-			}
-
-			existing, ok := m.ghStatus[ev.PRNumber]
-			if !ok {
-				existing = &prStatus{PRNumber: ev.PRNumber}
-				m.ghStatus[ev.PRNumber] = existing
-			}
-			if ev.CI != "" {
-				existing.CI = ev.CI
-			}
-			if ev.State != "" {
-				existing.State = ev.State
-			}
-			if ev.Conflicts != "" {
-				existing.Conflicts = ev.Conflicts
-			}
-			if ev.ReviewDecision != "" {
-				existing.ReviewDecision = ev.ReviewDecision
-			}
-
-			// Feed the updated status to the pipeline controller.
-			// Resolve ownerRepo in the same loop to avoid a redundant
-			// second pass over m.states.
-			pStatuses := make(map[string]*pipeline.PRStatus, 1)
-			ps := &pipeline.PRStatus{
-				PRNumber:              existing.PRNumber,
-				State:                 existing.State,
-				CI:                    existing.CI,
-				Conflicts:             existing.Conflicts,
-				ReviewDecision:        existing.ReviewDecision,
-				HasNewTrustedComments: existing.HasNewTrustedComments,
-			}
-			ownerRepo := ev.Repo
+			// Find run states that match this PR for a targeted fetch.
+			var matchedStates []*run.State
 			for _, s := range m.states {
-				prNum := extractPRNumber(s)
-				if prNum == ev.PRNumber {
-					if s.PRURL != nil {
-						ps.PRURL = *s.PRURL
-						if ownerRepo == "" {
-							ownerRepo = ownerRepoFromPRURL(*s.PRURL)
-						}
-					}
-					if s.TargetRepo != nil {
-						ps.TargetRepo = *s.TargetRepo
-					}
-					break
+				if extractPRNumber(s) == ev.PRNumber {
+					matchedStates = append(matchedStates, s)
 				}
 			}
-
-			// Check for unaddressed trusted reviewer comments
-			// asynchronously to avoid blocking the UI thread.
-			var checkCommentsCmd tea.Cmd
-			if strings.EqualFold(existing.ReviewDecision, "CHANGES_REQUESTED") ||
-				strings.EqualFold(existing.ReviewDecision, "APPROVED") {
-				existing.HasNewTrustedComments = false
-				ps.HasNewTrustedComments = false
-			} else if ownerRepo != "" {
-				repo := ownerRepo
-				prNum := ev.PRNumber
-				checkCommentsCmd = func() tea.Msg {
-					return trustedCommentsMsg{
-						prNumber:              prNum,
-						hasNewTrustedComments: hasUnaddressedTrustedComments(repo, prNum),
-					}
-				}
+			if len(matchedStates) > 0 {
+				return m, tea.Batch(
+					fetchGHStatusCmd(m.ghClient, matchedStates),
+					waitForWebhookCmd(m.webhookCh),
+				)
 			}
-
-			pStatuses[ev.PRNumber] = ps
-			actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
-			m.pipelineStates = m.pipelineCtrl.PipelineStates()
-			cmds := []tea.Cmd{waitForWebhookCmd(m.webhookCh)}
-			if checkCommentsCmd != nil {
-				cmds = append(cmds, checkCommentsCmd)
-			}
-			if len(actions) > 0 {
-				cmds = append(cmds, func() tea.Msg { return pipelineActionMsg{actions: actions} })
-			}
-			return m, tea.Batch(cmds...)
-		} else if ev.Repo != "" && ev.Conflicts == "unknown" {
-			// Push to default branch — mark all PRs from this repo for re-check.
-			for _, ps := range m.ghStatus {
-				if ps.State == "OPEN" || ps.State == "" {
-					ps.Conflicts = "unknown"
-				}
-			}
+		} else if ev.EventType == "push" && ev.Repo != "" {
+			// Push to default branch — re-fetch all open PRs since
+			// conflicts may have changed.
+			return m, tea.Batch(
+				fetchGHStatusCmd(m.ghClient, m.states),
+				waitForWebhookCmd(m.webhookCh),
+			)
 		}
 		return m, waitForWebhookCmd(m.webhookCh)
 
