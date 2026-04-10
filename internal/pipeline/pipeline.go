@@ -55,6 +55,8 @@ type PRPipelineState struct {
 	LastFailedAt            time.Time // when the last launch failure occurred
 	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
 	FixAttempts             int       // number of fix agents dispatched that completed without fixing CI
+
+	pendingLaunchDetail string // transient: detail text for pending launch action
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -62,6 +64,28 @@ type Action struct {
 	Type   string // "launch", "merge", or "error"
 	Detail string // human-readable description
 	Error  string // non-empty if action represents a failure
+}
+
+// ActionType enumerates the kinds of side-effects evaluate() can request.
+type ActionType int
+
+const (
+	ActionLaunchAgent ActionType = iota
+	ActionMergePR
+	ActionCleanupWorktrees
+	ActionSnapshotThreads
+)
+
+// ActionDescriptor is a pure data description of a side-effect to perform.
+// evaluate() returns these instead of executing I/O directly.
+type ActionDescriptor struct {
+	Type       ActionType
+	PRNumber   string
+	Repo       string
+	Prompt     string
+	ResumeFrom string
+	PRNumbers  []string // for merge
+	RunStates  []*run.State // for worktree cleanup
 }
 
 // Controller manages the PR pipeline lifecycle.
@@ -135,11 +159,19 @@ func (c *Controller) SetResolveThread(fn func(threadID string) error) {
 
 // HandleGHStatus is called by the dashboard on each GH poll with fresh PR statuses.
 // It evaluates pipeline transitions and returns any actions taken.
+//
+// The method holds the mutex only while computing what to do (evaluate), then
+// releases it to execute I/O (agent launches, merges, worktree cleanup), and
+// re-acquires to update state with results. This prevents blocking dashboard
+// rendering during slow exec calls.
 func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PRStatus, runStates []*run.State) []Action {
+	// Phase 1: Hold lock, compute descriptors and collect immediate actions.
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	var actions []Action
+	var descriptors []ActionDescriptor
+	// Track which PRs need thread resolution (agent just completed).
+	var threadResolvePRs []*PRPipelineState
 
 	// Build a set of running agent run IDs from current run states.
 	runningAgents := make(map[string]bool)
@@ -173,13 +205,15 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			ps.AgentRunning = runningAgents[ps.LastAgentID]
 		}
 
-		// Resolve review threads when a fix agent completes.
+		// Mark PRs that need thread resolution (agent just completed).
 		if wasRunning && !ps.AgentRunning && len(ps.PendingResolveThreadIDs) > 0 {
-			c.resolvePendingThreads(ps)
+			threadResolvePRs = append(threadResolvePRs, ps)
 		}
 
 		prevStage := ps.Stage
-		actions = append(actions, c.evaluate(ctx, ps, status, runStates)...)
+		evalActions, evalDescs := c.evaluate(ps, status, runStates)
+		actions = append(actions, evalActions...)
+		descriptors = append(descriptors, evalDescs...)
 
 		if ps.Stage != prevStage {
 			c.logger.Info("pipeline transition",
@@ -187,6 +221,103 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 				"from", string(prevStage),
 				"to", string(ps.Stage),
 			)
+		}
+	}
+
+	c.mu.Unlock()
+
+	// Phase 2: Execute I/O without holding the lock.
+
+	// Resolve pending review threads for agents that just completed.
+	for _, ps := range threadResolvePRs {
+		c.resolvePendingThreads(ps)
+	}
+
+	// Execute descriptors and collect results to apply under the lock.
+	type launchResult struct {
+		prNumber string
+		agentID  string
+		err      error
+	}
+	type mergeResult struct {
+		prNumber string
+		repo     string
+		err      error
+	}
+	var launchResults []launchResult
+	var mergeResults []mergeResult
+
+	for _, desc := range descriptors {
+		switch desc.Type {
+		case ActionCleanupWorktrees:
+			c.cleanupStaleWorktrees(desc.PRNumber, desc.RunStates)
+
+		case ActionSnapshotThreads:
+			c.mu.Lock()
+			ps := c.prStates[desc.PRNumber]
+			c.mu.Unlock()
+			if ps != nil {
+				c.snapshotUnresolvedThreads(ps, desc.Repo)
+			}
+
+		case ActionLaunchAgent:
+			agentID, err := c.launchAgent(ctx, desc.PRNumber, desc.Repo, desc.Prompt, desc.ResumeFrom)
+			launchResults = append(launchResults, launchResult{
+				prNumber: desc.PRNumber,
+				agentID:  agentID,
+				err:      err,
+			})
+
+		case ActionMergePR:
+			err := c.mergePRs(ctx, desc.Repo, desc.PRNumbers)
+			mergeResults = append(mergeResults, mergeResult{
+				prNumber: desc.PRNumber,
+				repo:     desc.Repo,
+				err:      err,
+			})
+		}
+	}
+
+	// Phase 3: Re-acquire lock to apply results.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, lr := range launchResults {
+		ps := c.prStates[lr.prNumber]
+		if ps == nil {
+			continue
+		}
+		if lr.err != nil {
+			c.logger.Error("failed to dispatch agent", "pr", lr.prNumber, "err", lr.err)
+			if !c.handleLaunchRetry(ps) {
+				ps.Stage = StageStalled
+				actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", lr.prNumber), Error: truncateError(lr.err.Error(), 120)})
+			}
+		} else {
+			ps.RetryCount = 0
+			ps.LastAgentID = lr.agentID
+			ps.AgentRunning = true
+			ps.LastDispatchAt = time.Now()
+			actions = append(actions, Action{Type: "launch", Detail: ps.pendingLaunchDetail})
+			ps.pendingLaunchDetail = ""
+		}
+	}
+
+	for _, mr := range mergeResults {
+		ps := c.prStates[mr.prNumber]
+		if ps == nil {
+			continue
+		}
+		if mr.err != nil {
+			c.logger.Error("auto-merge failed", "pr", mr.prNumber, "err", mr.err)
+			ps.Stage = StageStalled
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", mr.prNumber), Error: truncateError(mr.err.Error(), 120)})
+		} else {
+			ps.Stage = StageMerged
+			c.emitEvent(mr.prNumber, event.PRMerged, map[string]interface{}{
+				"pr_number": mr.prNumber,
+			})
+			actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", mr.prNumber)})
 		}
 	}
 
@@ -231,9 +362,12 @@ const retryBackoff = 60 * time.Second
 // dispatchCooldown is the minimum time between agent dispatches for the same PR.
 const dispatchCooldown = 60 * time.Second
 
-// evaluate checks the current GH status and determines transitions + dispatches.
-func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *PRStatus, runStates []*run.State) []Action {
+// evaluate checks the current GH status and determines transitions + action
+// descriptors. It performs NO I/O — all side-effects are described as
+// ActionDescriptor values for the caller to execute outside the lock.
+func (c *Controller) evaluate(ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 	var actions []Action
+	var descs []ActionDescriptor
 
 	switch {
 	case status.CI == "failing":
@@ -245,9 +379,9 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 					"pr", ps.PRNumber,
 					"attempts", ps.FixAttempts,
 				)
-				return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}
+				return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}, nil
 			}
-			return nil
+			return nil, nil
 		}
 
 		if ps.Stage != StageCIFailed || !ps.AgentRunning {
@@ -264,31 +398,29 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 						"pr", ps.PRNumber,
 						"attempts", ps.FixAttempts,
 					)
-					return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}
+					return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts)}}, nil
 				}
 
-				// Clean up stale worktrees for this PR before dispatching.
-				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+				// Request worktree cleanup before dispatch.
+				descs = append(descs, ActionDescriptor{
+					Type:      ActionCleanupWorktrees,
+					PRNumber:  ps.PRNumber,
+					RunStates: runStates,
+				})
 
-				// Dispatch fix agent for CI failure.
+				// Request fix agent launch for CI failure.
 				prompt := fmt.Sprintf(
 					"CI is failing on PR #%s. Diagnose the failures and push fixes. Check `gh pr checks %s` for details and `gh run view <run-id> --log-failed` for error output.",
 					ps.PRNumber, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
-				if err != nil {
-					c.logger.Error("failed to dispatch CI fix agent", "pr", ps.PRNumber, "err", err)
-					if !c.handleLaunchRetry(ps) {
-						ps.Stage = StageStalled
-						return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)}}
-					}
-					return nil
-				}
-				ps.RetryCount = 0
-				ps.LastAgentID = agentID
-				ps.AgentRunning = true
-				ps.LastDispatchAt = time.Now()
-				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("CI fix agent for PR #%s", ps.PRNumber)})
+				ps.pendingLaunchDetail = fmt.Sprintf("CI fix agent for PR #%s", ps.PRNumber)
+				descs = append(descs, ActionDescriptor{
+					Type:       ActionLaunchAgent,
+					PRNumber:   ps.PRNumber,
+					Repo:       status.TargetRepo,
+					Prompt:     prompt,
+					ResumeFrom: ps.LastAgentID,
+				})
 			}
 			ps.Stage = StageCIFailed
 			c.emitEvent(ps.PRNumber, event.AgentCIFailed, map[string]interface{}{
@@ -328,96 +460,91 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 				if status.Conflicts == "yes" {
 					// Conflicts detected — dispatch rebase agent.
 					if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
-						c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+						descs = append(descs, ActionDescriptor{
+							Type:      ActionCleanupWorktrees,
+							PRNumber:  ps.PRNumber,
+							RunStates: runStates,
+						})
 						prompt := fmt.Sprintf(
 							"PR #%s has merge conflicts with the base branch. Rebase onto main, resolve all conflicts, and push. Run tests after resolving.",
 							ps.PRNumber,
 						)
-						agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
-						if err != nil {
-							c.logger.Error("failed to dispatch rebase agent", "pr", ps.PRNumber, "err", err)
-							if !c.handleLaunchRetry(ps) {
-								ps.Stage = StageStalled
-								return []Action{{Type: "error", Detail: fmt.Sprintf("PR #%s: rebase dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)}}
-							}
-							return actions
-						}
-						ps.RetryCount = 0
 						ps.Stage = StageNeedsRebase
-						ps.LastAgentID = agentID
-						ps.AgentRunning = true
-						ps.LastDispatchAt = time.Now()
-						actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)})
+						ps.pendingLaunchDetail = fmt.Sprintf("Rebase agent for PR #%s", ps.PRNumber)
+						descs = append(descs, ActionDescriptor{
+							Type:       ActionLaunchAgent,
+							PRNumber:   ps.PRNumber,
+							Repo:       status.TargetRepo,
+							Prompt:     prompt,
+							ResumeFrom: ps.LastAgentID,
+						})
 					}
 				} else if c.autoMergeOnApproval {
 					// No conflicts and auto-merge enabled — proceed with merge.
 					ps.Stage = StageMerging
-					err := c.mergePRs(ctx, status.TargetRepo, []string{ps.PRNumber})
-					if err != nil {
-						c.logger.Error("auto-merge failed", "pr", ps.PRNumber, "err", err)
-						ps.Stage = StageStalled
-						actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
-					} else {
-						ps.Stage = StageMerged
-						c.emitEvent(ps.PRNumber, event.PRMerged, map[string]interface{}{
-							"pr_number": ps.PRNumber,
-							"pr_url":    status.PRURL,
-						})
-						actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", ps.PRNumber)})
-					}
+					descs = append(descs, ActionDescriptor{
+						Type:      ActionMergePR,
+						PRNumber:  ps.PRNumber,
+						Repo:      status.TargetRepo,
+						PRNumbers: []string{ps.PRNumber},
+					})
 				}
 			}
 		} else if changesRequested {
 			// Review comments need addressing.
 			if !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
-				// Clean up stale worktrees for this PR before dispatching.
-				c.cleanupStaleWorktrees(ps.PRNumber, runStates)
+				// Request worktree cleanup before dispatch.
+				descs = append(descs, ActionDescriptor{
+					Type:      ActionCleanupWorktrees,
+					PRNumber:  ps.PRNumber,
+					RunStates: runStates,
+				})
 
-				// Snapshot unresolved threads before dispatching fix agent.
-				c.snapshotUnresolvedThreads(ps, status.TargetRepo)
+				// Request thread snapshot before dispatch.
+				descs = append(descs, ActionDescriptor{
+					Type:     ActionSnapshotThreads,
+					PRNumber: ps.PRNumber,
+					Repo:     status.TargetRepo,
+				})
 
 				prompt := fmt.Sprintf(
 					"PR #%s has changes requested by reviewers. Address the review comments and push fixes. Check `gh api repos/{owner}/{repo}/pulls/%s/comments` for comment details.",
 					ps.PRNumber, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
-				if err != nil {
-					c.logger.Error("failed to dispatch review fix agent", "pr", ps.PRNumber, "err", err)
-					if !c.handleLaunchRetry(ps) {
-						ps.Stage = StageStalled
-						actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", ps.PRNumber), Error: truncateError(err.Error(), 120)})
-					}
-					return actions
-				}
-				ps.RetryCount = 0
-				ps.LastAgentID = agentID
-				ps.AgentRunning = true
-				ps.LastDispatchAt = time.Now()
+				ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)
 				ps.Stage = StageReviewPending
-				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)})
+				descs = append(descs, ActionDescriptor{
+					Type:       ActionLaunchAgent,
+					PRNumber:   ps.PRNumber,
+					Repo:       status.TargetRepo,
+					Prompt:     prompt,
+					ResumeFrom: ps.LastAgentID,
+				})
 			}
 		} else {
 			// CI passed, no explicit CHANGES_REQUESTED or APPROVED.
 			if status.HasNewTrustedComments && !ps.AgentRunning && time.Since(ps.LastDispatchAt) > dispatchCooldown {
-				// Snapshot unresolved threads before dispatching fix agent.
-				c.snapshotUnresolvedThreads(ps, status.TargetRepo)
+				// Request thread snapshot before dispatch.
+				descs = append(descs, ActionDescriptor{
+					Type:     ActionSnapshotThreads,
+					PRNumber: ps.PRNumber,
+					Repo:     status.TargetRepo,
+				})
 
 				// Trusted reviewer left unaddressed comments — dispatch fix agent.
 				prompt := fmt.Sprintf(
 					"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. Check the review comments with: gh api repos/%s/pulls/%s/comments",
 					ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber,
 				)
-				agentID, err := c.launchAgent(ctx, ps.PRNumber, status.TargetRepo, prompt, ps.LastAgentID)
-				if err != nil {
-					c.logger.Error("failed to dispatch trusted review fix agent", "pr", ps.PRNumber, "err", err)
-					ps.Stage = StageStalled
-					return actions
-				}
-				ps.LastAgentID = agentID
-				ps.AgentRunning = true
-				ps.LastDispatchAt = time.Now()
+				ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)
 				ps.Stage = StageReviewPending
-				actions = append(actions, Action{Type: "launch", Detail: fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)})
+				descs = append(descs, ActionDescriptor{
+					Type:       ActionLaunchAgent,
+					PRNumber:   ps.PRNumber,
+					Repo:       status.TargetRepo,
+					Prompt:     prompt,
+					ResumeFrom: ps.LastAgentID,
+				})
 			} else if ps.Stage != StageApproved && ps.Stage != StageMerging && !ps.AgentRunning {
 				// Waiting for review.
 				ps.Stage = StageCIPassed
@@ -440,7 +567,7 @@ func (c *Controller) evaluate(ctx context.Context, ps *PRPipelineState, status *
 		}
 	}
 
-	return actions
+	return actions, descs
 }
 
 // handleLaunchRetry checks whether the pipeline state is eligible for retry.
