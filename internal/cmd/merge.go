@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -38,24 +39,25 @@ type mergeRunner struct {
 }
 
 func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag string) *mergeRunner {
+	ctx := context.TODO()
 	r := &mergeRunner{
 		out: out,
 		in:  in,
 		getPRTitle: func(pr, repo string) string {
-			return gh.NewPRClient(repo).GetTitle(pr)
+			return gh.NewGHCLIClient(repo).GetTitle(ctx, pr)
 		},
 		getPRCI: func(pr, repo string) string {
-			return gh.NewPRClient(repo).GetCI(pr)
+			return gh.NewGHCLIClient(repo).GetCI(ctx, pr)
 		},
 		getPRConflicts: func(pr, repo string) string {
-			return gh.NewPRClient(repo).GetConflicts(pr)
+			return gh.NewGHCLIClient(repo).GetConflicts(ctx, pr)
 		},
 		getPRReviewDecision: func(pr, repo string) string {
-			return gh.NewPRClient(repo).GetReviewDecision(pr)
+			return gh.NewGHCLIClient(repo).GetReviewDecision(ctx, pr)
 		},
 		rebaseAndPush: rebaseAndPush,
 		mergePR: func(prNumber, mergeMethod string, deleteBranch bool, repo string) error {
-			return gh.NewPRClient(repo).Merge(prNumber, mergeMethod, deleteBranch)
+			return gh.NewGHCLIClient(repo).Merge(ctx, prNumber, mergeMethod, deleteBranch)
 		},
 		pollCI:        defaultPollCI,
 		markMerged:    markRunsMerged(store),
@@ -140,7 +142,7 @@ func buildApprovalChecker(store run.StateStore) func(string) bool {
 		}
 
 		// Fall back to checking GitHub review decision.
-		decision := gh.NewPRClient(repo).GetReviewDecision(prNumber)
+		decision := gh.NewGHCLIClient(repo).GetReviewDecision(context.TODO(), prNumber)
 		if strings.EqualFold(decision, "APPROVED") {
 			// Persist the approval into run state so future checks are fast.
 			for _, s := range states {
@@ -245,7 +247,7 @@ func validateMergeMethod(method string) error {
 // rebaseAndPush rebases a PR branch onto origin/main, verifies compilation,
 // and force-pushes using a temporary worktree.
 func rebaseAndPush(prNumber string, repo string) error {
-	branch, err := gh.NewPRClient(repo).GetBranch(prNumber)
+	branch, err := gh.NewGHCLIClient(repo).GetBranch(context.TODO(), prNumber)
 	if err != nil {
 		return fmt.Errorf("getting branch: %w", err)
 	}
@@ -315,10 +317,11 @@ func defaultPollCI(prNumber string, repo string) error {
 	timeout := 10 * time.Minute
 	interval := 30 * time.Second
 	deadline := time.Now().Add(timeout)
-	client := gh.NewPRClient(repo)
+	client := gh.NewGHCLIClient(repo)
+	ctx := context.TODO()
 
 	for {
-		ci := client.GetCI(prNumber)
+		ci := client.GetCI(ctx, prNumber)
 		switch ci {
 		case "passing":
 			return nil

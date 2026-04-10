@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patflynn/klaus/internal/config"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -830,7 +831,7 @@ func TestWebhookMsgSetsHasNewTrustedComments(t *testing.T) {
 		},
 	}
 
-	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
 	m.states = states
 
 	// Send a webhook event with a review decision that is neither
@@ -895,7 +896,7 @@ func TestWebhookMsgClearsTrustedCommentsOnApproval(t *testing.T) {
 	}
 	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
 
-	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
 	// Pre-populate with a status that has trusted comments.
 	m.ghStatus["42"] = &prStatus{
 		PRNumber:              "42",
@@ -941,7 +942,7 @@ func TestWebhookMsgTrustedCommentsFallbackToPRURL(t *testing.T) {
 		},
 	}
 
-	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{})
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
 	m.states = states
 
 	msg := webhookMsg{

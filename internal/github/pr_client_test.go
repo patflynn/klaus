@@ -21,7 +21,7 @@ func TestNewPRClient(t *testing.T) {
 }
 
 func TestGHArgsWithRepo(t *testing.T) {
-	c := NewPRClient("owner/repo")
+	c := NewGHCLIClient("owner/repo")
 	got := c.ChecksArgs("42")
 	want := []string{"pr", "checks", "--repo", "owner/repo", "--", "42"}
 	if !reflect.DeepEqual(got, want) {
@@ -30,7 +30,7 @@ func TestGHArgsWithRepo(t *testing.T) {
 }
 
 func TestGHArgsWithoutRepo(t *testing.T) {
-	c := NewPRClient("")
+	c := NewGHCLIClient("")
 	got := c.ChecksArgs("42")
 	want := []string{"pr", "checks", "--", "42"}
 	if !reflect.DeepEqual(got, want) {
@@ -39,7 +39,7 @@ func TestGHArgsWithoutRepo(t *testing.T) {
 }
 
 func TestAllArgBuildersPlaceFlagsBeforeSeparator(t *testing.T) {
-	client := NewPRClient("owner/repo")
+	client := NewGHCLIClient("owner/repo")
 	builders := []struct {
 		name string
 		fn   func(string) []string
@@ -178,7 +178,7 @@ func TestParseCIStatus(t *testing.T) {
 
 func TestArgsAcceptFullURL(t *testing.T) {
 	url := "https://github.com/owner/repo/pull/42"
-	client := NewPRClient("")
+	client := NewGHCLIClient("")
 
 	builders := []struct {
 		name string
@@ -213,8 +213,8 @@ func TestGetCI_NoChecksConfigured(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
 
-	client := NewPRClient("")
-	got := client.GetCI("42")
+	client := NewGHCLIClient("")
+	got := client.GetCI(nil, "42")
 	if got != "passing" {
 		t.Errorf("GetCI() with no checks configured = %q, want %q", got, "passing")
 	}
@@ -231,8 +231,8 @@ func TestGetCI_GhCommandFails(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
 
-	client := NewPRClient("")
-	got := client.GetCI("42")
+	client := NewGHCLIClient("")
+	got := client.GetCI(nil, "42")
 	if got != "unknown" {
 		t.Errorf("GetCI() with gh failure = %q, want %q", got, "unknown")
 	}

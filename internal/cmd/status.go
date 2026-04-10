@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -25,11 +26,14 @@ var statusCmd = &cobra.Command{
 			return nil
 		}
 
+		ghClient := gh.NewGHCLIClient("")
+
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
 			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "MERGE", "PROMPT")
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
 			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "-----", "------")
 
+		ctx := context.TODO()
 		for _, s := range states {
 			status := determineStatus(s)
 			cost := formatCost(s)
@@ -50,8 +54,7 @@ var statusCmd = &cobra.Command{
 
 			ci, conflicts, merge := "-", "-", "-"
 			if prRef := extractPRRef(s); prRef != "" {
-				client := gh.NewPRClient("") // full URL in prRef handles repo resolution
-				prState := client.GetState(prRef)
+				prState := ghClient.GetState(ctx, prRef)
 				switch prState {
 				case "MERGED":
 					status = "merged"
@@ -59,9 +62,9 @@ var statusCmd = &cobra.Command{
 				case "CLOSED":
 					status = "closed"
 				default:
-					ci = client.GetCI(prRef)
-					conflicts = client.GetConflicts(prRef)
-					merge = computeMergeStatus(ci, conflicts, client.GetReviewDecision(prRef))
+					ci = ghClient.GetCI(ctx, prRef)
+					conflicts = ghClient.GetConflicts(ctx, prRef)
+					merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef))
 				}
 			}
 

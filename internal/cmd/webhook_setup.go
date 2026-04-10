@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -45,7 +46,9 @@ type webhookStatus struct {
 var (
 	webhookListHooks    = listRepoHooks
 	webhookCreateHook   = createRepoHook
-	webhookResolveRepo  = github.GetRepoOwnerAndNameFromDir
+	webhookResolveRepo  = func(dir string) (string, string, error) {
+		return github.NewGHCLIClient("").GetRepoOwnerAndNameFromDir(context.TODO(), dir)
+	}
 	webhookLoadConfig   = func() (config.Config, error) { return config.Load("") }
 	webhookLoadRegistry = project.Load
 	webhookReadFile     = os.ReadFile
@@ -256,7 +259,8 @@ func matchHook(hooks []ghHook, relayURL string) int64 {
 
 // listRepoHooks fetches webhooks for a repository via the GitHub API.
 func listRepoHooks(owner, repo string) ([]ghHook, error) {
-	data, err := github.APIGet(fmt.Sprintf("repos/%s/%s/hooks", owner, repo))
+	client := github.NewGHCLIClient("")
+	data, err := client.APIGet(context.TODO(), fmt.Sprintf("repos/%s/%s/hooks", owner, repo))
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +273,7 @@ func listRepoHooks(owner, repo string) ([]ghHook, error) {
 
 // createRepoHook creates a webhook on a GitHub repository.
 func createRepoHook(owner, repo, relayURL, secret string) error {
+	client := github.NewGHCLIClient("")
 	body := map[string]interface{}{
 		"name":   "web",
 		"active": true,
@@ -279,7 +284,7 @@ func createRepoHook(owner, repo, relayURL, secret string) error {
 			"secret":       secret,
 		},
 	}
-	_, err := github.APIPostJSON(fmt.Sprintf("repos/%s/%s/hooks", owner, repo), body)
+	_, err := client.APIPostJSON(context.TODO(), fmt.Sprintf("repos/%s/%s/hooks", owner, repo), body)
 	return err
 }
 

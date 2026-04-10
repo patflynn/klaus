@@ -1,12 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/github"
 )
 
 // ownerRepoFromPRURL extracts "owner/repo" from a full GitHub PR URL.
@@ -102,9 +103,9 @@ func hasUnaddressedTrustedCommentsImpl(ownerRepo, prNumber string) bool {
 
 // fetchPRReviews calls gh api to get reviews for a PR.
 func fetchPRReviews(ownerRepo, prNumber string) []ghReview {
+	client := github.NewGHCLIClient("")
 	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/reviews"
-	cmd := exec.Command("gh", "api", endpoint)
-	out, err := cmd.Output()
+	out, err := client.APIGet(context.TODO(), endpoint)
 	if err != nil {
 		return nil
 	}
@@ -117,9 +118,9 @@ func fetchPRReviews(ownerRepo, prNumber string) []ghReview {
 
 // fetchLatestCommitTime calls gh api to get the latest commit time on a PR.
 func fetchLatestCommitTime(ownerRepo, prNumber string) time.Time {
+	client := github.NewGHCLIClient("")
 	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/commits"
-	cmd := exec.Command("gh", "api", endpoint)
-	out, err := cmd.Output()
+	out, err := client.APIGet(context.TODO(), endpoint)
 	if err != nil {
 		return time.Time{}
 	}

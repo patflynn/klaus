@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -172,8 +173,9 @@ are synced back after completion. Use --local to force local execution, or
 
 		if prNumber != "" {
 			ghRepo := resolveGHRepo(repoRef, repoRoot)
-			prClient := gh.NewPRClient(ghRepo)
-			prBranch, err := prClient.GetBranch(prNumber)
+			ghClient := gh.NewGHCLIClient(ghRepo)
+			ctx := context.TODO()
+			prBranch, err := ghClient.GetBranch(ctx, prNumber)
 			if err != nil {
 				return fmt.Errorf("getting PR branch: %w", err)
 			}
@@ -181,7 +183,7 @@ are synced back after completion. Use --local to force local execution, or
 			isPRFix = true
 
 			// Look up the PR URL for state tracking
-			prURL, err = prClient.GetURL(prNumber)
+			prURL, err = ghClient.GetURL(ctx, prNumber)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}

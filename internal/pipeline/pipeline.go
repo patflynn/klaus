@@ -92,7 +92,9 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
 	c.snapshotThreads = c.defaultSnapshotThreads
-	c.resolveThread = ghutil.ResolveReviewThread
+	c.resolveThread = func(threadID string) error {
+		return ghutil.NewGHCLIClient("").ResolveReviewThread(context.TODO(), threadID)
+	}
 	return c
 }
 
@@ -678,7 +680,7 @@ func (c *Controller) defaultSnapshotThreads(repo, prNumber string) ([]string, er
 	if err != nil {
 		return nil, fmt.Errorf("invalid PR number: %s", prNumber)
 	}
-	threads, err := ghutil.FetchReviewThreads(parts[0], parts[1], prNum)
+	threads, err := ghutil.NewGHCLIClient("").FetchReviewThreads(context.TODO(), parts[0], parts[1], prNum)
 	if err != nil {
 		return nil, err
 	}
