@@ -291,7 +291,7 @@ func rebaseAndPush(prNumber string, repo string) error {
 		abortCmd := exec.Command("git", "rebase", "--abort")
 		abortCmd.Dir = worktreePath
 		if abortErr := abortCmd.Run(); abortErr != nil {
-			slog.Warn("failed to abort rebase", "worktree", worktreePath, "err", abortErr)
+			slog.Warn("failed to abort rebase", "pr", prNumber, "worktree", worktreePath, "err", abortErr)
 		}
 		return fmt.Errorf("rebase conflicts: %s", strings.TrimSpace(stderr.String()))
 	}
