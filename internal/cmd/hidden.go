@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"regexp"
 
@@ -118,10 +119,14 @@ func cleanupWorktree(store run.StateStore, state *run.State) {
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
 	if state.Branch != "" {
-		_ = git.BranchDelete(gitRoot, state.Branch)
+		if err := git.BranchDelete(gitRoot, state.Branch); err != nil {
+			slog.Warn("failed to delete branch during cleanup", "branch", state.Branch, "err", err)
+		}
 	}
 	state.Worktree = ""
-	_ = store.Save(state)
+	if err := store.Save(state); err != nil {
+		slog.Warn("failed to save state after worktree cleanup", "id", state.ID, "err", err)
+	}
 }
 
 func finalizeFromLog(store run.StateStore, state *run.State) error {

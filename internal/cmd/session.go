@@ -3,6 +3,7 @@ package cmd
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -179,7 +180,9 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			modified = true
 		}
 		if modified {
-			_ = store.Save(state)
+			if err := store.Save(state); err != nil {
+				slog.Warn("failed to save state after clearing stale panes", "id", state.ID, "err", err)
+			}
 		}
 
 		fmt.Printf("Resuming coordinator session %s...\n", id)
@@ -321,7 +324,9 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		if csID != "" {
 			claudeArgs = append(claudeArgs, "--session-id", csID)
 			state.ClaudeSessionID = &csID
-			_ = store.Save(state)
+			if err := store.Save(state); err != nil {
+				slog.Warn("failed to save state with claude session ID", "id", state.ID, "err", err)
+			}
 		}
 	}
 	claude := exec.Command("claude", claudeArgs...)
@@ -391,7 +396,9 @@ func waitForAgents(store run.StateStore) {
 
 			if !s.IsAgentRunning() {
 				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
-				tmux.KillPane(*s.TmuxPane)
+				if err := tmux.KillPane(*s.TmuxPane); err != nil {
+					slog.Warn("failed to kill agent pane", "id", s.ID, "pane", *s.TmuxPane, "err", err)
+				}
 				continue
 			}
 
