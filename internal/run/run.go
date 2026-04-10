@@ -62,6 +62,43 @@ func (s *State) IsAgentRunning() bool {
 	return !PaneIsDead(*s.TmuxPane)
 }
 
+// StaleGracePeriod is how long after creation before a run can be considered stale.
+// This allows time for the agent pipeline to start up.
+var StaleGracePeriod = 2 * time.Minute
+
+// IsStale returns true if the run appears to have been orphaned — its pipeline
+// never ran _finalize. A run is stale when it has no finalization data (CostUSD
+// and DurationMS are both nil), its tmux pane no longer exists, and enough time
+// has passed since creation to rule out normal startup delays.
+func (s *State) IsStale() bool {
+	// Already finalized — not stale.
+	if s.CostUSD != nil || s.DurationMS != nil {
+		return false
+	}
+
+	// Sessions are not agent runs.
+	if s.Type == "session" {
+		return false
+	}
+
+	// If the pane reference is nil or the pane still exists, not stale.
+	if s.TmuxPane == nil {
+		// No pane reference at all — could be stale if old enough, but we
+		// require the pane to have existed and then disappeared.
+		return false
+	}
+	if PaneExists(*s.TmuxPane) {
+		return false
+	}
+
+	// Grace period: don't mark very recent runs as stale.
+	created, err := time.Parse(time.RFC3339, s.CreatedAt)
+	if err != nil {
+		return false
+	}
+	return time.Since(created) > StaleGracePeriod
+}
+
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.
 func GenID() (string, error) {
 	ts := time.Now().Format("20060102-1504")
