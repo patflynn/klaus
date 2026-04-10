@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,7 +174,9 @@ func markRunsMerged(store run.StateStore) func(string) {
 		for _, s := range states {
 			if extractPRNumber(s) == prNumber {
 				s.MergedAt = &now
-				store.Save(s)
+				if err := store.Save(s); err != nil {
+					slog.Warn("failed to save merged state", "id", s.ID, "err", err)
+				}
 			}
 		}
 	}
@@ -289,7 +292,9 @@ func rebaseAndPush(prNumber string, repo string) error {
 	if err := rebaseCmd.Run(); err != nil {
 		abortCmd := exec.Command("git", "rebase", "--abort")
 		abortCmd.Dir = worktreePath
-		abortCmd.Run()
+		if abortErr := abortCmd.Run(); abortErr != nil {
+			slog.Warn("failed to abort rebase", "pr", prNumber, "worktree", worktreePath, "err", abortErr)
+		}
 		return fmt.Errorf("rebase conflicts: %s", strings.TrimSpace(stderr.String()))
 	}
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/patflynn/klaus/internal/git"
@@ -101,6 +102,8 @@ func cleanupOne(root string, store run.StateStore, id string, force bool) error 
 	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
 		if err := tmux.KillPane(*state.TmuxPane); err == nil {
 			fmt.Println("  killed tmux pane")
+		} else {
+			slog.Warn("failed to kill tmux pane", "id", id, "pane", *state.TmuxPane, "err", err)
 		}
 	}
 
@@ -108,6 +111,8 @@ func cleanupOne(root string, store run.StateStore, id string, force bool) error 
 	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
 		if err := tmux.KillPane(*state.DashboardPane); err == nil {
 			fmt.Println("  killed dashboard pane")
+		} else {
+			slog.Warn("failed to kill dashboard pane", "id", id, "pane", *state.DashboardPane, "err", err)
 		}
 	}
 
@@ -121,6 +126,8 @@ func cleanupOne(root string, store run.StateStore, id string, force bool) error 
 	if state.Worktree != "" {
 		if err := git.WorktreeRemove(gitRoot, state.Worktree); err == nil {
 			fmt.Println("  removed worktree")
+		} else {
+			slog.Warn("failed to remove worktree", "id", id, "worktree", state.Worktree, "err", err)
 		}
 	}
 
@@ -128,12 +135,16 @@ func cleanupOne(root string, store run.StateStore, id string, force bool) error 
 	if state.Branch != "" {
 		if err := git.BranchDelete(gitRoot, state.Branch); err == nil {
 			fmt.Println("  deleted local branch")
+		} else {
+			slog.Warn("failed to delete local branch", "id", id, "branch", state.Branch, "err", err)
 		}
 	}
 
 	// Remove state file
 	if err := store.Delete(id); err == nil {
 		fmt.Println("  removed state file")
+	} else {
+		slog.Warn("failed to remove state file", "id", id, "err", err)
 	}
 
 	fmt.Println("  done.")
