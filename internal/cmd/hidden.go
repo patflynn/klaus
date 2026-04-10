@@ -120,7 +120,7 @@ func cleanupWorktree(store run.StateStore, state *run.State) {
 	}
 	if state.Branch != "" {
 		if err := git.BranchDelete(gitRoot, state.Branch); err != nil {
-			slog.Warn("failed to delete branch during cleanup", "branch", state.Branch, "err", err)
+			slog.Warn("failed to delete branch during cleanup", "id", state.ID, "branch", state.Branch, "err", err)
 		}
 	}
 	state.Worktree = ""
