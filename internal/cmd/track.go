@@ -1,14 +1,14 @@
 package cmd
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
@@ -172,27 +172,10 @@ func trackPR(ref, defaultRepo string, store run.StateStore, existingStates []*ru
 	return nil
 }
 
-// fetchPRMetadata fetches PR URL, title, head branch, and state from GitHub via gh CLI.
+// fetchPRMetadata fetches PR URL, title, head branch, and state from GitHub via the Client interface.
 func fetchPRMetadata(prNumber, repo string) (prURL, title, headBranch, state string, err error) {
-	args := []string{
-		"pr", "view", prNumber,
-		"--repo", repo,
-		"--json", "url,title,headRefName,state",
-		"-q", `(.url) + "\t" + (.title) + "\t" + (.headRefName) + "\t" + (.state)`,
-	}
-	cmd := exec.Command("gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return "", "", "", "", fmt.Errorf("gh pr view: %s", strings.TrimSpace(stderr.String()))
-	}
-
-	parts := strings.SplitN(strings.TrimSpace(stdout.String()), "\t", 4)
-	if len(parts) < 4 {
-		return "", "", "", "", fmt.Errorf("unexpected gh output: %s", stdout.String())
-	}
-	return parts[0], parts[1], parts[2], parts[3], nil
+	client := github.NewGHCLIClient("")
+	return client.FetchPRMetadata(context.TODO(), prNumber, repo)
 }
 
 func init() {

@@ -65,7 +65,8 @@ Keyboard shortcuts:
 			fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", err)
 		}
 
-		model := newDashboardModel(store, cfg)
+		ghClient := gh.NewGHCLIClient("")
+		model := newDashboardModel(store, cfg, ghClient)
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
 			port := cfg.Webhook.Port
@@ -157,6 +158,7 @@ type repoGroup struct {
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
 	store          run.StateStore
+	ghClient       gh.Client
 	states         []*run.State
 	ghStatus       map[string]*prStatus // keyed by PR number
 	sandboxHosts   map[string]bool      // host -> reachable
@@ -174,7 +176,7 @@ type dashboardModel struct {
 	pollEnabled    bool                // true when polling is active (default or poll_fallback)
 }
 
-func newDashboardModel(store run.StateStore, cfg config.Config) dashboardModel {
+func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
@@ -192,6 +194,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config) dashboardModel {
 
 	return dashboardModel{
 		store:          store,
+		ghClient:       ghClient,
 		ghStatus:       make(map[string]*prStatus),
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
@@ -227,7 +230,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, tea.Batch(
 				loadStatesCmd(m.store),
-				fetchGHStatusCmd(m.states),
+				fetchGHStatusCmd(m.ghClient, m.states),
 			)
 		}
 
@@ -237,7 +240,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statesLoadedMsg:
 		m.states = msg.states
-		return m, fetchGHStatusCmd(m.states)
+		return m, fetchGHStatusCmd(m.ghClient, m.states)
 
 	case ghStatusMsg:
 		for k, v := range msg.statuses {
@@ -320,7 +323,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if len(matchedStates) > 0 {
 					return m, tea.Batch(
-						fetchGHStatusCmd(matchedStates),
+						fetchGHStatusCmd(m.ghClient, matchedStates),
 						waitForWebhookCmd(m.webhookCh),
 					)
 				}
@@ -435,7 +438,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tickAfterCmd(),
 		}
 		if m.pollEnabled {
-			cmds = append(cmds, fetchGHStatusCmd(m.states))
+			cmds = append(cmds, fetchGHStatusCmd(m.ghClient, m.states))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -707,7 +710,7 @@ func loadStatesCmd(store run.StateStore) tea.Cmd {
 	}
 }
 
-func fetchGHStatusCmd(states []*run.State) tea.Cmd {
+func fetchGHStatusCmd(client gh.Client, states []*run.State) tea.Cmd {
 	return func() tea.Msg {
 		statuses := make(map[string]*prStatus)
 		seen := make(map[string]bool)
@@ -718,7 +721,7 @@ func fetchGHStatusCmd(states []*run.State) tea.Cmd {
 				continue
 			}
 			seen[prNum] = true
-			statuses[prNum] = fetchPRStatus(prNum, prRef)
+			statuses[prNum] = fetchPRStatus(client, prNum, prRef)
 		}
 		return ghStatusMsg{statuses: statuses}
 	}
@@ -823,16 +826,16 @@ func renderSandboxStatus(hosts map[string]bool) string {
 
 // fetchPRStatus queries GitHub for a single PR's status.
 // prRef should be a full PR URL so gh can resolve it from any directory.
-func fetchPRStatus(prNumber, prRef string) *prStatus {
-	client := gh.NewPRClient("") // full URL in prRef handles repo resolution
+func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
+	ctx := context.TODO()
 	ps := &prStatus{PRNumber: prNumber}
-	ps.State = client.GetState(prRef)
+	ps.State = client.GetState(ctx, prRef)
 	if ps.State == "MERGED" || ps.State == "CLOSED" {
 		return ps
 	}
-	ps.CI = client.GetCI(prRef)
-	ps.Conflicts = client.GetConflicts(prRef)
-	ps.ReviewDecision = client.GetReviewDecision(prRef)
+	ps.CI = client.GetCI(ctx, prRef)
+	ps.Conflicts = client.GetConflicts(ctx, prRef)
+	ps.ReviewDecision = client.GetReviewDecision(ctx, prRef)
 
 	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
 	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.

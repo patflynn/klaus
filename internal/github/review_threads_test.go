@@ -26,7 +26,7 @@ func TestFetchReviewThreads(t *testing.T) {
 		return []byte(responseJSON), nil
 	}
 
-	threads, err := fetchReviewThreadsWithRunner("ignored", runner)
+	threads, err := fetchReviewThreadsImpl("ignored", runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestFetchReviewThreadsEmpty(t *testing.T) {
 		return []byte(responseJSON), nil
 	}
 
-	threads, err := fetchReviewThreadsWithRunner("ignored", runner)
+	threads, err := fetchReviewThreadsImpl("ignored", runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestFetchReviewThreadsAPIError(t *testing.T) {
 		return nil, fmt.Errorf("gh api graphql: exit status 1: not found")
 	}
 
-	_, err := fetchReviewThreadsWithRunner("ignored", runner)
+	_, err := fetchReviewThreadsImpl("ignored", runner)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -98,7 +98,7 @@ func TestResolveReviewThread(t *testing.T) {
 		return []byte(responseJSON), nil
 	}
 
-	err := resolveReviewThreadWithRunner("RT_abc", runner)
+	err := resolveReviewThreadImpl("RT_abc", runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestResolveReviewThreadGraphQLError(t *testing.T) {
 		return []byte(responseJSON), nil
 	}
 
-	err := resolveReviewThreadWithRunner("RT_abc", runner)
+	err := resolveReviewThreadImpl("RT_abc", runner)
 	if err == nil {
 		t.Fatal("expected error from GraphQL error response")
 	}
@@ -131,7 +131,7 @@ func TestResolveReviewThreadAPIError(t *testing.T) {
 		return nil, fmt.Errorf("gh api graphql: exit status 1: forbidden")
 	}
 
-	err := resolveReviewThreadWithRunner("RT_abc", runner)
+	err := resolveReviewThreadImpl("RT_abc", runner)
 	if err == nil {
 		t.Fatal("expected error")
 	}
