@@ -9,17 +9,15 @@ import (
 	"strings"
 )
 
-// Event represents a parsed GitHub webhook event with PR status information.
-// Fields are empty strings when the event doesn't carry that information
-// (e.g. a check_run only sets CI, not ReviewDecision).
+// Event is an invalidation signal from a GitHub webhook. It carries just
+// enough information to know which PR (or repo) needs a fresh status fetch.
+// The dashboard uses this to trigger an immediate re-fetch via the same
+// code path that polling uses, rather than constructing status from the
+// webhook payload directly.
 type Event struct {
-	PRNumber          string // PR number, e.g. "42"
-	Repo              string // owner/repo
-	CI                string // passing, failing, pending, or ""
-	State             string // OPEN, MERGED, CLOSED, or ""
-	Conflicts         string // yes, none, or ""
-	ReviewDecision    string // APPROVED, CHANGES_REQUESTED, or ""
-	CheckRunCompleted bool   // true when a check_run or check_suite completed; signals the dashboard to re-poll aggregate CI
+	PRNumber  string // PR number, e.g. "42"; empty for repo-wide events (e.g. push)
+	Repo      string // owner/repo
+	EventType string // "check_run", "check_suite", "pull_request", "pull_request_review", "push"
 }
 
 // Server is an HTTP server that receives GitHub webhook payloads from a relay
@@ -211,15 +209,12 @@ func parseCheckRun(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	// Don't derive aggregate CI from a single check_run — a PR may have
-	// multiple checks and the last one to complete would blindly overwrite
-	// earlier results. Instead, signal the dashboard to re-poll aggregate CI.
 	var events []Event
 	for _, pr := range p.CheckRun.PullRequests {
 		events = append(events, Event{
-			PRNumber:          fmt.Sprintf("%d", pr.Number),
-			Repo:              p.Repository.FullName,
-			CheckRunCompleted: true,
+			PRNumber:  fmt.Sprintf("%d", pr.Number),
+			Repo:      p.Repository.FullName,
+			EventType: "check_run",
 		})
 	}
 	return events
@@ -234,15 +229,12 @@ func parseCheckSuite(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	// check_suite conclusion is per-suite, not per-workflow — a PR can have
-	// multiple suites so the same last-write-wins bug applies. Signal a
-	// re-poll instead of trusting the individual conclusion.
 	var events []Event
 	for _, pr := range p.CheckSuite.PullRequests {
 		events = append(events, Event{
-			PRNumber:          fmt.Sprintf("%d", pr.Number),
-			Repo:              p.Repository.FullName,
-			CheckRunCompleted: true,
+			PRNumber:  fmt.Sprintf("%d", pr.Number),
+			Repo:      p.Repository.FullName,
+			EventType: "check_suite",
 		})
 	}
 	return events
@@ -261,33 +253,11 @@ func parsePullRequest(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	ev := Event{
-		PRNumber: fmt.Sprintf("%d", p.PullRequest.Number),
-		Repo:     p.Repository.FullName,
-	}
-
-	// Map state
-	if p.PullRequest.Merged {
-		ev.State = "MERGED"
-	} else {
-		switch p.PullRequest.State {
-		case "open":
-			ev.State = "OPEN"
-		case "closed":
-			ev.State = "CLOSED"
-		}
-	}
-
-	// Map conflicts from mergeable_state
-	if p.PullRequest.Mergeable != nil {
-		if !*p.PullRequest.Mergeable {
-			ev.Conflicts = "yes"
-		} else {
-			ev.Conflicts = "none"
-		}
-	}
-
-	return []Event{ev}
+	return []Event{{
+		PRNumber:  fmt.Sprintf("%d", p.PullRequest.Number),
+		Repo:      p.Repository.FullName,
+		EventType: "pull_request",
+	}}
 }
 
 func parsePullRequestReview(payload json.RawMessage) []Event {
@@ -299,22 +269,19 @@ func parsePullRequestReview(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	ev := Event{
-		PRNumber: fmt.Sprintf("%d", p.PullRequest.Number),
-		Repo:     p.Repository.FullName,
-	}
-
+	// Only signal for meaningful review states.
 	switch strings.ToLower(p.Review.State) {
-	case "approved":
-		ev.ReviewDecision = "APPROVED"
-	case "changes_requested":
-		ev.ReviewDecision = "CHANGES_REQUESTED"
+	case "approved", "changes_requested":
+		// valid
 	default:
-		// "commented" or other states - don't set ReviewDecision
 		return nil
 	}
 
-	return []Event{ev}
+	return []Event{{
+		PRNumber:  fmt.Sprintf("%d", p.PullRequest.Number),
+		Repo:      p.Repository.FullName,
+		EventType: "pull_request_review",
+	}}
 }
 
 func parsePush(payload json.RawMessage) []Event {
@@ -333,18 +300,7 @@ func parsePush(payload json.RawMessage) []Event {
 	// PRNumber is empty to indicate this is a repo-wide event.
 	return []Event{{
 		Repo:      p.Repository.FullName,
-		Conflicts: "unknown",
+		EventType: "push",
 	}}
 }
 
-// mapConclusion maps a GitHub check conclusion to a CI status string.
-func mapConclusion(conclusion string) string {
-	switch conclusion {
-	case "success", "neutral", "skipped":
-		return "passing"
-	case "failure", "timed_out", "cancelled", "action_required":
-		return "failing"
-	default:
-		return "pending"
-	}
-}

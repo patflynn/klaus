@@ -27,11 +27,8 @@ func TestParseCheckRun(t *testing.T) {
 	if events[0].PRNumber != "42" || events[0].Repo != "owner/repo" {
 		t.Errorf("unexpected event[0]: %+v", events[0])
 	}
-	if !events[0].CheckRunCompleted {
-		t.Error("expected CheckRunCompleted=true for check_run event")
-	}
-	if events[0].CI != "" {
-		t.Errorf("check_run should not set CI directly, got %q", events[0].CI)
+	if events[0].EventType != "check_run" {
+		t.Errorf("expected EventType=check_run, got %q", events[0].EventType)
 	}
 	if events[1].PRNumber != "43" {
 		t.Errorf("unexpected event[1] PRNumber: %s", events[1].PRNumber)
@@ -52,11 +49,8 @@ func TestParseCheckRunFailure(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if !events[0].CheckRunCompleted {
-		t.Error("expected CheckRunCompleted=true")
-	}
-	if events[0].CI != "" {
-		t.Errorf("check_run should not set CI directly, got %q", events[0].CI)
+	if events[0].EventType != "check_run" {
+		t.Errorf("expected EventType=check_run, got %q", events[0].EventType)
 	}
 }
 
@@ -93,21 +87,16 @@ func TestParseCheckSuite(t *testing.T) {
 	if events[0].PRNumber != "99" || events[0].Repo != "org/project" {
 		t.Errorf("unexpected event: %+v", events[0])
 	}
-	if !events[0].CheckRunCompleted {
-		t.Error("expected CheckRunCompleted=true for check_suite event")
-	}
-	if events[0].CI != "" {
-		t.Errorf("check_suite should not set CI directly, got %q", events[0].CI)
+	if events[0].EventType != "check_suite" {
+		t.Errorf("expected EventType=check_suite, got %q", events[0].EventType)
 	}
 }
 
 func TestParsePullRequest(t *testing.T) {
 	tests := []struct {
-		name     string
-		payload  string
-		wantLen  int
-		wantState string
-		wantConflicts string
+		name    string
+		payload string
+		wantLen int
 	}{
 		{
 			name: "opened",
@@ -116,7 +105,7 @@ func TestParsePullRequest(t *testing.T) {
 				"pull_request": {"number": 5, "state": "open", "merged": false, "mergeable": true},
 				"repository": {"full_name": "owner/repo"}
 			}`,
-			wantLen: 1, wantState: "OPEN", wantConflicts: "none",
+			wantLen: 1,
 		},
 		{
 			name: "closed with merge",
@@ -125,16 +114,16 @@ func TestParsePullRequest(t *testing.T) {
 				"pull_request": {"number": 5, "state": "closed", "merged": true},
 				"repository": {"full_name": "owner/repo"}
 			}`,
-			wantLen: 1, wantState: "MERGED",
+			wantLen: 1,
 		},
 		{
-			name: "has conflicts",
+			name: "synchronize",
 			payload: `{
 				"action": "synchronize",
 				"pull_request": {"number": 5, "state": "open", "merged": false, "mergeable": false, "mergeable_state": "dirty"},
 				"repository": {"full_name": "owner/repo"}
 			}`,
-			wantLen: 1, wantState: "OPEN", wantConflicts: "yes",
+			wantLen: 1,
 		},
 		{
 			name: "ignored action",
@@ -154,11 +143,14 @@ func TestParsePullRequest(t *testing.T) {
 				t.Fatalf("expected %d events, got %d", tt.wantLen, len(events))
 			}
 			if tt.wantLen > 0 {
-				if events[0].State != tt.wantState {
-					t.Errorf("expected State=%s, got %s", tt.wantState, events[0].State)
+				if events[0].EventType != "pull_request" {
+					t.Errorf("expected EventType=pull_request, got %q", events[0].EventType)
 				}
-				if tt.wantConflicts != "" && events[0].Conflicts != tt.wantConflicts {
-					t.Errorf("expected Conflicts=%s, got %s", tt.wantConflicts, events[0].Conflicts)
+				if events[0].PRNumber != "5" {
+					t.Errorf("expected PRNumber=5, got %q", events[0].PRNumber)
+				}
+				if events[0].Repo != "owner/repo" {
+					t.Errorf("expected Repo=owner/repo, got %q", events[0].Repo)
 				}
 			}
 		})
@@ -167,10 +159,9 @@ func TestParsePullRequest(t *testing.T) {
 
 func TestParsePullRequestReview(t *testing.T) {
 	tests := []struct {
-		name       string
-		payload    string
-		wantLen    int
-		wantDecision string
+		name    string
+		payload string
+		wantLen int
 	}{
 		{
 			name: "approved",
@@ -180,7 +171,7 @@ func TestParsePullRequestReview(t *testing.T) {
 				"pull_request": {"number": 7},
 				"repository": {"full_name": "owner/repo"}
 			}`,
-			wantLen: 1, wantDecision: "APPROVED",
+			wantLen: 1,
 		},
 		{
 			name: "changes requested",
@@ -190,7 +181,7 @@ func TestParsePullRequestReview(t *testing.T) {
 				"pull_request": {"number": 7},
 				"repository": {"full_name": "owner/repo"}
 			}`,
-			wantLen: 1, wantDecision: "CHANGES_REQUESTED",
+			wantLen: 1,
 		},
 		{
 			name: "commented (ignored)",
@@ -210,8 +201,10 @@ func TestParsePullRequestReview(t *testing.T) {
 			if len(events) != tt.wantLen {
 				t.Fatalf("expected %d events, got %d", tt.wantLen, len(events))
 			}
-			if tt.wantLen > 0 && events[0].ReviewDecision != tt.wantDecision {
-				t.Errorf("expected ReviewDecision=%s, got %s", tt.wantDecision, events[0].ReviewDecision)
+			if tt.wantLen > 0 {
+				if events[0].EventType != "pull_request_review" {
+					t.Errorf("expected EventType=pull_request_review, got %q", events[0].EventType)
+				}
 			}
 		})
 	}
@@ -227,8 +220,11 @@ func TestParsePush(t *testing.T) {
 		if len(events) != 1 {
 			t.Fatalf("expected 1 event, got %d", len(events))
 		}
-		if events[0].Repo != "owner/repo" || events[0].Conflicts != "unknown" || events[0].PRNumber != "" {
+		if events[0].Repo != "owner/repo" || events[0].PRNumber != "" {
 			t.Errorf("unexpected event: %+v", events[0])
+		}
+		if events[0].EventType != "push" {
+			t.Errorf("expected EventType=push, got %q", events[0].EventType)
 		}
 	})
 
@@ -279,11 +275,8 @@ func TestServerHandleWebhook(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.PRNumber != "55" || ev.Repo != "test/repo" || !ev.CheckRunCompleted {
+		if ev.PRNumber != "55" || ev.Repo != "test/repo" || ev.EventType != "check_run" {
 			t.Errorf("unexpected event: %+v", ev)
-		}
-		if ev.CI != "" {
-			t.Errorf("check_run should not set CI directly, got %q", ev.CI)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
@@ -334,42 +327,6 @@ func TestServerRejectsMissingEventHeader(t *testing.T) {
 	}
 }
 
-func TestPartialStateMerge(t *testing.T) {
-	existing := map[string]*Event{
-		"42": {PRNumber: "42", CI: "failing", State: "OPEN", Conflicts: "none", ReviewDecision: ""},
-	}
-
-	// A pull_request event updates State but preserves other fields.
-	update := Event{PRNumber: "42", Repo: "owner/repo", State: "CLOSED"}
-	MergeEvent(existing, update)
-
-	got := existing["42"]
-	if got.State != "CLOSED" {
-		t.Errorf("expected State=CLOSED after merge, got %s", got.State)
-	}
-	if got.CI != "failing" {
-		t.Errorf("expected CI=failing preserved, got %s", got.CI)
-	}
-	if got.Conflicts != "none" {
-		t.Errorf("expected Conflicts=none preserved, got %s", got.Conflicts)
-	}
-}
-
-func TestPartialStateMergeNewPR(t *testing.T) {
-	existing := map[string]*Event{}
-
-	update := Event{PRNumber: "99", Repo: "owner/repo", CI: "passing"}
-	MergeEvent(existing, update)
-
-	got, ok := existing["99"]
-	if !ok {
-		t.Fatal("expected PR 99 to be added")
-	}
-	if got.CI != "passing" {
-		t.Errorf("expected CI=passing, got %s", got.CI)
-	}
-}
-
 func TestServerListenThenServe(t *testing.T) {
 	ch := make(chan Event, 10)
 	srv := NewServer(0, "/webhook/github", ch)
@@ -415,115 +372,108 @@ func TestServerListenThenServe(t *testing.T) {
 
 	select {
 	case ev := <-ch:
-		if ev.PRNumber != "77" || !ev.CheckRunCompleted {
+		if ev.PRNumber != "77" || ev.EventType != "check_run" {
 			t.Errorf("unexpected event: %+v", ev)
-		}
-		if ev.CI != "" {
-			t.Errorf("check_run should not set CI directly, got %q", ev.CI)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
 	}
 }
 
-func TestCheckRunDoesNotOverwriteCI(t *testing.T) {
-	// Simulate the scenario from issue #172: a PR has multiple checks.
-	// A failing check completes first, then a passing check completes.
-	// The dashboard should NOT show "passing" — it should re-poll for
-	// aggregate CI status.
-	//
-	// Since check_run events no longer carry CI status, we verify that
-	// multiple check_run events with different conclusions all produce
-	// events with CheckRunCompleted=true and empty CI.
-
-	failPayload := `{
-		"action": "completed",
-		"check_run": {
-			"conclusion": "failure",
-			"pull_requests": [{"number": 42}]
-		},
-		"repository": {"full_name": "owner/repo"}
-	}`
-
-	passPayload := `{
-		"action": "completed",
-		"check_run": {
-			"conclusion": "success",
-			"pull_requests": [{"number": 42}]
-		},
-		"repository": {"full_name": "owner/repo"}
-	}`
-
-	failEvents := parseEvent("check_run", json.RawMessage(failPayload))
-	passEvents := parseEvent("check_run", json.RawMessage(passPayload))
-
-	// Both events should signal a re-poll, not carry CI status.
-	for _, ev := range append(failEvents, passEvents...) {
-		if ev.CI != "" {
-			t.Errorf("check_run event should not set CI, got %q", ev.CI)
-		}
-		if !ev.CheckRunCompleted {
-			t.Error("check_run event should set CheckRunCompleted=true")
-		}
-		if ev.PRNumber != "42" {
-			t.Errorf("expected PRNumber=42, got %s", ev.PRNumber)
-		}
-	}
-
-	// Verify that applying these events via MergeEvent does not change
-	// an existing CI status (since CI is empty on the events).
-	existing := map[string]*Event{
-		"42": {PRNumber: "42", CI: "failing", State: "OPEN"},
-	}
-	for _, ev := range append(failEvents, passEvents...) {
-		MergeEvent(existing, ev)
-	}
-	if existing["42"].CI != "failing" {
-		t.Errorf("CI should remain 'failing' after check_run merges, got %q", existing["42"].CI)
-	}
-}
-
-func TestCheckSuiteDoesNotOverwriteCI(t *testing.T) {
-	payload := `{
-		"action": "completed",
-		"check_suite": {
-			"conclusion": "success",
-			"pull_requests": [{"number": 10}]
-		},
-		"repository": {"full_name": "owner/repo"}
-	}`
-
-	events := parseEvent("check_suite", json.RawMessage(payload))
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].CI != "" {
-		t.Errorf("check_suite should not set CI directly, got %q", events[0].CI)
-	}
-	if !events[0].CheckRunCompleted {
-		t.Error("expected CheckRunCompleted=true")
-	}
-}
-
-func TestMapConclusion(t *testing.T) {
+func TestEventIsInvalidationSignal(t *testing.T) {
+	// Verify that webhook events are pure invalidation signals: they carry
+	// only PRNumber, Repo, and EventType — no status data. This is the
+	// core design invariant that prevents webhook/polling divergence bugs.
 	tests := []struct {
-		conclusion string
-		want       string
+		name      string
+		eventType string
+		payload   string
 	}{
-		{"success", "passing"},
-		{"neutral", "passing"},
-		{"skipped", "passing"},
-		{"failure", "failing"},
-		{"timed_out", "failing"},
-		{"cancelled", "failing"},
-		{"action_required", "failing"},
-		{"", "pending"},
-		{"stale", "pending"},
+		{
+			name:      "check_run success",
+			eventType: "check_run",
+			payload: `{
+				"action": "completed",
+				"check_run": {
+					"conclusion": "success",
+					"pull_requests": [{"number": 42}]
+				},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
+		{
+			name:      "check_run failure",
+			eventType: "check_run",
+			payload: `{
+				"action": "completed",
+				"check_run": {
+					"conclusion": "failure",
+					"pull_requests": [{"number": 42}]
+				},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
+		{
+			name:      "check_suite",
+			eventType: "check_suite",
+			payload: `{
+				"action": "completed",
+				"check_suite": {
+					"conclusion": "success",
+					"pull_requests": [{"number": 10}]
+				},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
+		{
+			name:      "pull_request opened",
+			eventType: "pull_request",
+			payload: `{
+				"action": "opened",
+				"pull_request": {"number": 5, "state": "open", "merged": false, "mergeable": true},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
+		{
+			name:      "pull_request merged",
+			eventType: "pull_request",
+			payload: `{
+				"action": "closed",
+				"pull_request": {"number": 5, "state": "closed", "merged": true},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
+		{
+			name:      "pull_request_review approved",
+			eventType: "pull_request_review",
+			payload: `{
+				"action": "submitted",
+				"review": {"state": "approved"},
+				"pull_request": {"number": 7},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+		},
 	}
+
 	for _, tt := range tests {
-		t.Run(tt.conclusion, func(t *testing.T) {
-			if got := mapConclusion(tt.conclusion); got != tt.want {
-				t.Errorf("mapConclusion(%q) = %s, want %s", tt.conclusion, got, tt.want)
+		t.Run(tt.name, func(t *testing.T) {
+			events := parseEvent(tt.eventType, json.RawMessage(tt.payload))
+			if len(events) == 0 {
+				t.Fatal("expected at least one event")
+			}
+			for _, ev := range events {
+				if ev.PRNumber == "" {
+					t.Error("expected non-empty PRNumber")
+				}
+				if ev.Repo == "" {
+					t.Error("expected non-empty Repo")
+				}
+				if ev.EventType == "" {
+					t.Error("expected non-empty EventType")
+				}
+				if ev.EventType != tt.eventType {
+					t.Errorf("expected EventType=%q, got %q", tt.eventType, ev.EventType)
+				}
 			}
 		})
 	}

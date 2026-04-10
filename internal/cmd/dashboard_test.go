@@ -811,14 +811,10 @@ func TestDashboardViewWithSandboxAgent(t *testing.T) {
 	}
 }
 
-func TestWebhookMsgSetsHasNewTrustedComments(t *testing.T) {
-	// Stub hasUnaddressedTrustedComments to return true.
-	orig := hasUnaddressedTrustedComments
-	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
-		return true
-	}
-	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
-
+func TestWebhookMsgTriggersRefetchForMatchedPR(t *testing.T) {
+	// When a webhook arrives for a PR that has a matching run state,
+	// the dashboard should return a tea.Cmd (the re-fetch). This verifies
+	// webhooks act as invalidation signals, not data sources.
 	prURL := "https://github.com/owner/repo/pull/42"
 	states := []*run.State{
 		{
@@ -833,147 +829,135 @@ func TestWebhookMsgSetsHasNewTrustedComments(t *testing.T) {
 
 	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
 	m.states = states
+	// Set webhookCh so waitForWebhookCmd returns a non-nil cmd,
+	// ensuring tea.Batch produces a BatchMsg (not a single cmd).
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
 
-	// Send a webhook event with a review decision that is neither
-	// APPROVED nor CHANGES_REQUESTED, so trusted comments are checked.
 	msg := webhookMsg{
 		event: webhook.Event{
-			PRNumber:       "42",
-			Repo:           "owner/repo",
-			ReviewDecision: "REVIEW_REQUIRED",
+			PRNumber:  "42",
+			Repo:      "owner/repo",
+			EventType: "pull_request_review",
 		},
 	}
 
-	updated, cmd := m.Update(msg)
-	um := updated.(dashboardModel)
-
-	// The trusted comments check is now async via a tea.Cmd.
-	// Execute the batched commands to find and run the check.
+	_, cmd := m.Update(msg)
 	if cmd == nil {
-		t.Fatal("expected a tea.Cmd from Update")
-	}
-	// tea.Batch returns a Cmd that yields BatchMsg ([]Cmd).
-	// Recursively execute to find the trustedCommentsMsg.
-	found := false
-	var execCmds func(tea.Cmd)
-	execCmds = func(c tea.Cmd) {
-		if c == nil {
-			return
-		}
-		result := c()
-		if tcMsg, ok := result.(trustedCommentsMsg); ok {
-			found = true
-			updated, _ = um.Update(tcMsg)
-			um = updated.(dashboardModel)
-			return
-		}
-		if bm, ok := result.(tea.BatchMsg); ok {
-			for _, sub := range bm {
-				execCmds(sub)
-			}
-		}
-	}
-	execCmds(cmd)
-	if !found {
-		t.Fatal("expected trustedCommentsMsg in batched commands")
+		t.Fatal("expected a tea.Cmd from webhook with matching PR")
 	}
 
-	ps, ok := um.ghStatus["42"]
+	// The returned cmd is tea.Batch(fetchGHStatusCmd, waitForWebhookCmd).
+	// Execute the batch to get the sub-commands, then run only the
+	// non-blocking ones (skip waitForWebhookCmd which blocks on channel).
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
 	if !ok {
-		t.Fatal("expected prStatus for PR 42 to exist")
+		t.Fatal("expected tea.BatchMsg from webhook handler")
 	}
-	if !ps.HasNewTrustedComments {
-		t.Error("expected HasNewTrustedComments to be true on webhook path")
+
+	// Run each sub-command with a timeout to avoid blocking on channel reads.
+	foundFetch := false
+	for _, sub := range bm {
+		if sub == nil {
+			continue
+		}
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(sub)
+		select {
+		case r := <-done:
+			if _, ok := r.(ghStatusMsg); ok {
+				foundFetch = true
+			}
+		case <-time.After(2 * time.Second):
+			// This is the blocking waitForWebhookCmd — skip it.
+		}
+	}
+	if !foundFetch {
+		t.Error("expected ghStatusMsg from webhook-triggered fetch")
 	}
 }
 
-func TestWebhookMsgClearsTrustedCommentsOnApproval(t *testing.T) {
-	// Stub should not be called when review is APPROVED.
-	orig := hasUnaddressedTrustedComments
-	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
-		t.Error("hasUnaddressedTrustedComments should not be called for APPROVED reviews")
-		return true
-	}
-	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
-
+func TestWebhookMsgNoMatchReturnsCmd(t *testing.T) {
+	// When a webhook arrives for a PR with no matching run state,
+	// the dashboard should still return a cmd (to keep listening).
 	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
-	// Pre-populate with a status that has trusted comments.
-	m.ghStatus["42"] = &prStatus{
-		PRNumber:              "42",
-		HasNewTrustedComments: true,
-	}
+	m.states = []*run.State{} // no states
+
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
 
 	msg := webhookMsg{
 		event: webhook.Event{
-			PRNumber:       "42",
-			Repo:           "owner/repo",
-			ReviewDecision: "APPROVED",
+			PRNumber:  "999",
+			Repo:      "owner/repo",
+			EventType: "check_run",
 		},
 	}
 
-	updated, _ := m.Update(msg)
-	um := updated.(dashboardModel)
-
-	ps := um.ghStatus["42"]
-	if ps.HasNewTrustedComments {
-		t.Error("expected HasNewTrustedComments to be cleared on APPROVED")
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd even when no PR matches (to keep listening)")
 	}
 }
 
-func TestWebhookMsgTrustedCommentsFallbackToPRURL(t *testing.T) {
-	// Verify that when ev.Repo is empty, ownerRepo is extracted from the run state's PRURL.
-	orig := hasUnaddressedTrustedComments
-	var capturedOwnerRepo string
-	hasUnaddressedTrustedComments = func(ownerRepo, prNumber string) bool {
-		capturedOwnerRepo = ownerRepo
-		return false
-	}
-	t.Cleanup(func() { hasUnaddressedTrustedComments = orig })
-
-	prURL := "https://github.com/fallback/repo/pull/99"
+func TestWebhookPushTriggersFullRefetch(t *testing.T) {
+	// A push to the default branch should trigger a full re-fetch of all
+	// PR statuses, since any PR's conflict status could have changed.
+	prURL := "https://github.com/owner/repo/pull/42"
 	states := []*run.State{
 		{
-			ID:         "20260407-0900-bbbb",
-			Prompt:     "test",
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
 			Type:       "launch",
 			CreatedAt:  time.Now().Format(time.RFC3339),
-			TargetRepo: strPtr("fallback/repo"),
+			TargetRepo: strPtr("owner/repo"),
 			PRURL:      &prURL,
 		},
 	}
 
 	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
 	m.states = states
+	ch := make(chan webhook.Event, 1)
+	m.webhookCh = ch
 
 	msg := webhookMsg{
 		event: webhook.Event{
-			PRNumber:       "99",
-			Repo:           "", // empty — should fall back to PRURL
-			ReviewDecision: "REVIEW_REQUIRED",
+			Repo:      "owner/repo",
+			EventType: "push",
 		},
 	}
 
 	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from push webhook")
+	}
 
-	// Execute the async command to trigger the trusted comments check.
-	var execCmds func(tea.Cmd)
-	execCmds = func(c tea.Cmd) {
-		if c == nil {
-			return
+	// The returned cmd is tea.Batch(fetchGHStatusCmd, waitForWebhookCmd).
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected tea.BatchMsg from push webhook handler")
+	}
+
+	foundFetch := false
+	for _, sub := range bm {
+		if sub == nil {
+			continue
 		}
-		result := c()
-		if bm, ok := result.(tea.BatchMsg); ok {
-			for _, sub := range bm {
-				execCmds(sub)
+		done := make(chan tea.Msg, 1)
+		go func(c tea.Cmd) { done <- c() }(sub)
+		select {
+		case r := <-done:
+			if _, ok := r.(ghStatusMsg); ok {
+				foundFetch = true
 			}
+		case <-time.After(2 * time.Second):
+			// This is the blocking waitForWebhookCmd — skip it.
 		}
 	}
-	if cmd != nil {
-		execCmds(cmd)
-	}
-
-	if capturedOwnerRepo != "fallback/repo" {
-		t.Errorf("expected ownerRepo = %q from PRURL fallback, got %q", "fallback/repo", capturedOwnerRepo)
+	if !foundFetch {
+		t.Error("expected ghStatusMsg from push-triggered fetch")
 	}
 }
 
