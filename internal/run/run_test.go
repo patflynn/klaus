@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 )
 
 func TestGenID(t *testing.T) {
@@ -267,4 +268,137 @@ func TestGitDirStoreListSkipsCorruptFiles(t *testing.T) {
 	if result[0].ID != "20260210-1430-aaaa" {
 		t.Errorf("result[0].ID = %q, want 20260210-1430-aaaa", result[0].ID)
 	}
+}
+
+func TestIsStale(t *testing.T) {
+	oldPaneExists := PaneExists
+	defer func() { PaneExists = oldPaneExists }()
+
+	oldGrace := StaleGracePeriod
+	defer func() { StaleGracePeriod = oldGrace }()
+	StaleGracePeriod = 0 // disable grace period for most sub-tests
+
+	paneGone := func(string) bool { return false }
+	paneAlive := func(string) bool { return true }
+
+	strp := func(s string) *string { return &s }
+	fptr := func(f float64) *float64 { return &f }
+	iptr := func(i int64) *int64 { return &i }
+
+	past := time.Now().Add(-10 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		state    State
+		paneFunc func(string) bool
+		want     bool
+	}{
+		{
+			name: "unfinalized, pane gone, old enough => stale",
+			state: State{
+				ID:        "test-1",
+				TmuxPane:  strp("%1"),
+				CreatedAt: past,
+			},
+			paneFunc: paneGone,
+			want:     true,
+		},
+		{
+			name: "finalized with cost => not stale",
+			state: State{
+				ID:        "test-2",
+				TmuxPane:  strp("%1"),
+				CostUSD:   fptr(0.5),
+				CreatedAt: past,
+			},
+			paneFunc: paneGone,
+			want:     false,
+		},
+		{
+			name: "finalized with duration => not stale",
+			state: State{
+				ID:         "test-3",
+				TmuxPane:   strp("%1"),
+				DurationMS: iptr(1000),
+				CreatedAt:  past,
+			},
+			paneFunc: paneGone,
+			want:     false,
+		},
+		{
+			name: "pane still alive => not stale",
+			state: State{
+				ID:        "test-4",
+				TmuxPane:  strp("%1"),
+				CreatedAt: past,
+			},
+			paneFunc: paneAlive,
+			want:     false,
+		},
+		{
+			name: "no tmux pane reference => not stale",
+			state: State{
+				ID:        "test-5",
+				CreatedAt: past,
+			},
+			paneFunc: paneGone,
+			want:     false,
+		},
+		{
+			name: "session type => not stale",
+			state: State{
+				ID:        "test-6",
+				Type:      "session",
+				TmuxPane:  strp("%1"),
+				CreatedAt: past,
+			},
+			paneFunc: paneGone,
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			PaneExists = tt.paneFunc
+			got := tt.state.IsStale()
+			if got != tt.want {
+				t.Errorf("IsStale() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsStale_GracePeriod(t *testing.T) {
+	oldPaneExists := PaneExists
+	defer func() { PaneExists = oldPaneExists }()
+
+	oldGrace := StaleGracePeriod
+	defer func() { StaleGracePeriod = oldGrace }()
+
+	PaneExists = func(string) bool { return false }
+	StaleGracePeriod = 5 * time.Minute
+
+	strp := func(s string) *string { return &s }
+
+	t.Run("within grace period => not stale", func(t *testing.T) {
+		s := State{
+			ID:        "test-grace",
+			TmuxPane:  strp("%1"),
+			CreatedAt: time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
+		}
+		if s.IsStale() {
+			t.Error("expected not stale within grace period")
+		}
+	})
+
+	t.Run("past grace period => stale", func(t *testing.T) {
+		s := State{
+			ID:        "test-grace-expired",
+			TmuxPane:  strp("%1"),
+			CreatedAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
+		}
+		if !s.IsStale() {
+			t.Error("expected stale past grace period")
+		}
+	})
 }

@@ -240,6 +240,13 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case statesLoadedMsg:
 		m.states = msg.states
+		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
+		for _, s := range m.states {
+			if s.IsStale() {
+				slog.Info("finalizing stale run", "id", s.ID)
+				markRunFailed(m.store, s)
+			}
+		}
 		return m, fetchGHStatusCmd(m.ghClient, m.states)
 
 	case ghStatusMsg:
@@ -956,6 +963,21 @@ func computeSessionDuration(states []*run.State) time.Duration {
 		return 0
 	}
 	return time.Since(oldest)
+}
+
+// markRunFailed sets sentinel finalization values on a stale run and
+// cleans up its worktree and branch. Errors during cleanup are logged
+// but do not prevent the state from being saved.
+func markRunFailed(store run.StateStore, s *run.State) {
+	cost := float64(-1)
+	dur := int64(0)
+	s.CostUSD = &cost
+	s.DurationMS = &dur
+	s.TmuxPane = nil
+	cleanupWorktree(store, s)
+	if err := store.Save(s); err != nil {
+		slog.Warn("failed to save stale run state", "id", s.ID, "err", err)
+	}
 }
 
 // isAgentRunning checks if a run's agent is currently active in tmux.

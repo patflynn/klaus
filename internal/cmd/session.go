@@ -366,10 +366,14 @@ func waitForAgents(store run.StateStore) {
 		return
 	}
 
-	// Collect agent runs that still have live tmux panes
+	// Collect agent runs that still have live tmux panes, skipping stale ones.
 	var active []*run.State
 	for _, s := range states {
 		if s.Type == "session" {
+			continue
+		}
+		if s.IsStale() {
+			fmt.Printf("  agent %s is stale (orphaned), skipping\n", s.ID)
 			continue
 		}
 		if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
