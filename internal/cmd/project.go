@@ -71,6 +71,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	deps := DefaultProjectDeps()
 	var owner, repoName, cloneURL string
 
 	if strings.Contains(ref, "/") {
@@ -82,7 +83,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 	} else {
 		// Bare name — search GitHub repos
 		repoName = ref
-		ghOwner, ghURL, err := resolveGitHubRepo(ref)
+		ghOwner, ghURL, err := deps.ResolveGitHubRepo(ref)
 		if err != nil {
 			return err
 		}
@@ -126,7 +127,7 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "Already cloned at %s\n", targetDir)
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Cloning %s/%s into %s...\n", owner, repoName, targetDir)
-		if err := gitClone(cloneURL, targetDir); err != nil {
+		if err := deps.GitClone(cloneURL, targetDir); err != nil {
 			return fmt.Errorf("cloning: %w", err)
 		}
 	}
@@ -214,9 +215,23 @@ type ghRepoEntry struct {
 	URL           string `json:"url"`
 }
 
-// resolveGitHubRepo searches the user's GitHub repos for a name match.
+// ProjectDeps holds dependencies for project commands.
+type ProjectDeps struct {
+	ResolveGitHubRepo func(name string) (string, string, error)
+	GitClone          func(url, targetDir string) error
+}
+
+// DefaultProjectDeps returns ProjectDeps wired to real implementations.
+func DefaultProjectDeps() ProjectDeps {
+	return ProjectDeps{
+		ResolveGitHubRepo: defaultResolveGitHubRepo,
+		GitClone:          defaultGitClone,
+	}
+}
+
+// defaultResolveGitHubRepo searches the user's GitHub repos for a name match.
 // Returns (owner, cloneURL, error).
-var resolveGitHubRepo = func(name string) (string, string, error) {
+func defaultResolveGitHubRepo(name string) (string, string, error) {
 	out, err := exec.Command("gh", "repo", "list", "--json", "name,nameWithOwner,url", "--limit", "200").Output()
 	if err != nil {
 		return "", "", fmt.Errorf("running gh repo list: %w", err)
@@ -258,8 +273,8 @@ func isGitRepo(dir string) bool {
 	return info.IsDir()
 }
 
-// gitClone clones a repository to the target directory.
-var gitClone = func(url, targetDir string) error {
+// defaultGitClone clones a repository to the target directory.
+func defaultGitClone(url, targetDir string) error {
 	c := exec.Command("git", "clone", url, targetDir)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr

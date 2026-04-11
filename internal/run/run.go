@@ -38,28 +38,42 @@ type State struct {
 	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
 }
 
-// Tmux dependency injection for testing.
-var (
-	PaneExists = tmux.PaneExists
-	PaneIsIdle = tmux.PaneIsIdle
-	PaneIsDead = tmux.PaneIsDead
-)
+// TmuxDeps abstracts tmux pane operations so callers can inject test doubles.
+type TmuxDeps struct {
+	PaneExists func(string) bool
+	PaneIsIdle func(string) bool
+	PaneIsDead func(string) bool
+}
+
+// DefaultTmuxDeps returns TmuxDeps wired to the real tmux package.
+func DefaultTmuxDeps() TmuxDeps {
+	return TmuxDeps{
+		PaneExists: tmux.PaneExists,
+		PaneIsIdle: tmux.PaneIsIdle,
+		PaneIsDead: tmux.PaneIsDead,
+	}
+}
 
 // IsAgentRunning checks if the agent's tmux pane is still active and
 // executing its command pipeline.
 func (s *State) IsAgentRunning() bool {
-	if s.TmuxPane == nil || !PaneExists(*s.TmuxPane) {
+	return s.IsAgentRunningWith(DefaultTmuxDeps())
+}
+
+// IsAgentRunningWith is like IsAgentRunning but uses the provided TmuxDeps.
+func (s *State) IsAgentRunningWith(td TmuxDeps) bool {
+	if s.TmuxPane == nil || !td.PaneExists(*s.TmuxPane) {
 		return false
 	}
 
 	// Finalized runs (cost/duration set) are running only if their pane
 	// is not idle (e.g. still showing output before the user closes it).
 	if s.CostUSD != nil || s.DurationMS != nil {
-		return !PaneIsIdle(*s.TmuxPane)
+		return !td.PaneIsIdle(*s.TmuxPane)
 	}
 
 	// Active (unfinalized) runs are running unless the pane is explicitly dead.
-	return !PaneIsDead(*s.TmuxPane)
+	return !td.PaneIsDead(*s.TmuxPane)
 }
 
 // StaleGracePeriod is how long after creation before a run can be considered stale.
@@ -71,6 +85,11 @@ var StaleGracePeriod = 2 * time.Minute
 // and DurationMS are both nil), its tmux pane no longer exists, and enough time
 // has passed since creation to rule out normal startup delays.
 func (s *State) IsStale() bool {
+	return s.IsStaleWith(DefaultTmuxDeps())
+}
+
+// IsStaleWith is like IsStale but uses the provided TmuxDeps.
+func (s *State) IsStaleWith(td TmuxDeps) bool {
 	// Already finalized — not stale.
 	if s.CostUSD != nil || s.DurationMS != nil {
 		return false
@@ -87,7 +106,7 @@ func (s *State) IsStale() bool {
 		// require the pane to have existed and then disappeared.
 		return false
 	}
-	if PaneExists(*s.TmuxPane) {
+	if td.PaneExists(*s.TmuxPane) {
 		return false
 	}
 

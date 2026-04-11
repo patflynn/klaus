@@ -25,13 +25,15 @@ by default; pass --force to remove them anyway.`,
 
 		root, _ := git.RepoRoot() // may be empty outside a repo
 
+		deps := DefaultCleanupDeps()
+
 		if all {
 			store, err := sessionStoreOrAll()
 			if err != nil {
 				return err
 			}
 			if store != nil {
-				return cleanupAll(root, store, force)
+				return cleanupAll(root, store, force, deps)
 			}
 			// No session env — could scan all, but require explicit session
 			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
@@ -46,11 +48,11 @@ by default; pass --force to remove them anyway.`,
 			return err
 		}
 		_ = state // cleanupOne will re-load
-		return cleanupOne(root, store, args[0], force)
+		return cleanupOne(root, store, args[0], force, deps)
 	},
 }
 
-func cleanupAll(root string, store run.StateStore, force bool) error {
+func cleanupAll(root string, store run.StateStore, force bool, deps CleanupDeps) error {
 	states, err := store.List()
 	if err != nil {
 		return err
@@ -60,15 +62,27 @@ func cleanupAll(root string, store run.StateStore, force bool) error {
 		return nil
 	}
 	for _, s := range states {
-		if err := cleanupOne(root, store, s.ID, force); err != nil {
+		if err := cleanupOne(root, store, s.ID, force, deps); err != nil {
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
 	return nil
 }
 
-// isRunActive reports whether the run has a live, non-idle tmux pane or is the current session.
-var isRunActive = func(state *run.State) bool {
+// CleanupDeps holds dependencies for cleanup operations.
+type CleanupDeps struct {
+	IsRunActive func(state *run.State) bool
+}
+
+// DefaultCleanupDeps returns CleanupDeps wired to real implementations.
+func DefaultCleanupDeps() CleanupDeps {
+	return CleanupDeps{
+		IsRunActive: defaultIsRunActive,
+	}
+}
+
+// defaultIsRunActive reports whether the run has a live, non-idle tmux pane or is the current session.
+func defaultIsRunActive(state *run.State) bool {
 	if state.Type == "session" {
 		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
 			return true
@@ -85,13 +99,13 @@ var isRunActive = func(state *run.State) bool {
 	return false
 }
 
-func cleanupOne(root string, store run.StateStore, id string, force bool) error {
+func cleanupOne(root string, store run.StateStore, id string, force bool, deps CleanupDeps) error {
 	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("no run found with id: %s", id)
 	}
 
-	if !force && isRunActive(state) {
+	if !force && deps.IsRunActive(state) {
 		fmt.Printf("skipping %s (still running) — use --force to remove\n", id)
 		return nil
 	}

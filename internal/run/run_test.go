@@ -271,9 +271,6 @@ func TestGitDirStoreListSkipsCorruptFiles(t *testing.T) {
 }
 
 func TestIsStale(t *testing.T) {
-	oldPaneExists := PaneExists
-	defer func() { PaneExists = oldPaneExists }()
-
 	oldGrace := StaleGracePeriod
 	defer func() { StaleGracePeriod = oldGrace }()
 	StaleGracePeriod = 0 // disable grace period for most sub-tests
@@ -359,8 +356,12 @@ func TestIsStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			PaneExists = tt.paneFunc
-			got := tt.state.IsStale()
+			td := TmuxDeps{
+				PaneExists: tt.paneFunc,
+				PaneIsIdle: func(string) bool { return false },
+				PaneIsDead: func(string) bool { return false },
+			}
+			got := tt.state.IsStaleWith(td)
 			if got != tt.want {
 				t.Errorf("IsStale() = %v, want %v", got, tt.want)
 			}
@@ -369,13 +370,14 @@ func TestIsStale(t *testing.T) {
 }
 
 func TestIsStale_GracePeriod(t *testing.T) {
-	oldPaneExists := PaneExists
-	defer func() { PaneExists = oldPaneExists }()
-
 	oldGrace := StaleGracePeriod
 	defer func() { StaleGracePeriod = oldGrace }()
 
-	PaneExists = func(string) bool { return false }
+	td := TmuxDeps{
+		PaneExists: func(string) bool { return false },
+		PaneIsIdle: func(string) bool { return false },
+		PaneIsDead: func(string) bool { return false },
+	}
 	StaleGracePeriod = 5 * time.Minute
 
 	strp := func(s string) *string { return &s }
@@ -386,7 +388,7 @@ func TestIsStale_GracePeriod(t *testing.T) {
 			TmuxPane:  strp("%1"),
 			CreatedAt: time.Now().Add(-1 * time.Minute).Format(time.RFC3339),
 		}
-		if s.IsStale() {
+		if s.IsStaleWith(td) {
 			t.Error("expected not stale within grace period")
 		}
 	})
@@ -397,7 +399,7 @@ func TestIsStale_GracePeriod(t *testing.T) {
 			TmuxPane:  strp("%1"),
 			CreatedAt: time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
 		}
-		if !s.IsStale() {
+		if !s.IsStaleWith(td) {
 			t.Error("expected stale past grace period")
 		}
 	})

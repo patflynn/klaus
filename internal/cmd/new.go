@@ -112,15 +112,17 @@ func runNew(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	scaffoldDeps := DefaultScaffoldDeps()
+
 	// Create GitHub repo and clone it
 	fmt.Printf("Creating repository %s...\n", name)
-	ghOutput, err := runGHRepoCreate(name)
+	ghOutput, err := scaffoldDeps.RunGHRepoCreate(name)
 	if err != nil {
 		return fmt.Errorf("creating GitHub repo: %w", err)
 	}
 	fmt.Println(ghOutput)
 
-	repoDir, err := resolveNewRepoDir(cloneDir, name)
+	repoDir, err := scaffoldDeps.ResolveNewRepoDir(cloneDir, name)
 	if err != nil {
 		return err
 	}
@@ -255,16 +257,29 @@ Your task:
 		projectType, name, description, principles, projectType)
 }
 
-// runGHRepoCreate calls 'gh repo create' and returns its output.
-// Extracted as a variable for testing.
-var runGHRepoCreate = func(name string) (string, error) {
+// ScaffoldDeps holds dependencies for the scaffold (new) command.
+type ScaffoldDeps struct {
+	RunGHRepoCreate func(name string) (string, error)
+	ResolveNewRepoDir func(cwd, name string) (string, error)
+}
+
+// DefaultScaffoldDeps returns ScaffoldDeps wired to real implementations.
+func DefaultScaffoldDeps() ScaffoldDeps {
+	return ScaffoldDeps{
+		RunGHRepoCreate:   defaultRunGHRepoCreate,
+		ResolveNewRepoDir: defaultResolveNewRepoDir,
+	}
+}
+
+// defaultRunGHRepoCreate calls 'gh repo create' and returns its output.
+func defaultRunGHRepoCreate(name string) (string, error) {
 	cmd := exec.Command("gh", "repo", "create", name, "--public", "--clone")
 	out, err := cmd.CombinedOutput()
 	return strings.TrimSpace(string(out)), err
 }
 
-// resolveNewRepoDir returns the absolute path to the newly cloned repo directory.
-var resolveNewRepoDir = func(cwd, name string) (string, error) {
+// defaultResolveNewRepoDir returns the absolute path to the newly cloned repo directory.
+func defaultResolveNewRepoDir(cwd, name string) (string, error) {
 	dir := filepath.Join(cwd, name)
 	info, err := os.Stat(dir)
 	if err != nil {
