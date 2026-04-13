@@ -2,7 +2,7 @@
 
 **Status:** In Progress
 **Filed:** 2026-04-09
-**Updated:** 2026-04-09
+**Updated:** 2026-04-13
 
 ## Motivation
 
@@ -51,12 +51,13 @@ Two cross-cutting principles guide this work:
 | [#198](https://github.com/patflynn/klaus/issues/198) | #215 | Pipeline decide/execute split — mutex no longer held during I/O |
 | [#199](https://github.com/patflynn/klaus/issues/199) | #216 | Stale run detection and recovery |
 | [#205](https://github.com/patflynn/klaus/issues/205) | #210 | Log cleanup/finalization errors |
+| [#202](https://github.com/patflynn/klaus/issues/202) | #219 | Remove global mutable function pointers — use DI |
 
 ### In Progress
 
-| Issue | Title |
-|-------|-------|
-| [#202](https://github.com/patflynn/klaus/issues/202) | Remove global mutable function pointers |
+| Issue | PR | Title |
+|-------|-----|-------|
+| [#217](https://github.com/patflynn/klaus/issues/217) | — | Thread git.Client through all consumers |
 
 ### Remaining — Interface Consumer Migration
 
@@ -65,7 +66,6 @@ functions directly. These issues complete the decoupling:
 
 | Issue | Title | Key Concern |
 |-------|-------|-------------|
-| [#217](https://github.com/patflynn/klaus/issues/217) | Thread git.Client through consumers | launch, cleanup, finalize, merge |
 | [#218](https://github.com/patflynn/klaus/issues/218) | Thread tmux.Client through consumers | launch, cleanup, session, dashboard, run.State |
 
 ### Remaining — Structural Cleanup
@@ -95,7 +95,7 @@ functions directly. These issues complete the decoupling:
 ```
 #217 (git consumer migration)  ─┐
 #218 (tmux consumer migration)  ├─→ #200 (Split dashboard)
-#202 (Remove globals)           ─┘
+✅ #202 (Remove globals)        ─┘
 
 Independent (any time):
   #201 (Canonicalize store)

@@ -895,7 +895,7 @@ func markRunFailed(store run.StateStore, s *run.State) {
 	s.CostUSD = &cost
 	s.DurationMS = &dur
 	s.TmuxPane = nil
-	cleanupWorktree(store, s)
+	cleanupWorktree(store, git.NewExecClient(), s)
 	if err := store.Save(s); err != nil {
 		slog.Warn("failed to save stale run state", "id", s.ID, "err", err)
 	}

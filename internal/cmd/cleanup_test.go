@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -21,7 +22,7 @@ func TestCleanupAllSkipsActiveRuns(t *testing.T) {
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll("", store, false, deps); err != nil {
+		if err := cleanupAll("", store, git.NewExecClient(), false, deps); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -52,7 +53,7 @@ func TestCleanupAllForceRemovesActiveRuns(t *testing.T) {
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll("", store, true, deps); err != nil {
+		if err := cleanupAll("", store, git.NewExecClient(), true, deps); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -79,7 +80,7 @@ func TestCleanupOneSkipsActiveRun(t *testing.T) {
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupOne("", store, "run-1", false, deps); err != nil {
+		if err := cleanupOne("", store, git.NewExecClient(), "run-1", false, deps); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
@@ -100,7 +101,7 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	captureStdout(t, func() {
-		if err := cleanupOne("", store, "run-1", true, deps); err != nil {
+		if err := cleanupOne("", store, git.NewExecClient(), "run-1", true, deps); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
