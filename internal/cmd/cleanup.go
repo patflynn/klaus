@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -24,6 +25,8 @@ by default; pass --force to remove them anyway.`,
 		force, _ := cmd.Flags().GetBool("force")
 
 		root, _ := git.RepoRoot() // may be empty outside a repo
+		gitClient := git.NewExecClient()
+		ctx := cmd.Context()
 
 		deps := DefaultCleanupDeps()
 
@@ -33,7 +36,7 @@ by default; pass --force to remove them anyway.`,
 				return err
 			}
 			if store != nil {
-				return cleanupAll(root, store, force, deps)
+				return cleanupAll(ctx, root, store, gitClient, force, deps)
 			}
 			// No session env — could scan all, but require explicit session
 			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
@@ -48,11 +51,11 @@ by default; pass --force to remove them anyway.`,
 			return err
 		}
 		_ = state // cleanupOne will re-load
-		return cleanupOne(root, store, args[0], force, deps)
+		return cleanupOne(ctx, root, store, gitClient, args[0], force, deps)
 	},
 }
 
-func cleanupAll(root string, store run.StateStore, force bool, deps CleanupDeps) error {
+func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClient git.Client, force bool, deps CleanupDeps) error {
 	states, err := store.List()
 	if err != nil {
 		return err
@@ -62,7 +65,7 @@ func cleanupAll(root string, store run.StateStore, force bool, deps CleanupDeps)
 		return nil
 	}
 	for _, s := range states {
-		if err := cleanupOne(root, store, s.ID, force, deps); err != nil {
+		if err := cleanupOne(ctx, root, store, gitClient, s.ID, force, deps); err != nil {
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
@@ -99,7 +102,7 @@ func defaultIsRunActive(state *run.State) bool {
 	return false
 }
 
-func cleanupOne(root string, store run.StateStore, id string, force bool, deps CleanupDeps) error {
+func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClient git.Client, id string, force bool, deps CleanupDeps) error {
 	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("no run found with id: %s", id)
@@ -138,7 +141,7 @@ func cleanupOne(root string, store run.StateStore, id string, force bool, deps C
 
 	// Remove worktree
 	if state.Worktree != "" {
-		if err := git.WorktreeRemove(gitRoot, state.Worktree); err == nil {
+		if err := gitClient.WorktreeRemove(ctx, gitRoot, state.Worktree); err == nil {
 			fmt.Println("  removed worktree")
 		} else {
 			slog.Warn("failed to remove worktree", "id", id, "worktree", state.Worktree, "err", err)
@@ -147,7 +150,7 @@ func cleanupOne(root string, store run.StateStore, id string, force bool, deps C
 
 	// Delete local branch
 	if state.Branch != "" {
-		if err := git.BranchDelete(gitRoot, state.Branch); err == nil {
+		if err := gitClient.BranchDelete(ctx, gitRoot, state.Branch); err == nil {
 			fmt.Println("  deleted local branch")
 		} else {
 			slog.Warn("failed to delete local branch", "id", id, "branch", state.Branch, "err", err)

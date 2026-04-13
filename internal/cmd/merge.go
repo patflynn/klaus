@@ -250,7 +250,8 @@ func validateMergeMethod(method string) error {
 // rebaseAndPush rebases a PR branch onto origin/main, verifies compilation,
 // and force-pushes using a temporary worktree.
 func rebaseAndPush(prNumber string, repo string) error {
-	branch, err := gh.NewGHCLIClient(repo).GetBranch(context.TODO(), prNumber)
+	ctx := context.TODO()
+	branch, err := gh.NewGHCLIClient(repo).GetBranch(ctx, prNumber)
 	if err != nil {
 		return fmt.Errorf("getting branch: %w", err)
 	}
@@ -260,10 +261,12 @@ func rebaseAndPush(prNumber string, repo string) error {
 		return fmt.Errorf("could not determine git repository root: %w", err)
 	}
 
-	if err := git.FetchBranch(repoRoot, "main"); err != nil {
+	gitClient := git.NewExecClient()
+
+	if err := gitClient.FetchBranch(ctx, repoRoot, "main"); err != nil {
 		return fmt.Errorf("fetching main: %w", err)
 	}
-	if err := git.FetchBranch(repoRoot, branch); err != nil {
+	if err := gitClient.FetchBranch(ctx, repoRoot, branch); err != nil {
 		return fmt.Errorf("fetching %s: %w", branch, err)
 	}
 
@@ -273,7 +276,7 @@ func rebaseAndPush(prNumber string, repo string) error {
 	}
 	worktreePath := filepath.Join(tmpDir, "rebase")
 	defer func() {
-		if err := git.WorktreeRemove(repoRoot, worktreePath); err != nil {
+		if err := gitClient.WorktreeRemove(ctx, repoRoot, worktreePath); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", err)
 		}
 		if err := os.RemoveAll(tmpDir); err != nil {
@@ -281,7 +284,7 @@ func rebaseAndPush(prNumber string, repo string) error {
 		}
 	}()
 
-	if err := git.WorktreeAddTrack(repoRoot, worktreePath, branch); err != nil {
+	if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktreePath, branch); err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 

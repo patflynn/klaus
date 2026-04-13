@@ -64,6 +64,8 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	// Git repo is optional — session can run without one
 	root, _ := git.RepoRoot()
 	inRepo := root != ""
+	gitClient := git.NewExecClient()
+	ctx := cmd.Context()
 
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -158,11 +160,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 					return fmt.Errorf("session worktree no longer exists and no repo root available: %s", worktree)
 				}
 				defaultBranch := cfg.DefaultBranch
-				if err := git.FetchBranch(baseRepo, defaultBranch); err != nil {
+				if err := gitClient.FetchBranch(ctx, baseRepo, defaultBranch); err != nil {
 					return fmt.Errorf("fetching %s: %w", defaultBranch, err)
 				}
 				startPoint := "origin/" + defaultBranch
-				if err := git.WorktreeAdd(baseRepo, worktree, branch, startPoint); err != nil {
+				if err := gitClient.WorktreeAdd(ctx, baseRepo, worktree, branch, startPoint); err != nil {
 					return fmt.Errorf("recreating worktree: %w", err)
 				}
 			}
@@ -199,12 +201,12 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 			fmt.Printf("Creating coordinator session %s...\n", id)
 
-			if err := git.FetchBranch(root, defaultBranch); err != nil {
+			if err := gitClient.FetchBranch(ctx, root, defaultBranch); err != nil {
 				return fmt.Errorf("fetching %s: %w", defaultBranch, err)
 			}
 
 			startPoint := "origin/" + defaultBranch
-			if err := git.WorktreeAdd(root, worktree, branch, startPoint); err != nil {
+			if err := gitClient.WorktreeAdd(ctx, root, worktree, branch, startPoint); err != nil {
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 			fmt.Printf("  worktree: %s\n", worktree)

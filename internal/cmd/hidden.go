@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -91,9 +92,12 @@ var finalizeCmd = &cobra.Command{
 			return nil
 		}
 
-		syncRunToDataRef(syncRoot, store, cfg.DataRef, state)
+		ctx := cmd.Context()
+		gitClient := git.NewExecClient()
 
-		cleanupWorktree(store, state)
+		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
+
+		cleanupWorktree(ctx, store, gitClient, state)
 
 		return nil
 	},
@@ -102,7 +106,7 @@ var finalizeCmd = &cobra.Command{
 // cleanupWorktree removes the agent's worktree and local branch after
 // completion. The state file and logs are preserved. It is idempotent —
 // if the worktree is already gone, the state is still cleared.
-func cleanupWorktree(store run.StateStore, state *run.State) {
+func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State) {
 	if state.Worktree == "" {
 		return
 	}
@@ -115,11 +119,11 @@ func cleanupWorktree(store run.StateStore, state *run.State) {
 	if gitRoot == "" {
 		return
 	}
-	if err := git.WorktreeRemove(gitRoot, state.Worktree); err != nil {
+	if err := gitClient.WorktreeRemove(ctx, gitRoot, state.Worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
 	if state.Branch != "" {
-		if err := git.BranchDelete(gitRoot, state.Branch); err != nil {
+		if err := gitClient.BranchDelete(ctx, gitRoot, state.Branch); err != nil {
 			slog.Warn("failed to delete branch during cleanup", "id", state.ID, "branch", state.Branch, "err", err)
 		}
 	}
@@ -263,7 +267,7 @@ func ExtractClaudeSessionID(logPath string) string {
 	return ""
 }
 
-func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *run.State) {
+func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gitClient git.Client, dataRef string, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
 		"runs/" + state.ID + ".json": stateFile,
@@ -288,12 +292,12 @@ func syncRunToDataRef(root string, store run.StateStore, dataRef string, state *
 		}
 	}
 
-	if err := git.SyncToDataRef(root, dataRef, "Run "+state.ID, files); err != nil {
+	if err := gitClient.SyncToDataRef(ctx, root, dataRef, "Run "+state.ID, files); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync to data ref: %v\n", err)
 		return
 	}
 
-	if err := git.PushDataRef(root, dataRef); err != nil {
+	if err := gitClient.PushDataRef(ctx, root, dataRef); err != nil {
 		// Silently ignore push failures (no remote, etc.)
 	}
 }

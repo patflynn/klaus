@@ -43,18 +43,21 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 
 		fmt.Printf("Force-pushing log for %s (bypassing sensitivity check)...\n", id)
 
+		ctx := cmd.Context()
+		gitClient := git.NewExecClient()
+
 		stateFile := store.StateDir() + "/" + id + ".json"
 		files := map[string]string{
 			"runs/" + id + ".json":  stateFile,
 			"logs/" + id + ".jsonl": *state.LogFile,
 		}
 
-		if err := git.SyncToDataRef(root, cfg.DataRef, "Run "+id, files); err != nil {
+		if err := gitClient.SyncToDataRef(ctx, root, cfg.DataRef, "Run "+id, files); err != nil {
 			return fmt.Errorf("syncing to data ref: %w", err)
 		}
 
 		// Push to remote
-		if err := git.PushDataRef(root, cfg.DataRef); err != nil {
+		if err := gitClient.PushDataRef(ctx, root, cfg.DataRef); err != nil {
 			fmt.Printf("  warning: push to remote failed: %v\n", err)
 		}
 

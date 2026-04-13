@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -54,6 +53,8 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
+		gitClient := git.NewExecClient()
+		ctx := cmd.Context()
 
 		// Load session target (if any) to feed into resolution
 		var sessionTarget string
@@ -132,7 +133,7 @@ are synced back after completion. Use --local to force local execution, or
 			cloneDir := filepath.Join(hostCfg.WorktreeBase, ".repos", owner, repo)
 
 			fmt.Printf("Cloning/fetching %s/%s...\n", owner, repo)
-			if err := git.EnsureClone(cloneURL, cloneDir); err != nil {
+			if err := gitClient.EnsureClone(ctx, cloneURL, cloneDir); err != nil {
 				return fmt.Errorf("cloning %s: %w", repoRef, err)
 			}
 
@@ -161,7 +162,7 @@ are synced back after completion. Use --local to force local execution, or
 		// Skip when EnsureClone was already called — it fetches with the
 		// same flags (--prune --tags), so a second fetch is redundant.
 		if repoRef == "" || projectLocalPath != "" {
-			if err := git.FetchAll(repoRoot); err != nil {
+			if err := gitClient.FetchAll(ctx, repoRoot); err != nil {
 				return fmt.Errorf("fetching origin: %w", err)
 			}
 		}
@@ -174,7 +175,6 @@ are synced back after completion. Use --local to force local execution, or
 		if prNumber != "" {
 			ghRepo := resolveGHRepo(repoRef, repoRoot)
 			ghClient := gh.NewGHCLIClient(ghRepo)
-			ctx := context.TODO()
 			prBranch, err := ghClient.GetBranch(ctx, prNumber)
 			if err != nil {
 				return fmt.Errorf("getting PR branch: %w", err)
@@ -194,7 +194,7 @@ are synced back after completion. Use --local to force local execution, or
 			}
 
 			// Create worktree tracking the PR branch
-			if err := git.WorktreeAddTrack(repoRoot, worktree, prBranch); err != nil {
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, prBranch); err != nil {
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 		} else {
@@ -207,7 +207,7 @@ are synced back after completion. Use --local to force local execution, or
 
 			// Create worktree
 			startPoint := "origin/" + defaultBranch
-			if err := git.WorktreeAdd(repoRoot, worktree, branch, startPoint); err != nil {
+			if err := gitClient.WorktreeAdd(ctx, repoRoot, worktree, branch, startPoint); err != nil {
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 		}
@@ -218,7 +218,7 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
-		if err := git.InstallCommitMsgHook(worktree); err != nil {
+		if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 		}
 
