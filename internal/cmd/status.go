@@ -37,6 +37,9 @@ var statusCmd = &cobra.Command{
 			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "-----", "------")
 
 		for _, s := range states {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			status := determineStatus(ctx, s, tmuxClient)
 			cost := formatCost(s)
 			issue := "-"
