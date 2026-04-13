@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestComputeMergeStatus(t *testing.T) {
@@ -109,9 +111,11 @@ func TestDetermineStatus(t *testing.T) {
 		},
 	}
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := determineStatus(tt.s)
+			got := determineStatus(ctx, tt.s, tc)
 			if got != tt.want {
 				t.Errorf("determineStatus() = %q, want %q", got, tt.want)
 			}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,6 +47,8 @@ are synced back after completion. Use --local to force local execution, or
 		forceLocal, _ := cmd.Flags().GetBool("local")
 		hostOverride, _ := cmd.Flags().GetString("host")
 		resumeFrom, _ := cmd.Flags().GetString("resume-from")
+		ctx := cmd.Context()
+		tmuxClient := tmux.NewExecClient()
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
@@ -54,7 +57,6 @@ are synced back after completion. Use --local to force local execution, or
 		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
 		gitClient := git.NewExecClient()
-		ctx := cmd.Context()
 
 		// Load session target (if any) to feed into resolution
 		var sessionTarget string
@@ -306,21 +308,21 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Launch in tmux pane, targeting the pane that ran this command
 		currentPane := os.Getenv("TMUX_PANE")
-		paneID, err := tmux.SplitWindow(currentPane, worktree, paneCmd)
+		paneID, err := tmuxClient.SplitWindow(ctx, currentPane, worktree, paneCmd)
 		if err != nil {
 			return fmt.Errorf("creating tmux pane: %w", err)
 		}
 
-		if err := tmux.SetPaneTitle(paneID, FormatPaneTitle(id, issue, prompt)); err != nil {
+		if err := tmuxClient.SetPaneTitle(ctx, paneID, FormatPaneTitle(id, issue, prompt)); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to set pane title: %v\n", err)
 		}
-		if err := tmux.SetWindowOption(paneID, "automatic-rename", "off"); err != nil {
+		if err := tmuxClient.SetWindowOption(ctx, paneID, "automatic-rename", "off"); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to disable automatic rename: %v\n", err)
 		}
-		if err := tmux.LockPaneTitle(paneID); err != nil {
+		if err := tmuxClient.LockPaneTitle(ctx, paneID); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to lock pane title: %v\n", err)
 		}
-		if err := tmux.RebalanceLayout(currentPane); err != nil {
+		if err := tmuxClient.RebalanceLayout(ctx, currentPane); err != nil {
 			return fmt.Errorf("rebalancing tmux layout: %w", err)
 		}
 
@@ -328,7 +330,7 @@ are synced back after completion. Use --local to force local execution, or
 		// even-vertical which treats all panes equally, so the dashboard may
 		// end up in the middle. Load the session state to find the dashboard
 		// pane, then swap it to the last position if needed.
-		pinDashboardToBottom(currentPane, store)
+		pinDashboardToBottom(ctx, currentPane, store, tmuxClient)
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
@@ -600,7 +602,7 @@ func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finali
 // pinDashboardToBottom ensures the dashboard pane is the last (bottom-most)
 // pane in the window. This is called after RebalanceLayout which may have
 // moved the dashboard out of position.
-func pinDashboardToBottom(currentPane string, store run.StateStore) {
+func pinDashboardToBottom(ctx context.Context, currentPane string, store run.StateStore, tc tmux.Client) {
 	// Load the session state directly via KLAUS_SESSION_ID
 	sessionID := os.Getenv("KLAUS_SESSION_ID")
 	if sessionID == "" {
@@ -612,7 +614,7 @@ func pinDashboardToBottom(currentPane string, store run.StateStore) {
 	}
 	dashPane := *s.DashboardPane
 
-	panes, err := tmux.ListWindowPanes(currentPane)
+	panes, err := tc.ListWindowPanes(ctx, currentPane)
 	if err != nil || len(panes) < 2 {
 		return
 	}
@@ -634,7 +636,7 @@ func pinDashboardToBottom(currentPane string, store run.StateStore) {
 		return
 	}
 
-	if err := tmux.SwapPane(dashPane, lastPane); err != nil {
+	if err := tc.SwapPane(ctx, dashPane, lastPane); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not pin dashboard to bottom: %v\n", err)
 	}
 }

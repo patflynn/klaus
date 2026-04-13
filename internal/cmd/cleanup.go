@@ -23,12 +23,13 @@ by default; pass --force to remove them anyway.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		force, _ := cmd.Flags().GetBool("force")
+		ctx := cmd.Context()
+		tmuxClient := tmux.NewExecClient()
+		gitClient := git.NewExecClient()
 
 		root, _ := git.RepoRoot() // may be empty outside a repo
-		gitClient := git.NewExecClient()
-		ctx := cmd.Context()
 
-		deps := DefaultCleanupDeps()
+		deps := DefaultCleanupDeps(tmuxClient)
 
 		if all {
 			store, err := sessionStoreOrAll()
@@ -36,7 +37,7 @@ by default; pass --force to remove them anyway.`,
 				return err
 			}
 			if store != nil {
-				return cleanupAll(ctx, root, store, gitClient, force, deps)
+				return cleanupAll(ctx, root, store, gitClient, force, deps, tmuxClient)
 			}
 			// No session env — could scan all, but require explicit session
 			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
@@ -51,11 +52,11 @@ by default; pass --force to remove them anyway.`,
 			return err
 		}
 		_ = state // cleanupOne will re-load
-		return cleanupOne(ctx, root, store, gitClient, args[0], force, deps)
+		return cleanupOne(ctx, root, store, gitClient, args[0], force, deps, tmuxClient)
 	},
 }
 
-func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClient git.Client, force bool, deps CleanupDeps) error {
+func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClient git.Client, force bool, deps CleanupDeps, tc tmux.Client) error {
 	states, err := store.List()
 	if err != nil {
 		return err
@@ -65,7 +66,10 @@ func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClien
 		return nil
 	}
 	for _, s := range states {
-		if err := cleanupOne(ctx, root, store, gitClient, s.ID, force, deps); err != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := cleanupOne(ctx, root, store, gitClient, s.ID, force, deps, tc); err != nil {
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
@@ -78,14 +82,17 @@ type CleanupDeps struct {
 }
 
 // DefaultCleanupDeps returns CleanupDeps wired to real implementations.
-func DefaultCleanupDeps() CleanupDeps {
+func DefaultCleanupDeps(tc tmux.Client) CleanupDeps {
 	return CleanupDeps{
-		IsRunActive: defaultIsRunActive,
+		IsRunActive: func(state *run.State) bool {
+			return defaultIsRunActive(state, tc)
+		},
 	}
 }
 
 // defaultIsRunActive reports whether the run has a live, non-idle tmux pane or is the current session.
-func defaultIsRunActive(state *run.State) bool {
+func defaultIsRunActive(state *run.State, tc tmux.Client) bool {
+	ctx := context.Background()
 	if state.Type == "session" {
 		if sid := os.Getenv(sessionIDEnv); sid != "" && state.ID == sid {
 			return true
@@ -96,13 +103,13 @@ func defaultIsRunActive(state *run.State) bool {
 		return true
 	}
 
-	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+	if state.DashboardPane != nil && tc.PaneExists(ctx, *state.DashboardPane) {
 		return true
 	}
 	return false
 }
 
-func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClient git.Client, id string, force bool, deps CleanupDeps) error {
+func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClient git.Client, id string, force bool, deps CleanupDeps, tc tmux.Client) error {
 	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("no run found with id: %s", id)
@@ -116,8 +123,8 @@ func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClien
 	fmt.Printf("Cleaning up %s...\n", id)
 
 	// Kill tmux pane if alive
-	if state.TmuxPane != nil && tmux.PaneExists(*state.TmuxPane) {
-		if err := tmux.KillPane(*state.TmuxPane); err == nil {
+	if state.TmuxPane != nil && tc.PaneExists(ctx, *state.TmuxPane) {
+		if err := tc.KillPane(ctx, *state.TmuxPane); err == nil {
 			fmt.Println("  killed tmux pane")
 		} else {
 			slog.Warn("failed to kill tmux pane", "id", id, "pane", *state.TmuxPane, "err", err)
@@ -125,8 +132,8 @@ func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClien
 	}
 
 	// Kill dashboard pane if alive
-	if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
-		if err := tmux.KillPane(*state.DashboardPane); err == nil {
+	if state.DashboardPane != nil && tc.PaneExists(ctx, *state.DashboardPane) {
+		if err := tc.KillPane(ctx, *state.DashboardPane); err == nil {
 			fmt.Println("  killed dashboard pane")
 		} else {
 			slog.Warn("failed to kill dashboard pane", "id", id, "pane", *state.DashboardPane, "err", err)
