@@ -92,11 +92,12 @@ var finalizeCmd = &cobra.Command{
 			return nil
 		}
 
+		ctx := cmd.Context()
 		gitClient := git.NewExecClient()
 
-		syncRunToDataRef(syncRoot, store, gitClient, cfg.DataRef, state)
+		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
 
-		cleanupWorktree(store, gitClient, state)
+		cleanupWorktree(ctx, store, gitClient, state)
 
 		return nil
 	},
@@ -105,7 +106,7 @@ var finalizeCmd = &cobra.Command{
 // cleanupWorktree removes the agent's worktree and local branch after
 // completion. The state file and logs are preserved. It is idempotent —
 // if the worktree is already gone, the state is still cleared.
-func cleanupWorktree(store run.StateStore, gitClient git.Client, state *run.State) {
+func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State) {
 	if state.Worktree == "" {
 		return
 	}
@@ -118,7 +119,6 @@ func cleanupWorktree(store run.StateStore, gitClient git.Client, state *run.Stat
 	if gitRoot == "" {
 		return
 	}
-	ctx := context.TODO()
 	if err := gitClient.WorktreeRemove(ctx, gitRoot, state.Worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
@@ -267,7 +267,7 @@ func ExtractClaudeSessionID(logPath string) string {
 	return ""
 }
 
-func syncRunToDataRef(root string, store run.StateStore, gitClient git.Client, dataRef string, state *run.State) {
+func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gitClient git.Client, dataRef string, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
 		"runs/" + state.ID + ".json": stateFile,
@@ -292,7 +292,6 @@ func syncRunToDataRef(root string, store run.StateStore, gitClient git.Client, d
 		}
 	}
 
-	ctx := context.TODO()
 	if err := gitClient.SyncToDataRef(ctx, root, dataRef, "Run "+state.ID, files); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: sync to data ref: %v\n", err)
 		return

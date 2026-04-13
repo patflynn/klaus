@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"crypto/rand"
 	"fmt"
 	"log/slog"
@@ -66,7 +65,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	root, _ := git.RepoRoot()
 	inRepo := root != ""
 	gitClient := git.NewExecClient()
-	ctx := context.TODO()
+	ctx := cmd.Context()
 
 	cfg, err := config.Load(root)
 	if err != nil {

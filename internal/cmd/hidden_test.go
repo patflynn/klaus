@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,7 +40,7 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		store := &testStateStore{dir: stateDir, state: state}
 
 		// Simulate the cleanup logic from _finalize.
-		cleanupWorktree(store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
 
 		if state.Worktree != "" {
 			t.Errorf("expected Worktree to be cleared, got %q", state.Worktree)
@@ -68,7 +69,7 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		store := &testStateStore{dir: stateDir, state: state}
 
 		// Should not panic or fail — just clears state.
-		cleanupWorktree(store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
 
 		if state.Worktree != "" {
 			t.Errorf("expected Worktree to be cleared, got %q", state.Worktree)
@@ -79,7 +80,7 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		state := &run.State{ID: "test-run", Worktree: ""}
 		store := &testStateStore{state: state}
 
-		cleanupWorktree(store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
 
 		if state.Worktree != "" {
 			t.Errorf("expected empty worktree, got %q", state.Worktree)

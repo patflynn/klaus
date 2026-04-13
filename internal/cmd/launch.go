@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,7 +54,7 @@ are synced back after completion. Use --local to force local execution, or
 		// Host repo — optional when --repo is specified or session target is set
 		hostRoot, _ := git.RepoRoot()
 		gitClient := git.NewExecClient()
-		ctx := context.TODO()
+		ctx := cmd.Context()
 
 		// Load session target (if any) to feed into resolution
 		var sessionTarget string

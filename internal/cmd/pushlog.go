@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -44,7 +43,7 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 
 		fmt.Printf("Force-pushing log for %s (bypassing sensitivity check)...\n", id)
 
-		ctx := context.TODO()
+		ctx := cmd.Context()
 		gitClient := git.NewExecClient()
 
 		stateFile := store.StateDir() + "/" + id + ".json"
