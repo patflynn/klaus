@@ -2,23 +2,33 @@ package git
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
+)
+
+// Timeout constants for git operations.
+const (
+	// networkTimeout is for git commands that talk to a remote (fetch, push, clone).
+	networkTimeout = 2 * time.Minute
+	// localTimeout is for git commands that operate on local data (worktree, branch, rev-parse).
+	localTimeout = 30 * time.Second
 )
 
 // RepoRoot returns the top-level directory of the git repository.
 func RepoRoot() (string, error) {
-	return runGit("", "rev-parse", "--show-toplevel")
+	return runGit(context.Background(), "", "rev-parse", "--show-toplevel")
 }
 
 // CommonDir returns the absolute path to the git common directory.
 // This works from worktrees too (returns the main repo's .git dir).
-func CommonDir() (string, error) {
-	d, err := runGit("", "rev-parse", "--git-common-dir")
+func CommonDir(ctx context.Context) (string, error) {
+	d, err := runGit(ctx, "", "rev-parse", "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
@@ -31,62 +41,62 @@ func CommonDir() (string, error) {
 }
 
 // FetchAll fetches all branches and tags from origin, pruning deleted remote branches.
-func FetchAll(repoDir string) error {
-	_, err := runGit(repoDir, "fetch", "origin", "--prune", "--tags", "--quiet")
+func FetchAll(ctx context.Context, repoDir string) error {
+	_, err := runGitNetwork(ctx, repoDir, "fetch", "origin", "--prune", "--tags", "--quiet")
 	return err
 }
 
 // FetchBranch fetches a branch from origin.
-func FetchBranch(repoDir, branch string) error {
-	_, err := runGit(repoDir, "fetch", "origin", branch, "--quiet")
+func FetchBranch(ctx context.Context, repoDir, branch string) error {
+	_, err := runGitNetwork(ctx, repoDir, "fetch", "origin", branch, "--quiet")
 	return err
 }
 
 // WorktreeAdd creates a new worktree at path on a new branch based on startPoint.
 // If the branch is already checked out in a stale worktree, it prunes and retries once.
-func WorktreeAdd(repoDir, path, branch, startPoint string) error {
-	_, err := runGit(repoDir, "worktree", "add", path, "-b", branch, startPoint, "--quiet")
+func WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) error {
+	_, err := runGit(ctx, repoDir, "worktree", "add", path, "-b", branch, startPoint, "--quiet")
 	if err == nil {
 		return nil
 	}
-	return retryAfterPrune(repoDir, branch, err, func() error {
+	return retryAfterPrune(ctx, repoDir, branch, err, func() error {
 		// Use -B on retry: after pruning a stale worktree the branch ref remains,
 		// so -b (create new) would fail with "branch already exists".
-		_, e := runGit(repoDir, "worktree", "add", path, "-B", branch, startPoint, "--quiet")
+		_, e := runGit(ctx, repoDir, "worktree", "add", path, "-B", branch, startPoint, "--quiet")
 		return e
 	})
 }
 
 // WorktreeRemove removes a worktree. repoDir is the main repo directory.
-func WorktreeRemove(repoDir, path string) error {
-	_, err := runGit(repoDir, "worktree", "remove", "--force", path)
+func WorktreeRemove(ctx context.Context, repoDir, path string) error {
+	_, err := runGit(ctx, repoDir, "worktree", "remove", "--force", path)
 	return err
 }
 
 // WorktreeAddTrack creates a worktree tracking an existing remote branch.
 // It uses -B to force-create/reset the local branch to match origin/<branch>.
 // If the branch is already checked out in a stale worktree, it prunes and retries once.
-func WorktreeAddTrack(repoDir, path, branch string) error {
-	_, err := runGit(repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error {
+	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 	if err == nil {
 		return nil
 	}
-	return retryAfterPrune(repoDir, branch, err, func() error {
-		_, e := runGit(repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+	return retryAfterPrune(ctx, repoDir, branch, err, func() error {
+		_, e := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 		return e
 	})
 }
 
 // WorktreePrune removes stale worktree tracking information.
-func WorktreePrune(repoDir string) error {
-	_, err := runGit(repoDir, "worktree", "prune")
+func WorktreePrune(ctx context.Context, repoDir string) error {
+	_, err := runGit(ctx, repoDir, "worktree", "prune")
 	return err
 }
 
 // worktreePathForBranch returns the worktree path that has the given branch
 // checked out, or "" if not found.
-func worktreePathForBranch(repoDir, branch string) string {
-	out, err := runGit(repoDir, "worktree", "list", "--porcelain")
+func worktreePathForBranch(ctx context.Context, repoDir, branch string) string {
+	out, err := runGit(ctx, repoDir, "worktree", "list", "--porcelain")
 	if err != nil {
 		return ""
 	}
@@ -110,9 +120,9 @@ func worktreePathForBranch(repoDir, branch string) string {
 // retryAfterPrune handles "already used by worktree" errors. If the conflicting
 // worktree is stale (path no longer exists on disk), it prunes and retries.
 // If the worktree is still live, it returns a clear error.
-func retryAfterPrune(repoDir, branch string, origErr error, retry func() error) error {
+func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error, retry func() error) error {
 	// Check whether this branch is recorded in any worktree.
-	wtPath := worktreePathForBranch(repoDir, branch)
+	wtPath := worktreePathForBranch(ctx, repoDir, branch)
 	if wtPath == "" {
 		// Branch is not in any worktree — nothing to prune; return the original error.
 		return origErr
@@ -124,52 +134,52 @@ func retryAfterPrune(repoDir, branch string, origErr error, retry func() error) 
 	}
 
 	// Worktree directory is gone — prune stale entries and retry.
-	if err := WorktreePrune(repoDir); err != nil {
+	if err := WorktreePrune(ctx, repoDir); err != nil {
 		return fmt.Errorf("pruning stale worktrees: %w (original error: %v)", err, origErr)
 	}
 	return retry()
 }
 
 // BranchDelete deletes a local branch.
-func BranchDelete(repoDir, branch string) error {
-	_, err := runGit(repoDir, "branch", "-D", branch)
+func BranchDelete(ctx context.Context, repoDir, branch string) error {
+	_, err := runGit(ctx, repoDir, "branch", "-D", branch)
 	return err
 }
 
 // EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 // initial commit if it doesn't. Uses git plumbing so nothing in the working
 // tree is touched.
-func EnsureDataRef(repoDir, dataRef string) error {
-	_, err := runGit(repoDir, "rev-parse", "--verify", dataRef)
+func EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
+	_, err := runGit(ctx, repoDir, "rev-parse", "--verify", dataRef)
 	if err == nil {
 		return nil // already exists
 	}
 
 	// Create empty tree
-	emptyTree, err := runGit(repoDir, "hash-object", "-t", "tree", "/dev/null")
+	emptyTree, err := runGit(ctx, repoDir, "hash-object", "-t", "tree", "/dev/null")
 	if err != nil {
 		return fmt.Errorf("creating empty tree: %w", err)
 	}
 
 	// Create initial commit
-	initCommit, err := runGitStdin(repoDir, "Initialize klaus run data", "commit-tree", emptyTree)
+	initCommit, err := runGitStdin(ctx, repoDir, "Initialize klaus run data", "commit-tree", emptyTree)
 	if err != nil {
 		return fmt.Errorf("creating initial commit: %w", err)
 	}
 
 	// Update ref
-	_, err = runGit(repoDir, "update-ref", dataRef, initCommit)
+	_, err = runGit(ctx, repoDir, "update-ref", dataRef, initCommit)
 	return err
 }
 
 // SyncToDataRef commits files to the data ref using a temporary index.
 // files is a map of path-in-tree -> local-file-path.
-func SyncToDataRef(repoDir, dataRef, commitMsg string, files map[string]string) error {
-	if err := EnsureDataRef(repoDir, dataRef); err != nil {
+func SyncToDataRef(ctx context.Context, repoDir, dataRef, commitMsg string, files map[string]string) error {
+	if err := EnsureDataRef(ctx, repoDir, dataRef); err != nil {
 		return err
 	}
 
-	parentCommit, err := runGit(repoDir, "rev-parse", dataRef)
+	parentCommit, err := runGit(ctx, repoDir, "rev-parse", dataRef)
 	if err != nil {
 		return fmt.Errorf("resolving data ref: %w", err)
 	}
@@ -183,36 +193,36 @@ func SyncToDataRef(repoDir, dataRef, commitMsg string, files map[string]string) 
 	defer os.Remove(tmpIndexPath)
 
 	// Read current tree into temp index
-	if err := runGitEnv(repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "read-tree", dataRef); err != nil {
+	if err := runGitEnv(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "read-tree", dataRef); err != nil {
 		return fmt.Errorf("reading tree: %w", err)
 	}
 
 	// Add each file
 	for treePath, localPath := range files {
-		blob, err := runGit(repoDir, "hash-object", "-w", localPath)
+		blob, err := runGit(ctx, repoDir, "hash-object", "-w", localPath)
 		if err != nil {
 			return fmt.Errorf("hashing %s: %w", localPath, err)
 		}
 		cacheInfo := fmt.Sprintf("100644,%s,%s", blob, treePath)
-		if err := runGitEnv(repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "update-index", "--add", "--cacheinfo", cacheInfo); err != nil {
+		if err := runGitEnv(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "update-index", "--add", "--cacheinfo", cacheInfo); err != nil {
 			return fmt.Errorf("updating index for %s: %w", treePath, err)
 		}
 	}
 
 	// Write tree
-	newTree, err := runGitOutput(repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "write-tree")
+	newTree, err := runGitOutput(ctx, repoDir, map[string]string{"GIT_INDEX_FILE": tmpIndexPath}, "write-tree")
 	if err != nil {
 		return fmt.Errorf("writing tree: %w", err)
 	}
 
 	// Create commit
-	newCommit, err := runGitStdin(repoDir, commitMsg, "commit-tree", newTree, "-p", parentCommit)
+	newCommit, err := runGitStdin(ctx, repoDir, commitMsg, "commit-tree", newTree, "-p", parentCommit)
 	if err != nil {
 		return fmt.Errorf("creating commit: %w", err)
 	}
 
 	// Update ref
-	_, err = runGit(repoDir, "update-ref", dataRef, newCommit)
+	_, err = runGit(ctx, repoDir, "update-ref", dataRef, newCommit)
 	return err
 }
 
@@ -298,23 +308,23 @@ func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
 
 // EnsureClone clones a repo to destDir if it doesn't already exist.
 // If it already exists, fetches the latest from origin.
-func EnsureClone(cloneURL, destDir string) error {
+func EnsureClone(ctx context.Context, cloneURL, destDir string) error {
 	if _, err := os.Stat(filepath.Join(destDir, ".git")); err == nil {
-		_, fetchErr := runGit(destDir, "fetch", "origin", "--prune", "--tags", "--quiet")
+		_, fetchErr := runGitNetwork(ctx, destDir, "fetch", "origin", "--prune", "--tags", "--quiet")
 		return fetchErr
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destDir), 0o755); err != nil {
 		return fmt.Errorf("creating parent dir: %w", err)
 	}
-	_, err := runGit("", "clone", cloneURL, destDir, "--quiet")
+	_, err := runGitNetwork(ctx, "", "clone", cloneURL, destDir, "--quiet")
 	return err
 }
 
 // PushDataRef pushes the data ref to origin.
-func PushDataRef(repoDir, dataRef string) error {
+func PushDataRef(ctx context.Context, repoDir, dataRef string) error {
 	refspec := fmt.Sprintf("%s:%s", dataRef, dataRef)
-	_, err := runGit(repoDir, "push", "origin", refspec, "--quiet")
+	_, err := runGitNetwork(ctx, repoDir, "push", "origin", refspec, "--quiet")
 	return err
 }
 
@@ -335,9 +345,9 @@ rm -f "$1.bak"
 
 // InstallCommitMsgHook installs a commit-msg hook in the given worktree that
 // strips Claude/Anthropic attribution from commit messages.
-func InstallCommitMsgHook(worktreeDir string) error {
+func InstallCommitMsgHook(ctx context.Context, worktreeDir string) error {
 	// Find the git dir for this worktree
-	gitDir, err := runGit(worktreeDir, "rev-parse", "--git-dir")
+	gitDir, err := runGit(ctx, worktreeDir, "rev-parse", "--git-dir")
 	if err != nil {
 		return fmt.Errorf("finding git dir: %w", err)
 	}
@@ -357,16 +367,28 @@ func InstallCommitMsgHook(worktreeDir string) error {
 
 	// Worktrees use the main repo's hooks by default. Point this worktree
 	// at its own hooks directory so our commit-msg hook actually runs.
-	if _, err := runGit(worktreeDir, "config", "core.hooksPath", hooksDir); err != nil {
+	if _, err := runGit(ctx, worktreeDir, "config", "core.hooksPath", hooksDir); err != nil {
 		return fmt.Errorf("setting core.hooksPath: %w", err)
 	}
 
 	return nil
 }
 
-// runGit executes a git command and returns trimmed stdout.
-func runGit(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// ensureTimeout returns a context with the given default timeout applied if
+// the parent context has no deadline set.
+func ensureTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// runGit executes a local git command and returns trimmed stdout.
+func runGit(ctx context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -374,14 +396,41 @@ func runGit(dir string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s timed out after %s", args[0], localTimeout)
+		}
+		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// runGitNetwork executes a git command that talks to a remote and returns trimmed stdout.
+func runGitNetwork(ctx context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, networkTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s timed out after %s", args[0], networkTimeout)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
 
 // runGitStdin executes a git command with stdin and returns trimmed stdout.
-func runGitStdin(dir, stdin string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func runGitStdin(ctx context.Context, dir, stdin string, args ...string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -390,14 +439,20 @@ func runGitStdin(dir, stdin string, args ...string) (string, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s timed out after %s", args[0], localTimeout)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
 
 // runGitEnv executes a git command with extra env vars (no stdout capture needed for some).
-func runGitEnv(dir string, env map[string]string, args ...string) error {
-	cmd := exec.Command("git", args...)
+func runGitEnv(ctx context.Context, dir string, env map[string]string, args ...string) error {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -408,14 +463,20 @@ func runGitEnv(dir string, env map[string]string, args ...string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("git %s timed out after %s", args[0], localTimeout)
+		}
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return nil
 }
 
 // runGitOutput executes a git command with extra env vars and returns stdout.
-func runGitOutput(dir string, env map[string]string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+func runGitOutput(ctx context.Context, dir string, env map[string]string, args ...string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -427,6 +488,9 @@ func runGitOutput(dir string, env map[string]string, args ...string) (string, er
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git %s timed out after %s", args[0], localTimeout)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, stderr.String())
 	}
 	return strings.TrimSpace(stdout.String()), nil

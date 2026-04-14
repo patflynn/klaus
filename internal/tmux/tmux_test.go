@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -48,7 +49,7 @@ func TestBuildArgsCapturePane(t *testing.T) {
 }
 
 func TestRebalanceLayoutEmptyPane(t *testing.T) {
-	err := RebalanceLayout("")
+	err := RebalanceLayout(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty targetPane, got nil")
 	}

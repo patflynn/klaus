@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -46,11 +47,12 @@ type TmuxDeps struct {
 }
 
 // DefaultTmuxDeps returns TmuxDeps wired to the real tmux package.
+// Uses a background context for the underlying tmux calls.
 func DefaultTmuxDeps() TmuxDeps {
 	return TmuxDeps{
-		PaneExists: tmux.PaneExists,
-		PaneIsIdle: tmux.PaneIsIdle,
-		PaneIsDead: tmux.PaneIsDead,
+		PaneExists: func(paneID string) bool { return tmux.PaneExists(context.Background(), paneID) },
+		PaneIsIdle: func(paneID string) bool { return tmux.PaneIsIdle(context.Background(), paneID) },
+		PaneIsDead: func(paneID string) bool { return tmux.PaneIsDead(context.Background(), paneID) },
 	}
 }
 

@@ -64,57 +64,57 @@ func NewExecClient() *ExecClient { return &ExecClient{} }
 func (c *ExecClient) InSession() bool { return InSession() }
 
 func (c *ExecClient) SplitWindow(ctx context.Context, targetPane, dir, command string) (string, error) {
-	return SplitWindow(targetPane, dir, command)
+	return SplitWindow(ctx, targetPane, dir, command)
 }
 
 func (c *ExecClient) SplitWindowSized(ctx context.Context, targetPane, dir, command, orientation, size string) (string, error) {
-	return SplitWindowSized(targetPane, dir, command, orientation, size)
+	return SplitWindowSized(ctx, targetPane, dir, command, orientation, size)
 }
 
 func (c *ExecClient) SetPaneTitle(ctx context.Context, paneID, title string) error {
-	return SetPaneTitle(paneID, title)
+	return SetPaneTitle(ctx, paneID, title)
 }
 
 func (c *ExecClient) LockPaneTitle(ctx context.Context, paneID string) error {
-	return LockPaneTitle(paneID)
+	return LockPaneTitle(ctx, paneID)
 }
 
 func (c *ExecClient) RebalanceLayout(ctx context.Context, targetPane string) error {
-	return RebalanceLayout(targetPane)
+	return RebalanceLayout(ctx, targetPane)
 }
 
 func (c *ExecClient) SwapPane(ctx context.Context, src, dst string) error {
-	return SwapPane(src, dst)
+	return SwapPane(ctx, src, dst)
 }
 
 func (c *ExecClient) ListWindowPanes(ctx context.Context, targetPane string) ([]string, error) {
-	return ListWindowPanes(targetPane)
+	return ListWindowPanes(ctx, targetPane)
 }
 
 func (c *ExecClient) PaneExists(ctx context.Context, paneID string) bool {
-	return PaneExists(paneID)
+	return PaneExists(ctx, paneID)
 }
 
 func (c *ExecClient) PaneIsDead(ctx context.Context, paneID string) bool {
-	return PaneIsDead(paneID)
+	return PaneIsDead(ctx, paneID)
 }
 
 func (c *ExecClient) PaneIsIdle(ctx context.Context, paneID string) bool {
-	return PaneIsIdle(paneID)
+	return PaneIsIdle(ctx, paneID)
 }
 
 func (c *ExecClient) CapturePane(ctx context.Context, paneID string, history int) (string, error) {
-	return CapturePane(paneID, history)
+	return CapturePane(ctx, paneID, history)
 }
 
 func (c *ExecClient) KillPane(ctx context.Context, paneID string) error {
-	return KillPane(paneID)
+	return KillPane(ctx, paneID)
 }
 
 func (c *ExecClient) SetWindowOption(ctx context.Context, target, option, value string) error {
-	return SetWindowOption(target, option, value)
+	return SetWindowOption(ctx, target, option, value)
 }
 
 func (c *ExecClient) RenameWindow(ctx context.Context, target, name string) error {
-	return RenameWindow(target, name)
+	return RenameWindow(ctx, target, name)
 }
