@@ -295,9 +295,24 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 	// Launch dashboard in a bottom pane before starting Claude.
 	// If a dashboard pane already exists from a prior run, reuse it.
+	// After a tmux server restart pane IDs recycle, so verify the
+	// dashboard pane is actually in our window and isn't the current pane.
 	var dashPane string
 	if currentPane != "" {
-		if state.DashboardPane != nil && tmuxClient.PaneExists(ctx, *state.DashboardPane) {
+		dashOK := false
+		if state.DashboardPane != nil && *state.DashboardPane != currentPane && tmuxClient.PaneExists(ctx, *state.DashboardPane) {
+			// Verify the pane is in the same window
+			windowPanes, listErr := tmuxClient.ListWindowPanes(ctx, currentPane)
+			if listErr == nil {
+				for _, p := range windowPanes {
+					if p == *state.DashboardPane {
+						dashOK = true
+						break
+					}
+				}
+			}
+		}
+		if dashOK {
 			dashPane = *state.DashboardPane
 		} else {
 			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
