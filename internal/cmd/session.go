@@ -176,6 +176,19 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			fmt.Printf("Recreated worktree at %s\n", worktree)
 		}
 
+		// Clear stale tmux pane references from all agent runs in this session.
+		// After a tmux restart, pane IDs recycle and point to unrelated panes.
+		agentStates, _ := store.List()
+		for _, as := range agentStates {
+			if as.Type == "session" || as.TmuxPane == nil {
+				continue
+			}
+			as.TmuxPane = nil
+			if err := store.Save(as); err != nil {
+				slog.Warn("failed to clear stale pane from agent", "id", as.ID, "err", err)
+			}
+		}
+
 		// Build clean state, carrying forward only what matters
 		state = &run.State{
 			ID:              id,
@@ -368,18 +381,7 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 		return
 	}
 
-	// Collect agent runs that still have live tmux panes in our window,
-	// skipping stale ones and panes from recycled tmux IDs.
-	currentPane := os.Getenv("TMUX_PANE")
-	var windowPanes []string
-	if currentPane != "" {
-		windowPanes, _ = tc.ListWindowPanes(ctx, currentPane)
-	}
-	windowPaneSet := make(map[string]bool, len(windowPanes))
-	for _, p := range windowPanes {
-		windowPaneSet[p] = true
-	}
-
+	// Collect agent runs that still have live tmux panes, skipping stale ones.
 	active := make(map[string]*run.State)
 	for _, s := range states {
 		if s.Type == "session" {
@@ -389,7 +391,7 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 			fmt.Printf("  agent %s is stale (orphaned), skipping\n", s.ID)
 			continue
 		}
-		if s.TmuxPane != nil && windowPaneSet[*s.TmuxPane] {
+		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
 			active[s.ID] = s
 		}
 	}
