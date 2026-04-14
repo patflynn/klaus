@@ -205,7 +205,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			continue
 		}
 
-		ps := c.getOrCreateState(prNum)
+		ps := c.getOrCreateState(prNum, status)
 
 		// Update agent running status.
 		wasRunning := ps.AgentRunning
@@ -344,17 +344,36 @@ func (c *Controller) PipelineStates() map[string]*PRPipelineState {
 	return out
 }
 
-func (c *Controller) getOrCreateState(prNum string) *PRPipelineState {
+func (c *Controller) getOrCreateState(prNum string, status *PRStatus) *PRPipelineState {
 	ps, ok := c.prStates[prNum]
 	if !ok {
+		// Seed initial stage from current GitHub status so that session
+		// resume doesn't force already-progressed PRs back to ci_pending.
+		stage := seedStageFromStatus(status)
 		ps = &PRPipelineState{
 			PRNumber:       prNum,
-			Stage:          StageCIPending,
+			Stage:          stage,
 			SeenCommentIDs: make(map[int64]bool),
 		}
 		c.prStates[prNum] = ps
 	}
 	return ps
+}
+
+// seedStageFromStatus returns an appropriate initial pipeline stage based on
+// the PR's current GitHub status. This prevents merged/closed PRs from
+// re-entering the pipeline as ci_pending on session resume.
+func seedStageFromStatus(status *PRStatus) Stage {
+	switch {
+	case status.State == "MERGED":
+		return StageMerged
+	case status.CI == "passing":
+		return StageCIPassed
+	case status.CI == "failing":
+		return StageCIFailed
+	default:
+		return StageCIPending
+	}
 }
 
 // maxLaunchRetries is the maximum number of agent launch retries before going to StageStalled.

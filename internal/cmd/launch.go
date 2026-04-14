@@ -213,6 +213,19 @@ are synced back after completion. Use --local to force local execution, or
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 		}
+
+		// Clean up the worktree if the launch fails after this point.
+		// This prevents stale worktrees from blocking future dispatch retries.
+		var launchSucceeded bool
+		defer func() {
+			if !launchSucceeded {
+				fmt.Fprintf(os.Stderr, "cleaning up worktree after failed launch: %s\n", worktree)
+				if rmErr := gitClient.WorktreeRemove(ctx, repoRoot, worktree); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to remove worktree %s: %v\n", worktree, rmErr)
+				}
+			}
+		}()
+
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
 
@@ -403,6 +416,7 @@ are synced back after completion. Use --local to force local execution, or
 		fmt.Printf("  log:      %s\n", logFile)
 		fmt.Println()
 		fmt.Printf("Agent %s is running. Use 'klaus status' to check progress.\n", id)
+		launchSucceeded = true
 		return nil
 	},
 }
