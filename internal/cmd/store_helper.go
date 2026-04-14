@@ -26,7 +26,16 @@ func tmuxSessionEnvPrefix() string {
 func sessionStore() (run.StateStore, error) {
 	sessionID := os.Getenv(sessionIDEnv)
 	if sessionID == "" {
-		return nil, fmt.Errorf("KLAUS_SESSION_ID is not set (are you inside a klaus session?)")
+		// Fall back to most recent session
+		sessionsDir, err := run.SessionsDir()
+		if err != nil {
+			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and could not find sessions directory: %w", err)
+		}
+		found, err := run.FindMostRecentSession(sessionsDir)
+		if err != nil {
+			return nil, fmt.Errorf("KLAUS_SESSION_ID is not set and no sessions found (are you inside a klaus session?)")
+		}
+		sessionID = found
 	}
 	store, err := run.NewHomeDirStore(sessionID)
 	if err != nil {
