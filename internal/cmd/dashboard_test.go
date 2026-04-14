@@ -969,6 +969,29 @@ func TestWebhookPushTriggersFullRefetch(t *testing.T) {
 	}
 }
 
+func TestQuitCancelsShutdownContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewGitDirStore(tmpDir)
+	cfg := config.Config{}
+	ghClient := gh.NewGHCLIClient("")
+	model := newDashboardModel(store, cfg, ghClient)
+	model.tmuxDeps = testDashboardTmuxDeps()
+
+	cancelled := false
+	model.shutdownCancel = func() { cancelled = true }
+
+	// Simulate pressing 'q'.
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_ = updated
+
+	if !cancelled {
+		t.Error("expected shutdownCancel to be called on quit")
+	}
+	if cmd == nil {
+		t.Error("expected tea.Quit command")
+	}
+}
+
 // Helper functions for tests.
 
 func float64Ptr(f float64) *float64 {

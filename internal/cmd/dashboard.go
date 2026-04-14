@@ -65,27 +65,33 @@ Keyboard shortcuts:
 			fmt.Fprintf(os.Stderr, "warning: loading config: %v\n", err)
 		}
 
+		// Shared context for coordinating graceful shutdown of all subsystems.
+		ctx, cancel := context.WithCancel(cmd.Context())
+
 		ghClient := gh.NewGHCLIClient("")
 		model := newDashboardModel(store, cfg, ghClient)
+		model.shutdownCancel = cancel
+
+		var webhookSrv *webhook.Server
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
 			port := cfg.Webhook.Port
 			if port == 0 {
 				port = 9800
 			}
-			srv := webhook.NewServer(port, cfg.Webhook.Path, ch)
+			webhookSrv = webhook.NewServer(port, cfg.Webhook.Path, ch)
 
-			if err := srv.Listen(); err != nil {
+			if err := webhookSrv.Listen(); err != nil {
 				return fmt.Errorf("webhook server: %w", err)
 			}
 
 			model.webhookCh = ch
 			model.useWebhook = true
 			model.pollEnabled = cfg.Webhook.PollFallback
-			model.webhookAddr = srv.Addr()
+			model.webhookAddr = webhookSrv.Addr()
 
 			go func() {
-				if err := srv.Serve(); err != nil && err != http.ErrServerClosed {
+				if err := webhookSrv.Serve(); err != nil && err != http.ErrServerClosed {
 					fmt.Fprintf(os.Stderr, "webhook server error: %v\n", err)
 				}
 			}()
@@ -93,8 +99,29 @@ Keyboard shortcuts:
 			model.pollEnabled = true
 		}
 
-		p := tea.NewProgram(model, tea.WithAltScreen())
-		_, err = p.Run()
+		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+		finalModel, err := p.Run()
+		cancel()
+
+		// BubbleTea has exited — centralize cleanup of watcher and log file.
+		if m, ok := finalModel.(dashboardModel); ok {
+			if m.watcher != nil {
+				m.watcher.Close()
+			}
+			if m.logFile != nil {
+				m.logFile.Close()
+			}
+		}
+
+		// Gracefully shut down the webhook server so the port is released promptly.
+		if webhookSrv != nil {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			if err := webhookSrv.Shutdown(shutdownCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "webhook server shutdown: %v\n", err)
+			}
+		}
+
 		return err
 	},
 }
@@ -171,6 +198,7 @@ type dashboardModel struct {
 	err            error
 	watcher        *fsnotify.Watcher
 	logFile        *os.File
+	shutdownCancel context.CancelFunc  // cancels the shared shutdown context
 	webhookCh      <-chan webhook.Event // non-nil when webhook mode is active
 	webhookAddr    string              // e.g. "127.0.0.1:9800"
 	useWebhook     bool                // true when webhook server is running
@@ -222,11 +250,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
-			if m.watcher != nil {
-				m.watcher.Close()
-			}
-			if m.logFile != nil {
-				m.logFile.Close()
+			// Cancel the shared context to signal all subsystems to stop.
+			if m.shutdownCancel != nil {
+				m.shutdownCancel()
 			}
 			return m, tea.Quit
 		case "r":
