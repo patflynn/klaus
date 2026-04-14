@@ -115,11 +115,13 @@ var transitions = []transition{
 			notInStageWhileRunning(StageCIFailed),
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			if ps.Stage != StageCIFailed {
+				c.emitEvent(ps.PRNumber, event.AgentCIFailed, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+			}
 			ps.Stage = StageCIFailed
-			c.emitEvent(ps.PRNumber, event.AgentCIFailed, map[string]interface{}{
-				"pr_number": ps.PRNumber,
-				"pr_url":    status.PRURL,
-			})
 			return nil, nil
 		},
 	},
@@ -331,11 +333,13 @@ var transitions = []transition{
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
+			if ps.Stage != StageCIPassed {
+				c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+			}
 			ps.Stage = StageCIPassed
-			c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
-				"pr_number": ps.PRNumber,
-				"pr_url":    status.PRURL,
-			})
 			return nil, nil
 		},
 	},
