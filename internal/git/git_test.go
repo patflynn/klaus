@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,10 +45,11 @@ func initTestRepo(t *testing.T) string {
 }
 
 func TestWorktreeAddRemove(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "worktree1")
 
-	if err := WorktreeAdd(repo, wtPath, "test-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "test-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
 
@@ -56,7 +58,7 @@ func TestWorktreeAddRemove(t *testing.T) {
 		t.Errorf("worktree should contain README.md: %v", err)
 	}
 
-	if err := WorktreeRemove(repo, wtPath); err != nil {
+	if err := WorktreeRemove(ctx, repo, wtPath); err != nil {
 		t.Fatalf("WorktreeRemove: %v", err)
 	}
 
@@ -67,13 +69,14 @@ func TestWorktreeAddRemove(t *testing.T) {
 }
 
 func TestCommonDirFromWorktree(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt")
 
-	if err := WorktreeAdd(repo, wtPath, "test-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "test-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
-	defer WorktreeRemove(repo, wtPath)
+	defer WorktreeRemove(ctx, repo, wtPath)
 
 	// Save original dir and chdir to worktree
 	origDir, err := os.Getwd()
@@ -93,7 +96,7 @@ func TestCommonDirFromWorktree(t *testing.T) {
 	}
 
 	// CommonDir from a worktree returns the main repo's .git dir
-	common, err := CommonDir()
+	common, err := CommonDir(ctx)
 	if err != nil {
 		t.Fatalf("CommonDir: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestCommonDirFromWorktree(t *testing.T) {
 	}
 
 	// The main repo root survives worktree removal.
-	if err := WorktreeRemove(repo, wtPath); err != nil {
+	if err := WorktreeRemove(ctx, repo, wtPath); err != nil {
 		t.Fatalf("WorktreeRemove: %v", err)
 	}
 	if _, err := os.Stat(mainRoot); err != nil {
@@ -115,16 +118,17 @@ func TestCommonDirFromWorktree(t *testing.T) {
 }
 
 func TestEnsureDataRef(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	ref := "refs/klaus/data"
 
 	// First call creates the ref
-	if err := EnsureDataRef(repo, ref); err != nil {
+	if err := EnsureDataRef(ctx, repo, ref); err != nil {
 		t.Fatalf("EnsureDataRef (create): %v", err)
 	}
 
 	// Verify ref exists
-	out, err := runGit(repo, "rev-parse", "--verify", ref)
+	out, err := runGit(ctx, repo, "rev-parse", "--verify", ref)
 	if err != nil {
 		t.Fatalf("ref should exist: %v", err)
 	}
@@ -133,12 +137,13 @@ func TestEnsureDataRef(t *testing.T) {
 	}
 
 	// Second call is idempotent
-	if err := EnsureDataRef(repo, ref); err != nil {
+	if err := EnsureDataRef(ctx, repo, ref); err != nil {
 		t.Fatalf("EnsureDataRef (idempotent): %v", err)
 	}
 }
 
 func TestSyncToDataRef(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	ref := "refs/klaus/data"
 
@@ -152,12 +157,12 @@ func TestSyncToDataRef(t *testing.T) {
 		"runs/test-123.json": tmpFile,
 	}
 
-	if err := SyncToDataRef(repo, ref, "Run test-123", files); err != nil {
+	if err := SyncToDataRef(ctx, repo, ref, "Run test-123", files); err != nil {
 		t.Fatalf("SyncToDataRef: %v", err)
 	}
 
 	// Verify the file is in the data ref tree
-	out, err := runGit(repo, "ls-tree", "-r", "--name-only", ref)
+	out, err := runGit(ctx, repo, "ls-tree", "-r", "--name-only", ref)
 	if err != nil {
 		t.Fatalf("ls-tree: %v", err)
 	}
@@ -166,7 +171,7 @@ func TestSyncToDataRef(t *testing.T) {
 	}
 
 	// Verify content
-	content, err := runGit(repo, "show", ref+":runs/test-123.json")
+	content, err := runGit(ctx, repo, "show", ref+":runs/test-123.json")
 	if err != nil {
 		t.Fatalf("show: %v", err)
 	}
@@ -176,6 +181,7 @@ func TestSyncToDataRef(t *testing.T) {
 }
 
 func TestSyncToDataRefMultipleFiles(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	ref := "refs/klaus/data"
 
@@ -186,15 +192,15 @@ func TestSyncToDataRefMultipleFiles(t *testing.T) {
 	os.WriteFile(f2, []byte("log"), 0o644)
 
 	files := map[string]string{
-		"runs/a.json": f1,
+		"runs/a.json":  f1,
 		"logs/a.jsonl": f2,
 	}
 
-	if err := SyncToDataRef(repo, ref, "Run a", files); err != nil {
+	if err := SyncToDataRef(ctx, repo, ref, "Run a", files); err != nil {
 		t.Fatalf("SyncToDataRef: %v", err)
 	}
 
-	out, err := runGit(repo, "ls-tree", "-r", "--name-only", ref)
+	out, err := runGit(ctx, repo, "ls-tree", "-r", "--name-only", ref)
 	if err != nil {
 		t.Fatalf("ls-tree: %v", err)
 	}
@@ -368,15 +374,16 @@ func TestParseRepoRefSSH(t *testing.T) {
 }
 
 func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook")
 
-	if err := WorktreeAdd(repo, wtPath, "hook-test", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "hook-test", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
-	defer WorktreeRemove(repo, wtPath)
+	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -396,7 +403,7 @@ func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
 	}
 
 	// Verify the Co-Authored-By line was stripped
-	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	msg, err := runGit(ctx, wtPath, "log", "-1", "--format=%B")
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}
@@ -409,15 +416,16 @@ func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
 }
 
 func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-human")
 
-	if err := WorktreeAdd(repo, wtPath, "hook-human-test", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "hook-human-test", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
-	defer WorktreeRemove(repo, wtPath)
+	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -435,7 +443,7 @@ func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
 		}
 	}
 
-	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	msg, err := runGit(ctx, wtPath, "log", "-1", "--format=%B")
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}
@@ -445,15 +453,16 @@ func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
 }
 
 func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-clean")
 
-	if err := WorktreeAdd(repo, wtPath, "hook-clean-test", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "hook-clean-test", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
-	defer WorktreeRemove(repo, wtPath)
+	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -471,7 +480,7 @@ func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
 		}
 	}
 
-	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	msg, err := runGit(ctx, wtPath, "log", "-1", "--format=%B")
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}
@@ -481,15 +490,16 @@ func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
 }
 
 func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-multi")
 
-	if err := WorktreeAdd(repo, wtPath, "hook-multi-test", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "hook-multi-test", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
-	defer WorktreeRemove(repo, wtPath)
+	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -509,7 +519,7 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 		}
 	}
 
-	msg, err := runGit(wtPath, "log", "-1", "--format=%B")
+	msg, err := runGit(ctx, wtPath, "log", "-1", "--format=%B")
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}
@@ -525,11 +535,12 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 }
 
 func TestWorktreeAdd_PrunesStaleAndRetries(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 
 	// Create a worktree, then delete its directory to make it stale
 	stalePath := filepath.Join(t.TempDir(), "stale-wt")
-	if err := WorktreeAdd(repo, stalePath, "stale-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, stalePath, "stale-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd (setup): %v", err)
 	}
 	// Remove the worktree directory without telling git — makes it stale
@@ -539,10 +550,10 @@ func TestWorktreeAdd_PrunesStaleAndRetries(t *testing.T) {
 
 	// Now try to create a new worktree on the same branch — should auto-prune and succeed
 	newPath := filepath.Join(t.TempDir(), "new-wt")
-	if err := WorktreeAdd(repo, newPath, "stale-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, newPath, "stale-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd should recover from stale worktree: %v", err)
 	}
-	defer WorktreeRemove(repo, newPath)
+	defer WorktreeRemove(ctx, repo, newPath)
 
 	// Verify the new worktree exists
 	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
@@ -551,6 +562,7 @@ func TestWorktreeAdd_PrunesStaleAndRetries(t *testing.T) {
 }
 
 func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 
 	// Create a local bare repo as "origin" with a feature branch
@@ -559,21 +571,21 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("bare clone: %v\n%s", err, out)
 	}
-	if _, err := runGit(repo, "remote", "add", "origin", bareDir); err != nil {
-		runGit(repo, "remote", "set-url", "origin", bareDir)
+	if _, err := runGit(ctx, repo, "remote", "add", "origin", bareDir); err != nil {
+		runGit(ctx, repo, "remote", "set-url", "origin", bareDir)
 	}
 
 	// Create and push a feature branch
-	if _, err := runGit(repo, "branch", "feature-x"); err != nil {
+	if _, err := runGit(ctx, repo, "branch", "feature-x"); err != nil {
 		t.Fatalf("branch: %v", err)
 	}
-	if _, err := runGit(repo, "push", "origin", "feature-x"); err != nil {
+	if _, err := runGit(ctx, repo, "push", "origin", "feature-x"); err != nil {
 		t.Fatalf("push: %v", err)
 	}
 
 	// Create a worktree tracking origin/feature-x, then make it stale
 	stalePath := filepath.Join(t.TempDir(), "stale-track")
-	if err := WorktreeAddTrack(repo, stalePath, "feature-x"); err != nil {
+	if err := WorktreeAddTrack(ctx, repo, stalePath, "feature-x"); err != nil {
 		t.Fatalf("WorktreeAddTrack (setup): %v", err)
 	}
 	if err := os.RemoveAll(stalePath); err != nil {
@@ -582,10 +594,10 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 
 	// Retry should prune and succeed
 	newPath := filepath.Join(t.TempDir(), "new-track")
-	if err := WorktreeAddTrack(repo, newPath, "feature-x"); err != nil {
+	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-x"); err != nil {
 		t.Fatalf("WorktreeAddTrack should recover from stale worktree: %v", err)
 	}
-	defer WorktreeRemove(repo, newPath)
+	defer WorktreeRemove(ctx, repo, newPath)
 
 	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
 		t.Errorf("new worktree should contain README.md: %v", err)
@@ -593,18 +605,19 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 }
 
 func TestWorktreeAdd_LiveWorktreeReturnsError(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 
 	// Create a worktree that's still live (directory exists)
 	livePath := filepath.Join(t.TempDir(), "live-wt")
-	if err := WorktreeAdd(repo, livePath, "live-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, livePath, "live-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd (setup): %v", err)
 	}
-	defer WorktreeRemove(repo, livePath)
+	defer WorktreeRemove(ctx, repo, livePath)
 
 	// Try to create another worktree on the same branch — should fail with a clear error
 	otherPath := filepath.Join(t.TempDir(), "other-wt")
-	err := WorktreeAdd(repo, otherPath, "live-branch", "main")
+	err := WorktreeAdd(ctx, repo, otherPath, "live-branch", "main")
 	if err == nil {
 		t.Fatal("WorktreeAdd should fail when branch is in a live worktree")
 	}
@@ -617,23 +630,24 @@ func TestWorktreeAdd_LiveWorktreeReturnsError(t *testing.T) {
 }
 
 func TestWorktreePrune(t *testing.T) {
+	ctx := context.Background()
 	repo := initTestRepo(t)
 
 	// Create a worktree, delete its directory, then prune
 	wtPath := filepath.Join(t.TempDir(), "prune-wt")
-	if err := WorktreeAdd(repo, wtPath, "prune-branch", "main"); err != nil {
+	if err := WorktreeAdd(ctx, repo, wtPath, "prune-branch", "main"); err != nil {
 		t.Fatalf("WorktreeAdd: %v", err)
 	}
 	os.RemoveAll(wtPath)
 
-	if err := WorktreePrune(repo); err != nil {
+	if err := WorktreePrune(ctx, repo); err != nil {
 		t.Fatalf("WorktreePrune: %v", err)
 	}
 
 	// After prune, creating a worktree on the same branch should work
 	// (using -B since the branch ref still exists after prune)
 	newPath := filepath.Join(t.TempDir(), "after-prune")
-	_, err := runGit(repo, "worktree", "add", newPath, "-B", "prune-branch", "main", "--quiet")
+	_, err := runGit(ctx, repo, "worktree", "add", newPath, "-B", "prune-branch", "main", "--quiet")
 	if err != nil {
 		t.Fatalf("worktree add after prune should succeed: %v", err)
 	}

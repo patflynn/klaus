@@ -69,7 +69,7 @@ func FetchReviewThreads(owner, repo string, prNumber int) ([]ReviewThread, error
 type graphQLRunner func(query string) ([]byte, error)
 
 func defaultGraphQLRunner(query string) ([]byte, error) {
-	return NewGHCLIClient("").runGraphQL(query)
+	return NewGHCLIClient("").runGraphQL(context.TODO(), query)
 }
 
 func fetchReviewThreadsWithRunner(query string, runner graphQLRunner) ([]ReviewThread, error) {
