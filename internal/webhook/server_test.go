@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -378,6 +379,46 @@ func TestServerListenThenServe(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
 	}
+}
+
+func TestServerGracefulShutdownReleasesPort(t *testing.T) {
+	ch := make(chan Event, 10)
+	srv := NewServer(0, "/webhook/github", ch)
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	addr := srv.Addr()
+
+	go func() {
+		_ = srv.Serve()
+	}()
+
+	// Verify the server is accepting connections.
+	url := "http://" + addr + "/webhook/github"
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("server not reachable: %v", err)
+	}
+	resp.Body.Close()
+
+	// Shut down with a deadline.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	// The port should be released — we can bind a new server on the same address.
+	srv2 := NewServer(0, "/webhook/github", ch)
+	// Extract the port from the original address to reuse it.
+	_, port, _ := net.SplitHostPort(addr)
+	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatalf("port not released after shutdown: %v", err)
+	}
+	ln.Close()
+	_ = srv2 // suppress unused warning
 }
 
 func TestEventIsInvalidationSignal(t *testing.T) {
