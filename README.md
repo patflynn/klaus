@@ -1,6 +1,6 @@
 # klaus
 
-[![CI](https://github.com/patflynn/klaus/actions/workflows/ci.yml/badge.svg)](https://github.com/patflynn/klaus/actions/workflows/ci.yml)
+[![Build Status](https://github.com/patflynn/klaus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/patflynn/klaus/actions/workflows/ci.yml)
 
 Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Start a normal Claude Code session that can fan out work to parallel autonomous agents, each in its own git worktree and tmux pane.
 
