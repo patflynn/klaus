@@ -377,6 +377,9 @@ func InstallCommitMsgHook(ctx context.Context, worktreeDir string) error {
 // ensureTimeout returns a context with the given default timeout applied if
 // the parent context has no deadline set.
 func ensureTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
 	}

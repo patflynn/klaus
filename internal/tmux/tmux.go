@@ -185,6 +185,9 @@ func BuildArgs(op string, args ...string) []string {
 // context has no deadline set. If the parent already has a shorter deadline,
 // it is returned unchanged.
 func ensureTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
 	}
