@@ -135,13 +135,15 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	var state *run.State
 
 	if resuming {
-		// Load existing state for the session being resumed
-		state, err = store.Load(id)
+		// Load existing state — only carry forward Claude session ID,
+		// worktree path, and repo root. All ephemeral state (pane IDs,
+		// etc.) starts clean to avoid stale references after tmux restarts.
+		prevState, err := store.Load(id)
 		if err != nil {
 			return fmt.Errorf("loading session state: %w", err)
 		}
-		branch = state.Branch
-		worktree = state.Worktree
+		worktree = prevState.Worktree
+		branch = prevState.Branch
 		if branch != "" {
 			repoName = filepath.Base(filepath.Dir(worktree))
 		} else if inRepo {
@@ -151,15 +153,13 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		// Verify worktree still exists; recreate if cleaned up
 		if _, statErr := os.Stat(worktree); os.IsNotExist(statErr) {
 			if branch == "" {
-				// Non-repo session: recreate scratch workspace
 				if err := os.MkdirAll(worktree, 0o755); err != nil {
 					return fmt.Errorf("recreating scratch workspace: %w", err)
 				}
 			} else {
-				// Repo session: recreate worktree using the original repo root
 				baseRepo := root
-				if state.RepoRoot != nil && *state.RepoRoot != "" {
-					baseRepo = *state.RepoRoot
+				if prevState.RepoRoot != nil && *prevState.RepoRoot != "" {
+					baseRepo = *prevState.RepoRoot
 				}
 				if baseRepo == "" {
 					return fmt.Errorf("session worktree no longer exists and no repo root available: %s", worktree)
@@ -176,20 +176,19 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			fmt.Printf("Recreated worktree at %s\n", worktree)
 		}
 
-		// Clear stale tmux pane references and persist immediately
-		modified := false
-		if state.TmuxPane != nil && !tmuxClient.PaneExists(ctx, *state.TmuxPane) {
-			state.TmuxPane = nil
-			modified = true
+		// Build clean state, carrying forward only what matters
+		state = &run.State{
+			ID:              id,
+			Type:            "session",
+			Prompt:          "(interactive session)",
+			Branch:          branch,
+			Worktree:        worktree,
+			CreatedAt:       prevState.CreatedAt,
+			RepoRoot:        prevState.RepoRoot,
+			ClaudeSessionID: prevState.ClaudeSessionID,
 		}
-		if state.DashboardPane != nil && !tmuxClient.PaneExists(ctx, *state.DashboardPane) {
-			state.DashboardPane = nil
-			modified = true
-		}
-		if modified {
-			if err := store.Save(state); err != nil {
-				slog.Warn("failed to save state after clearing stale panes", "id", state.ID, "err", err)
-			}
+		if err := store.Save(state); err != nil {
+			return fmt.Errorf("saving refreshed session state: %w", err)
 		}
 
 		fmt.Printf("Resuming coordinator session %s...\n", id)
@@ -294,22 +293,17 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	fmt.Println()
 
 	// Launch dashboard in a bottom pane before starting Claude.
-	// If a dashboard pane already exists from a prior run, reuse it.
 	var dashPane string
 	if currentPane != "" {
-		if state.DashboardPane != nil && tmuxClient.PaneExists(ctx, *state.DashboardPane) {
-			dashPane = *state.DashboardPane
+		dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
+		paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
 		} else {
-			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
-			paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
-			} else {
-				dashPane = paneID
-				state.DashboardPane = &dashPane
-				if err := store.Save(state); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not persist dashboard pane: %v\n", err)
-				}
+			dashPane = paneID
+			state.DashboardPane = &dashPane
+			if err := store.Save(state); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not persist dashboard pane: %v\n", err)
 			}
 		}
 	}
