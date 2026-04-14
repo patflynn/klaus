@@ -639,6 +639,21 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 	if err := tc.SwapPane(ctx, dashPane, lastPane); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not pin dashboard to bottom: %v\n", err)
 	}
+
+	// Also pin the coordinator pane (the session's TmuxPane) to the top.
+	// After even-vertical rebalancing, agents may end up above the coordinator.
+	if s.TmuxPane != nil {
+		// Re-read the pane list after the dashboard swap
+		panes, err = tc.ListWindowPanes(ctx, currentPane)
+		if err == nil && len(panes) > 1 && panes[0] != *s.TmuxPane {
+			for _, p := range panes {
+				if p == *s.TmuxPane {
+					_ = tc.SwapPane(ctx, p, panes[0])
+					break
+				}
+			}
+		}
+	}
 }
 
 func init() {
