@@ -440,11 +440,11 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 			}
 			reapFinishedAgents(ctx, store, tc, active)
 
-		case _, ok := <-watcher.Errors:
+		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}
-			// Ignore transient watcher errors.
+			slog.Debug("ignoring transient watcher error", "err", err)
 
 		case <-fallbackTicker.C:
 			reapFinishedAgents(ctx, store, tc, active)
@@ -469,11 +469,13 @@ func reapFinishedAgents(ctx context.Context, store run.StateStore, tc tmux.Clien
 		}
 
 		if !s.IsAgentRunningWith(td) {
-			fmt.Printf("  agent %s finished, closing pane\n", s.ID)
-			if s.TmuxPane != nil {
+			if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
+				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
 				if err := tc.KillPane(ctx, *s.TmuxPane); err != nil {
 					slog.Warn("failed to kill agent pane", "id", s.ID, "pane", *s.TmuxPane, "err", err)
 				}
+			} else {
+				fmt.Printf("  agent %s finished\n", s.ID)
 			}
 			delete(active, id)
 		}
