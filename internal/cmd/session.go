@@ -368,7 +368,18 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 		return
 	}
 
-	// Collect agent runs that still have live tmux panes, skipping stale ones.
+	// Collect agent runs that still have live tmux panes in our window,
+	// skipping stale ones and panes from recycled tmux IDs.
+	currentPane := os.Getenv("TMUX_PANE")
+	var windowPanes []string
+	if currentPane != "" {
+		windowPanes, _ = tc.ListWindowPanes(ctx, currentPane)
+	}
+	windowPaneSet := make(map[string]bool, len(windowPanes))
+	for _, p := range windowPanes {
+		windowPaneSet[p] = true
+	}
+
 	active := make(map[string]*run.State)
 	for _, s := range states {
 		if s.Type == "session" {
@@ -378,7 +389,7 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 			fmt.Printf("  agent %s is stale (orphaned), skipping\n", s.ID)
 			continue
 		}
-		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
+		if s.TmuxPane != nil && windowPaneSet[*s.TmuxPane] {
 			active[s.ID] = s
 		}
 	}
