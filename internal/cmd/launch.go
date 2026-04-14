@@ -220,7 +220,7 @@ are synced back after completion. Use --local to force local execution, or
 		defer func() {
 			if !launchSucceeded {
 				fmt.Fprintf(os.Stderr, "cleaning up worktree after failed launch: %s\n", worktree)
-				if rmErr := gitClient.WorktreeRemove(ctx, repoRoot, worktree); rmErr != nil {
+				if rmErr := gitClient.WorktreeRemove(context.Background(), repoRoot, worktree); rmErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to remove worktree %s: %v\n", worktree, rmErr)
 				}
 			}

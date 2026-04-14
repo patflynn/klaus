@@ -361,12 +361,10 @@ func (c *Controller) getOrCreateState(prNum string, status *PRStatus) *PRPipelin
 }
 
 // seedStageFromStatus returns an appropriate initial pipeline stage based on
-// the PR's current GitHub status. This prevents merged/closed PRs from
-// re-entering the pipeline as ci_pending on session resume.
+// the PR's current GitHub status. Merged/closed PRs are filtered out before
+// this function is called, so only open-PR statuses are handled here.
 func seedStageFromStatus(status *PRStatus) Stage {
 	switch {
-	case status.State == "MERGED":
-		return StageMerged
 	case status.CI == "passing":
 		return StageCIPassed
 	case status.CI == "failing":
