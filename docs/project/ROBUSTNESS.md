@@ -45,28 +45,16 @@ Two cross-cutting principles guide this work:
 | Issue | PR | Title |
 |-------|-----|-------|
 | [#194](https://github.com/patflynn/klaus/issues/194) | #209 | GitHub interface — defined + consumers migrated |
-| [#195](https://github.com/patflynn/klaus/issues/195) | #212 | Tmux interface — defined (consumers not yet migrated) |
-| [#196](https://github.com/patflynn/klaus/issues/196) | #211 | Git interface — defined (consumers not yet migrated) |
+| [#195](https://github.com/patflynn/klaus/issues/195) | #212 | Tmux interface — defined + consumers migrated (#222) |
+| [#196](https://github.com/patflynn/klaus/issues/196) | #211 | Git interface — defined + consumers migrated (#220) |
 | [#197](https://github.com/patflynn/klaus/issues/197) | #214 | Unify webhook/polling — webhooks as invalidation signals |
 | [#198](https://github.com/patflynn/klaus/issues/198) | #215 | Pipeline decide/execute split — mutex no longer held during I/O |
 | [#199](https://github.com/patflynn/klaus/issues/199) | #216 | Stale run detection and recovery |
 | [#205](https://github.com/patflynn/klaus/issues/205) | #210 | Log cleanup/finalization errors |
 | [#202](https://github.com/patflynn/klaus/issues/202) | #219 | Remove global mutable function pointers — use DI |
-
-### In Progress
-
-| Issue | PR | Title |
-|-------|-----|-------|
-| [#217](https://github.com/patflynn/klaus/issues/217) | — | Thread git.Client through all consumers |
-
-### Remaining — Interface Consumer Migration
-
-The interfaces are defined but tmux and git consumers still call package-level
-functions directly. These issues complete the decoupling:
-
-| Issue | Title | Key Concern |
-|-------|-------|-------------|
-| [#218](https://github.com/patflynn/klaus/issues/218) | Thread tmux.Client through consumers | launch, cleanup, session, dashboard, run.State |
+| [#217](https://github.com/patflynn/klaus/issues/217) | #220 | Thread git.Client through all consumers |
+| [#218](https://github.com/patflynn/klaus/issues/218) | #222 | Thread tmux.Client through all consumers |
+| [#207](https://github.com/patflynn/klaus/issues/207) | #221 | Table-driven pipeline FSM — explicit transitions |
 
 ### Remaining — Structural Cleanup
 
@@ -82,7 +70,6 @@ functions directly. These issues complete the decoupling:
 | [#203](https://github.com/patflynn/klaus/issues/203) | Add subprocess timeouts | Prevent indefinite hangs |
 | [#204](https://github.com/patflynn/klaus/issues/204) | Graceful shutdown coordination | Clean teardown of all subsystems |
 | [#206](https://github.com/patflynn/klaus/issues/206) | Event-driven agent completion | Replace polling with fsnotify |
-| [#207](https://github.com/patflynn/klaus/issues/207) | Table-driven pipeline FSM | Explicit transitions, easier to extend |
 
 ### Future Direction
 
@@ -93,16 +80,16 @@ functions directly. These issues complete the decoupling:
 ## Suggested Execution Order
 
 ```
-#217 (git consumer migration)  ─┐
-#218 (tmux consumer migration)  ├─→ #200 (Split dashboard)
-✅ #202 (Remove globals)        ─┘
+✅ #217 (git consumer migration)  ─┐
+✅ #218 (tmux consumer migration)  ├─→ #200 (Split dashboard) ← NEXT
+✅ #202 (Remove globals)           ─┘
 
 Independent (any time):
   #201 (Canonicalize store)
-  #203 (Timeouts) — best done after consumer migration
+  #203 (Timeouts)
   #204 (Graceful shutdown)
   #206 (Event-driven completion)
-  #207 (Table-driven FSM) — builds on #198
+  ✅ #207 (Table-driven FSM)
 ```
 
 ## Non-Goals
