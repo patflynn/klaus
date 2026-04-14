@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/patflynn/klaus/internal/event"
-	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -31,11 +30,7 @@ Use --all to show all events, or --json for machine-readable output.`,
 			return err
 		}
 
-		hds, ok := store.(*run.HomeDirStore)
-		if !ok {
-			return fmt.Errorf("unexpected store type")
-		}
-		baseDir := hds.BaseDir()
+		baseDir := filepath.Dir(store.StateDir())
 		log := event.NewLog(baseDir)
 
 		var events []event.Event

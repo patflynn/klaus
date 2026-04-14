@@ -79,9 +79,7 @@ func buildRepoResolver(store run.StateStore, repoFlag string) func(string) strin
 
 	var sessionTarget string
 	if store != nil {
-		if hds, ok := store.(*run.HomeDirStore); ok {
-			sessionTarget, _ = run.LoadTarget(hds.BaseDir())
-		}
+		sessionTarget, _ = run.LoadTarget(filepath.Dir(store.StateDir()))
 	}
 
 	return func(prNumber string) string {
