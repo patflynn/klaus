@@ -31,27 +31,19 @@ by default; pass --force to remove them anyway.`,
 
 		deps := DefaultCleanupDeps(tmuxClient)
 
+		store, err := sessionStore()
+		if err != nil {
+			return err
+		}
+
 		if all {
-			store, err := sessionStoreOrAll()
-			if err != nil {
-				return err
-			}
-			if store != nil {
-				return cleanupAll(ctx, root, store, gitClient, force, deps, tmuxClient)
-			}
-			// No session env — could scan all, but require explicit session
-			return fmt.Errorf("KLAUS_SESSION_ID not set; specify a run ID or run inside a session")
+			return cleanupAll(ctx, root, store, gitClient, force, deps, tmuxClient)
 		}
 
 		if len(args) != 1 {
 			return fmt.Errorf("usage: klaus cleanup <run-id> or klaus cleanup --all")
 		}
 
-		state, store, err := loadStateFromEnvOrAll(args[0])
-		if err != nil {
-			return err
-		}
-		_ = state // cleanupOne will re-load
 		return cleanupOne(ctx, root, store, gitClient, args[0], force, deps, tmuxClient)
 	},
 }

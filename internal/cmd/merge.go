@@ -71,21 +71,15 @@ func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag 
 // buildRepoResolver returns a function that resolves the target repo for a given PR number.
 // Priority: run state pr_url match > --repo flag > session target > "" (existing behavior).
 func buildRepoResolver(store run.StateStore, repoFlag string) func(string) string {
-	// Pre-load states and session target once.
+	// Pre-load states and session target once from the provided store.
 	var states []*run.State
 	if store != nil {
 		states, _ = store.List()
-	} else {
-		states, _, _ = listStatesFromEnvOrAll()
 	}
 
 	var sessionTarget string
-	if store == nil {
-		if s, err := sessionStore(); err == nil {
-			if hds, ok := s.(*run.HomeDirStore); ok {
-				sessionTarget, _ = run.LoadTarget(hds.BaseDir())
-			}
-		}
+	if store != nil {
+		sessionTarget, _ = run.LoadTarget(filepath.Dir(store.StateDir()))
 	}
 
 	return func(prNumber string) string {
@@ -116,9 +110,7 @@ func buildApprovalChecker(store run.StateStore) func(string) bool {
 	return func(prNumber string) bool {
 		// Check internal approval state first.
 		var states []*run.State
-		if store == nil {
-			states, _, _ = listStatesFromEnvOrAll()
-		} else {
+		if store != nil {
 			states, _ = store.List()
 		}
 

@@ -47,11 +47,8 @@ Keyboard shortcuts:
   q  quit
   r  force refresh`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		store, err := sessionStoreOrAll()
+		store, err := sessionStore()
 		if err != nil {
-			return err
-		}
-		if store == nil {
 			return fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
 		}
 

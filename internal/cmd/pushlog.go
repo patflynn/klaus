@@ -28,9 +28,13 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 			return err
 		}
 
-		state, store, err := loadStateFromEnvOrAll(id)
+		store, err := sessionStore()
 		if err != nil {
 			return err
+		}
+		state, err := store.Load(id)
+		if err != nil {
+			return fmt.Errorf("no run found with id: %s", id)
 		}
 
 		if state.LogFile == nil {
