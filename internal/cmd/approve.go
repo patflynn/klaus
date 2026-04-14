@@ -25,7 +25,11 @@ Use --all to approve all merge-ready PRs.`,
 			return fmt.Errorf("specify PR numbers, --run <id>, or --all")
 		}
 
-		states, store, err := listStatesFromEnvOrAll()
+		store, err := sessionStore()
+		if err != nil {
+			return err
+		}
+		states, err := store.List()
 		if err != nil {
 			return err
 		}
@@ -35,7 +39,7 @@ Use --all to approve all merge-ready PRs.`,
 		}
 
 		if runID != "" {
-			return approveByRunID(runID)
+			return approveByRunID(runID, store)
 		}
 
 		return approveByPRNumbers(args, states, store)
@@ -65,8 +69,8 @@ func approveAll(states []*run.State, store run.StateStore) error {
 	return nil
 }
 
-func approveByRunID(id string) error {
-	state, store, err := loadStateFromEnvOrAll(id)
+func approveByRunID(id string, store run.StateStore) error {
+	state, err := store.Load(id)
 	if err != nil {
 		return fmt.Errorf("run %s not found: %w", id, err)
 	}
@@ -108,21 +112,12 @@ func markApproved(s *run.State, store run.StateStore) error {
 	return nil
 }
 
-// findRunByPR finds a run state matching a PR number. If store is non-nil,
-// saves are directed there; otherwise scans all sessions.
+// findRunByPR finds a run state matching a PR number in the given store.
 func findRunByPR(prNumber string, states []*run.State, store run.StateStore) (*run.State, run.StateStore, error) {
 	prNumber = strings.TrimPrefix(prNumber, "#")
 	for _, s := range states {
 		if extractPRNumber(s) == prNumber {
-			if store != nil {
-				return s, store, nil
-			}
-			// Need to find the store for this state when scanning all sessions
-			_, foundStore, err := loadStateFromEnvOrAll(s.ID)
-			if err != nil {
-				return nil, nil, fmt.Errorf("found run %s but could not load its state store: %w", s.ID, err)
-			}
-			return s, foundStore, nil
+			return s, store, nil
 		}
 	}
 	return nil, nil, fmt.Errorf("no run with PR #%s", prNumber)

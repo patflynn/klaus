@@ -30,9 +30,13 @@ Modes:
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
-		state, _, err := loadStateFromEnvOrAll(id)
+		store, err := sessionStore()
 		if err != nil {
 			return err
+		}
+		state, err := store.Load(id)
+		if err != nil {
+			return fmt.Errorf("no run found with id: %s", id)
 		}
 
 		if raw {

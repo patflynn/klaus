@@ -26,42 +26,31 @@ Use --all to show all events, or --json for machine-readable output.`,
 		showAll, _ := cmd.Flags().GetBool("all")
 		jsonOut, _ := cmd.Flags().GetBool("json")
 
-		store, err := sessionStoreOrAll()
+		store, err := sessionStore()
 		if err != nil {
 			return err
 		}
 
-		// Collect events from session or all sessions
+		hds, ok := store.(*run.HomeDirStore)
+		if !ok {
+			return fmt.Errorf("unexpected store type")
+		}
+		baseDir := hds.BaseDir()
+		log := event.NewLog(baseDir)
+
 		var events []event.Event
-		var baseDir string
-
-		if store != nil {
-			hds, ok := store.(*run.HomeDirStore)
-			if !ok {
-				return fmt.Errorf("unexpected store type")
-			}
-			baseDir = hds.BaseDir()
-			log := event.NewLog(baseDir)
-
-			if showAll {
-				events, err = log.Read()
-			} else {
-				marker := loadMarker(baseDir)
-				var newMarker string
-				events, newMarker, err = log.ReadSince(marker)
-				if err == nil {
-					saveMarker(baseDir, newMarker)
-				}
-			}
-			if err != nil {
-				return fmt.Errorf("reading events: %w", err)
-			}
+		if showAll {
+			events, err = log.Read()
 		} else {
-			// No active session — scan all sessions
-			events, err = readAllSessionEvents()
-			if err != nil {
-				return fmt.Errorf("reading events: %w", err)
+			marker := loadMarker(baseDir)
+			var newMarker string
+			events, newMarker, err = log.ReadSince(marker)
+			if err == nil {
+				saveMarker(baseDir, newMarker)
 			}
+		}
+		if err != nil {
+			return fmt.Errorf("reading events: %w", err)
 		}
 
 		if jsonOut {
@@ -199,37 +188,6 @@ func saveMarker(baseDir, marker string) {
 	if err := os.WriteFile(filepath.Join(baseDir, markerFile), []byte(marker+"\n"), 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save notification marker: %v\n", err)
 	}
-}
-
-// readAllSessionEvents reads events from all session directories.
-func readAllSessionEvents() ([]event.Event, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	sessionsDir := filepath.Join(home, ".klaus", "sessions")
-	entries, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var all []event.Event
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		baseDir := filepath.Join(sessionsDir, e.Name())
-		log := event.NewLog(baseDir)
-		events, readErr := log.Read()
-		if readErr != nil {
-			continue
-		}
-		all = append(all, events...)
-	}
-	return all, nil
 }
 
 func init() {

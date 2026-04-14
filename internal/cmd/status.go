@@ -19,7 +19,11 @@ var statusCmd = &cobra.Command{
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
-		states, _, err := listStatesFromEnvOrAll()
+		store, err := sessionStore()
+		if err != nil {
+			return err
+		}
+		states, err := store.List()
 		if err != nil {
 			return err
 		}
