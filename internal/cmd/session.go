@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
@@ -20,8 +21,9 @@ import (
 )
 
 const (
-	klausSessionIDEnv = "KLAUS_SESSION_ID"
-	agentPollInterval = 3 * time.Second
+	klausSessionIDEnv  = "KLAUS_SESSION_ID"
+	agentWaitTimeout   = 30 * time.Minute
+	agentPollFallback  = 10 * time.Second
 )
 
 var sessionCmd = &cobra.Command{
@@ -361,10 +363,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	return nil
 }
 
-// waitForAgents polls for active agent panes and waits for them to
-// finish before returning. Panes that have completed their work but
-// are still alive (e.g. stuck on a shell prompt) are killed so the
-// session can exit cleanly.
+// waitForAgents watches state files for changes and waits for active agent
+// panes to finish before returning. Uses fsnotify to react to state file
+// updates instead of polling, with a fallback poll for tmux pane exits that
+// don't trigger file changes. Times out after agentWaitTimeout to prevent
+// the session from hanging indefinitely.
 func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 	states, err := store.List()
 	if err != nil {
@@ -372,7 +375,7 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 	}
 
 	// Collect agent runs that still have live tmux panes, skipping stale ones.
-	var active []*run.State
+	active := make(map[string]*run.State)
 	for _, s := range states {
 		if s.Type == "session" {
 			continue
@@ -382,7 +385,7 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 			continue
 		}
 		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
-			active = append(active, s)
+			active[s.ID] = s
 		}
 	}
 
@@ -392,28 +395,113 @@ func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 
 	fmt.Printf("Waiting for %d agent(s) to finish...\n", len(active))
 
-	// Poll until all agent panes have exited or their work is done
+	// Set up fsnotify watcher on the state directory.
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		slog.Warn("failed to create file watcher, falling back to polling", "err", err)
+		waitForAgentsPoll(ctx, store, tc, active)
+		return
+	}
+	defer watcher.Close()
+
+	stateDir := store.StateDir()
+	if err := watcher.Add(stateDir); err != nil {
+		slog.Warn("failed to watch state dir, falling back to polling", "dir", stateDir, "err", err)
+		waitForAgentsPoll(ctx, store, tc, active)
+		return
+	}
+
+	timeout := time.After(agentWaitTimeout)
+	// Fallback ticker catches tmux pane exits that don't write state files.
+	fallbackTicker := time.NewTicker(agentPollFallback)
+	defer fallbackTicker.Stop()
+
 	for len(active) > 0 {
-		time.Sleep(agentPollInterval)
+		select {
+		case <-ctx.Done():
+			return
 
-		var stillActive []*run.State
-		for _, s := range active {
-			// Reload state to check for finalized cost/duration
-			if updated, err := store.Load(s.ID); err == nil {
-				s = updated
+		case <-timeout:
+			var names []string
+			for id := range active {
+				names = append(names, id)
 			}
+			fmt.Printf("Timed out after %s waiting for agents: %v\n", agentWaitTimeout, names)
+			fmt.Println("These agents may still be running in their tmux panes.")
+			return
 
-			if !s.IsAgentRunning() {
-				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			// Only react to state file writes.
+			if filepath.Ext(event.Name) != ".json" {
+				continue
+			}
+			reapFinishedAgents(ctx, store, tc, active)
+
+		case _, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			// Ignore transient watcher errors.
+
+		case <-fallbackTicker.C:
+			reapFinishedAgents(ctx, store, tc, active)
+		}
+	}
+
+	fmt.Println("All agents finished.")
+}
+
+// reapFinishedAgents checks each active agent and removes those that are
+// no longer running, killing their tmux panes.
+func reapFinishedAgents(ctx context.Context, store run.StateStore, tc tmux.Client, active map[string]*run.State) {
+	td := run.TmuxDeps{
+		PaneExists: func(id string) bool { return tc.PaneExists(ctx, id) },
+		PaneIsIdle: func(id string) bool { return tc.PaneIsIdle(ctx, id) },
+		PaneIsDead: func(id string) bool { return tc.PaneIsDead(ctx, id) },
+	}
+
+	for id, s := range active {
+		if updated, err := store.Load(id); err == nil {
+			s = updated
+		}
+
+		if !s.IsAgentRunningWith(td) {
+			fmt.Printf("  agent %s finished, closing pane\n", s.ID)
+			if s.TmuxPane != nil {
 				if err := tc.KillPane(ctx, *s.TmuxPane); err != nil {
 					slog.Warn("failed to kill agent pane", "id", s.ID, "pane", *s.TmuxPane, "err", err)
 				}
-				continue
 			}
-
-			stillActive = append(stillActive, s)
+			delete(active, id)
 		}
-		active = stillActive
+	}
+}
+
+// waitForAgentsPoll is the fallback polling loop used when fsnotify cannot
+// be set up.
+func waitForAgentsPoll(ctx context.Context, store run.StateStore, tc tmux.Client, active map[string]*run.State) {
+	timeout := time.After(agentWaitTimeout)
+	ticker := time.NewTicker(agentPollFallback)
+	defer ticker.Stop()
+
+	for len(active) > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timeout:
+			var names []string
+			for id := range active {
+				names = append(names, id)
+			}
+			fmt.Printf("Timed out after %s waiting for agents: %v\n", agentWaitTimeout, names)
+			fmt.Println("These agents may still be running in their tmux panes.")
+			return
+		case <-ticker.C:
+			reapFinishedAgents(ctx, store, tc, active)
+		}
 	}
 
 	fmt.Println("All agents finished.")
