@@ -66,8 +66,7 @@ Keyboard shortcuts:
 		}
 
 		// Shared context for coordinating graceful shutdown of all subsystems.
-		_, cancel := context.WithCancel(cmd.Context())
-		defer cancel()
+		ctx, cancel := context.WithCancel(cmd.Context())
 
 		ghClient := gh.NewGHCLIClient("")
 		model := newDashboardModel(store, cfg, ghClient)
@@ -100,11 +99,19 @@ Keyboard shortcuts:
 			model.pollEnabled = true
 		}
 
-		p := tea.NewProgram(model, tea.WithAltScreen())
-		_, err = p.Run()
-
-		// BubbleTea has exited — tear down all subsystems.
+		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
+		finalModel, err := p.Run()
 		cancel()
+
+		// BubbleTea has exited — centralize cleanup of watcher and log file.
+		if m, ok := finalModel.(dashboardModel); ok {
+			if m.watcher != nil {
+				m.watcher.Close()
+			}
+			if m.logFile != nil {
+				m.logFile.Close()
+			}
+		}
 
 		// Gracefully shut down the webhook server so the port is released promptly.
 		if webhookSrv != nil {
@@ -246,12 +253,6 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cancel the shared context to signal all subsystems to stop.
 			if m.shutdownCancel != nil {
 				m.shutdownCancel()
-			}
-			if m.watcher != nil {
-				m.watcher.Close()
-			}
-			if m.logFile != nil {
-				m.logFile.Close()
 			}
 			return m, tea.Quit
 		case "r":
