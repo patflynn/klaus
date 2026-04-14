@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"log/slog"
@@ -54,6 +55,9 @@ want to start clean instead of resuming the most recent session.`,
 }
 
 func runSession(cmd *cobra.Command, forceNew bool) error {
+	ctx := cmd.Context()
+	tmuxClient := tmux.NewExecClient()
+
 	if !tmux.InSession() {
 		return fmt.Errorf("klaus session must be run inside a tmux session")
 	}
@@ -65,7 +69,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	root, _ := git.RepoRoot()
 	inRepo := root != ""
 	gitClient := git.NewExecClient()
-	ctx := cmd.Context()
 
 	cfg, err := config.Load(root)
 	if err != nil {
@@ -173,11 +176,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		// Clear stale tmux pane references and persist immediately
 		modified := false
-		if state.TmuxPane != nil && !tmux.PaneExists(*state.TmuxPane) {
+		if state.TmuxPane != nil && !tmuxClient.PaneExists(ctx, *state.TmuxPane) {
 			state.TmuxPane = nil
 			modified = true
 		}
-		if state.DashboardPane != nil && !tmux.PaneExists(*state.DashboardPane) {
+		if state.DashboardPane != nil && !tmuxClient.PaneExists(ctx, *state.DashboardPane) {
 			state.DashboardPane = nil
 			modified = true
 		}
@@ -277,10 +280,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		if windowTitle == "" {
 			windowTitle = "klaus"
 		}
-		tmux.SetWindowOption(currentPane, "automatic-rename", "off")
-		tmux.RenameWindow(currentPane, windowTitle)
-		tmux.SetWindowOption(currentPane, "pane-border-status", "top")
-		tmux.SetWindowOption(currentPane, "pane-border-format", "#{pane_title}")
+		tmuxClient.SetWindowOption(ctx, currentPane, "automatic-rename", "off")
+		tmuxClient.RenameWindow(ctx, currentPane, windowTitle)
+		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-status", "top")
+		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-format", "#{pane_title}")
 	}
 
 	fmt.Println()
@@ -292,11 +295,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	// If a dashboard pane already exists from a prior run, reuse it.
 	var dashPane string
 	if currentPane != "" {
-		if state.DashboardPane != nil && tmux.PaneExists(*state.DashboardPane) {
+		if state.DashboardPane != nil && tmuxClient.PaneExists(ctx, *state.DashboardPane) {
 			dashPane = *state.DashboardPane
 		} else {
 			dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
-			paneID, err := tmux.SplitWindowSized(currentPane, worktree, dashCmd, "-v", "30%")
+			paneID, err := tmuxClient.SplitWindowSized(ctx, currentPane, worktree, dashCmd, "-v", "30%")
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not open dashboard pane: %v\n", err)
 			} else {
@@ -343,10 +346,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	fmt.Printf("Session %s ended.\n", id)
 
 	// Wait for any running agents to finish, then clean up their panes
-	waitForAgents(store)
+	waitForAgents(ctx, store, tmuxClient)
 
 	if dashPane != "" {
-		if err := tmux.KillPane(dashPane); err != nil {
+		if err := tmuxClient.KillPane(ctx, dashPane); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
 		}
 	}
@@ -362,7 +365,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 // finish before returning. Panes that have completed their work but
 // are still alive (e.g. stuck on a shell prompt) are killed so the
 // session can exit cleanly.
-func waitForAgents(store run.StateStore) {
+func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
 	states, err := store.List()
 	if err != nil {
 		return
@@ -378,7 +381,7 @@ func waitForAgents(store run.StateStore) {
 			fmt.Printf("  agent %s is stale (orphaned), skipping\n", s.ID)
 			continue
 		}
-		if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
+		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
 			active = append(active, s)
 		}
 	}
@@ -402,7 +405,7 @@ func waitForAgents(store run.StateStore) {
 
 			if !s.IsAgentRunning() {
 				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
-				if err := tmux.KillPane(*s.TmuxPane); err != nil {
+				if err := tc.KillPane(ctx, *s.TmuxPane); err != nil {
 					slog.Warn("failed to kill agent pane", "id", s.ID, "pane", *s.TmuxPane, "err", err)
 				}
 				continue

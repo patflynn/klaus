@@ -36,6 +36,8 @@ Must be run inside a tmux session.`,
 
 func runNew(cmd *cobra.Command, args []string) error {
 	name := args[0]
+	ctx := cmd.Context()
+	tmuxClient := tmux.NewExecClient()
 
 	if !ValidProjectName(name) {
 		return fmt.Errorf("invalid project name %q: must start with alphanumeric character and contain only alphanumeric characters, hyphens, underscores, or dots", name)
@@ -173,21 +175,21 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// Launch in tmux pane
 	currentPane := os.Getenv("TMUX_PANE")
-	paneID, err := tmux.SplitWindow(currentPane, repoDir, paneCmd)
+	paneID, err := tmuxClient.SplitWindow(ctx, currentPane, repoDir, paneCmd)
 	if err != nil {
 		return fmt.Errorf("creating tmux pane: %w", err)
 	}
 
-	if err := tmux.SetPaneTitle(paneID, FormatPaneTitle(id, "", "new "+name)); err != nil {
+	if err := tmuxClient.SetPaneTitle(ctx, paneID, FormatPaneTitle(id, "", "new "+name)); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to set pane title: %v\n", err)
 	}
-	if err := tmux.SetWindowOption(paneID, "automatic-rename", "off"); err != nil {
+	if err := tmuxClient.SetWindowOption(ctx, paneID, "automatic-rename", "off"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to disable automatic rename: %v\n", err)
 	}
-	if err := tmux.LockPaneTitle(paneID); err != nil {
+	if err := tmuxClient.LockPaneTitle(ctx, paneID); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to lock pane title: %v\n", err)
 	}
-	if err := tmux.RebalanceLayout(currentPane); err != nil {
+	if err := tmuxClient.RebalanceLayout(ctx, currentPane); err != nil {
 		return fmt.Errorf("rebalancing tmux layout: %w", err)
 	}
 

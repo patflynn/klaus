@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,8 @@ Modes:
 		id := args[0]
 		raw, _ := cmd.Flags().GetBool("raw")
 		replay, _ := cmd.Flags().GetBool("replay")
+		ctx := cmd.Context()
+		tmuxClient := tmux.NewExecClient()
 
 		state, _, err := loadStateFromEnvOrAll(id)
 		if err != nil {
@@ -38,7 +41,7 @@ Modes:
 		if replay {
 			return replayLog(state)
 		}
-		return showLive(state)
+		return showLive(ctx, state, tmuxClient)
 	},
 }
 
@@ -67,10 +70,10 @@ func replayLog(s *run.State) error {
 	return stream.FormatStream(f, os.Stdout)
 }
 
-func showLive(s *run.State) error {
+func showLive(ctx context.Context, s *run.State, tc tmux.Client) error {
 	// Try live tmux pane first
-	if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
-		output, err := tmux.CapturePane(*s.TmuxPane, 500)
+	if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
+		output, err := tc.CapturePane(ctx, *s.TmuxPane, 500)
 		if err != nil {
 			return fmt.Errorf("capturing pane: %w", err)
 		}

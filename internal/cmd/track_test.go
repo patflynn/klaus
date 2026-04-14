@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"testing"
 
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestParsePRRef(t *testing.T) {
@@ -236,9 +238,11 @@ func TestDetermineStatusTrack(t *testing.T) {
 		},
 	}
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := determineStatus(tt.s)
+			got := determineStatus(ctx, tt.s, tc)
 			if got != tt.want {
 				t.Errorf("determineStatus() = %q, want %q", got, tt.want)
 			}

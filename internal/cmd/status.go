@@ -16,6 +16,9 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show all runs and their current state",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		ctx := cmd.Context()
+		tmuxClient := tmux.NewExecClient()
+
 		states, _, err := listStatesFromEnvOrAll()
 		if err != nil {
 			return err
@@ -33,9 +36,11 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
 			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "-----", "------")
 
-		ctx := context.TODO()
 		for _, s := range states {
-			status := determineStatus(s)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			status := determineStatus(ctx, s, tmuxClient)
 			cost := formatCost(s)
 			issue := "-"
 			if s.Issue != nil {
@@ -76,7 +81,7 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-func determineStatus(s *run.State) string {
+func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	if s.Type == "session" {
 		if _, err := os.Stat(s.Worktree); err == nil {
 			return "active"
@@ -91,7 +96,7 @@ func determineStatus(s *run.State) string {
 		return "tracking"
 	}
 
-	if s.TmuxPane != nil && tmux.PaneExists(*s.TmuxPane) {
+	if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
 		return "running"
 	}
 

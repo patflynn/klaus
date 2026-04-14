@@ -10,6 +10,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestCleanupAllSkipsActiveRuns(t *testing.T) {
@@ -19,11 +20,14 @@ func TestCleanupAllSkipsActiveRuns(t *testing.T) {
 		&run.State{ID: "run-3", Prompt: "c", Branch: "b3", CreatedAt: "2026-01-01T00:02:00Z"},
 	)
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
+
 	// Make run-2 active
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll(context.Background(), "", store, git.NewExecClient(), false, deps); err != nil {
+		if err := cleanupAll(ctx, "", store, git.NewExecClient(), false, deps, tc); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -51,10 +55,12 @@ func TestCleanupAllForceRemovesActiveRuns(t *testing.T) {
 		&run.State{ID: "run-2", Prompt: "b", Branch: "b2", CreatedAt: "2026-01-01T00:01:00Z"},
 	)
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupAll(context.Background(), "", store, git.NewExecClient(), true, deps); err != nil {
+		if err := cleanupAll(ctx, "", store, git.NewExecClient(), true, deps, tc); err != nil {
 			t.Fatalf("cleanupAll() error: %v", err)
 		}
 	})
@@ -78,10 +84,12 @@ func TestCleanupOneSkipsActiveRun(t *testing.T) {
 		&run.State{ID: "run-1", Prompt: "a", Branch: "b1", CreatedAt: "2026-01-01T00:00:00Z"},
 	)
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	output := captureStdout(t, func() {
-		if err := cleanupOne(context.Background(), "", store, git.NewExecClient(), "run-1", false, deps); err != nil {
+		if err := cleanupOne(ctx, "", store, git.NewExecClient(), "run-1", false, deps, tc); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
@@ -99,10 +107,12 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 		&run.State{ID: "run-1", Prompt: "a", Branch: "b1", CreatedAt: "2026-01-01T00:00:00Z"},
 	)
 
+	ctx := context.Background()
+	tc := tmux.NewExecClient()
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	captureStdout(t, func() {
-		if err := cleanupOne(context.Background(), "", store, git.NewExecClient(), "run-1", true, deps); err != nil {
+		if err := cleanupOne(ctx, "", store, git.NewExecClient(), "run-1", true, deps, tc); err != nil {
 			t.Fatalf("cleanupOne() error: %v", err)
 		}
 	})
@@ -114,37 +124,40 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 
 func TestIsRunActiveWithSessionEnv(t *testing.T) {
 	t.Setenv(sessionIDEnv, "sess-123")
+	tc := tmux.NewExecClient()
 
 	// Session run matching current session ID should be active
 	s := &run.State{ID: "sess-123", Type: "session"}
-	if !defaultIsRunActive(s) {
+	if !defaultIsRunActive(s, tc) {
 		t.Error("expected session run matching KLAUS_SESSION_ID to be active")
 	}
 
 	// Different session ID should not be active (no tmux pane)
 	s2 := &run.State{ID: "sess-456", Type: "session"}
-	if defaultIsRunActive(s2) {
+	if defaultIsRunActive(s2, tc) {
 		t.Error("expected different session ID to not be active")
 	}
 
 	// Non-session run without tmux pane should not be active
 	s3 := &run.State{ID: "sess-123", Type: "launch"}
-	if defaultIsRunActive(s3) {
+	if defaultIsRunActive(s3, tc) {
 		t.Error("expected non-session run without tmux pane to not be active")
 	}
 }
 
 func TestIsRunActiveWithDashboardPane(t *testing.T) {
+	tc := tmux.NewExecClient()
+
 	// A run with no panes should not be active
 	s := &run.State{ID: "run-1"}
-	if defaultIsRunActive(s) {
+	if defaultIsRunActive(s, tc) {
 		t.Error("expected run without panes to not be active")
 	}
 
 	// A run with a DashboardPane that doesn't exist should not be active
 	fakePaneID := "%999999"
 	s2 := &run.State{ID: "run-2", DashboardPane: &fakePaneID}
-	if defaultIsRunActive(s2) {
+	if defaultIsRunActive(s2, tc) {
 		t.Error("expected run with dead dashboard pane to not be active")
 	}
 }
