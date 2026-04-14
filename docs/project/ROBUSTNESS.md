@@ -80,7 +80,7 @@ Two cross-cutting principles guide this work:
 ## Suggested Execution Order
 
 ```
-✅ #217 (git consumer migration)  ─┐
+✅ #217 (git consumer migration)   ─┐
 ✅ #218 (tmux consumer migration)  ├─→ #200 (Split dashboard) ← NEXT
 ✅ #202 (Remove globals)           ─┘
 
