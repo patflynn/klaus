@@ -23,7 +23,7 @@ If no session exists, a new one is created. Use 'klaus new' to explicitly start
 a fresh session.`,
 	Version: version,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return sessionCmd.RunE(sessionCmd, args)
+		return runSession(cmd, false)
 	},
 }
 
