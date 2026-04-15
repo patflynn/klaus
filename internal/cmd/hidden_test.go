@@ -9,6 +9,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestFinalizeWorktreeCleanup(t *testing.T) {
@@ -111,6 +112,48 @@ func runGitCmd(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
+}
+
+func TestKillAgentPane(t *testing.T) {
+	paneID := "%42"
+
+	t.Run("kills pane and clears state", func(t *testing.T) {
+		state := &run.State{ID: "test-run", TmuxPane: &paneID}
+		store := &testStateStore{state: state}
+		tc := &fakeTmux{killedPanes: []string{}}
+
+		killAgentPane(context.Background(), store, tc, state)
+
+		if len(tc.killedPanes) != 1 || tc.killedPanes[0] != paneID {
+			t.Errorf("expected KillPane(%q), got %v", paneID, tc.killedPanes)
+		}
+		if state.TmuxPane != nil {
+			t.Errorf("expected TmuxPane to be nil, got %v", *state.TmuxPane)
+		}
+	})
+
+	t.Run("no-op when TmuxPane is nil", func(t *testing.T) {
+		state := &run.State{ID: "test-run", TmuxPane: nil}
+		store := &testStateStore{state: state}
+		tc := &fakeTmux{}
+
+		killAgentPane(context.Background(), store, tc, state)
+
+		if len(tc.killedPanes) != 0 {
+			t.Errorf("expected no KillPane calls, got %v", tc.killedPanes)
+		}
+	})
+}
+
+// fakeTmux is a minimal tmux.Client for testing killAgentPane.
+type fakeTmux struct {
+	tmux.ExecClient
+	killedPanes []string
+}
+
+func (f *fakeTmux) KillPane(_ context.Context, id string) error {
+	f.killedPanes = append(f.killedPanes, id)
+	return nil
 }
 
 func TestExtractPRNumberFromURL(t *testing.T) {
