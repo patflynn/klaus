@@ -160,9 +160,9 @@ func TestParseCIStatus(t *testing.T) {
 			want:   "failing",
 		},
 		{
-			name:   "empty output (no checks configured)",
+			name:   "empty output",
 			output: "",
-			want:   "passing",
+			want:   "unknown",
 		},
 	}
 
@@ -217,6 +217,24 @@ func TestGetCI_NoChecksConfigured(t *testing.T) {
 	got := client.GetCI(nil, "42")
 	if got != "passing" {
 		t.Errorf("GetCI() with no checks configured = %q, want %q", got, "passing")
+	}
+}
+
+func TestGetCI_EmptyStdoutSuccess(t *testing.T) {
+	// Simulate gh pr checks returning exit 0 with empty stdout (e.g., GraphQL rate limiting).
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+origPath)
+
+	client := NewGHCLIClient("")
+	got := client.GetCI(nil, "42")
+	if got != "unknown" {
+		t.Errorf("GetCI() with empty stdout = %q, want %q", got, "unknown")
 	}
 }
 

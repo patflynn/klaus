@@ -42,8 +42,8 @@ func ParseCIStatus(output string) string {
 	if passing > 0 {
 		return "passing"
 	}
-	// No checks matched any category — treat as passing
-	return "passing"
+	// No checks matched any category
+	return "unknown"
 }
 
 // MergeArgs returns arguments for merging a PR. Exported for testing.
