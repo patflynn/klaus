@@ -15,6 +15,7 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/scan"
 	"github.com/patflynn/klaus/internal/stream"
+	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -99,6 +100,10 @@ var finalizeCmd = &cobra.Command{
 
 		cleanupWorktree(ctx, store, gitClient, state)
 
+		// Kill the tmux pane — _finalize is the last command in the pipeline,
+		// so this is safe. The pane would otherwise stay open indefinitely.
+		killAgentPane(ctx, store, tmux.NewExecClient(), state)
+
 		return nil
 	},
 }
@@ -130,6 +135,22 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	state.Worktree = ""
 	if err := store.Save(state); err != nil {
 		slog.Warn("failed to save state after worktree cleanup", "id", state.ID, "err", err)
+	}
+}
+
+// killAgentPane kills the tmux pane associated with the agent. This must
+// be called after all state writes and worktree cleanup are complete,
+// since _finalize runs inside the pane itself.
+func killAgentPane(ctx context.Context, store run.StateStore, tc tmux.Client, state *run.State) {
+	if state.TmuxPane == nil {
+		return
+	}
+	if err := tc.KillPane(ctx, *state.TmuxPane); err != nil {
+		slog.Warn("failed to kill agent pane", "id", state.ID, "pane", *state.TmuxPane, "err", err)
+	}
+	state.TmuxPane = nil
+	if err := store.Save(state); err != nil {
+		slog.Warn("failed to save state after pane cleanup", "id", state.ID, "err", err)
 	}
 }
 
