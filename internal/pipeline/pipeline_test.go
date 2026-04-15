@@ -1672,6 +1672,147 @@ func TestIsRunning_DeadPane(t *testing.T) {
 	}
 }
 
+func TestCooldownRespectsLastFailedAt(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "", fmt.Errorf("worktree conflict")
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	// First call: dispatches and fails.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch attempt, got %d", launchCount)
+	}
+
+	// Second call immediately after: cooldown should prevent re-dispatch
+	// because LastFailedAt was just set.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Errorf("expected cooldown to block immediate retry, got %d launches", launchCount)
+	}
+
+	// After cooldown expires, retry should be allowed.
+	c.mu.Lock()
+	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
+	c.mu.Unlock()
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 2 {
+		t.Errorf("expected retry after cooldown expired, got %d launches", launchCount)
+	}
+}
+
+func TestMergedStageIsTerminal(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	launchCount := 0
+	mergeCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Seed a PR directly in StageMerged (simulates post-merge state).
+	c.mu.Lock()
+	c.prStates["38"] = &PRPipelineState{
+		PRNumber:       "38",
+		Stage:          StageMerged,
+		SeenCommentIDs: make(map[int64]bool),
+	}
+	c.mu.Unlock()
+
+	// Even with CI passing and approved status, merged should not transition.
+	statuses := map[string]*PRStatus{
+		"38": {
+			PRNumber: "38", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["38"]
+	if state.Stage != StageMerged {
+		t.Errorf("expected merged to remain terminal, got stage %s", state.Stage)
+	}
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for merged PR, got %d", launchCount)
+	}
+	if mergeCount != 0 {
+		t.Errorf("expected no merge attempt for merged PR, got %d", mergeCount)
+	}
+}
+
+func TestSessionResumeSeedsFromGitHubStatus(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-001", nil
+	})
+
+	// Simulate session resume: prStates is empty, but PR is already passing CI.
+	statuses := map[string]*PRStatus{
+		"50": {PRNumber: "50", State: "OPEN", CI: "passing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["50"]
+	if state == nil {
+		t.Fatal("expected PR 50 to be tracked")
+	}
+	// A passing PR on session resume should seed as ci_passed, not ci_pending.
+	if state.Stage != StageCIPassed {
+		t.Errorf("expected ci_passed on resume with passing CI, got %s", state.Stage)
+	}
+	// Should not have dispatched any agent (CI is passing, no review issues).
+	if launchCount != 0 {
+		t.Errorf("expected no agent launch for passing PR on resume, got %d", launchCount)
+	}
+}
+
+func TestSessionResumeFailingCISeedsCorrectly(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// Session resume with a failing CI PR.
+	statuses := map[string]*PRStatus{
+		"51": {PRNumber: "51", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["51"]
+	if state == nil {
+		t.Fatal("expected PR 51 to be tracked")
+	}
+	if state.Stage != StageCIFailed {
+		t.Errorf("expected ci_failed after handling failing CI, got %s", state.Stage)
+	}
+	if launchCount != 1 {
+		t.Errorf("expected 1 agent launch for failing CI, got %d", launchCount)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }

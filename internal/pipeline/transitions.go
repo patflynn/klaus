@@ -20,6 +20,15 @@ type transition struct {
 
 // transitions is the ordered list of pipeline rules. First match wins.
 var transitions = []transition{
+	// ── Terminal: merged PRs must not be re-processed ───────────────────
+	{
+		Name:  "terminal/merged",
+		Guard: inStage(StageMerged),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+
 	// ── CI failing ──────────────────────────────────────────────────────
 
 	{
@@ -427,6 +436,12 @@ func agentNotRunning(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.S
 }
 
 func cooldownExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	// Check both LastDispatchAt (set on success) and LastFailedAt (set on failure).
+	// Without checking LastFailedAt, a failed dispatch allows immediate re-evaluation
+	// because LastDispatchAt is never updated on failure.
+	if !ps.LastFailedAt.IsZero() && time.Since(ps.LastFailedAt) <= dispatchCooldown {
+		return false
+	}
 	return time.Since(ps.LastDispatchAt) > dispatchCooldown
 }
 
