@@ -121,10 +121,6 @@ func (c *GHCLIClient) GetCI(ctx context.Context, prRef string) string {
 		return "unknown"
 	}
 
-	if err == nil && strings.TrimSpace(output) == "" {
-		return "unknown"
-	}
-
 	return ParseCIStatus(output)
 }
 
