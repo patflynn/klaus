@@ -59,7 +59,7 @@ func WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) 
 	if err == nil {
 		return nil
 	}
-	return retryAfterPrune(ctx, repoDir, branch, err, func() error {
+	return retryAfterPrune(ctx, repoDir, branch, err, false, func() error {
 		// Use -B on retry: after pruning a stale worktree the branch ref remains,
 		// so -b (create new) would fail with "branch already exists".
 		_, e := runGit(ctx, repoDir, "worktree", "add", path, "-B", branch, startPoint, "--quiet")
@@ -81,7 +81,7 @@ func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error {
 	if err == nil {
 		return nil
 	}
-	return retryAfterPrune(ctx, repoDir, branch, err, func() error {
+	return retryAfterPrune(ctx, repoDir, branch, err, true, func() error {
 		_, e := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 		return e
 	})
@@ -119,8 +119,9 @@ func worktreePathForBranch(ctx context.Context, repoDir, branch string) string {
 
 // retryAfterPrune handles "already used by worktree" errors. If the conflicting
 // worktree is stale (path no longer exists on disk), it prunes and retries.
-// If the worktree is still live, it returns a clear error.
-func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error, retry func() error) error {
+// If forceRemoveLive is true and the worktree directory still exists, it
+// force-removes the old worktree before retrying. Otherwise it returns a clear error.
+func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error, forceRemoveLive bool, retry func() error) error {
 	// Check whether this branch is recorded in any worktree.
 	wtPath := worktreePathForBranch(ctx, repoDir, branch)
 	if wtPath == "" {
@@ -128,9 +129,16 @@ func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error,
 		return origErr
 	}
 
-	// If the worktree directory still exists, the worktree is live — don't touch it.
 	if _, err := os.Stat(wtPath); err == nil {
-		return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
+		// Worktree directory still exists on disk.
+		if !forceRemoveLive {
+			return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
+		}
+		// Force-remove the old worktree so we can reuse the branch.
+		if err := WorktreeRemove(ctx, repoDir, wtPath); err != nil {
+			return fmt.Errorf("removing existing worktree %q: %w (original error: %v)", wtPath, err, origErr)
+		}
+		return retry()
 	}
 
 	// Worktree directory is gone — prune stale entries and retry.

@@ -604,6 +604,57 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddTrack_ForceRemovesLiveWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := initTestRepo(t)
+
+	// Create a local bare repo as "origin" with a feature branch
+	bareDir := filepath.Join(t.TempDir(), "bare.git")
+	cmd := exec.Command("git", "clone", "--bare", repo, bareDir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("bare clone: %v\n%s", err, out)
+	}
+	if _, err := runGit(ctx, repo, "remote", "add", "origin", bareDir); err != nil {
+		runGit(ctx, repo, "remote", "set-url", "origin", bareDir)
+	}
+
+	// Create and push a feature branch
+	if _, err := runGit(ctx, repo, "branch", "feature-y"); err != nil {
+		t.Fatalf("branch: %v", err)
+	}
+	if _, err := runGit(ctx, repo, "push", "origin", "feature-y"); err != nil {
+		t.Fatalf("push: %v", err)
+	}
+
+	// Create a worktree tracking origin/feature-y (simulates a previous agent run)
+	oldPath := filepath.Join(t.TempDir(), "old-worktree")
+	if err := WorktreeAddTrack(ctx, repo, oldPath, "feature-y"); err != nil {
+		t.Fatalf("WorktreeAddTrack (setup): %v", err)
+	}
+
+	// Directory still exists — simulates incomplete cleanup
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("old worktree should exist: %v", err)
+	}
+
+	// Creating a new worktree for the same branch should auto-recover
+	newPath := filepath.Join(t.TempDir(), "new-worktree")
+	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-y"); err != nil {
+		t.Fatalf("WorktreeAddTrack should auto-remove live worktree and succeed: %v", err)
+	}
+	defer WorktreeRemove(ctx, repo, newPath)
+
+	// Old worktree should be gone
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Error("old worktree directory should have been removed")
+	}
+
+	// New worktree should be functional
+	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
+		t.Errorf("new worktree should contain README.md: %v", err)
+	}
+}
+
 func TestWorktreeAdd_LiveWorktreeReturnsError(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
