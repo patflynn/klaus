@@ -138,19 +138,21 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	}
 }
 
-// killAgentPane kills the tmux pane associated with the agent. This must
-// be called after all state writes and worktree cleanup are complete,
-// since _finalize runs inside the pane itself.
+// killAgentPane kills the tmux pane associated with the agent. State is
+// saved before the pane is killed because _finalize runs inside the pane
+// itself — killing the pane first would terminate the process before the
+// state save executes.
 func killAgentPane(ctx context.Context, store run.StateStore, tc tmux.Client, state *run.State) {
 	if state.TmuxPane == nil {
 		return
 	}
-	if err := tc.KillPane(ctx, *state.TmuxPane); err != nil {
-		slog.Warn("failed to kill agent pane", "id", state.ID, "pane", *state.TmuxPane, "err", err)
-	}
+	paneID := *state.TmuxPane
 	state.TmuxPane = nil
 	if err := store.Save(state); err != nil {
-		slog.Warn("failed to save state after pane cleanup", "id", state.ID, "err", err)
+		slog.Warn("failed to save state before pane cleanup", "id", state.ID, "err", err)
+	}
+	if err := tc.KillPane(ctx, paneID); err != nil {
+		slog.Warn("failed to kill agent pane", "id", state.ID, "pane", paneID, "err", err)
 	}
 }
 
