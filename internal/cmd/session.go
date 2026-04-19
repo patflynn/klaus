@@ -383,6 +383,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 func checkRunningAgents(ctx context.Context, store run.StateStore, tc tmux.Client) []*run.State {
 	states, err := store.List()
 	if err != nil {
+		slog.Warn("failed to list agent states", "err", err)
 		return nil
 	}
 
@@ -394,10 +395,13 @@ func checkRunningAgents(ctx context.Context, store run.StateStore, tc tmux.Clien
 
 	var running []*run.State
 	for _, s := range states {
+		if ctx.Err() != nil {
+			break
+		}
 		if s.Type == "session" {
 			continue
 		}
-		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) && s.IsAgentRunningWith(td) {
+		if s.IsAgentRunningWith(td) {
 			running = append(running, s)
 		}
 	}
