@@ -243,126 +243,7 @@ func (s *stubTmuxClient) KillPane(_ context.Context, id string) error {
 	return nil
 }
 
-func TestWaitForAgents_ContextCancellation(t *testing.T) {
-	// Set up a store with an active agent.
-	tmpDir := t.TempDir()
-	store := run.NewHomeDirStoreFromPath(tmpDir)
-	if err := store.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	pane := "%99"
-	state := &run.State{
-		ID:        "agent-test-cancel",
-		Type:      "agent",
-		TmuxPane:  &pane,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-	if err := store.Save(state); err != nil {
-		t.Fatal(err)
-	}
-
-	tc := &stubTmuxClient{existingPanes: map[string]bool{"%99": true}}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel immediately so waitForAgents returns quickly.
-	cancel()
-
-	done := make(chan struct{})
-	go func() {
-		waitForAgents(ctx, store, tc)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Good -- returned promptly on context cancel.
-	case <-time.After(5 * time.Second):
-		t.Fatal("waitForAgents did not return after context cancellation")
-	}
-}
-
-func TestWaitForAgents_FsnotifyDetectsCompletion(t *testing.T) {
-	tmpDir := t.TempDir()
-	store := run.NewHomeDirStoreFromPath(tmpDir)
-	if err := store.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	pane := "%50"
-	state := &run.State{
-		ID:        "agent-fsnotify-test",
-		Type:      "agent",
-		TmuxPane:  &pane,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-	if err := store.Save(state); err != nil {
-		t.Fatal(err)
-	}
-
-	tc := &stubTmuxClient{existingPanes: map[string]bool{"%50": true}}
-
-	ctx := context.Background()
-	done := make(chan struct{})
-	go func() {
-		waitForAgents(ctx, store, tc)
-		close(done)
-	}()
-
-	// Give fsnotify time to set up the watcher.
-	time.Sleep(100 * time.Millisecond)
-
-	// Simulate the agent finishing: remove the pane from the mock and
-	// write the state file to trigger fsnotify.
-	delete(tc.existingPanes, "%50")
-	state.CostUSD = new(float64)
-	*state.CostUSD = 0.05
-	if err := store.Save(state); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case <-done:
-		// Good -- detected completion via fsnotify.
-	case <-time.After(5 * time.Second):
-		t.Fatal("waitForAgents did not detect agent completion via fsnotify")
-	}
-}
-
-func TestWaitForAgents_NoActiveAgents(t *testing.T) {
-	tmpDir := t.TempDir()
-	store := run.NewHomeDirStoreFromPath(tmpDir)
-	if err := store.EnsureDirs(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Save a session (should be skipped) and no agents with live panes.
-	state := &run.State{
-		ID:        "session-skip",
-		Type:      "session",
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-	if err := store.Save(state); err != nil {
-		t.Fatal(err)
-	}
-
-	tc := &stubTmuxClient{existingPanes: map[string]bool{}}
-
-	done := make(chan struct{})
-	go func() {
-		waitForAgents(context.Background(), store, tc)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Returns immediately when no active agents.
-	case <-time.After(2 * time.Second):
-		t.Fatal("waitForAgents should return immediately with no active agents")
-	}
-}
-
-func TestReapFinishedAgents(t *testing.T) {
+func TestCheckRunningAgents_ReturnsRunning(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := run.NewHomeDirStoreFromPath(tmpDir)
 	if err := store.EnsureDirs(); err != nil {
@@ -371,14 +252,14 @@ func TestReapFinishedAgents(t *testing.T) {
 
 	pane1 := "%10"
 	pane2 := "%11"
-	// Agent 1: pane still exists (still running).
+	// Agent 1: pane exists → running.
 	s1 := &run.State{
 		ID:        "agent-running",
 		Type:      "agent",
 		TmuxPane:  &pane1,
 		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	// Agent 2: pane gone (finished).
+	// Agent 2: pane gone → not running.
 	s2 := &run.State{
 		ID:        "agent-done",
 		Type:      "agent",
@@ -393,18 +274,100 @@ func TestReapFinishedAgents(t *testing.T) {
 	}
 
 	tc := &stubTmuxClient{existingPanes: map[string]bool{"%10": true}}
-	active := map[string]*run.State{
-		s1.ID: s1,
-		s2.ID: s2,
+	running := checkRunningAgents(context.Background(), store, tc)
+
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running agent, got %d", len(running))
+	}
+	if running[0].ID != "agent-running" {
+		t.Errorf("expected agent-running, got %s", running[0].ID)
+	}
+}
+
+func TestCheckRunningAgents_NoAgents(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatal(err)
 	}
 
-	reapFinishedAgents(context.Background(), store, tc, active)
-
-	if _, ok := active["agent-done"]; ok {
-		t.Error("agent-done should have been reaped")
+	// Save a session (should be skipped).
+	state := &run.State{
+		ID:        "session-skip",
+		Type:      "session",
+		CreatedAt: time.Now().Format(time.RFC3339),
 	}
-	if _, ok := active["agent-running"]; !ok {
-		t.Error("agent-running should still be active")
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &stubTmuxClient{existingPanes: map[string]bool{}}
+	running := checkRunningAgents(context.Background(), store, tc)
+
+	if len(running) != 0 {
+		t.Errorf("expected no running agents, got %d", len(running))
+	}
+}
+
+func TestCheckRunningAgents_SkipsSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := "%20"
+	// A session with a live pane should not be counted as a running agent.
+	state := &run.State{
+		ID:        "session-live",
+		Type:      "session",
+		TmuxPane:  &pane,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &stubTmuxClient{existingPanes: map[string]bool{"%20": true}}
+	running := checkRunningAgents(context.Background(), store, tc)
+
+	if len(running) != 0 {
+		t.Errorf("expected no running agents (session should be skipped), got %d", len(running))
+	}
+}
+
+func TestCheckRunningAgents_NonBlocking(t *testing.T) {
+	// Verify checkRunningAgents returns immediately even with active agents.
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := "%99"
+	state := &run.State{
+		ID:        "agent-active",
+		Type:      "agent",
+		TmuxPane:  &pane,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &stubTmuxClient{existingPanes: map[string]bool{"%99": true}}
+
+	done := make(chan struct{})
+	go func() {
+		checkRunningAgents(context.Background(), store, tc)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — returned immediately without blocking.
+	case <-time.After(2 * time.Second):
+		t.Fatal("checkRunningAgents blocked instead of returning immediately")
 	}
 }
 
