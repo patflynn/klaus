@@ -42,6 +42,26 @@ func (c *ExecClient) BranchDelete(ctx context.Context, repoDir, branch string) e
 	return BranchDelete(ctx, repoDir, branch)
 }
 
+func (c *ExecClient) IsClean(ctx context.Context, repoDir string) (bool, error) {
+	return IsClean(ctx, repoDir)
+}
+
+func (c *ExecClient) CurrentBranch(ctx context.Context, repoDir string) (string, error) {
+	return CurrentBranch(ctx, repoDir)
+}
+
+func (c *ExecClient) HasUpstream(ctx context.Context, repoDir string) (bool, error) {
+	return HasUpstream(ctx, repoDir)
+}
+
+func (c *ExecClient) MergeFastForward(ctx context.Context, repoDir string) error {
+	return MergeFastForward(ctx, repoDir)
+}
+
+func (c *ExecClient) CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error) {
+	return CommitsBehindUpstream(ctx, repoDir)
+}
+
 func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
 	return EnsureDataRef(ctx, repoDir, dataRef)
 }

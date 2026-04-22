@@ -100,6 +100,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus project list` | Show registered projects |
 | `klaus project remove <name>` | Unregister a project |
 | `klaus project set-dir <path>` | Set the default projects directory |
+| `klaus sync` | Fetch and fast-forward every registered project |
 | `klaus new <project-name>` | Scaffold a new project using principles-based generation |
 | `klaus webhook check` | Check registered projects for GitHub webhook configuration |
 | `klaus webhook setup [project]` | Create missing webhooks for registered projects |

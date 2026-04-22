@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +153,106 @@ func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error,
 func BranchDelete(ctx context.Context, repoDir, branch string) error {
 	_, err := runGit(ctx, repoDir, "branch", "-D", branch)
 	return err
+}
+
+// IsClean reports whether the working tree at repoDir has no uncommitted changes.
+// Returns true only when git status --porcelain produces empty output.
+func IsClean(ctx context.Context, repoDir string) (bool, error) {
+	out, err := runGit(ctx, repoDir, "status", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	return out == "", nil
+}
+
+// CurrentBranch returns the short name of the currently checked-out branch,
+// or "" if the repo is in a detached HEAD state. Any other failure (not a git
+// repo, missing HEAD, etc.) is returned as an error rather than silently
+// treated as "no branch".
+func CurrentBranch(ctx context.Context, repoDir string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "symbolic-ref", "--quiet", "--short", "HEAD")
+	cmd.Dir = repoDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return strings.TrimSpace(stdout.String()), nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git symbolic-ref timed out after %s", localTimeout)
+	}
+	// With --quiet, symbolic-ref exits with code 1 ONLY when HEAD is not a
+	// symbolic ref (i.e., detached HEAD). Other failures (e.g., not a git
+	// repo → "fatal:" exit 128) still need to bubble up.
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 && stderr.Len() == 0 {
+		return "", nil
+	}
+	return "", fmt.Errorf("git symbolic-ref: %w: %s", err, stderr.String())
+}
+
+// HasUpstream reports whether the current branch at repoDir has a tracking
+// upstream. Missing upstream (a normal state) is reported as (false, nil);
+// other failures — not a git repo, bad path, I/O errors — return an error.
+func HasUpstream(ctx context.Context, repoDir string) (bool, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd.Dir = repoDir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	if err == nil {
+		return strings.TrimSpace(stdout.String()) != "", nil
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return false, fmt.Errorf("git rev-parse timed out after %s", localTimeout)
+	}
+	// Git reports missing upstream with specific stderr text and exit 128.
+	// Distinguish that from fatal errors like "not a git repository".
+	se := stderr.String()
+	if isNoUpstreamErr(se) {
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse: %w: %s", err, se)
+}
+
+// isNoUpstreamErr returns true if stderr matches the messages git emits when
+// a branch has no configured upstream. Covers both `@{u}` phrasings seen in
+// modern git.
+func isNoUpstreamErr(stderr string) bool {
+	s := strings.ToLower(stderr)
+	return strings.Contains(s, "no upstream configured") ||
+		strings.Contains(s, "does not point to a branch") ||
+		strings.Contains(s, "head does not point")
+}
+
+// MergeFastForward runs `git merge --ff-only @{u}` in repoDir. Fails if the
+// current branch has diverged from upstream, has no upstream, or the working
+// tree isn't clean. Does NOT touch the tree on failure.
+func MergeFastForward(ctx context.Context, repoDir string) error {
+	_, err := runGit(ctx, repoDir, "merge", "--ff-only", "--quiet", "@{u}")
+	return err
+}
+
+// CommitsBehindUpstream returns how many commits the current branch is behind
+// its upstream. Returns 0 if already up-to-date. Assumes an upstream exists;
+// callers should check HasUpstream first.
+func CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error) {
+	out, err := runGit(ctx, repoDir, "rev-list", "--count", "HEAD..@{u}")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parsing rev-list --count output %q: %w", out, err)
+	}
+	return n, nil
 }
 
 // EnsureDataRef ensures the custom data ref exists. Creates it with an empty
