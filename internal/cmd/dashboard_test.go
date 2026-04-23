@@ -864,24 +864,11 @@ func TestWebhookMsgTriggersRefetchForMatchedPR(t *testing.T) {
 		t.Fatal("expected tea.BatchMsg from webhook handler")
 	}
 
-	// Run each sub-command with a timeout to avoid blocking on channel reads.
-	foundFetch := false
-	for _, sub := range bm {
-		if sub == nil {
-			continue
-		}
-		done := make(chan tea.Msg, 1)
-		go func(c tea.Cmd) { done <- c() }(sub)
-		select {
-		case r := <-done:
-			if _, ok := r.(ghStatusMsg); ok {
-				foundFetch = true
-			}
-		case <-time.After(2 * time.Second):
-			// This is the blocking waitForWebhookCmd — skip it.
-		}
-	}
-	if !foundFetch {
+	// Run all sub-commands concurrently; one is waitForWebhookCmd which
+	// blocks forever (the channel is empty), so we wait on a shared result
+	// channel with a generous timeout rather than per-iteration. A tight
+	// timeout per sub-command races the real gh CLI on slow CI runners.
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
 		t.Error("expected ghStatusMsg from webhook-triggered fetch")
 	}
 }
@@ -948,24 +935,32 @@ func TestWebhookPushTriggersFullRefetch(t *testing.T) {
 		t.Fatal("expected tea.BatchMsg from push webhook handler")
 	}
 
-	foundFetch := false
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
+		t.Error("expected ghStatusMsg from push-triggered fetch")
+	}
+}
+
+// awaitGHStatusMsg runs all sub-commands in bm concurrently and reports
+// whether any produced a ghStatusMsg within the given timeout. Sub-commands
+// that block (e.g. waitForWebhookCmd with an empty channel) are ignored.
+func awaitGHStatusMsg(bm tea.BatchMsg, timeout time.Duration) bool {
+	results := make(chan tea.Msg, len(bm))
 	for _, sub := range bm {
 		if sub == nil {
 			continue
 		}
-		done := make(chan tea.Msg, 1)
-		go func(c tea.Cmd) { done <- c() }(sub)
-		select {
-		case r := <-done:
-			if _, ok := r.(ghStatusMsg); ok {
-				foundFetch = true
-			}
-		case <-time.After(2 * time.Second):
-			// This is the blocking waitForWebhookCmd — skip it.
-		}
+		go func(c tea.Cmd) { results <- c() }(sub)
 	}
-	if !foundFetch {
-		t.Error("expected ghStatusMsg from push-triggered fetch")
+	deadline := time.After(timeout)
+	for {
+		select {
+		case r := <-results:
+			if _, ok := r.(ghStatusMsg); ok {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
 	}
 }
 
