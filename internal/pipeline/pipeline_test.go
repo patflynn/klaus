@@ -216,6 +216,62 @@ func TestReviewCommentsDispatchAgent(t *testing.T) {
 	}
 }
 
+func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
+	cases := []struct {
+		name   string
+		status *PRStatus
+	}{
+		{
+			name: "changes-requested",
+			status: &PRStatus{
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
+			},
+		},
+		{
+			name: "trusted-comments",
+			status: &PRStatus{
+				PRNumber: "42", State: "OPEN", CI: "passing",
+				HasNewTrustedComments: true, TargetRepo: "owner/repo",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestController(t)
+
+			var launchedPrompt string
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+				launchedPrompt = prompt
+				return "agent-x", nil
+			})
+
+			c.HandleGHStatus(context.Background(), map[string]*PRStatus{"42": tc.status}, nil)
+
+			if launchedPrompt == "" {
+				t.Fatal("expected agent dispatch")
+			}
+			// Must instruct fetching the comments.
+			if !strings.Contains(launchedPrompt, "gh api repos/owner/repo/pulls/42/comments") {
+				t.Errorf("prompt missing fetch instruction: %q", launchedPrompt)
+			}
+			// Must instruct replying to each comment.
+			if !strings.Contains(launchedPrompt, "reply to EACH") {
+				t.Errorf("prompt missing reply-to-each instruction: %q", launchedPrompt)
+			}
+			// Must include the exact replies endpoint format.
+			if !strings.Contains(launchedPrompt, "/comments/{commentId}/replies") {
+				t.Errorf("prompt missing replies command format: %q", launchedPrompt)
+			}
+			// Must mention discounted comments.
+			if !strings.Contains(launchedPrompt, "discounted") {
+				t.Errorf("prompt missing discounted-comment guidance: %q", launchedPrompt)
+			}
+		})
+	}
+}
+
 func TestMergedPRCleanedUp(t *testing.T) {
 	c, _ := newTestController(t)
 	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {

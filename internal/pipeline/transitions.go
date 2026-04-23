@@ -264,8 +264,14 @@ var transitions = []transition{
 			})
 
 			prompt := fmt.Sprintf(
-				"PR #%s has changes requested by reviewers. Address the review comments and push fixes. Check `gh api repos/{owner}/{repo}/pulls/%s/comments` for comment details.",
-				ps.PRNumber, ps.PRNumber,
+				"PR #%s in %s has changes requested by reviewers. "+
+					"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
+					"Address each comment in the code, then push your fixes.\n"+
+					"After pushing, reply to EACH review comment with a concise (1-2 sentence) explanation of what you changed. "+
+					"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
+					"Use this exact command to reply, substituting the comment id and your explanation:\n"+
+					"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
+				ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber, status.TargetRepo, ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)
 			ps.Stage = StageReviewPending
@@ -314,8 +320,14 @@ var transitions = []transition{
 			})
 
 			prompt := fmt.Sprintf(
-				"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. Check the review comments with: gh api repos/%s/pulls/%s/comments",
-				ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber,
+				"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. "+
+					"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
+					"Address each comment in the code, then push your fixes.\n"+
+					"After pushing, reply to EACH review comment with a concise (1-2 sentence) explanation of what you changed. "+
+					"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
+					"Use this exact command to reply, substituting the comment id and your explanation:\n"+
+					"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
+				ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber, status.TargetRepo, ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)
 			ps.Stage = StageReviewPending
