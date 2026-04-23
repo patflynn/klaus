@@ -218,8 +218,9 @@ func TestReviewCommentsDispatchAgent(t *testing.T) {
 
 func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 	cases := []struct {
-		name   string
-		status *PRStatus
+		name       string
+		status     *PRStatus
+		wantLeadIn string
 	}{
 		{
 			name: "changes-requested",
@@ -227,6 +228,7 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 				PRNumber: "42", State: "OPEN", CI: "passing",
 				ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
 			},
+			wantLeadIn: "changes requested by reviewers",
 		},
 		{
 			name: "trusted-comments",
@@ -234,9 +236,11 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 				PRNumber: "42", State: "OPEN", CI: "passing",
 				HasNewTrustedComments: true, TargetRepo: "owner/repo",
 			},
+			wantLeadIn: "trusted reviewer",
 		},
 	}
 
+	prompts := make(map[string]string, len(cases))
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := newTestController(t)
@@ -252,6 +256,10 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if launchedPrompt == "" {
 				t.Fatal("expected agent dispatch")
 			}
+			// Path-specific lead-in.
+			if !strings.Contains(launchedPrompt, tc.wantLeadIn) {
+				t.Errorf("prompt missing lead-in %q: %q", tc.wantLeadIn, launchedPrompt)
+			}
 			// Must instruct fetching the comments.
 			if !strings.Contains(launchedPrompt, "gh api repos/owner/repo/pulls/42/comments") {
 				t.Errorf("prompt missing fetch instruction: %q", launchedPrompt)
@@ -259,6 +267,10 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			// Must instruct replying to each comment.
 			if !strings.Contains(launchedPrompt, "reply to EACH") {
 				t.Errorf("prompt missing reply-to-each instruction: %q", launchedPrompt)
+			}
+			// Must guard against duplicate replies on re-dispatch.
+			if !strings.Contains(launchedPrompt, "haven't already replied to") {
+				t.Errorf("prompt missing duplicate-reply guard: %q", launchedPrompt)
 			}
 			// Must include the exact replies endpoint format.
 			if !strings.Contains(launchedPrompt, "/comments/{commentId}/replies") {
@@ -268,7 +280,23 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if !strings.Contains(launchedPrompt, "discounted") {
 				t.Errorf("prompt missing discounted-comment guidance: %q", launchedPrompt)
 			}
+			prompts[tc.name] = launchedPrompt
 		})
+	}
+
+	// The shared body (everything from "Fetch the review comments" onward)
+	// must be identical across both dispatch paths so reviewers see consistent
+	// instructions regardless of which transition fired.
+	bodyOf := func(p string) string {
+		i := strings.Index(p, "Fetch the review comments")
+		if i < 0 {
+			t.Fatalf("prompt has no shared body: %q", p)
+		}
+		return p[i:]
+	}
+	if bodyOf(prompts["changes-requested"]) != bodyOf(prompts["trusted-comments"]) {
+		t.Errorf("shared prompt body differs across dispatch paths:\nchanges-requested: %q\ntrusted-comments:  %q",
+			bodyOf(prompts["changes-requested"]), bodyOf(prompts["trusted-comments"]))
 	}
 }
 

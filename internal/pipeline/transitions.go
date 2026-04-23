@@ -263,15 +263,9 @@ var transitions = []transition{
 				Repo:     status.TargetRepo,
 			})
 
-			prompt := fmt.Sprintf(
-				"PR #%s in %s has changes requested by reviewers. "+
-					"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
-					"Address each comment in the code, then push your fixes.\n"+
-					"After pushing, reply to EACH review comment with a concise (1-2 sentence) explanation of what you changed. "+
-					"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
-					"Use this exact command to reply, substituting the comment id and your explanation:\n"+
-					"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
-				ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber, status.TargetRepo, ps.PRNumber,
+			prompt := reviewFixPrompt(
+				fmt.Sprintf("PR #%s in %s has changes requested by reviewers.", ps.PRNumber, status.TargetRepo),
+				status.TargetRepo, ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)
 			ps.Stage = StageReviewPending
@@ -319,15 +313,9 @@ var transitions = []transition{
 				Repo:     status.TargetRepo,
 			})
 
-			prompt := fmt.Sprintf(
-				"PR #%s in %s has review comments from a trusted reviewer that need to be addressed. "+
-					"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
-					"Address each comment in the code, then push your fixes.\n"+
-					"After pushing, reply to EACH review comment with a concise (1-2 sentence) explanation of what you changed. "+
-					"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
-					"Use this exact command to reply, substituting the comment id and your explanation:\n"+
-					"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
-				ps.PRNumber, status.TargetRepo, status.TargetRepo, ps.PRNumber, status.TargetRepo, ps.PRNumber,
+			prompt := reviewFixPrompt(
+				fmt.Sprintf("PR #%s in %s has review comments from a trusted reviewer that need to be addressed.", ps.PRNumber, status.TargetRepo),
+				status.TargetRepo, ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)
 			ps.Stage = StageReviewPending
@@ -544,6 +532,27 @@ func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) 
 			"pr_url":    status.PRURL,
 		})
 	}
+}
+
+// reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is
+// the situation-specific opening sentence (e.g. "PR #X has changes requested
+// by reviewers."); the rest of the body is shared so both the changes-requested
+// and trusted-comments dispatch paths produce identical instructions to the agent.
+//
+// The "(that you haven't already replied to)" qualifier matters because a fix
+// agent may be re-dispatched (e.g. after CI fails on its first push). Without
+// it the agent may post duplicate replies on threads it already answered.
+func reviewFixPrompt(leadIn, repo, prNumber string) string {
+	return fmt.Sprintf(
+		"%s "+
+			"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
+			"Address each comment in the code, then push your fixes.\n"+
+			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
+			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
+			"Use this exact command to reply, substituting the comment id and your explanation:\n"+
+			"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
+		leadIn, repo, prNumber, repo, prNumber,
+	)
 }
 
 // setApprovedIfNeeded transitions to StageApproved and emits the approval
