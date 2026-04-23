@@ -7,10 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
@@ -21,9 +22,7 @@ import (
 )
 
 const (
-	klausSessionIDEnv  = "KLAUS_SESSION_ID"
-	agentWaitTimeout   = 30 * time.Minute
-	agentPollFallback  = 10 * time.Second
+	klausSessionIDEnv = "KLAUS_SESSION_ID"
 )
 
 var sessionCmd = &cobra.Command{
@@ -354,12 +353,20 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	fmt.Println()
 	fmt.Printf("Session %s ended.\n", id)
 
-	// Wait for any running agents to finish, then clean up their panes
-	waitForAgents(ctx, store, tmuxClient)
+	// Install signal handler so Ctrl+C during post-exit work exits promptly.
+	sigCtx, sigStop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	defer sigStop()
+
+	// Check for running agents and print a summary instead of blocking.
+	running := checkRunningAgents(sigCtx, store, tmuxClient)
 
 	if dashPane != "" {
-		if err := tmuxClient.KillPane(ctx, dashPane); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
+		if len(running) > 0 {
+			fmt.Println("Dashboard pane left open to monitor running agents.")
+		} else {
+			if err := tmuxClient.KillPane(sigCtx, dashPane); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not kill dashboard pane %s: %v\n", dashPane, err)
+			}
 		}
 	}
 
@@ -370,150 +377,45 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	return nil
 }
 
-// waitForAgents watches state files for changes and waits for active agent
-// panes to finish before returning. Uses fsnotify to react to state file
-// updates instead of polling, with a fallback poll for tmux pane exits that
-// don't trigger file changes. Times out after agentWaitTimeout to prevent
-// the session from hanging indefinitely.
-func waitForAgents(ctx context.Context, store run.StateStore, tc tmux.Client) {
+// checkRunningAgents inspects agent states and returns those still running
+// in tmux panes. It prints a summary so the user knows what's still active.
+// It does not block — agents continue in their tmux panes independently.
+func checkRunningAgents(ctx context.Context, store run.StateStore, tc tmux.Client) []*run.State {
 	states, err := store.List()
 	if err != nil {
-		return
+		slog.Warn("failed to list agent states", "err", err)
+		return nil
 	}
 
-	// Collect agent runs that still have live tmux panes, skipping stale ones.
-	active := make(map[string]*run.State)
-	for _, s := range states {
-		if s.Type == "session" {
-			continue
-		}
-		if s.IsStale() {
-			fmt.Printf("  agent %s is stale (orphaned), skipping\n", s.ID)
-			continue
-		}
-		if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
-			active[s.ID] = s
-		}
-	}
-
-	if len(active) == 0 {
-		return
-	}
-
-	fmt.Printf("Waiting for %d agent(s) to finish...\n", len(active))
-
-	// Set up fsnotify watcher on the state directory.
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		slog.Warn("failed to create file watcher, falling back to polling", "err", err)
-		waitForAgentsPoll(ctx, store, tc, active)
-		return
-	}
-	defer watcher.Close()
-
-	stateDir := store.StateDir()
-	if err := watcher.Add(stateDir); err != nil {
-		slog.Warn("failed to watch state dir, falling back to polling", "dir", stateDir, "err", err)
-		waitForAgentsPoll(ctx, store, tc, active)
-		return
-	}
-
-	timeout := time.After(agentWaitTimeout)
-	// Fallback ticker catches tmux pane exits that don't write state files.
-	fallbackTicker := time.NewTicker(agentPollFallback)
-	defer fallbackTicker.Stop()
-
-	for len(active) > 0 {
-		select {
-		case <-ctx.Done():
-			return
-
-		case <-timeout:
-			var names []string
-			for id := range active {
-				names = append(names, id)
-			}
-			fmt.Printf("Timed out after %s waiting for agents: %v\n", agentWaitTimeout, names)
-			fmt.Println("These agents may still be running in their tmux panes.")
-			return
-
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			// Only react to state file writes.
-			if filepath.Ext(event.Name) != ".json" {
-				continue
-			}
-			reapFinishedAgents(ctx, store, tc, active)
-
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			slog.Debug("ignoring transient watcher error", "err", err)
-
-		case <-fallbackTicker.C:
-			reapFinishedAgents(ctx, store, tc, active)
-		}
-	}
-
-	fmt.Println("All agents finished.")
-}
-
-// reapFinishedAgents checks each active agent and removes those that are
-// no longer running, killing their tmux panes.
-func reapFinishedAgents(ctx context.Context, store run.StateStore, tc tmux.Client, active map[string]*run.State) {
 	td := run.TmuxDeps{
 		PaneExists: func(id string) bool { return tc.PaneExists(ctx, id) },
 		PaneIsIdle: func(id string) bool { return tc.PaneIsIdle(ctx, id) },
 		PaneIsDead: func(id string) bool { return tc.PaneIsDead(ctx, id) },
 	}
 
-	for id, s := range active {
-		if updated, err := store.Load(id); err == nil {
-			s = updated
+	var running []*run.State
+	for _, s := range states {
+		if ctx.Err() != nil {
+			break
 		}
-
-		if !s.IsAgentRunningWith(td) {
-			if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
-				fmt.Printf("  agent %s finished, closing pane\n", s.ID)
-				if err := tc.KillPane(ctx, *s.TmuxPane); err != nil {
-					slog.Warn("failed to kill agent pane", "id", s.ID, "pane", *s.TmuxPane, "err", err)
-				}
-			} else {
-				fmt.Printf("  agent %s finished\n", s.ID)
-			}
-			delete(active, id)
+		if s.Type == "session" {
+			continue
 		}
-	}
-}
-
-// waitForAgentsPoll is the fallback polling loop used when fsnotify cannot
-// be set up.
-func waitForAgentsPoll(ctx context.Context, store run.StateStore, tc tmux.Client, active map[string]*run.State) {
-	timeout := time.After(agentWaitTimeout)
-	ticker := time.NewTicker(agentPollFallback)
-	defer ticker.Stop()
-
-	for len(active) > 0 {
-		select {
-		case <-ctx.Done():
-			return
-		case <-timeout:
-			var names []string
-			for id := range active {
-				names = append(names, id)
-			}
-			fmt.Printf("Timed out after %s waiting for agents: %v\n", agentWaitTimeout, names)
-			fmt.Println("These agents may still be running in their tmux panes.")
-			return
-		case <-ticker.C:
-			reapFinishedAgents(ctx, store, tc, active)
+		if s.IsAgentRunningWith(td) {
+			running = append(running, s)
 		}
 	}
 
-	fmt.Println("All agents finished.")
+	if len(running) == 0 {
+		fmt.Println("No agents running.")
+		return nil
+	}
+
+	fmt.Printf("%d agent(s) still running:\n", len(running))
+	for _, s := range running {
+		fmt.Printf("  - %s (pane %s)\n", s.ID, *s.TmuxPane)
+	}
+	return running
 }
 
 // genUUIDv4 returns a random UUID v4 string, or "" on error.
