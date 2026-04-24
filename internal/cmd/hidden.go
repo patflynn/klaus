@@ -163,6 +163,15 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 	}
 	defer f.Close()
 
+	// Preserve PRURL set at launch time (e.g. --pr mode).
+	// Only extract from logs when no URL is already known; otherwise the
+	// regex can clobber the correct value with a false match from agent
+	// tool output (source code, test fixtures, etc.).
+	existingPRURL := ""
+	if state.PRURL != nil {
+		existingPRURL = *state.PRURL
+	}
+
 	// Use line-by-line scanning for robust JSONL parsing.
 	// json.NewDecoder can corrupt its internal state on malformed lines,
 	// causing subsequent events to be silently skipped.
@@ -233,6 +242,10 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 				}
 			}
 		}
+	}
+
+	if existingPRURL != "" {
+		state.PRURL = &existingPRURL
 	}
 
 	return store.Save(state)
