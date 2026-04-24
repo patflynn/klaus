@@ -389,6 +389,43 @@ not valid json at all
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/2")
 	})
+
+	t.Run("preserves PRURL set before finalization", func(t *testing.T) {
+		// Simulates --pr mode: launch.go sets state.PRURL to the real PR
+		// before the agent runs. The agent's tool output contains unrelated
+		// PR URLs (e.g. from source code, test fixtures, or comments) that
+		// would otherwise clobber the correct value.
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at https://github.com/other/repo/pull/999 for reference"}]}}
+{"type":"tool_result","content":"see https://github.com/some/fixture/pull/123 in test data"}
+{"type":"result","total_cost_usd":1.0,"duration_ms":5000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		existing := "https://github.com/owner/repo/pull/42"
+		state.PRURL = &existing
+
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+	})
+
+	t.Run("extracts PRURL from log when not set before finalization", func(t *testing.T) {
+		// Simulates new-PR mode: state.PRURL is nil until the agent runs
+		// `gh pr create`. Regex extraction fills it in from the log.
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Creating PR now."}]}}
+{"type":"tool_result","content":"https://github.com/owner/repo/pull/77\n"}
+{"type":"result","total_cost_usd":1.0,"duration_ms":5000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if state.PRURL != nil {
+			t.Fatalf("test precondition: expected nil PRURL before finalize")
+		}
+
+		if err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/77")
+	})
 }
 
 func TestExtractClaudeSessionID(t *testing.T) {
