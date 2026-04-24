@@ -32,6 +32,23 @@ type Client interface {
 	// BranchDelete deletes a local branch.
 	BranchDelete(ctx context.Context, repoDir, branch string) error
 
+	// IsClean reports whether the working tree at repoDir has no uncommitted changes.
+	IsClean(ctx context.Context, repoDir string) (bool, error)
+
+	// CurrentBranch returns the short name of the currently checked-out branch,
+	// or "" when HEAD is detached.
+	CurrentBranch(ctx context.Context, repoDir string) (string, error)
+
+	// HasUpstream reports whether the current branch has a tracking upstream.
+	HasUpstream(ctx context.Context, repoDir string) (bool, error)
+
+	// MergeFastForward runs `git merge --ff-only @{u}` in repoDir.
+	MergeFastForward(ctx context.Context, repoDir string) error
+
+	// CommitsBehindUpstream returns how many commits the current branch is
+	// behind its upstream. Returns 0 if already up-to-date.
+	CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error)
+
 	// EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 	// initial commit if it doesn't.
 	EnsureDataRef(ctx context.Context, repoDir, dataRef string) error

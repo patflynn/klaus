@@ -16,6 +16,7 @@ import (
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
+	"github.com/patflynn/klaus/internal/projectsync"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -129,6 +130,12 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	if err := store.EnsureDirs(); err != nil {
 		return err
 	}
+
+	// Keep registered project clones up-to-date with their upstreams in the
+	// background so the coordinator sees current code. Never blocks startup;
+	// results are appended to ~/.klaus/sync.log. The current repo is excluded
+	// to avoid racing with the foreground git operations below.
+	kickoffBackgroundSync("session", root)
 
 	var branch, repoName, worktree string
 	var state *run.State
@@ -375,6 +382,25 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
 	return nil
+}
+
+// kickoffBackgroundSync fires projectsync.Sync in a goroutine and writes its
+// results to ~/.klaus/sync.log. The foreground caller is not blocked. The
+// goroutine uses a detached context so it survives past the foreground
+// command's lifetime (bounded by projectsync.PerRepoTimeout per repo).
+//
+// excludePath is the absolute path of any repo the foreground caller is about
+// to operate on; it's skipped to avoid racing with concurrent git operations
+// (e.g., FETCH_HEAD.lock contention).
+func kickoffBackgroundSync(source, excludePath string) {
+	reg, err := project.Load()
+	if err != nil || reg == nil || len(reg.Projects) == 0 {
+		return
+	}
+	go func() {
+		results := projectsync.Sync(context.Background(), reg, git.NewExecClient(), excludePath)
+		projectsync.WriteLog(source, results)
+	}()
 }
 
 // checkRunningAgents inspects agent states and returns those still running

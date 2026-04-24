@@ -160,6 +160,11 @@ are synced back after completion. Use --local to force local execution, or
 
 		worktree := filepath.Join(hostCfg.WorktreeBase, repoName, id)
 
+		// Background-sync registered project clones so the agent's worktree
+		// branches from fresh main. Non-blocking; results go to ~/.klaus/sync.log.
+		// Exclude repoRoot to avoid racing with the foreground fetch below.
+		kickoffBackgroundSync("launch", repoRoot)
+
 		// Fetch all refs so the worktree starts from the latest state.
 		// Skip when EnsureClone was already called — it fetches with the
 		// same flags (--prune --tags), so a second fetch is redundant.
