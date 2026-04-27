@@ -883,6 +883,149 @@ func TestRebaseDispatchRetryOnFailure(t *testing.T) {
 	}
 }
 
+func TestUnapprovedConflictsDispatchesRebase(t *testing.T) {
+	c, _ := newTestController(t)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	var launchedPrompt string
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchedPrompt = prompt
+		launchCount++
+		return "agent-rebase", nil
+	})
+
+	// CI passing, no review decision, no klaus internal approval, but conflicts present.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 0 {
+		t.Error("should not merge when conflicts exist")
+	}
+	if launchCount != 1 {
+		t.Errorf("expected 1 rebase agent launch for unapproved PR with conflicts, got %d", launchCount)
+	}
+	if !strings.Contains(launchedPrompt, "merge conflicts") {
+		t.Errorf("expected rebase prompt, got %q", launchedPrompt)
+	}
+
+	hasLaunch := false
+	for _, a := range actions {
+		if a.Type == "launch" && strings.Contains(a.Detail, "Rebase") {
+			hasLaunch = true
+		}
+	}
+	if !hasLaunch {
+		t.Errorf("expected rebase launch action, got %v", actions)
+	}
+
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase, got %s", state.Stage)
+	}
+	// Approval-related side effects must not have run.
+	if state.Stage == StageApproved {
+		t.Error("rebase dispatch should not transition unapproved PR to approved stage")
+	}
+}
+
+func TestRebaseCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// Dispatch 1: initial rebase agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Simulate agent completion (finalized with cost) without resolving conflicts.
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Expire the dispatch cooldown.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+
+		// Conflicts still present -> should re-dispatch rebase.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Three rebase agents have been dispatched. Simulate agent 3 completing.
+	cost := 1.0
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+
+	// Conflicts persist -> circuit breaker trips; no 4th dispatch.
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "fix attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Errorf("expected error action from rebase circuit breaker, got %v", actions)
+	}
+
+	if c.PipelineStates()["42"].Stage != StageStalled {
+		t.Errorf("expected stalled stage, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Subsequent poll while still stalled and conflicts present must not re-dispatch
+	// or emit duplicate stall errors.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions = c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected no further dispatches after stall, got %d", launchCount)
+	}
+	for _, a := range actions {
+		if a.Type == "error" {
+			t.Errorf("expected no duplicate error after stall, got %v", actions)
+		}
+	}
+}
+
 func TestApprovedNoConflictsMerges(t *testing.T) {
 	c, _ := newTestController(t)
 	c.SetAutoMergeOnApproval(true)

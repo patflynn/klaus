@@ -142,22 +142,49 @@ var transitions = []transition{
 		},
 	},
 
-	// ── CI passing + approved + conflicts → rebase ──────────────────────
+	// ── CI passing + conflicts → rebase ─────────────────────────────────
 
 	{
-		Name: "ci-passing/approved-conflicts-dispatch-rebase",
+		Name: "ci-passing/rebase-circuit-breaker-already-stalled",
 		Guard: allOf(
 			ciPassing,
-			isApproved,
+			hasConflicts,
+			fixAttemptsExhausted,
+			agentNotRunning,
+			inStage(StageStalled),
+		),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/conflicts-dispatch-rebase",
+		Guard: allOf(
+			ciPassing,
 			hasConflicts,
 			agentNotRunning,
 			cooldownExpired,
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
-			ps.FixAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
-			setApprovedIfNeeded(c, ps, status)
-			c.markRunStatesApproved(ps.PRNumber, runStates)
+
+			// Count a failed rebase attempt when a previous agent finished but conflicts persist.
+			if ps.Stage == StageNeedsRebase && ps.LastAgentID != "" {
+				ps.FixAttempts++
+			}
+
+			// Re-check circuit breaker after incrementing.
+			if ps.FixAttempts >= maxFixAttempts {
+				ps.Stage = StageStalled
+				c.logger.Warn("rebase agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.FixAttempts,
+				)
+				return []Action{{
+					Type:   "error",
+					Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts),
+				}}, nil
+			}
 
 			var descs []ActionDescriptor
 			descs = append(descs, ActionDescriptor{
@@ -182,17 +209,13 @@ var transitions = []transition{
 		},
 	},
 	{
-		Name: "ci-passing/approved-conflicts-wait",
+		Name: "ci-passing/conflicts-wait",
 		Guard: allOf(
 			ciPassing,
-			isApproved,
 			hasConflicts,
 		),
-		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
-			ps.FixAttempts = 0
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			emitCIPassedIfNeeded(c, ps, status)
-			setApprovedIfNeeded(c, ps, status)
-			c.markRunStatesApproved(ps.PRNumber, runStates)
 			return nil, nil
 		},
 	},
