@@ -54,7 +54,8 @@ type PRPipelineState struct {
 	RetryCount              int       // number of launch retries after failure
 	LastFailedAt            time.Time // when the last launch failure occurred
 	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
-	FixAttempts             int       // number of fix agents dispatched that completed without fixing CI
+	FixAttempts             int       // number of CI-fix agents dispatched that completed without fixing CI
+	RebaseAttempts          int       // number of rebase agents dispatched that completed without resolving conflicts
 
 	pendingLaunchDetail string // transient: detail text for pending launch action
 }
