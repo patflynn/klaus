@@ -149,7 +149,7 @@ var transitions = []transition{
 		Guard: allOf(
 			ciPassing,
 			hasConflicts,
-			fixAttemptsExhausted,
+			rebaseAttemptsExhausted,
 			agentNotRunning,
 			inStage(StageStalled),
 		),
@@ -168,21 +168,25 @@ var transitions = []transition{
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			emitCIPassedIfNeeded(c, ps, status)
 
+			// CI is now passing — any prior CI-fix attempts no longer count against
+			// the rebase agent's budget. RebaseAttempts is tracked separately.
+			ps.FixAttempts = 0
+
 			// Count a failed rebase attempt when a previous agent finished but conflicts persist.
 			if ps.Stage == StageNeedsRebase && ps.LastAgentID != "" {
-				ps.FixAttempts++
+				ps.RebaseAttempts++
 			}
 
-			// Re-check circuit breaker after incrementing.
-			if ps.FixAttempts >= maxFixAttempts {
+			// Re-check rebase circuit breaker after incrementing.
+			if ps.RebaseAttempts >= maxFixAttempts {
 				ps.Stage = StageStalled
 				c.logger.Warn("rebase agent circuit breaker tripped",
 					"pr", ps.PRNumber,
-					"attempts", ps.FixAttempts,
+					"attempts", ps.RebaseAttempts,
 				)
 				return []Action{{
 					Type:   "error",
-					Detail: fmt.Sprintf("PR #%s: %d fix attempts failed, stopping", ps.PRNumber, ps.FixAttempts),
+					Detail: fmt.Sprintf("PR #%s: %d rebase attempts failed, stopping", ps.PRNumber, ps.RebaseAttempts),
 				}}, nil
 			}
 
@@ -216,6 +220,13 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			emitCIPassedIfNeeded(c, ps, status)
+			// Move stage out of CI-failed/pending stages so emitCIPassedIfNeeded
+			// doesn't fire on every poll while the rebase dispatch is gated on
+			// cooldown or an in-flight agent. Preserve Stalled so the circuit
+			// breaker remains observable.
+			if ps.Stage != StageStalled && ps.Stage != StageNeedsRebase {
+				ps.Stage = StageNeedsRebase
+			}
 			return nil, nil
 		},
 	},
@@ -232,6 +243,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			setApprovedIfNeeded(c, ps, status)
 			c.markRunStatesApproved(ps.PRNumber, runStates)
@@ -253,6 +265,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			setApprovedIfNeeded(c, ps, status)
 			c.markRunStatesApproved(ps.PRNumber, runStates)
@@ -272,6 +285,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 
 			var descs []ActionDescriptor
@@ -310,6 +324,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			return nil, nil
 		},
@@ -327,6 +342,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 
 			var descs []ActionDescriptor
@@ -364,6 +380,7 @@ var transitions = []transition{
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			if ps.Stage != StageCIPassed {
 				c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
@@ -382,6 +399,7 @@ var transitions = []transition{
 		Guard: ciPassing,
 		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			return nil, nil
 		},
 	},
@@ -396,6 +414,7 @@ var transitions = []transition{
 		),
 		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
 			if ps.Stage == StageStalled {
 				ps.Stage = StageCIPending
 			}
@@ -474,6 +493,10 @@ func fixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*
 	return ps.FixAttempts >= maxFixAttempts
 }
 
+func rebaseAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.RebaseAttempts >= maxFixAttempts
+}
+
 // Stage guards.
 
 func inStage(s Stage) guardFunc {
@@ -547,9 +570,10 @@ func autoMergeEnabled(c *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.S
 // ── Shared helpers used by Apply functions ──────────────────────────────
 
 // emitCIPassedIfNeeded emits the CI-passed event when transitioning from
-// stages where CI was not previously known to be passing.
+// stages where CI was not previously known to be passing. StageNeedsRebase is
+// excluded so that polls during an in-flight rebase don't re-emit the event.
 func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) {
-	if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending || ps.Stage == StageNeedsRebase {
+	if ps.Stage == StageCIFailed || ps.Stage == StageCIPending || ps.Stage == StageReviewPending {
 		c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
 			"pr_number": ps.PRNumber,
 			"pr_url":    status.PRURL,

@@ -998,7 +998,7 @@ func TestRebaseCircuitBreaker(t *testing.T) {
 
 	hasError := false
 	for _, a := range actions {
-		if a.Type == "error" && strings.Contains(a.Detail, "fix attempts failed") {
+		if a.Type == "error" && strings.Contains(a.Detail, "rebase attempts failed") {
 			hasError = true
 		}
 	}
@@ -1023,6 +1023,171 @@ func TestRebaseCircuitBreaker(t *testing.T) {
 		if a.Type == "error" {
 			t.Errorf("expected no duplicate error after stall, got %v", actions)
 		}
+	}
+}
+
+// TestStalledFromCIRecoversWithConflicts verifies that a PR which exhausted
+// its CI fix-attempt budget and went to StageStalled is not blocked from
+// dispatching a rebase agent once CI starts passing — the rebase counter is
+// tracked separately so the rebase agent gets its own budget.
+func TestStalledFromCIRecoversWithConflicts(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Manually put the PR in StageStalled with FixAttempts maxed out, simulating
+	// having exhausted CI fix attempts before CI started passing.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:    "42",
+		Stage:       StageStalled,
+		FixAttempts: maxFixAttempts,
+		LastAgentID: "agent-old",
+	}
+	c.mu.Unlock()
+
+	// CI now passes but conflicts have appeared.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 1 {
+		t.Errorf("expected rebase agent to dispatch with fresh budget, got %d launches", launchCount)
+	}
+	for _, a := range actions {
+		if a.Type == "error" {
+			t.Errorf("did not expect circuit-breaker error on first rebase attempt, got %v", actions)
+		}
+	}
+	state := c.PipelineStates()["42"]
+	if state.Stage != StageNeedsRebase {
+		t.Errorf("expected stage needs_rebase after recovery, got %s", state.Stage)
+	}
+	if state.FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0, got %d", state.FixAttempts)
+	}
+	if state.RebaseAttempts != 0 {
+		t.Errorf("expected RebaseAttempts to start at 0, got %d", state.RebaseAttempts)
+	}
+}
+
+// TestRebaseDispatchDoesNotConsumeCIFixBudget verifies a PR with prior CI
+// fix attempts gets a full rebase budget once CI passes.
+func TestRebaseDispatchDoesNotConsumeCIFixBudget(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+
+	// Two prior CI fix attempts that didn't resolve CI yet.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:    "42",
+		Stage:       StageCIFailed,
+		FixAttempts: 2,
+		LastAgentID: "agent-old",
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First rebase dispatch: should fire and reset FixAttempts.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected first rebase dispatch, got %d launches", launchCount)
+	}
+	state := c.PipelineStates()["42"]
+	if state.FixAttempts != 0 {
+		t.Errorf("expected FixAttempts reset to 0 once CI passes, got %d", state.FixAttempts)
+	}
+	if state.RebaseAttempts != 0 {
+		t.Errorf("expected RebaseAttempts at 0 after first dispatch, got %d", state.RebaseAttempts)
+	}
+
+	// Two more cycles should still dispatch rebase agents (full rebase budget).
+	for attempt := 2; attempt <= 3; attempt++ {
+		cost := 1.0
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d total launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+}
+
+// TestConflictsWaitDoesNotSpamCIPassedEvent verifies that polling repeatedly
+// while a rebase is in flight (conflicts still present) does not re-emit the
+// AgentCIPassed event on every poll.
+func TestConflictsWaitDoesNotSpamCIPassedEvent(t *testing.T) {
+	c, baseDir := newTestController(t)
+	eventLog := event.NewLog(filepath.Join(baseDir, "session"))
+
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		return "agent-rebase", nil
+	})
+
+	// Seed the PR in StageCIPending so the first poll's transition emits
+	// AgentCIPassed exactly once when CI is found passing.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber: "42",
+		Stage:    StageCIPending,
+	}
+	c.mu.Unlock()
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			ReviewDecision: "", Conflicts: "yes", TargetRepo: "owner/repo",
+		},
+	}
+
+	// Initial poll dispatches rebase agent and emits AgentCIPassed once.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Subsequent polls hit conflicts-wait (agent still running — unfinalized
+	// run with a live pane is treated as running). Each must not re-emit
+	// AgentCIPassed.
+	runStates := []*run.State{
+		{ID: "agent-rebase", TmuxPane: strPtr("%1")},
+	}
+	for i := 0; i < 5; i++ {
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+	}
+
+	events, err := eventLog.Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	ciPassedCount := 0
+	for _, e := range events {
+		if e.Type == event.AgentCIPassed {
+			ciPassedCount++
+		}
+	}
+	if ciPassedCount != 1 {
+		t.Errorf("expected exactly 1 AgentCIPassed event, got %d (events: %v)", ciPassedCount, events)
 	}
 }
 
