@@ -152,8 +152,10 @@ Key behaviors:
   to address the comments. After the agent completes, unresolved review threads
   are automatically marked as resolved.
 
-- **Merge conflicts** — when an approved PR has conflicts, a rebase agent is
-  dispatched to rebase onto main, resolve conflicts, run tests, and push.
+- **Merge conflicts** — when a PR has conflicts with passing CI, a rebase agent
+  is dispatched to rebase onto main, resolve conflicts, run tests, and push.
+  Approval is not required; the rebase circuit breaker stops after
+  `maxFixAttempts` consecutive failed rebase attempts.
 
 - **Retry logic** — if an agent dispatch fails, the controller retries up to 2
   times with 60-second backoff. A 60-second cooldown prevents duplicate dispatches
