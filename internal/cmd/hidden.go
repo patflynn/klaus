@@ -280,6 +280,15 @@ func claudeSessionExists(sessionUUID string) bool {
 	if sessionUUID == "" {
 		return false
 	}
+	// Validate the UUID before interpolating into a filepath.Glob pattern:
+	// reject anything containing glob metacharacters or path separators so a
+	// crafted log entry can't escape the projects directory or match
+	// unintended files.
+	for _, r := range sessionUUID {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-') {
+			return false
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false

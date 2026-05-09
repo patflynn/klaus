@@ -508,6 +508,14 @@ func TestClaudeSessionExists(t *testing.T) {
 	if claudeSessionExists("") {
 		t.Error("claudeSessionExists(\"\") = true, want false")
 	}
+
+	// Reject inputs containing glob metacharacters or path separators even if
+	// matching files happen to exist on disk.
+	for _, bad := range []string{"*", "?", "../" + presentUUID, presentUUID + "/..", "[a-z]" + presentUUID[5:], presentUUID + "\x00"} {
+		if claudeSessionExists(bad) {
+			t.Errorf("claudeSessionExists(%q) = true, want false (invalid characters)", bad)
+		}
+	}
 }
 
 // TestResumeFallsBackWhenSessionMissing covers the bug from PR #529: a prior
