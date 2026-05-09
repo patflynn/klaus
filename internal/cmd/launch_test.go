@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/project"
+	"github.com/patflynn/klaus/internal/run"
 )
 
 func TestFormatPaneTitle(t *testing.T) {
@@ -479,6 +482,116 @@ func TestLaunchCmdHasResumeFromFlag(t *testing.T) {
 	}
 	if f.DefValue != "" {
 		t.Errorf("--resume-from default value should be empty, got %q", f.DefValue)
+	}
+}
+
+func TestClaudeSessionExists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projDir := filepath.Join(home, ".claude", "projects", "-some-encoded-dir")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	const presentUUID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
+	if err := os.WriteFile(filepath.Join(projDir, presentUUID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !claudeSessionExists(presentUUID) {
+		t.Errorf("claudeSessionExists(%q) = false, want true", presentUUID)
+	}
+	if claudeSessionExists("00000000-0000-0000-0000-000000000000") {
+		t.Error("claudeSessionExists(missing UUID) = true, want false")
+	}
+	if claudeSessionExists("") {
+		t.Error("claudeSessionExists(\"\") = true, want false")
+	}
+}
+
+// TestResumeFallsBackWhenSessionMissing covers the bug from PR #529: a prior
+// run's log file extracts a Claude session UUID, but the session file itself
+// has been cleaned up. Without validation, we'd pass --resume <uuid> and
+// claude would exit at startup with 0 turns. With validation, we skip the
+// flag and start a fresh session.
+func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Set up a klaus state store with a prior run whose log file references
+	// a Claude session UUID that does NOT exist on disk.
+	baseDir := filepath.Join(home, ".klaus", "sessions", "session-test")
+	store := run.NewHomeDirStoreFromPath(baseDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	const priorRunID = "20260509-1355-6139"
+	const orphanUUID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
+
+	logFile := filepath.Join(store.LogDir(), priorRunID+".jsonl")
+	resultEvent := map[string]interface{}{
+		"type":       "result",
+		"session_id": orphanUUID,
+	}
+	data, _ := json.Marshal(resultEvent)
+	if err := os.WriteFile(logFile, append(data, '\n'), 0o644); err != nil {
+		t.Fatalf("WriteFile log: %v", err)
+	}
+
+	priorState := &run.State{
+		ID:        priorRunID,
+		Prompt:    "fix CI",
+		LogFile:   &logFile,
+		CreatedAt: "2026-05-09T13:55:00Z",
+	}
+	if err := store.Save(priorState); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// The Claude session under ~/.claude/projects/ does NOT exist for orphanUUID.
+	// Mirror the resolve block in launch.go RunE.
+	s, err := store.Load(priorRunID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if s.LogFile == nil {
+		t.Fatal("LogFile is nil after Save/Load round-trip")
+	}
+	candidate := ExtractClaudeSessionID(*s.LogFile)
+	if candidate != orphanUUID {
+		t.Fatalf("ExtractClaudeSessionID = %q, want %q", candidate, orphanUUID)
+	}
+
+	var resolvedResume string
+	if claudeSessionExists(candidate) {
+		resolvedResume = candidate
+	}
+	if resolvedResume != "" {
+		t.Errorf("resolvedResume = %q, want empty (session is missing on disk)", resolvedResume)
+	}
+
+	// The downstream claude command should NOT include --resume.
+	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume)
+	if strings.Contains(cmd, "--resume") {
+		t.Errorf("expected no --resume flag when session is missing, got: %s", cmd)
+	}
+
+	// Sanity check: when the session DOES exist, we keep --resume.
+	projDir := filepath.Join(home, ".claude", "projects", "-encoded")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projDir, orphanUUID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile session: %v", err)
+	}
+	if !claudeSessionExists(orphanUUID) {
+		t.Fatal("claudeSessionExists should now return true after creating the file")
+	}
+	cmdResumed := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", orphanUUID)
+	if !strings.Contains(cmdResumed, "--resume '"+orphanUUID+"'") {
+		t.Errorf("expected --resume flag when session exists, got: %s", cmdResumed)
 	}
 }
 

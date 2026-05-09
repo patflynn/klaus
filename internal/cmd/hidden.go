@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 
 	"github.com/patflynn/klaus/internal/config"
@@ -269,6 +270,26 @@ func extractPRNumberFromURL(prURL string) string {
 		return ""
 	}
 	return matches[1]
+}
+
+// claudeSessionExists returns true if a Claude session JSONL file with the
+// given UUID exists under ~/.claude/projects/. Claude stores each session at
+// ~/.claude/projects/<encoded-project-dir>/<session-uuid>.jsonl; if the file
+// has been cleaned up, "claude --resume <uuid>" exits at startup with 0 turns.
+func claudeSessionExists(sessionUUID string) bool {
+	if sessionUUID == "" {
+		return false
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	pattern := filepath.Join(home, ".claude", "projects", "*", sessionUUID+".jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return false
+	}
+	return len(matches) > 0
 }
 
 // ExtractClaudeSessionID parses a Claude stream-json JSONL log file and
