@@ -288,6 +288,28 @@ func TestDescribeUnregisteredProjectErrors(t *testing.T) {
 	}
 }
 
+func TestDescribeNormalizesWhitespace(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir: "/tmp/projects",
+		Projects:    map[string]string{"foo": "/tmp/foo"},
+	}
+
+	if err := reg.Describe("foo", "  the\tfoo\n tool  "); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if got := reg.Description("foo"); got != "the foo tool" {
+		t.Errorf("Description = %q, want %q", got, "the foo tool")
+	}
+
+	// Whitespace-only input should be treated as empty and clear the entry.
+	if err := reg.Describe("foo", "   \t\n  "); err != nil {
+		t.Fatalf("Describe whitespace-only: %v", err)
+	}
+	if _, ok := reg.Descriptions["foo"]; ok {
+		t.Error("expected whitespace-only description to clear entry")
+	}
+}
+
 func TestDescribeEmptyClearsEntry(t *testing.T) {
 	reg := &Registry{
 		ProjectsDir:  "/tmp/projects",

@@ -122,12 +122,7 @@ func (r *Registry) saveTo(path string) error {
 	for name, p := range r.Projects {
 		out.Projects[name] = contractHome(p)
 	}
-	if len(r.Descriptions) > 0 {
-		out.Descriptions = make(map[string]string, len(r.Descriptions))
-		for name, d := range r.Descriptions {
-			out.Descriptions[name] = d
-		}
-	}
+	out.Descriptions = r.Descriptions
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -164,6 +159,7 @@ func (r *Registry) Describe(name, description string) error {
 	if _, exists := r.Projects[name]; !exists {
 		return fmt.Errorf("project %q is not registered", name)
 	}
+	description = strings.Join(strings.Fields(description), " ")
 	if description == "" {
 		delete(r.Descriptions, name)
 		return nil
