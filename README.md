@@ -99,6 +99,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus project add <owner/repo>` | Register a project (clones if needed) |
 | `klaus project list` | Show registered projects |
 | `klaus project remove <name>` | Unregister a project |
+| `klaus project describe <name> <desc>` | Set a one-line description (empty string clears it) |
 | `klaus project set-dir <path>` | Set the default projects directory |
 | `klaus sync` | Fetch and fast-forward every registered project |
 | `klaus new <project-name>` | Scaffold a new project using principles-based generation |
@@ -213,6 +214,8 @@ klaus project add owner/repo --path .     # register an existing local checkout
 klaus project add my-tool                 # search your GitHub repos by name
 klaus project list                        # show all registered projects
 klaus project remove my-tool              # unregister (does not delete the clone)
+klaus project describe my-tool "CLI for X"  # add a one-line description
+klaus project describe my-tool ""         # clear the description
 klaus project set-dir ~/hack              # set the default clone directory
 ```
 

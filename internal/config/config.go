@@ -466,15 +466,21 @@ func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "session-prompt.md", defaultSessionPromptTemplate, vars)
 }
 
-// FormatProjectList formats a map of project name → local path as a bulleted list
-// for use in the session prompt. Returns empty string if no projects are registered.
-func FormatProjectList(projects map[string]string) string {
+// FormatProjectList formats project name → local path (and optional description)
+// as a bulleted list for use in the session prompt. Returns empty string if no
+// projects are registered. When a description is present for a project, it is
+// appended after an em dash.
+func FormatProjectList(projects, descriptions map[string]string) string {
 	if len(projects) == 0 {
 		return ""
 	}
 	var lines []string
 	for name, localPath := range projects {
-		lines = append(lines, fmt.Sprintf("- %s (%s)", name, contractHomeForDisplay(localPath)))
+		line := fmt.Sprintf("- %s (%s)", name, contractHomeForDisplay(localPath))
+		if d := descriptions[name]; d != "" {
+			line += " — " + d
+		}
+		lines = append(lines, line)
 	}
 	// Sort for deterministic output
 	sortStrings(lines)

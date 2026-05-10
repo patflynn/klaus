@@ -279,7 +279,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	// Load project list for session prompt
 	var projectList string
 	if reg, loadErr := project.Load(); loadErr == nil {
-		projectList = config.FormatProjectList(reg.List())
+		projectList = config.FormatProjectList(reg.List(), reg.Descriptions)
 	}
 
 	// Render session system prompt
