@@ -272,15 +272,24 @@ are synced back after completion. Use --local to force local execution, or
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 		// Resolve the Claude session UUID from the previous run's JSONL log.
-		// claude --resume expects a UUID v4, not the klaus run ID.
+		// claude --resume expects a UUID v4, not the klaus run ID. The session
+		// must also still exist on disk under ~/.claude/projects/; if it's
+		// been cleaned up, claude --resume exits at startup with 0 turns.
 		var resolvedResume string
 		if resumeFrom != "" {
 			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s.LogFile != nil {
-				resolvedResume = ExtractClaudeSessionID(*s.LogFile)
+				candidate := ExtractClaudeSessionID(*s.LogFile)
+				if candidate != "" {
+					if claudeSessionExists(candidate) {
+						resolvedResume = candidate
+					} else {
+						fmt.Fprintf(os.Stderr, "warning: prior Claude session %s no longer exists on disk, starting fresh\n", candidate)
+					}
+				}
 			}
 			// If we couldn't extract a session UUID (e.g., previous agent
-			// also failed with no output), skip --resume entirely and
-			// let claude start a fresh session.
+			// also failed with no output) or the session has been cleaned
+			// up, skip --resume entirely and let claude start fresh.
 		}
 
 		// Build the claude command
