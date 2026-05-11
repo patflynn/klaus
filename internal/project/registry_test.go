@@ -259,6 +259,175 @@ func TestRoundTripWithTildePaths(t *testing.T) {
 	}
 }
 
+func TestDescribeAndDescription(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir: "/tmp/projects",
+		Projects:    map[string]string{"foo": "/tmp/foo"},
+	}
+
+	if got := reg.Description("foo"); got != "" {
+		t.Errorf("Description before set = %q, want empty", got)
+	}
+
+	if err := reg.Describe("foo", "the foo tool"); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if got := reg.Description("foo"); got != "the foo tool" {
+		t.Errorf("Description = %q, want %q", got, "the foo tool")
+	}
+}
+
+func TestDescribeUnregisteredProjectErrors(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir: "/tmp/projects",
+		Projects:    make(map[string]string),
+	}
+
+	if err := reg.Describe("nope", "anything"); err == nil {
+		t.Fatal("expected error for unregistered project, got nil")
+	}
+}
+
+func TestDescribeNormalizesWhitespace(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir: "/tmp/projects",
+		Projects:    map[string]string{"foo": "/tmp/foo"},
+	}
+
+	if err := reg.Describe("foo", "  the\tfoo\n tool  "); err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if got := reg.Description("foo"); got != "the foo tool" {
+		t.Errorf("Description = %q, want %q", got, "the foo tool")
+	}
+
+	// Whitespace-only input should be treated as empty and clear the entry.
+	if err := reg.Describe("foo", "   \t\n  "); err != nil {
+		t.Fatalf("Describe whitespace-only: %v", err)
+	}
+	if _, ok := reg.Descriptions["foo"]; ok {
+		t.Error("expected whitespace-only description to clear entry")
+	}
+}
+
+func TestDescribeEmptyClearsEntry(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir:  "/tmp/projects",
+		Projects:     map[string]string{"foo": "/tmp/foo"},
+		Descriptions: map[string]string{"foo": "old"},
+	}
+
+	if err := reg.Describe("foo", ""); err != nil {
+		t.Fatalf("Describe with empty: %v", err)
+	}
+	if _, ok := reg.Descriptions["foo"]; ok {
+		t.Error("expected description entry to be deleted on empty input")
+	}
+	if got := reg.Description("foo"); got != "" {
+		t.Errorf("Description after clear = %q, want empty", got)
+	}
+}
+
+func TestRemoveCleansUpDescription(t *testing.T) {
+	reg := &Registry{
+		ProjectsDir:  "/tmp/projects",
+		Projects:     map[string]string{"foo": "/tmp/foo"},
+		Descriptions: map[string]string{"foo": "the foo tool"},
+	}
+
+	if err := reg.Remove("foo"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := reg.Descriptions["foo"]; ok {
+		t.Error("Remove should also delete the description entry")
+	}
+}
+
+func TestDescriptionsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "projects.json")
+
+	reg := &Registry{
+		ProjectsDir:  "/tmp/projects",
+		Projects:     map[string]string{"foo": "/tmp/foo", "bar": "/tmp/bar"},
+		Descriptions: map[string]string{"foo": "foo tool"},
+	}
+
+	if err := reg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	loaded, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+
+	if got := loaded.Description("foo"); got != "foo tool" {
+		t.Errorf("Description(foo) after round-trip = %q, want %q", got, "foo tool")
+	}
+	if got := loaded.Description("bar"); got != "" {
+		t.Errorf("Description(bar) after round-trip = %q, want empty", got)
+	}
+}
+
+func TestLoadLegacyJSONWithoutDescriptionsKey(t *testing.T) {
+	// Mirror the literal shape of an existing projects.json from before the
+	// descriptions field was added — no `descriptions` key at all.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "projects.json")
+
+	if err := os.WriteFile(path, []byte(`{
+		"projects_dir": "~/hack",
+		"projects": {"klaus": "~/hack/klaus"}
+	}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reg, err := LoadFrom(path)
+	if err != nil {
+		t.Fatalf("LoadFrom legacy file: %v", err)
+	}
+
+	if reg.Descriptions == nil {
+		t.Error("Descriptions should be initialized to non-nil empty map for legacy files")
+	}
+	if got := reg.Description("klaus"); got != "" {
+		t.Errorf("Description(klaus) = %q, want empty for legacy file", got)
+	}
+
+	// Setting a description on a legacy-loaded registry should still work.
+	if err := reg.Describe("klaus", "self-hosting orchestrator"); err != nil {
+		t.Fatalf("Describe after legacy load: %v", err)
+	}
+	if got := reg.Description("klaus"); got != "self-hosting orchestrator" {
+		t.Errorf("Description after Describe = %q", got)
+	}
+}
+
+func TestSaveOmitsDescriptionsKeyWhenEmpty(t *testing.T) {
+	// When no descriptions are set, the saved JSON should not include a
+	// `descriptions` key (omitempty), keeping diffs clean for users who
+	// don't use this feature.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "projects.json")
+
+	reg := &Registry{
+		ProjectsDir: "/tmp/projects",
+		Projects:    map[string]string{"foo": "/tmp/foo"},
+	}
+	if err := reg.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if contains(string(data), "descriptions") {
+		t.Errorf("saved file should not contain `descriptions` when none set:\n%s", data)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && searchString(s, substr)
 }

@@ -665,24 +665,24 @@ func TestRenderSessionPromptWithoutProjects(t *testing.T) {
 
 func TestFormatProjectList(t *testing.T) {
 	t.Run("empty projects", func(t *testing.T) {
-		result := FormatProjectList(map[string]string{})
+		result := FormatProjectList(map[string]string{}, nil)
 		if result != "" {
 			t.Errorf("expected empty string for empty projects, got %q", result)
 		}
 	})
 
 	t.Run("nil projects", func(t *testing.T) {
-		result := FormatProjectList(nil)
+		result := FormatProjectList(nil, nil)
 		if result != "" {
 			t.Errorf("expected empty string for nil projects, got %q", result)
 		}
 	})
 
-	t.Run("single project", func(t *testing.T) {
+	t.Run("single project no description", func(t *testing.T) {
 		result := FormatProjectList(map[string]string{
 			"my-proj": "/tmp/my-proj",
-		})
-		if !strings.Contains(result, "- my-proj (/tmp/my-proj)") {
+		}, nil)
+		if result != "- my-proj (/tmp/my-proj)" {
 			t.Errorf("unexpected format: %q", result)
 		}
 	})
@@ -691,7 +691,7 @@ func TestFormatProjectList(t *testing.T) {
 		result := FormatProjectList(map[string]string{
 			"zebra": "/tmp/zebra",
 			"alpha": "/tmp/alpha",
-		})
+		}, nil)
 		lines := strings.Split(result, "\n")
 		if len(lines) != 2 {
 			t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
@@ -701,6 +701,37 @@ func TestFormatProjectList(t *testing.T) {
 		}
 		if !strings.HasPrefix(lines[1], "- zebra") {
 			t.Errorf("expected second line to be zebra, got %q", lines[1])
+		}
+	})
+
+	t.Run("with description uses em dash", func(t *testing.T) {
+		result := FormatProjectList(
+			map[string]string{"my-proj": "/tmp/my-proj"},
+			map[string]string{"my-proj": "Does the thing"},
+		)
+		want := "- my-proj (/tmp/my-proj) — Does the thing"
+		if result != want {
+			t.Errorf("FormatProjectList = %q, want %q", result, want)
+		}
+	})
+
+	t.Run("description present for some projects", func(t *testing.T) {
+		result := FormatProjectList(
+			map[string]string{
+				"alpha": "/tmp/alpha",
+				"zebra": "/tmp/zebra",
+			},
+			map[string]string{"alpha": "First letter"},
+		)
+		lines := strings.Split(result, "\n")
+		if len(lines) != 2 {
+			t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+		}
+		if lines[0] != "- alpha (/tmp/alpha) — First letter" {
+			t.Errorf("alpha line = %q", lines[0])
+		}
+		if lines[1] != "- zebra (/tmp/zebra)" {
+			t.Errorf("zebra line = %q", lines[1])
 		}
 	})
 }

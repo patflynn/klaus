@@ -11,8 +11,9 @@ import (
 // Registry holds the project registry: a default projects directory
 // and a map of project name to local path.
 type Registry struct {
-	ProjectsDir string            `json:"projects_dir"`
-	Projects    map[string]string `json:"projects"`
+	ProjectsDir  string            `json:"projects_dir"`
+	Projects     map[string]string `json:"projects"`
+	Descriptions map[string]string `json:"descriptions,omitempty"`
 }
 
 // registryPath returns the path to ~/.klaus/projects.json.
@@ -78,6 +79,9 @@ func loadFrom(path string) (*Registry, error) {
 	if reg.Projects == nil {
 		reg.Projects = make(map[string]string)
 	}
+	if reg.Descriptions == nil {
+		reg.Descriptions = make(map[string]string)
+	}
 	return &reg, nil
 }
 
@@ -88,8 +92,9 @@ func defaultRegistry() (*Registry, error) {
 		return nil, fmt.Errorf("resolving home dir: %w", err)
 	}
 	return &Registry{
-		ProjectsDir: filepath.Join(home, "src"),
-		Projects:    make(map[string]string),
+		ProjectsDir:  filepath.Join(home, "src"),
+		Projects:     make(map[string]string),
+		Descriptions: make(map[string]string),
 	}, nil
 }
 
@@ -117,6 +122,7 @@ func (r *Registry) saveTo(path string) error {
 	for name, p := range r.Projects {
 		out.Projects[name] = contractHome(p)
 	}
+	out.Descriptions = r.Descriptions
 
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -142,7 +148,32 @@ func (r *Registry) Remove(name string) error {
 		return fmt.Errorf("project %q is not registered", name)
 	}
 	delete(r.Projects, name)
+	delete(r.Descriptions, name)
 	return nil
+}
+
+// Describe sets or clears a freeform description for a registered project.
+// An empty description deletes any stored description for the name.
+// Returns an error if the project is not registered.
+func (r *Registry) Describe(name, description string) error {
+	if _, exists := r.Projects[name]; !exists {
+		return fmt.Errorf("project %q is not registered", name)
+	}
+	description = strings.Join(strings.Fields(description), " ")
+	if description == "" {
+		delete(r.Descriptions, name)
+		return nil
+	}
+	if r.Descriptions == nil {
+		r.Descriptions = make(map[string]string)
+	}
+	r.Descriptions[name] = description
+	return nil
+}
+
+// Description returns the stored description for a project, or "" if none.
+func (r *Registry) Description(name string) string {
+	return r.Descriptions[name]
 }
 
 // Get returns the local path for a project, expanding ~ if present.

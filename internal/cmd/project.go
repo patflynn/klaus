@@ -24,6 +24,7 @@ The registry maps project names to local paths and is stored in ~/.klaus/project
   klaus project add owner/repo --path . Register with explicit local path
   klaus project list                    Show registered projects
   klaus project remove <name>           Unregister a project
+  klaus project describe <name> <desc>  Set a one-line description (empty to clear)
   klaus project set-dir ~/hack          Set the default projects directory`,
 }
 
@@ -60,6 +61,22 @@ var projectSetDirCmd = &cobra.Command{
 	Short: "Set the default projects directory",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectSetDir,
+}
+
+var projectDescribeCmd = &cobra.Command{
+	Use:   "describe <name> <description>",
+	Short: "Set a one-line description for a registered project (empty string clears it)",
+	Long: `Set a freeform one-line description for a registered project.
+
+The description is shown in 'klaus project list' and included in the session
+coordinator's system prompt so the coordinator knows what each project is for.
+
+Pass an empty string to clear an existing description:
+
+  klaus project describe my-tool "CLI for managing X"
+  klaus project describe my-tool ""`,
+	Args: cobra.ExactArgs(2),
+	RunE: runProjectDescribe,
 }
 
 func runProjectAdd(cmd *cobra.Command, args []string) error {
@@ -156,11 +173,39 @@ func runProjectList(cmd *cobra.Command, _ []string) error {
 
 	for name, localPath := range projects {
 		remote := gitRemoteURL(localPath)
+		desc := reg.Description(name)
+		line := fmt.Sprintf("%-20s %s", name, localPath)
 		if remote != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s  (%s)\n", name, localPath, remote)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "%-20s %s\n", name, localPath)
+			line += fmt.Sprintf("  (%s)", remote)
 		}
+		if desc != "" {
+			line += " — " + desc
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), line)
+	}
+	return nil
+}
+
+func runProjectDescribe(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	description := args[1]
+
+	reg, err := project.Load()
+	if err != nil {
+		return err
+	}
+
+	if err := reg.Describe(name, description); err != nil {
+		return err
+	}
+	if err := reg.Save(); err != nil {
+		return err
+	}
+
+	if description == "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Cleared description for %s\n", name)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Set description for %s: %s\n", name, description)
 	}
 	return nil
 }
@@ -297,5 +342,6 @@ func init() {
 	projectCmd.AddCommand(projectListCmd)
 	projectCmd.AddCommand(projectRemoveCmd)
 	projectCmd.AddCommand(projectSetDirCmd)
+	projectCmd.AddCommand(projectDescribeCmd)
 	rootCmd.AddCommand(projectCmd)
 }
