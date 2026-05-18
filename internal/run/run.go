@@ -120,10 +120,10 @@ func (s *State) IsStaleWith(td TmuxDeps) bool {
 	return time.Since(created) > StaleGracePeriod
 }
 
-// GenID generates a run ID in the format YYYYMMDD-HHMM-XXXX where XXXX is 4 hex chars.
+// GenID generates a run ID in the format YYYYMMDD-HHMM-XXXXXXXX where the suffix is 8 hex chars.
 func GenID() (string, error) {
 	ts := time.Now().Format("20060102-1504")
-	b := make([]byte, 2)
+	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generating random bytes: %w", err)
 	}
