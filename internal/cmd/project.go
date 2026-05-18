@@ -20,12 +20,13 @@ var projectCmd = &cobra.Command{
 
 The registry maps project names to local paths and is stored in ~/.klaus/projects.json.
 
-  klaus project add owner/repo          Clone and register a project
-  klaus project add owner/repo --path . Register with explicit local path
-  klaus project list                    Show registered projects
-  klaus project remove <name>           Unregister a project
-  klaus project describe <name> <desc>  Set a one-line description (empty to clear)
-  klaus project set-dir ~/hack          Set the default projects directory`,
+  klaus project add owner/repo                       Clone and register a project
+  klaus project add owner/repo --path .              Register with explicit local path
+  klaus project add owner/repo -d "what it does"     Register with a description
+  klaus project list                                 Show registered projects
+  klaus project remove <name>                        Unregister a project
+  klaus project describe <name> <desc>               Set a one-line description (empty to clear)
+  klaus project set-dir ~/hack                       Set the default projects directory`,
 }
 
 var projectAddCmd = &cobra.Command{
@@ -37,7 +38,12 @@ With owner/repo format, clones the repo into the projects directory and register
 With just a name, searches your GitHub repos for a match.
 
 If --path is provided, registers the project at that path (must be an existing git repo).
-If the repo is already cloned at the expected path, it is registered without re-cloning.`,
+If the repo is already cloned at the expected path, it is registered without re-cloning.
+
+If --description is provided, it is stored as the project's one-line description.
+When --description is omitted, klaus tries 'gh repo view --json description' to fetch
+the GitHub description automatically; if that fails or returns empty, no description
+is stored (you can set one later with 'klaus project describe').`,
 	Args: cobra.ExactArgs(1),
 	RunE: runProjectAdd,
 }
@@ -82,13 +88,14 @@ Pass an empty string to clear an existing description:
 func runProjectAdd(cmd *cobra.Command, args []string) error {
 	ref := args[0]
 	explicitPath, _ := cmd.Flags().GetString("path")
+	description, _ := cmd.Flags().GetString("description")
 
 	reg, err := project.Load()
 	if err != nil {
 		return err
 	}
 
-	deps := DefaultProjectDeps()
+	deps := getProjectDeps()
 	var owner, repoName, cloneURL string
 
 	if strings.Contains(ref, "/") {
@@ -106,6 +113,12 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		}
 		owner = ghOwner
 		cloneURL = ghURL
+	}
+
+	// If the user didn't supply --description, try to pull one from GitHub.
+	// Best-effort: any error or empty result leaves description blank.
+	if description == "" && owner != "" && repoName != "" {
+		description = deps.FetchDescription(owner + "/" + repoName)
 	}
 
 	if explicitPath != "" {
@@ -126,10 +139,15 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 		if err := reg.Add(repoName, absPath); err != nil {
 			return err
 		}
+		if description != "" {
+			if err := reg.Describe(repoName, description); err != nil {
+				return err
+			}
+		}
 		if err := reg.Save(); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s\n", repoName, absPath)
+		printRegistered(cmd, repoName, absPath, description)
 		return nil
 	}
 
@@ -152,11 +170,24 @@ func runProjectAdd(cmd *cobra.Command, args []string) error {
 	if err := reg.Add(repoName, targetDir); err != nil {
 		return err
 	}
+	if description != "" {
+		if err := reg.Describe(repoName, description); err != nil {
+			return err
+		}
+	}
 	if err := reg.Save(); err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s\n", repoName, targetDir)
+	printRegistered(cmd, repoName, targetDir, description)
 	return nil
+}
+
+func printRegistered(cmd *cobra.Command, name, path, description string) {
+	if description != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s — %s\n", name, path, description)
+		return
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Registered %s → %s\n", name, path)
 }
 
 func runProjectList(cmd *cobra.Command, _ []string) error {
@@ -264,6 +295,10 @@ type ghRepoEntry struct {
 type ProjectDeps struct {
 	ResolveGitHubRepo func(name string) (string, string, error)
 	GitClone          func(url, targetDir string) error
+	// FetchDescription returns the GitHub description for owner/repo, or "" on
+	// any failure (missing binary, auth issue, no description set). It must
+	// never return an error — a missing description is not an error condition.
+	FetchDescription func(repoSlug string) string
 }
 
 // DefaultProjectDeps returns ProjectDeps wired to real implementations.
@@ -271,7 +306,23 @@ func DefaultProjectDeps() ProjectDeps {
 	return ProjectDeps{
 		ResolveGitHubRepo: defaultResolveGitHubRepo,
 		GitClone:          defaultGitClone,
+		FetchDescription:  defaultFetchDescription,
 	}
+}
+
+// getProjectDeps lets tests swap in stub dependencies without touching cobra.
+var getProjectDeps = DefaultProjectDeps
+
+// defaultFetchDescription shells out to `gh repo view <slug> --json description -q .description`.
+// Returns "" if gh is unavailable, unauthenticated, the repo doesn't exist, or
+// the repo has no description set. All failure modes collapse to empty so that
+// `klaus project add` does not fail just because a description couldn't be fetched.
+func defaultFetchDescription(repoSlug string) string {
+	out, err := exec.Command("gh", "repo", "view", repoSlug, "--json", "description", "-q", ".description").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // defaultResolveGitHubRepo searches the user's GitHub repos for a name match.
@@ -338,6 +389,7 @@ func gitRemoteURL(repoDir string) string {
 
 func init() {
 	projectAddCmd.Flags().String("path", "", "Register with an explicit local path instead of cloning")
+	projectAddCmd.Flags().StringP("description", "d", "", "One-line description for the project (falls back to 'gh repo view' if unset)")
 	projectCmd.AddCommand(projectAddCmd)
 	projectCmd.AddCommand(projectListCmd)
 	projectCmd.AddCommand(projectRemoveCmd)

@@ -213,13 +213,16 @@ Manage a persistent registry of projects. The registry maps short names to local
 ```bash
 klaus project add owner/repo              # clone into projects dir and register
 klaus project add owner/repo --path .     # register an existing local checkout
+klaus project add owner/repo -d "CLI for X"  # register with an explicit description
 klaus project add my-tool                 # search your GitHub repos by name
 klaus project list                        # show all registered projects
 klaus project remove my-tool              # unregister (does not delete the clone)
-klaus project describe my-tool "CLI for X"  # add a one-line description
+klaus project describe my-tool "CLI for X"  # add or update the one-line description
 klaus project describe my-tool ""         # clear the description
 klaus project set-dir ~/hack              # set the default clone directory
 ```
+
+When `klaus project add` is called without `-d/--description`, klaus tries `gh repo view --json description` to pick up the GitHub description automatically. If gh is unavailable or the repo has no description, the project is registered without one — you can backfill later with `klaus project describe`. Descriptions show up in `klaus project list` and in the session coordinator's `## Registered projects` block.
 
 ### `klaus webhook`
 
