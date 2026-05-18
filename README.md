@@ -53,6 +53,8 @@ PR created → CI pending → CI passed → Approved → Merged
 - **Approved + CI green + no conflicts** — auto-merge (when `auto_merge_on_approval` is enabled)
 - **Merge conflicts** — a rebase agent resolves them before merging
 
+When a `pr-fix` run is already active on a PR — including coordinator-launched runs from `klaus launch --pr` — the pipeline will not auto-dispatch additional fix or rebase agents on it. This prevents races during multi-step refactors where intermediate commits may fail CI before the run completes.
+
 Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`.
 
 You can also drive the pipeline manually with `klaus approve` and `klaus merge`.

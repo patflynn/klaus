@@ -473,8 +473,17 @@ func ciPendingOrUnknown(_ *Controller, _ *PRPipelineState, status *PRStatus, _ [
 
 // Agent status guards.
 
-func agentNotRunning(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
-	return !ps.AgentRunning
+// agentNotRunning gates dispatch on there being no active agent for this PR.
+// It checks both the controller's last-dispatched agent (ps.AgentRunning) and
+// any pr-fix run in runStates that matches the PR — the latter catches
+// coordinator-launched runs (`klaus launch --pr`) that the controller did not
+// dispatch itself, preventing the pipeline from racing them with a competing
+// fix agent.
+func agentNotRunning(c *Controller, ps *PRPipelineState, _ *PRStatus, runStates []*run.State) bool {
+	if ps.AgentRunning {
+		return false
+	}
+	return !c.anyPRFixRunning(ps.PRNumber, runStates)
 }
 
 func cooldownExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
