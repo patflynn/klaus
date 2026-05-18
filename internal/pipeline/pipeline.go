@@ -571,6 +571,26 @@ func (c *Controller) isRunning(s *run.State) bool {
 	return s.IsAgentRunningWith(c.tmuxDeps)
 }
 
+// anyPRFixRunning returns true if any pr-fix run is currently active on the
+// given PR, regardless of whether the controller itself dispatched it. This
+// detects coordinator-launched pr-fix runs (`klaus launch --pr <num>`) that
+// the controller has no record of, so it can avoid racing with them while
+// they are pushing incremental commits.
+func (c *Controller) anyPRFixRunning(prNumber string, runStates []*run.State) bool {
+	for _, s := range runStates {
+		if s == nil || s.Type != "pr-fix" {
+			continue
+		}
+		if !runStateMatchesPR(s, prNumber) {
+			continue
+		}
+		if c.isRunning(s) {
+			return true
+		}
+	}
+	return false
+}
+
 // truncateError returns a short, single-line version of an error message.
 // It strips cobra "Usage:" help text and truncates to maxLen.
 func truncateError(s string, maxLen int) string {

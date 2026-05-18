@@ -2205,6 +2205,142 @@ func TestSessionResumeFailingCISeedsCorrectly(t *testing.T) {
 	}
 }
 
+// TestCoordinatorLaunchedPRFixSuppresses verifies the controller does NOT
+// dispatch a competing fix agent when a coordinator-launched pr-fix run
+// (e.g. from `klaus launch --pr 42 ...`) is already active on the same PR.
+// This is the real-world incident on flux PR #66, where intermediate commits
+// during a multi-step refactor failed CI, the pipeline dispatched its own
+// fix agent, and the two agents revert-warred.
+func TestCoordinatorLaunchedPRFixSuppresses(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	// Coordinator-launched pr-fix run: Type set, running pane, PRURL matches PR 42.
+	// Note: the pipeline never recorded it in ps.LastAgentID.
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-001",
+			Type:     "pr-fix",
+			PRURL:    strPtr("https://github.com/owner/repo/pull/42"),
+			TmuxPane: strPtr("%7"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected pipeline to suppress dispatch while coordinator pr-fix run is active, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedPRFixSuppressesViaPRField covers the case where the
+// coordinator-launched run has its PR field populated (rather than PRURL).
+// Both forms should trigger the guard.
+func TestCoordinatorLaunchedPRFixSuppressesViaPRField(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-002",
+			Type:     "pr-fix",
+			PR:       strPtr("42"),
+			TmuxPane: strPtr("%8"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 0 {
+		t.Errorf("expected suppression via PR field match, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedPRFixFinishedAllowsDispatch verifies that once the
+// coordinator-launched pr-fix run completes (finalized, pane idle), the
+// pipeline is free to dispatch its own fix agent on a CI failure.
+func TestCoordinatorLaunchedPRFixFinishedAllowsDispatch(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	// Coordinator run is finalized (CostUSD set) — IsAgentRunning treats this
+	// as not running when the pane is idle (testTmuxDeps reports PaneIsIdle=true).
+	cost := 0.42
+	runStates := []*run.State{
+		{
+			ID:       "coord-fix-001",
+			Type:     "pr-fix",
+			PRURL:    strPtr("https://github.com/owner/repo/pull/42"),
+			TmuxPane: strPtr("%7"),
+			CostUSD:  &cost,
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 1 {
+		t.Errorf("expected dispatch after coordinator pr-fix run finished, got %d launches", launchCount)
+	}
+}
+
+// TestCoordinatorLaunchedNonPRFixDoesNotSuppress ensures only pr-fix runs trip
+// the guard — other run types on the same PR shouldn't block the pipeline.
+func TestCoordinatorLaunchedNonPRFixDoesNotSuppress(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "pipeline-agent", nil
+	})
+
+	runStates := []*run.State{
+		{
+			ID:       "coord-other",
+			Type:     "session", // not a pr-fix
+			PR:       strPtr("42"),
+			TmuxPane: strPtr("%9"),
+		},
+	}
+
+	statuses := map[string]*PRStatus{
+		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 1 {
+		t.Errorf("expected dispatch when only non-pr-fix runs are active, got %d launches", launchCount)
+	}
+}
+
 func strPtr(s string) *string {
 	return &s
 }
