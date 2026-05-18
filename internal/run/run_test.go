@@ -14,20 +14,20 @@ func TestGenID(t *testing.T) {
 		t.Fatalf("GenID() error: %v", err)
 	}
 
-	// Format: YYYYMMDD-HHMM-XXXX (4 hex chars)
-	pattern := `^\d{8}-\d{4}-[0-9a-f]{4}$`
+	// Format: YYYYMMDD-HHMM-XXXXXXXX (8 hex chars)
+	pattern := `^\d{8}-\d{4}-[0-9a-f]{8}$`
 	matched, err := regexp.MatchString(pattern, id)
 	if err != nil {
 		t.Fatalf("regexp error: %v", err)
 	}
 	if !matched {
-		t.Errorf("GenID() = %q, want format YYYYMMDD-HHMM-XXXX", id)
+		t.Errorf("GenID() = %q, want format YYYYMMDD-HHMM-XXXXXXXX", id)
 	}
 }
 
 func TestGenIDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 1000; i++ {
 		id, err := GenID()
 		if err != nil {
 			t.Fatalf("GenID() error: %v", err)
