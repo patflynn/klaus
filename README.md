@@ -55,7 +55,7 @@ PR created → CI pending → CI passed → Approved → Merged
 
 When a `pr-fix` run is already active on a PR — including coordinator-launched runs from `klaus launch --pr` — the pipeline will not auto-dispatch additional fix or rebase agents on it. This prevents races during multi-step refactors where intermediate commits may fail CI before the run completes.
 
-Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`.
+Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`. Budget-exhausted agents land in `budget_paused` — see [Budget pause and resume](#budget-pause-and-resume) below.
 
 You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
@@ -73,6 +73,30 @@ klaus watch --list-types             # show live and reserved event types
 ```
 
 The coordinator session's system prompt automatically suggests arming a persistent Monitor on `klaus watch` at startup. The dashboard reads the same `events.jsonl` file independently — both consumers can run side by side.
+
+## Budget pause and resume
+
+When an agent exhausts its `--budget` cap, klaus does not silently kill the worktree. Instead it parks the in-progress work on GitHub:
+
+1. Commits any uncommitted changes in the worktree (`WIP from klaus run <id> (budget paused)`).
+2. Pushes the branch to `origin` (with `--force-with-lease`).
+3. Opens a draft PR — or updates the existing one — and applies the `klaus:budget-paused` label.
+4. Posts a one-line PR comment explaining the pause and how to continue.
+5. Cleans up the worktree and tmux pane.
+
+The draft PR + label is the persisted state — klaus does not keep an in-process "paused" status. The dashboard surfaces these as **budget paused, awaiting decision** via the pipeline FSM (which reads the label off GitHub).
+
+To resume, dispatch a fresh agent against the PR's branch:
+
+```bash
+klaus launch --pr <num> "continue the work"
+```
+
+The new agent sees the WIP commit and picks up from there. When the follow-up agent's `_finalize` runs, the `klaus:budget-paused` label is automatically removed and an `agent:resumed` event is emitted. If the follow-up agent *also* exhausts its budget, the cycle repeats (a new WIP commit, label re-applied).
+
+To abandon the work, close the draft PR. To redirect, push manual commits to its branch.
+
+There is no separate `klaus resume` or `klaus finalize` command — `klaus launch --pr` is the only resume path, and `_finalize` handles the WIP commit automatically.
 
 ## Install
 

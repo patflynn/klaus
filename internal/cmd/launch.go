@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
@@ -31,7 +32,11 @@ matches a registered project (no owner/ prefix), the project's local path is
 used directly. Otherwise, the repo is cloned from GitHub.
 
 Use --pr to push fixes to an existing PR's branch instead of creating a new
-PR. The agent will commit and push to the PR branch directly.
+PR. The agent will commit and push to the PR branch directly. This is also
+how you resume a budget-paused PR: launch a fresh agent against the paused
+PR and it picks up from the WIP commit klaus left on the branch. When the
+follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
+automatically.
 
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
@@ -418,6 +423,20 @@ are synced back after completion. Use --local to force local execution, or
 				startedData["target_repo"] = *normalizedTarget
 			}
 			emitEvent(hds.BaseDir(), id, event.AgentStarted, startedData)
+
+			// If this is a launch against a budget-paused PR, emit
+			// agent:resumed so the coordinator (and dashboard) know the
+			// pause is being acted on.
+			if isPRFix && prNumber != "" {
+				ghRepoArg := resolveGHRepo(repoRef, repoRoot)
+				if paused, perr := draft.HasBudgetPausedLabel(ctx, draft.ExecRunner{}, worktree, ghRepoArg, prNumber); perr == nil && paused {
+					emitEvent(hds.BaseDir(), id, event.AgentResumed, map[string]interface{}{
+						"id":        id,
+						"pr_number": prNumber,
+						"pr_url":    prURL,
+					})
+				}
+			}
 		}
 
 		fmt.Printf("  pane:     %s\n", paneID)
@@ -685,7 +704,7 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 
 func init() {
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
-	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR")
+	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR (also the way to resume a budget-paused PR — the agent picks up from the WIP commit)")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")

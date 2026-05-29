@@ -305,7 +305,7 @@ func TestFinalizeFromLog(t *testing.T) {
 {"type":"result","total_cost_usd":1.5,"duration_ms":30000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
@@ -321,7 +321,7 @@ func TestFinalizeFromLog(t *testing.T) {
 {"type":"result","total_cost_usd":2.0,"duration_ms":45000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/99")
@@ -333,7 +333,7 @@ func TestFinalizeFromLog(t *testing.T) {
 {"type":"result","total_cost_usd":1.0,"duration_ms":10000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/7")
@@ -344,7 +344,7 @@ func TestFinalizeFromLog(t *testing.T) {
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
@@ -358,7 +358,7 @@ not valid json at all
 {"type":"result","total_cost_usd":0.5,"duration_ms":2000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/5")
@@ -370,7 +370,7 @@ not valid json at all
 {"type":"result","total_cost_usd":0.1,"duration_ms":1000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		if state.PRURL != nil {
@@ -384,7 +384,7 @@ not valid json at all
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/2")
@@ -403,7 +403,7 @@ not valid json at all
 		existing := "https://github.com/owner/repo/pull/42"
 		state.PRURL = &existing
 
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
@@ -421,7 +421,7 @@ not valid json at all
 			t.Fatalf("test precondition: expected nil PRURL before finalize")
 		}
 
-		if err := finalizeFromLog(store, state); err != nil {
+		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/77")

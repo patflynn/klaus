@@ -161,6 +161,32 @@ func (c *GHCLIClient) GetReviewDecision(ctx context.Context, prRef string) strin
 	return strings.TrimSpace(stdout.String())
 }
 
+// GetLabels returns the names of all labels currently applied to the PR.
+// Returns an empty slice on error (including when the PR has no labels).
+func (c *GHCLIClient) GetLabels(ctx context.Context, prRef string) []string {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	args := c.ghArgs([]string{"pr", "view", "--json", "labels", "-q", ".labels[].name"}, prRef)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		return nil
+	}
+	var labels []string
+	for _, line := range strings.Split(out, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			labels = append(labels, name)
+		}
+	}
+	return labels
+}
+
 // GetState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED").
 func (c *GHCLIClient) GetState(ctx context.Context, prRef string) string {
 	ctx, cancel := ensureTimeout(ctx)

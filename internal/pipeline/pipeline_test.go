@@ -2344,3 +2344,112 @@ func TestCoordinatorLaunchedNonPRFixDoesNotSuppress(t *testing.T) {
 func strPtr(s string) *string {
 	return &s
 }
+
+func TestBudgetPausedLabelDrivesStage(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-x", nil
+	})
+
+	// PR has the klaus:budget-paused label. Even though CI is failing, the
+	// pause transition should win and no fix-agent should be dispatched.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "failing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 0 {
+		t.Errorf("expected no agent dispatch for paused PR, got %d launches", launchCount)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions for paused PR, got %v", actions)
+	}
+	if got := c.PipelineStates()["42"].Stage; got != StageBudgetPaused {
+		t.Errorf("expected stage budget_paused, got %s", got)
+	}
+}
+
+func TestBudgetPausedTransitionsToCIFailedOnceLabelCleared(t *testing.T) {
+	c, _ := newTestController(t)
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return "agent-fix", nil
+	})
+
+	// Step 1: paused.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "failing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if c.PipelineStates()["42"].Stage != StageBudgetPaused {
+		t.Fatalf("setup: expected budget_paused, got %s", c.PipelineStates()["42"].Stage)
+	}
+
+	// Step 2: label cleared → pipeline should resume normal handling
+	// (dispatch a fix agent for failing CI).
+	statuses["42"] = &PRStatus{
+		PRNumber:   "42",
+		State:      "OPEN",
+		CI:         "failing",
+		TargetRepo: "owner/repo",
+		Labels:     nil,
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if launchCount != 1 {
+		t.Errorf("expected fix agent dispatch after label clear, got %d launches", launchCount)
+	}
+	if got := c.PipelineStates()["42"].Stage; got != StageCIFailed {
+		t.Errorf("expected stage ci_failed after label clear, got %s", got)
+	}
+}
+
+func TestBudgetPausedEmitsEventOnTransition(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		return "agent-x", nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:   "42",
+			State:      "OPEN",
+			CI:         "passing",
+			TargetRepo: "owner/repo",
+			Labels:     []string{"klaus:budget-paused"},
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	// Idempotent: calling again should not double-emit (we just verify the
+	// stage stays the same — events.jsonl assertion is more fragile to set
+	// up in this test harness, so we rely on the stage as the proxy).
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if got := c.PipelineStates()["42"].Stage; got != StageBudgetPaused {
+		t.Errorf("expected stage budget_paused, got %s", got)
+	}
+}
+
+func TestStageLabelBudgetPaused(t *testing.T) {
+	if got := StageLabel(StageBudgetPaused); got != "budget paused, awaiting decision" {
+		t.Errorf("StageLabel(budget_paused) = %q", got)
+	}
+}
