@@ -59,6 +59,21 @@ Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`
 
 You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
+### Real-time event channel
+
+Pipeline events (PR created/approved/merged, CI passed/failed, agent errors) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
+
+```bash
+klaus watch                          # default filter, follow new events
+klaus watch --since-start            # replay everything in the file, then follow
+klaus watch --filter pr:merged       # narrow to a single event type (repeatable)
+klaus watch --filter-out pr:approved # subtract from the default filter
+klaus watch --json                   # raw JSONL passthrough
+klaus watch --list-types             # show live and reserved event types
+```
+
+The coordinator session's system prompt automatically suggests arming a persistent Monitor on `klaus watch` at startup. The dashboard reads the same `events.jsonl` file independently — both consumers can run side by side.
+
 ## Install
 
 ### Nix flake (recommended)
@@ -108,6 +123,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus webhook check` | Check registered projects for GitHub webhook configuration |
 | `klaus webhook setup [project]` | Create missing webhooks for registered projects |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
+| `klaus watch` | Stream pipeline events line-by-line (designed for Claude Code's Monitor tool) |
 | `klaus approve <pr>...` | Approve PRs for merging |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |

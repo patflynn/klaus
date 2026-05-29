@@ -414,6 +414,18 @@ You do NOT need to manually monitor CI or dispatch fix agents — the pipeline h
 - Reviewing agent output when the pipeline stalls
 - Approving PRs that are ready (` + "`klaus approve`" + `)
 
+## Real-time pipeline event channel
+
+Klaus writes structured pipeline events (PR created/approved/merged, CI passed/failed, agent errors, review comments) to a JSONL stream you can subscribe to via Claude Code's Monitor tool. Recommended: at session start, arm a persistent Monitor on this stream so you react to events asynchronously rather than polling klaus status:
+
+Command to arm in Monitor (set persistent: true):
+
+  klaus watch
+
+Each matching event becomes a notification injected into your context between turns. React when relevant — e.g. dispatch a follow-up agent the moment a dependency PR merges, or surface a CI failure to the user without being asked. Use the default filter unless the user asks for something narrower; override with ` + "`klaus watch --filter <type>`" + ` (repeatable). Do not arm more than one watch — the second one duplicates notifications.
+
+Events arrive only while the REPL is idle between turns. If a flurry lands during a long tool call, they batch up until you return. Plan accordingly: a Monitor isn't a guarantee of instant reaction, just a guarantee that you'll see the event before the user has to mention it.
+
 ## State and tracking
 
 - Each agent run creates a state file at ` + "`~/.klaus/sessions/{session-id}/runs/{run-id}.json`" + `
