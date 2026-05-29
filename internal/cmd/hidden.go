@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"time"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
@@ -19,6 +21,11 @@ import (
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
 )
+
+// budgetExhaustionTolerance is the fraction of budget at which a completed
+// run is treated as paused (the claude binary self-terminates near, but not
+// always exactly at, the cap). Reaching 95% of the cap is enough.
+const budgetExhaustionTolerance = 0.95
 
 var formatStreamCmd = &cobra.Command{
 	Use:    "_format-stream",
@@ -54,7 +61,16 @@ var finalizeCmd = &cobra.Command{
 			}
 		}
 
+		// If claude exited because the budget cap was reached, treat the
+		// run as paused: keep the worktree and tmux pane intact so the
+		// coordinator can resume or save the in-progress work.
+		if isBudgetExhausted(state) {
+			pauseAfterBudgetExhaustion(store, state)
+			return nil
+		}
+
 		// Emit events for completed run
+		setStatus(state, run.StatusCompleted)
 		if hds, ok := store.(*run.HomeDirStore); ok {
 			baseDir := hds.BaseDir()
 
@@ -107,6 +123,67 @@ var finalizeCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// isBudgetExhausted reports whether the run terminated because claude hit
+// its --max-budget-usd cap. We compare total spend to the configured cap;
+// claude self-terminates at or near the cap when budget is exhausted.
+func isBudgetExhausted(state *run.State) bool {
+	if state.Budget == nil || *state.Budget == "" {
+		return false
+	}
+	if state.CostUSD == nil {
+		return false
+	}
+	cap, err := strconv.ParseFloat(*state.Budget, 64)
+	if err != nil || cap <= 0 {
+		return false
+	}
+	return *state.CostUSD >= cap*budgetExhaustionTolerance
+}
+
+// setStatus assigns Status to the given value, allocating a fresh string
+// pointer so callers don't accidentally share storage across runs.
+func setStatus(state *run.State, status string) {
+	s := status
+	state.Status = &s
+}
+
+// pauseAfterBudgetExhaustion marks the run paused, emits the agent:paused
+// event, and prints a coordinator-facing one-liner pointing at the recovery
+// commands. The worktree and tmux pane are deliberately left intact.
+func pauseAfterBudgetExhaustion(store run.StateStore, state *run.State) {
+	setStatus(state, run.StatusPaused)
+	pausedAt := time.Now().UTC().Format(time.RFC3339)
+	state.PausedAt = &pausedAt
+	reason := run.PauseReasonBudgetExceeded
+	state.PauseReason = &reason
+
+	if err := store.Save(state); err != nil {
+		slog.Warn("failed to save paused state", "id", state.ID, "err", err)
+	}
+
+	cost := 0.0
+	if state.CostUSD != nil {
+		cost = *state.CostUSD
+	}
+	budget := ""
+	if state.Budget != nil {
+		budget = *state.Budget
+	}
+
+	if hds, ok := store.(*run.HomeDirStore); ok {
+		emitEvent(hds.BaseDir(), state.ID, event.AgentPaused, map[string]interface{}{
+			"id":         state.ID,
+			"reason":     run.PauseReasonBudgetExceeded,
+			"cost_usd":   cost,
+			"budget_usd": budget,
+		})
+	}
+
+	fmt.Printf("\nAgent %s paused: budget exceeded ($%.4f of $%s). "+
+		"Resume with 'klaus resume %s --add-budget <usd>', or save the WIP with 'klaus finalize %s'.\n",
+		state.ID, cost, budget, state.ID, state.ID)
 }
 
 // cleanupWorktree removes the agent's worktree and local branch after

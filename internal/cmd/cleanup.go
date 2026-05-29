@@ -91,6 +91,16 @@ func defaultIsRunActive(state *run.State, tc tmux.Client) bool {
 		}
 	}
 
+	// Paused and finalized runs have given up their claim on resources —
+	// their tmux pane may still exist (paused agents preserve theirs), but
+	// they are explicitly safe to clean up without --force.
+	if state.Status != nil {
+		switch *state.Status {
+		case run.StatusPaused, run.StatusFinalized, run.StatusCompleted:
+			return false
+		}
+	}
+
 	if state.IsAgentRunning() {
 		return true
 	}

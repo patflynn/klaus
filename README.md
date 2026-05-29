@@ -96,6 +96,8 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
+| `klaus resume <id> [--add-budget <usd>]` | Resume a paused agent with extended budget |
+| `klaus finalize <id> [--open-pr]` | Commit and push a paused agent's WIP without resuming claude |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id>` | Force-push a log held back for sensitivity |
 | `klaus project add <owner/repo>` | Register a project (clones if needed) |
@@ -122,6 +124,26 @@ klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 ```
 
 The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
+
+### Pause and resume
+
+Agents that exceed their `--budget` cap are **paused** rather than killed. Their git worktree and tmux pane are preserved so any in-progress work can be recovered. Watch for an `agent:paused` event (visible in `klaus notifications` and the dashboard); the agent stops emitting log activity but the state file flips to `status: paused`.
+
+There are three recovery paths:
+
+```bash
+klaus resume <run-id>                          # add $5 to the budget cap and continue
+klaus resume <run-id> --add-budget 10          # add $10
+klaus resume <run-id> --budget 20              # set an absolute new cap of $20
+
+klaus finalize <run-id>                        # commit any uncommitted changes and push
+klaus finalize <run-id> --message "fix auth"   # custom commit message
+klaus finalize <run-id> --open-pr              # also open a draft PR
+
+klaus cleanup <run-id>                         # discard the work (explicit throw-away)
+```
+
+`klaus resume` relaunches claude in the same worktree using `--resume <session-id>`, so the conversation context is preserved. `klaus finalize` saves the work without paying for more agent time. `klaus cleanup` is unchanged and remains the explicit "delete it all" path — it also works on paused runs without `--force`.
 
 ### `klaus launch --repo`
 

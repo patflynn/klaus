@@ -14,6 +14,9 @@ type Event struct {
 const (
 	AgentStarted        = "agent:started"
 	AgentCompleted      = "agent:completed"
+	AgentPaused         = "agent:paused"
+	AgentResumed        = "agent:resumed"
+	AgentFinalized      = "agent:finalized"
 	AgentPRCreated      = "agent:pr-created"
 	AgentCIPassed       = "agent:ci-passed"
 	AgentCIFailed       = "agent:ci-failed"

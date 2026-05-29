@@ -392,13 +392,33 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 
 - ` + "`klaus status`" + ` — check on running agents
 - ` + "`klaus logs <run-id>`" + ` — view agent output
-- ` + "`klaus cleanup <run-id>`" + ` — clean up finished runs
+- ` + "`klaus resume <run-id> [--add-budget <usd>]`" + ` — resume a paused agent with more budget
+- ` + "`klaus finalize <run-id> [--open-pr]`" + ` — commit and push a paused agent's WIP without resuming claude
+- ` + "`klaus cleanup <run-id>`" + ` — clean up finished or paused runs (destructive: removes worktree)
 - ` + "`klaus target [owner/repo | project-name]`" + ` — get/set default target repo
 - ` + "`klaus approve <pr-number> [...]`" + ` — approve PRs for merging
 - ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially
 - ` + "`klaus track <pr-number> [--repo <repo>]`" + ` — add existing PR to dashboard for pipeline monitoring
 - ` + "`klaus untrack <pr-number>`" + ` — stop tracking a PR
 - ` + "`klaus dashboard`" + ` — open live dashboard
+
+### When an agent pauses (` + "`agent:paused`" + ` event)
+
+Agents that exceed their --budget are now **paused, not killed**. Their worktree
+and tmux pane are preserved so the work isn't lost. You have three recovery paths:
+
+- ` + "`klaus resume <run-id> --add-budget <usd>`" + ` — resumes claude in the same
+  worktree with a higher cap. **Use this when the agent was close to done — most
+  common case.** Skim the last few log lines first to gauge how close.
+- ` + "`klaus finalize <run-id>`" + ` — commits any uncommitted changes and pushes
+  the branch without resuming claude. Use when you don't want to spend more on
+  the agent but want to save the work for human inspection or a follow-up agent.
+  Add ` + "`--open-pr`" + ` to also open a draft PR.
+- ` + "`klaus cleanup <run-id>`" + ` — the explicit 'throw it away' path. Use only
+  when the agent has clearly gone off the rails.
+
+Default to ` + "`klaus resume`" + ` + budget bump when the last log line suggests the
+agent was nearly done (e.g. about to commit, about to push, about to create a PR).
 
 ## How the pipeline works
 

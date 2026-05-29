@@ -37,7 +37,27 @@ type State struct {
 	OriginalRunID    *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
 	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
 	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
+
+	// Status lifecycle. Unset is treated as "running" for backward
+	// compatibility with state files written before this field existed.
+	// Known values: "running", "paused", "completed", "finalized".
+	Status      *string `json:"status,omitempty"`
+	PausedAt    *string `json:"paused_at,omitempty"`    // RFC3339 timestamp when the run was paused
+	PauseReason *string `json:"pause_reason,omitempty"` // e.g. "budget-exceeded"
 }
+
+// Status constants for State.Status.
+const (
+	StatusRunning   = "running"
+	StatusPaused    = "paused"
+	StatusCompleted = "completed"
+	StatusFinalized = "finalized"
+)
+
+// PauseReason constants for State.PauseReason.
+const (
+	PauseReasonBudgetExceeded = "budget-exceeded"
+)
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.
 type TmuxDeps struct {
