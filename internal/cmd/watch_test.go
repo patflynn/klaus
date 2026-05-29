@@ -90,6 +90,34 @@ func TestWatchFilterMatches(t *testing.T) {
 	}
 }
 
+// TestTruncateLine verifies the genuinely tricky parts of truncateLine: rune
+// (not byte) slicing so multi-byte UTF-8 characters survive truncation, and
+// whitespace collapsing via strings.Fields.
+func TestTruncateLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		max  int
+		want string
+	}{
+		{"shorter than max passes through", "hello", 10, "hello"},
+		{"collapses internal whitespace", "a\nb\tc  d", 20, "a b c d"},
+		{"trims leading and trailing whitespace", "  hi  ", 20, "hi"},
+		{"truncates ASCII with ellipsis", "abcdefghij", 5, "abcd…"},
+		{"counts runes not bytes for length check", "héllo", 5, "héllo"},
+		{"truncates multi-byte runes without splitting", "日本語テスト", 4, "日本語…"},
+		{"max==1 returns one rune (no ellipsis room)", "日本語", 1, "日"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := truncateLine(tc.in, tc.max)
+			if got != tc.want {
+				t.Errorf("truncateLine(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+			}
+		})
+	}
+}
+
 // klausBinary lazily builds the real klaus binary and returns its path. All
 // integration tests below run klaus as a subprocess so we exercise the full
 // command surface including SIGTERM handling, line-buffered stdout, and

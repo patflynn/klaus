@@ -468,15 +468,15 @@ func eventSummary(evt event.Event) string {
 }
 
 func truncateLine(s string, max int) string {
-	s = strings.ReplaceAll(s, "\n", " ")
-	s = strings.ReplaceAll(s, "\r", " ")
-	if len(s) <= max {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
 	if max <= 1 {
-		return s[:max]
+		return string(runes[:max])
 	}
-	return s[:max-1] + "…"
+	return string(runes[:max-1]) + "…"
 }
 
 // waitForFile blocks until path exists or timeout elapses. Polls every 500ms.
