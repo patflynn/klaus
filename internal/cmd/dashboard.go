@@ -233,6 +233,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Conflicts:             v.Conflicts,
 				ReviewDecision:        v.ReviewDecision,
 				HasNewTrustedComments: v.HasNewTrustedComments,
+				Labels:                v.Labels,
 			}
 			// Find the PR URL and target repo from run states.
 			for _, s := range m.states {

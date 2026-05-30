@@ -15,6 +15,8 @@ const (
 	AgentStarted        = "agent:started"
 	AgentCompleted      = "agent:completed"
 	AgentPRCreated      = "agent:pr-created"
+	AgentPaused         = "agent:paused"
+	AgentResumed        = "agent:resumed"
 	AgentCIPassed       = "agent:ci-passed"
 	AgentCIFailed       = "agent:ci-failed"
 	AgentNeedsAttention = "agent:needs-attention"
@@ -22,6 +24,11 @@ const (
 	PRApproved          = "pr:approved"
 	PRMerged            = "pr:merged"
 )
+
+// BudgetPausedLabel is the GitHub label applied to PRs whose agents have
+// paused due to budget exhaustion. Klaus uses the label as the persistence
+// signal for the paused state; the draft PR + label is the canonical record.
+const BudgetPausedLabel = "klaus:budget-paused"
 
 // New creates an Event with the current timestamp.
 func New(runID, eventType string, data map[string]interface{}) Event {

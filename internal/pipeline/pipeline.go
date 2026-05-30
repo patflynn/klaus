@@ -29,18 +29,20 @@ const (
 	StageMerging       Stage = "merging"
 	StageMerged        Stage = "merged"
 	StageStalled       Stage = "stalled"
+	StageBudgetPaused  Stage = "budget_paused"
 )
 
 // PRStatus holds the GitHub-fetched status for a single PR, passed from the dashboard.
 type PRStatus struct {
-	PRNumber               string
-	PRURL                  string
-	State                  string // OPEN, MERGED, CLOSED
-	CI                     string // passing, failing, pending, unknown
-	Conflicts              string // yes, none, unknown
-	ReviewDecision         string // APPROVED, CHANGES_REQUESTED, etc.
-	TargetRepo             string // owner/repo for dispatch context
-	HasNewTrustedComments  bool   // unaddressed comments from trusted reviewers
+	PRNumber              string
+	PRURL                 string
+	State                 string // OPEN, MERGED, CLOSED
+	CI                    string // passing, failing, pending, unknown
+	Conflicts             string // yes, none, unknown
+	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
+	TargetRepo            string // owner/repo for dispatch context
+	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
+	Labels                []string // GitHub label names; klaus uses "klaus:budget-paused" as a pause signal
 }
 
 // PRPipelineState tracks per-PR pipeline state.
@@ -695,6 +697,8 @@ func StageLabel(stage Stage) string {
 		return "merged"
 	case StageStalled:
 		return "stalled"
+	case StageBudgetPaused:
+		return "budget paused, awaiting decision"
 	default:
 		return string(stage)
 	}

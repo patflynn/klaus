@@ -29,6 +29,41 @@ var transitions = []transition{
 		},
 	},
 
+	// ── Budget-paused (handled before CI rules so the dashboard surfaces
+	// the pause regardless of CI state) ────────────────────────────────
+
+	{
+		Name: "budget-paused/await-decision",
+		Guard: allOf(
+			isBudgetPausedDraft,
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			if ps.Stage != StageBudgetPaused {
+				c.emitEvent(ps.PRNumber, event.AgentPaused, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+					"reason":    "budget_exhausted",
+				})
+			}
+			ps.Stage = StageBudgetPaused
+			return nil, nil
+		},
+	},
+	{
+		Name:  "budget-paused/noop-while-agent-running",
+		Guard: isBudgetPausedDraft,
+		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			// An agent is running against the paused PR (klaus launch --pr).
+			// Hold the budget_paused stage until the agent's _finalize
+			// clears the label.
+			if ps.Stage != StageBudgetPaused {
+				ps.Stage = StageBudgetPaused
+			}
+			return nil, nil
+		},
+	},
+
 	// ── CI failing ──────────────────────────────────────────────────────
 
 	{
@@ -558,6 +593,22 @@ func changesRequested(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*
 
 func hasTrustedComments(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
 	return status.HasNewTrustedComments
+}
+
+// Label guards.
+
+// isBudgetPausedDraft reports whether the PR carries the klaus:budget-paused
+// label. We treat the label as the canonical paused-state signal: it persists
+// across klaus restarts and survives the worktree being cleaned up. Whether
+// the PR is currently draft or ready-for-review doesn't change the signal;
+// the label IS the signal.
+func isBudgetPausedDraft(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	for _, label := range status.Labels {
+		if label == event.BudgetPausedLabel {
+			return true
+		}
+	}
+	return false
 }
 
 // Conflict guards.

@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
@@ -19,6 +22,10 @@ import (
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
 )
+
+// budgetPauseRunner is overridable in tests to capture gh/git calls without
+// touching the network. Production uses draft.ExecRunner{}.
+var budgetPauseRunner draft.Runner = draft.ExecRunner{}
 
 var formatStreamCmd = &cobra.Command{
 	Use:    "_format-stream",
@@ -47,35 +54,29 @@ var finalizeCmd = &cobra.Command{
 			return nil // silently ignore if state not found
 		}
 
-		// Parse log for cost/duration/PR URL
+		// Track whether _finalize discovered the PR URL for the first time
+		// in this run. We emit agent:pr-created even on budget pause so the
+		// pipeline starts tracking the (now-draft) PR.
+		hadPRURLBefore := state.PRURL != nil && *state.PRURL != ""
+
+		// Parse log for cost/duration/PR URL and result subtype.
+		var resultSubtype string
 		if state.LogFile != nil {
-			if err := finalizeFromLog(store, state); err != nil {
+			subtype, err := finalizeFromLog(store, state)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: finalize: %v\n", err)
 			}
+			resultSubtype = subtype
 		}
 
-		// Emit events for completed run
+		ctx := cmd.Context()
+		baseDir := ""
 		if hds, ok := store.(*run.HomeDirStore); ok {
-			baseDir := hds.BaseDir()
-
-			completedData := map[string]interface{}{"id": id}
-			if state.CostUSD != nil {
-				completedData["cost_usd"] = *state.CostUSD
-			}
-			if state.DurationMS != nil {
-				completedData["duration_ms"] = *state.DurationMS
-			}
-			emitEvent(baseDir, id, event.AgentCompleted, completedData)
-
-			if state.PRURL != nil && *state.PRURL != "" {
-				prNum := extractPRNumberFromURL(*state.PRURL)
-				emitEvent(baseDir, id, event.AgentPRCreated, map[string]interface{}{
-					"id":        id,
-					"pr_url":    *state.PRURL,
-					"pr_number": prNum,
-				})
-			}
+			baseDir = hds.BaseDir()
 		}
+
+		// Decide: did this run end normally, or did it exhaust its budget?
+		paused := handleBudgetPauseIfNeeded(ctx, baseDir, state, resultSubtype, hadPRURLBefore)
 
 		// Sync to data ref — use the target repo's clone dir if available,
 		// otherwise fall back to the current git repo.
@@ -94,9 +95,38 @@ var finalizeCmd = &cobra.Command{
 			return nil
 		}
 
-		ctx := cmd.Context()
 		gitClient := git.NewExecClient()
 
+		// For a normal (non-budget) completion against an existing paused
+		// PR, clear the budget-paused label so the dashboard reflects that
+		// the follow-up agent shipped its work. Emit agent:resumed so the
+		// coordinator sees the resumption complete.
+		if !paused && baseDir != "" {
+			clearLabelIfResumed(ctx, baseDir, state)
+		}
+
+		// Emit events for completed run. For paused runs, agent:completed
+		// is intentionally suppressed in favor of agent:paused, since the
+		// run is not "done" — it's parked in a draft PR awaiting continuation.
+		if baseDir != "" && !paused {
+			completedData := map[string]interface{}{"id": id}
+			if state.CostUSD != nil {
+				completedData["cost_usd"] = *state.CostUSD
+			}
+			if state.DurationMS != nil {
+				completedData["duration_ms"] = *state.DurationMS
+			}
+			emitEvent(baseDir, id, event.AgentCompleted, completedData)
+
+			if state.PRURL != nil && *state.PRURL != "" {
+				prNum := extractPRNumberFromURL(*state.PRURL)
+				emitEvent(baseDir, id, event.AgentPRCreated, map[string]interface{}{
+					"id":        id,
+					"pr_url":    *state.PRURL,
+					"pr_number": prNum,
+				})
+			}
+		}
 		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
 
 		cleanupWorktree(ctx, store, gitClient, state)
@@ -107,6 +137,161 @@ var finalizeCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// handleBudgetPauseIfNeeded decides whether the just-finalized run hit its
+// budget cap, and if so commits/pushes the WIP, ensures a draft PR with
+// the budget-paused label, and emits agent:paused (plus agent:pr-created
+// if a PR was newly discovered or created).
+//
+// Returns true if the budget-pause flow was taken (so the caller can
+// suppress the normal agent:completed event).
+func handleBudgetPauseIfNeeded(ctx context.Context, baseDir string, state *run.State, resultSubtype string, hadPRURLBefore bool) bool {
+	if !isBudgetExhausted(state, resultSubtype) {
+		return false
+	}
+	if state.Worktree == "" {
+		// Nothing to push: worktree already cleaned up. Best-effort skip.
+		return false
+	}
+
+	budgetUSD := 0.0
+	if state.Budget != nil {
+		if v, err := strconv.ParseFloat(*state.Budget, 64); err == nil {
+			budgetUSD = v
+		}
+	}
+	cost := 0.0
+	if state.CostUSD != nil {
+		cost = *state.CostUSD
+	}
+
+	repo := ""
+	if state.TargetRepo != nil {
+		repo = *state.TargetRepo
+	}
+	if !strings.Contains(repo, "/") {
+		// Bare project name — gh can't use it. Let gh infer from the
+		// worktree's remote.
+		repo = ""
+	}
+
+	existingPR := ""
+	if state.PR != nil {
+		existingPR = *state.PR
+	}
+
+	in := draft.PauseInput{
+		RunID:      state.ID,
+		Worktree:   state.Worktree,
+		Branch:     state.Branch,
+		Repo:       repo,
+		Prompt:     state.Prompt,
+		CostUSD:    cost,
+		BudgetUSD:  budgetUSD,
+		ExistingPR: existingPR,
+	}
+
+	out, err := draft.HandleBudgetPause(ctx, budgetPauseRunner, in)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: budget-pause flow failed: %v\n", err)
+		// Fall through: emit no agent:paused event, treat as a regular
+		// (failed) completion so the caller's normal-event branch fires.
+		return false
+	}
+
+	// Persist the discovered PR URL so the dashboard picks up the draft PR.
+	if out.PRURL != "" {
+		state.PRURL = &out.PRURL
+	}
+	if out.PRNumber != "" {
+		pr := out.PRNumber
+		state.PR = &pr
+	}
+
+	if baseDir != "" {
+		data := map[string]interface{}{
+			"id":         state.ID,
+			"pr_number":  out.PRNumber,
+			"pr_url":     out.PRURL,
+			"cost_usd":   cost,
+			"budget_usd": budgetUSD,
+			"reason":     "budget_exhausted",
+		}
+		emitEvent(baseDir, state.ID, event.AgentPaused, data)
+
+		// If this is the first time klaus has seen the PR URL for this run
+		// (either because the agent created it on this final flush, or
+		// because we just created it), emit agent:pr-created so the
+		// pipeline starts tracking it.
+		if !hadPRURLBefore && out.PRURL != "" {
+			emitEvent(baseDir, state.ID, event.AgentPRCreated, map[string]interface{}{
+				"id":        state.ID,
+				"pr_url":    out.PRURL,
+				"pr_number": out.PRNumber,
+			})
+		}
+	}
+	return true
+}
+
+// isBudgetExhausted decides whether the just-completed run terminated
+// because it hit the budget cap. The signal is: claude did NOT emit a
+// success result event AND observed cost is at least 95% of the budget cap.
+//
+// When the result event is "success", we trust claude and never treat the
+// run as paused even if cost is near cap.
+//
+// When the result event is absent (early kill, crash, stream truncation)
+// OR has a non-success subtype, we apply the 95% heuristic. This avoids
+// false positives where cost ramped fast for an unrelated reason.
+func isBudgetExhausted(state *run.State, resultSubtype string) bool {
+	if state.Budget == nil || state.CostUSD == nil {
+		return false
+	}
+	cap, err := strconv.ParseFloat(*state.Budget, 64)
+	if err != nil || cap <= 0 {
+		return false
+	}
+	if resultSubtype == "success" {
+		return false
+	}
+	return draft.BudgetExhausted(*state.CostUSD, cap)
+}
+
+// clearLabelIfResumed removes the klaus:budget-paused label if it was set
+// on the run's PR, and emits agent:resumed so the dashboard reflects the
+// pause being resolved. Called only on successful (non-paused) finalize.
+func clearLabelIfResumed(ctx context.Context, baseDir string, state *run.State) {
+	if state.PR == nil || *state.PR == "" {
+		return
+	}
+	repo := ""
+	if state.TargetRepo != nil && strings.Contains(*state.TargetRepo, "/") {
+		repo = *state.TargetRepo
+	}
+	workdir := state.Worktree
+	if workdir == "" && state.CloneDir != nil {
+		workdir = *state.CloneDir
+	}
+
+	had, err := draft.HasBudgetPausedLabel(ctx, budgetPauseRunner, workdir, repo, *state.PR)
+	if err != nil || !had {
+		return
+	}
+	if err := draft.ClearBudgetPausedLabel(ctx, budgetPauseRunner, workdir, repo, *state.PR); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clearing budget-paused label: %v\n", err)
+		return
+	}
+
+	data := map[string]interface{}{
+		"id":        state.ID,
+		"pr_number": *state.PR,
+	}
+	if state.PRURL != nil {
+		data["pr_url"] = *state.PRURL
+	}
+	emitEvent(baseDir, state.ID, event.AgentResumed, data)
 }
 
 // cleanupWorktree removes the agent's worktree and local branch after
@@ -157,10 +342,15 @@ func killAgentPane(ctx context.Context, store run.StateStore, tc tmux.Client, st
 	}
 }
 
-func finalizeFromLog(store run.StateStore, state *run.State) error {
+// finalizeFromLog parses the agent's JSONL log, mutates state with the
+// observed cost / duration / PR URL, and returns the subtype of the last
+// "result" event (e.g. "success", "error_max_turns", or empty if no
+// result event was emitted). The subtype lets the caller distinguish a
+// successful completion from a budget-cap kill.
+func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 	f, err := os.Open(*state.LogFile)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer f.Close()
 
@@ -179,6 +369,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
+	var resultSubtype string
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -187,6 +378,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 
 		var ev struct {
 			Type         string  `json:"type"`
+			Subtype      string  `json:"subtype"`
 			TotalCostUSD float64 `json:"total_cost_usd"`
 			DurationMS   int64   `json:"duration_ms"`
 			Message      *struct {
@@ -210,6 +402,9 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 			}
 			if ev.DurationMS > 0 {
 				state.DurationMS = &ev.DurationMS
+			}
+			if ev.Subtype != "" {
+				resultSubtype = ev.Subtype
 			}
 		case "assistant":
 			if ev.Message != nil {
@@ -249,7 +444,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) error {
 		state.PRURL = &existingPRURL
 	}
 
-	return store.Save(state)
+	return resultSubtype, store.Save(state)
 }
 
 // prURLExtractRegex matches GitHub PR URLs in free-form text, including

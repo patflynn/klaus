@@ -59,6 +59,7 @@ type prStatus struct {
 	Conflicts             string // yes, none, unknown
 	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
 	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
+	Labels                []string // applied PR labels (used to surface klaus:budget-paused)
 }
 
 // Commands for the bubbletea event loop.
@@ -183,6 +184,7 @@ func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
 	ps.CI = client.GetCI(ctx, prRef)
 	ps.Conflicts = client.GetConflicts(ctx, prRef)
 	ps.ReviewDecision = client.GetReviewDecision(ctx, prRef)
+	ps.Labels = client.GetLabels(ctx, prRef)
 
 	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
 	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.

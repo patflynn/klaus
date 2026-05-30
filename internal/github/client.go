@@ -13,6 +13,7 @@ type Client interface {
 	GetConflicts(ctx context.Context, prRef string) string
 	GetReviewDecision(ctx context.Context, prRef string) string
 	GetState(ctx context.Context, prRef string) string
+	GetLabels(ctx context.Context, prRef string) []string
 	GetBranch(ctx context.Context, prRef string) (string, error)
 	GetURL(ctx context.Context, prRef string) (string, error)
 	GetTitle(ctx context.Context, prRef string) string

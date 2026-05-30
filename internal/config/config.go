@@ -453,6 +453,25 @@ What happens after ` + "`klaus launch`" + `:
 5. Dashboard detects state change and updates display
 6. Pipeline evaluates the PR and manages CI/review/merge cycle
 
+### When an agent pauses (agent:paused event)
+
+Agents that exceed their ` + "`--budget`" + ` are paused by:
+1. Committing any work-in-progress to their branch.
+2. Pushing the branch to origin.
+3. Opening or updating a draft PR with the ` + "`klaus:budget-paused`" + ` label.
+4. Posting an explanatory PR comment.
+5. Terminating cleanly (worktree removed, tmux pane closed).
+
+The work is safe in the draft PR. To continue:
+
+- ` + "`klaus launch --pr <num> \"continue the work\"`" + ` dispatches a fresh agent against the PR's branch. The new agent re-orients from the WIP commit and finishes the work. This is cheaper than human intervention but does cost one re-exploration of the repo.
+- Close the PR in GitHub to abandon.
+- Add commits manually to the PR branch if you want to redirect.
+
+The ` + "`klaus:budget-paused`" + ` label is automatically cleared when a follow-up agent ` + "`_finalize`" + `s. If you see the label persist after a launch, that's a signal the follow-up itself failed (paused or crashed).
+
+There is NO ` + "`klaus resume`" + ` or ` + "`klaus finalize`" + ` command. The draft PR plus label IS the persisted state; ` + "`klaus launch --pr`" + ` is the resume path.
+
 ## Gotchas and common issues
 
 - **Worktree conflicts**: When using --pr to push fixes to an existing PR, the PR's branch cannot be checked out in the main repo clone. If you get a worktree error, switch the main repo to main first.
