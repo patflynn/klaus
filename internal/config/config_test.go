@@ -885,6 +885,112 @@ func TestLoadApprovalConfig(t *testing.T) {
 	}
 }
 
+func TestLoadRepoContextPresent(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	if err := os.MkdirAll(klausDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "# Repo overview\n\nThis project does X. Entry point: cmd/foo/main.go.\n"
+	if err := os.WriteFile(filepath.Join(klausDir, "context.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := LoadRepoContext(dir)
+	if err != nil {
+		t.Fatalf("LoadRepoContext() error: %v", err)
+	}
+	if got != body {
+		t.Errorf("LoadRepoContext() = %q, want %q", got, body)
+	}
+}
+
+func TestLoadRepoContextAbsent(t *testing.T) {
+	dir := t.TempDir()
+
+	got, err := LoadRepoContext(dir)
+	if err != nil {
+		t.Fatalf("LoadRepoContext() error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("LoadRepoContext() = %q, want \"\"", got)
+	}
+}
+
+func TestLoadRepoContextEmptyRepoRoot(t *testing.T) {
+	got, err := LoadRepoContext("")
+	if err != nil {
+		t.Fatalf("LoadRepoContext(\"\") error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("LoadRepoContext(\"\") = %q, want \"\"", got)
+	}
+}
+
+func TestLoadRepoContextUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	klausDir := filepath.Join(dir, ".klaus")
+	if err := os.MkdirAll(klausDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make context.md a directory — os.ReadFile will return a non-IsNotExist
+	// error (EISDIR), which LoadRepoContext should propagate.
+	if err := os.MkdirAll(filepath.Join(klausDir, "context.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadRepoContext(dir)
+	if err == nil {
+		t.Fatal("expected error when context.md is a directory, got nil")
+	}
+}
+
+func TestWrapRepoContext(t *testing.T) {
+	body := "line one\nline two\n"
+	got := WrapRepoContext(body)
+	want := "## Repository context (from .klaus/context.md)\n\nline one\nline two\n"
+	if got != want {
+		t.Errorf("WrapRepoContext() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPromptTemplateMentionsContextFile(t *testing.T) {
+	dir := t.TempDir()
+	prompt, err := RenderPrompt(dir, PromptVars{RunID: "test-123"})
+	if err != nil {
+		t.Fatalf("RenderPrompt() error: %v", err)
+	}
+	if !strings.Contains(prompt, ".klaus/context.md") {
+		t.Error("default launch prompt should mention .klaus/context.md upkeep")
+	}
+}
+
+func TestDefaultPRFixPromptTemplateMentionsContextFile(t *testing.T) {
+	dir := t.TempDir()
+	prompt, err := RenderPRFixPrompt(dir, PromptVars{RunID: "test-123", PR: "42", Branch: "fix/x"})
+	if err != nil {
+		t.Fatalf("RenderPRFixPrompt() error: %v", err)
+	}
+	if !strings.Contains(prompt, ".klaus/context.md") {
+		t.Error("default pr-fix prompt should mention .klaus/context.md upkeep")
+	}
+}
+
+func TestDefaultSessionPromptTemplateMentionsContextFile(t *testing.T) {
+	dir := t.TempDir()
+	prompt, err := RenderSessionPrompt(dir, PromptVars{
+		RunID:    "session-test",
+		Branch:   "session/test",
+		RepoName: "myrepo",
+	})
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt() error: %v", err)
+	}
+	if !strings.Contains(prompt, ".klaus/context.md") {
+		t.Error("default session prompt should mention .klaus/context.md upkeep")
+	}
+}
+
 func TestInitGlobal(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)

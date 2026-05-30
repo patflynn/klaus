@@ -318,6 +318,8 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 
 **`.klaus/pr-fix-prompt.md`** — Custom prompt for PR-fix agents. Additional variable: `{{.PR}}`.
 
+**`.klaus/context.md`** — Optional repo overview that klaus reads automatically and appends to every launched agent and coordinator session prompt under the heading `## Repository context (from .klaus/context.md)`. Use it to bootstrap agents with curated facts they'd otherwise have to rediscover: entry points, key directories, test commands, in-flight refactors. Plain markdown, no template variables. The file is optional — if it's not committed to the repo, klaus skips it silently. Keep it factual: launched agents are instructed to update `.klaus/context.md` in the same PR whenever they make a change that contradicts it (renamed command, removed dependency, etc.).
+
 ## Under the hood
 
 - **Worktrees** isolate each agent — they can't step on each other or your working tree

@@ -293,6 +293,12 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		return fmt.Errorf("rendering session prompt: %w", err)
 	}
 
+	if repoCtx, err := config.LoadRepoContext(worktree); err != nil {
+		return fmt.Errorf("load repo context: %w", err)
+	} else if repoCtx != "" {
+		sessionPrompt += "\n\n" + config.WrapRepoContext(repoCtx)
+	}
+
 	// Configure tmux window for better situational awareness
 	currentPane := os.Getenv("TMUX_PANE")
 	if currentPane != "" {

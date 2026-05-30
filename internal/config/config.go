@@ -275,6 +275,10 @@ Do not include any AI attribution or 'Generated with Claude Code' lines in the P
 - If you add or change a CLI command or flag, update the help text in the cobra command definition.
 - If you add or change user-facing behavior, update the README if one exists.
 - Keep code comments accurate — update or remove comments that no longer match the code.
+
+## Keeping .klaus/context.md accurate
+
+If you make a factual change that contradicts ` + "`.klaus/context.md`" + ` — renamed a command, added or removed an entry point, removed a dependency, changed a convention — update that file in the same PR. Facts only: only update with things you can verify from the code. Do not add speculation, plans, or TODOs. If ` + "`.klaus/context.md`" + ` does not exist in this repo, do not create it as part of unrelated work.
 `
 
 const defaultPRFixPromptTemplate = `You are an autonomous agent pushing fixes to PR #{{.PR}} in this repository.
@@ -305,6 +309,10 @@ Reference issue #{{.Issue}} in your commit messages where appropriate.
 - If you add or change a CLI command or flag, update the help text in the cobra command definition.
 - If you add or change user-facing behavior, update the README if one exists.
 - Keep code comments accurate — update or remove comments that no longer match the code.
+
+## Keeping .klaus/context.md accurate
+
+If you make a factual change that contradicts ` + "`.klaus/context.md`" + ` — renamed a command, added or removed an entry point, removed a dependency, changed a convention — update that file in the same PR. Facts only: only update with things you can verify from the code. Do not add speculation, plans, or TODOs. If ` + "`.klaus/context.md`" + ` does not exist in this repo, do not create it as part of unrelated work.
 
 ## Identity
 Run: {{.RunID}}
@@ -489,6 +497,10 @@ These projects are available by name with ` + "`klaus launch --repo <name>`" + `
 - Tests should exercise real behavior — a few tests that run the real binary are worth more than many with injected fakes.
 - Only unit test genuinely tricky logic.
 - Agents must run the project's test suite before creating a PR and fix any failures.
+
+## Keeping .klaus/context.md accurate
+
+If you make a factual change that contradicts ` + "`.klaus/context.md`" + ` — renamed a command, added or removed an entry point, removed a dependency, changed a convention — update that file in the same PR. Facts only: only update with things you can verify from the code. Do not add speculation, plans, or TODOs. If ` + "`.klaus/context.md`" + ` does not exist in this repo, do not create it as part of unrelated work.
 `
 
 // RenderSessionPrompt renders the session coordinator system prompt.
@@ -758,6 +770,36 @@ func LoadPrinciples(dir string) (string, error) {
 		return "", fmt.Errorf("reading principles: %w", err)
 	}
 	return string(data), nil
+}
+
+// repoContextHeader is the section header prepended to .klaus/context.md
+// content when injected into a system prompt.
+const repoContextHeader = "## Repository context (from .klaus/context.md)"
+
+// LoadRepoContext reads .klaus/context.md from repoRoot and returns its
+// verbatim contents. If the file does not exist, it returns "", nil — many
+// repos will not have a context file yet, and that case must stay silent.
+// Read failures other than "file not found" are returned as errors.
+func LoadRepoContext(repoRoot string) (string, error) {
+	if repoRoot == "" {
+		return "", nil
+	}
+	path := filepath.Join(repoRoot, ".klaus", "context.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("reading repo context: %w", err)
+	}
+	return string(data), nil
+}
+
+// WrapRepoContext wraps a .klaus/context.md body under the repo-context
+// section header so it can be appended to a rendered system prompt. The body
+// is passed through verbatim — markdown inside is not transformed.
+func WrapRepoContext(body string) string {
+	return repoContextHeader + "\n\n" + body
 }
 
 func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars PromptVars) (string, error) {

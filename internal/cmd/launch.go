@@ -274,6 +274,12 @@ are synced back after completion. Use --local to force local execution, or
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
 
+		if repoCtx, err := config.LoadRepoContext(worktree); err != nil {
+			return fmt.Errorf("load repo context: %w", err)
+		} else if repoCtx != "" {
+			sysPrompt += "\n\n" + config.WrapRepoContext(repoCtx)
+		}
+
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 		// Resolve the Claude session UUID from the previous run's JSONL log.

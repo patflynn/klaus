@@ -613,3 +613,124 @@ func TestLaunchCmdHasPRFlag(t *testing.T) {
 		t.Errorf("--pr default value should be empty, got %q", f.DefValue)
 	}
 }
+
+// assembleLaunchPrompt mirrors the inline prompt assembly in the launch RunE
+// (RenderPrompt → LoadRepoContext → WrapRepoContext). Kept in the test file so
+// drift between the test and the real assembly is caught at review time.
+func assembleLaunchPrompt(t *testing.T, repoRoot, worktree string, vars config.PromptVars) string {
+	t.Helper()
+	sysPrompt, err := config.RenderPrompt(repoRoot, vars)
+	if err != nil {
+		t.Fatalf("RenderPrompt: %v", err)
+	}
+	repoCtx, err := config.LoadRepoContext(worktree)
+	if err != nil {
+		t.Fatalf("LoadRepoContext: %v", err)
+	}
+	if repoCtx != "" {
+		sysPrompt += "\n\n" + config.WrapRepoContext(repoCtx)
+	}
+	return sysPrompt
+}
+
+func TestLaunchPromptInjectsRepoContextWhenPresent(t *testing.T) {
+	// Real fixture worktree on disk with a .klaus/context.md file. Mirrors
+	// the layout launch.go creates before assembling sysPrompt.
+	worktree := t.TempDir()
+	klausDir := filepath.Join(worktree, ".klaus")
+	if err := os.MkdirAll(klausDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contextBody := "# my-repo overview\n\nEntry point: cmd/foo/main.go.\nTests: go test ./...\n"
+	if err := os.WriteFile(filepath.Join(klausDir, "context.md"), []byte(contextBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := assembleLaunchPrompt(t, worktree, worktree, config.PromptVars{
+		RunID:    "20260530-0900-abcd",
+		Branch:   "agent/20260530-0900-abcd",
+		RepoName: "my-repo",
+	})
+
+	if !strings.Contains(prompt, "## Repository context (from .klaus/context.md)") {
+		t.Error("rendered launch prompt missing repo-context header")
+	}
+	if !strings.Contains(prompt, contextBody) {
+		t.Error("rendered launch prompt missing context.md body")
+	}
+	// The header must come AFTER the rendered template, not in the middle.
+	headerIdx := strings.Index(prompt, "## Repository context (from .klaus/context.md)")
+	if headerIdx == -1 || !strings.HasPrefix(prompt[headerIdx:], "## Repository context (from .klaus/context.md)\n\n"+contextBody) {
+		t.Error("header should be followed by blank line then verbatim body")
+	}
+}
+
+func TestLaunchPromptOmitsRepoContextHeaderWhenAbsent(t *testing.T) {
+	worktree := t.TempDir() // no .klaus/context.md
+
+	prompt := assembleLaunchPrompt(t, worktree, worktree, config.PromptVars{
+		RunID:    "20260530-0900-abcd",
+		Branch:   "agent/20260530-0900-abcd",
+		RepoName: "my-repo",
+	})
+
+	if strings.Contains(prompt, "## Repository context (from .klaus/context.md)") {
+		t.Error("rendered launch prompt should not include repo-context header when file is absent")
+	}
+}
+
+// assembleSessionPrompt mirrors the inline assembly in session.go's runSession.
+func assembleSessionPrompt(t *testing.T, repoRoot, worktree string, vars config.PromptVars) string {
+	t.Helper()
+	sessionPrompt, err := config.RenderSessionPrompt(repoRoot, vars)
+	if err != nil {
+		t.Fatalf("RenderSessionPrompt: %v", err)
+	}
+	repoCtx, err := config.LoadRepoContext(worktree)
+	if err != nil {
+		t.Fatalf("LoadRepoContext: %v", err)
+	}
+	if repoCtx != "" {
+		sessionPrompt += "\n\n" + config.WrapRepoContext(repoCtx)
+	}
+	return sessionPrompt
+}
+
+func TestSessionPromptInjectsRepoContextWhenPresent(t *testing.T) {
+	worktree := t.TempDir()
+	klausDir := filepath.Join(worktree, ".klaus")
+	if err := os.MkdirAll(klausDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contextBody := "# coordinator overview\n\nProjects use cobra + tmux panes.\n"
+	if err := os.WriteFile(filepath.Join(klausDir, "context.md"), []byte(contextBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prompt := assembleSessionPrompt(t, worktree, worktree, config.PromptVars{
+		RunID:    "session-20260530-0900-abcd",
+		Branch:   "session/session-20260530-0900-abcd",
+		RepoName: "my-repo",
+	})
+
+	if !strings.Contains(prompt, "## Repository context (from .klaus/context.md)") {
+		t.Error("rendered session prompt missing repo-context header")
+	}
+	if !strings.Contains(prompt, contextBody) {
+		t.Error("rendered session prompt missing context.md body")
+	}
+}
+
+func TestSessionPromptOmitsRepoContextHeaderWhenAbsent(t *testing.T) {
+	worktree := t.TempDir() // no .klaus/context.md
+
+	prompt := assembleSessionPrompt(t, worktree, worktree, config.PromptVars{
+		RunID:    "session-20260530-0900-abcd",
+		Branch:   "session/session-20260530-0900-abcd",
+		RepoName: "my-repo",
+	})
+
+	if strings.Contains(prompt, "## Repository context (from .klaus/context.md)") {
+		t.Error("rendered session prompt should not include repo-context header when file is absent")
+	}
+}
