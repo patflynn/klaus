@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
@@ -53,6 +54,14 @@ type webhookMsg struct {
 // webhookClosedMsg signals that the webhook event channel was closed, so live
 // webhook consumption has stopped. Surfaced as a non-fatal error in the TUI.
 type webhookClosedMsg struct{}
+
+// internalEventMsg delivers a klaus-emitted event (e.g. PRApprovalChanged
+// from `klaus approve`) into the dashboard's Update loop. Internal events
+// are treated as invalidation signals — the dashboard reacts by re-fetching
+// PR status, mirroring how it reacts to a real GitHub webhook.
+type internalEventMsg struct {
+	event event.Event
+}
 
 type trustedCommentsMsg struct {
 	prNumber             string
@@ -116,6 +125,51 @@ func waitForWebhookCmd(ch <-chan webhook.Event) tea.Cmd {
 		}
 		return webhookMsg{event: ev}
 	}
+}
+
+func waitForInternalEventCmd(ch <-chan event.Event) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ev, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return internalEventMsg{event: ev}
+	}
+}
+
+// shouldInvalidate reports whether an event type should trigger a refetch
+// of GitHub PR status. Most klaus events (agent:started, pr:merged, …) are
+// pure notifications and either reflect state the dashboard already learned
+// from the pipeline FSM, or are observational. Only events that signal an
+// external precondition change need an active invalidation.
+func shouldInvalidate(eventType string) bool {
+	switch eventType {
+	case event.PRApprovalChanged:
+		return true
+	}
+	return false
+}
+
+// internalEventPRNumber returns the PR number associated with an event,
+// or empty if none. The event Data is map[string]interface{} from JSON,
+// so PR numbers may arrive as either string or float64 depending on the
+// emitter; both forms are tolerated.
+func internalEventPRNumber(ev event.Event) string {
+	if ev.Data == nil {
+		return ""
+	}
+	switch v := ev.Data["pr_number"].(type) {
+	case string:
+		return v
+	case float64:
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%d", int64(v))
+		}
+	}
+	return ""
 }
 
 func tickCmd() tea.Cmd {

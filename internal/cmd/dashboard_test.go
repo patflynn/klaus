@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
@@ -961,6 +962,166 @@ func awaitGHStatusMsg(bm tea.BatchMsg, timeout time.Duration) bool {
 		case <-deadline:
 			return false
 		}
+	}
+}
+
+// TestInternalEventMsgTriggersRefetchForMatchedPR is the dashboard-side
+// counterpart to the webhook test above. When `klaus approve` emits a
+// PRApprovalChanged event and the dashboard receives it via the internal
+// event channel, the dashboard must kick a targeted GH refetch so the
+// pipeline FSM gets a fresh evaluation. Without this, an approved PR with
+// already-passing CI sits at StageCIPassed until an unrelated webhook
+// arrives (or polling tick, when poll_fallback is enabled).
+func TestInternalEventMsgTriggersRefetchForMatchedPR(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Prompt:     "fix bug",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "42",
+			"pr_url":    prURL,
+			"approved":  true,
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd from internal event with matching PR")
+	}
+	result := cmd()
+	bm, ok := result.(tea.BatchMsg)
+	if !ok {
+		t.Fatal("expected tea.BatchMsg from internal event handler")
+	}
+	if !awaitGHStatusMsg(bm, 15*time.Second) {
+		t.Error("expected ghStatusMsg from internal-event-triggered fetch")
+	}
+}
+
+// TestInternalEventMsgNoMatchKeepsListening ensures the handler returns a
+// new wait command even when no PR matches, so the dashboard keeps reading
+// from the channel. (Otherwise a stray event would silently kill the
+// subscription.)
+func TestInternalEventMsgNoMatchKeepsListening(t *testing.T) {
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = []*run.State{}
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("run-x", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "999",
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd even when no PR matches (to keep listening)")
+	}
+}
+
+// TestInternalEventMsgIgnoresUnknownEventType verifies the handler only
+// reacts to invalidation-class events. A pr:merged or agent:completed event
+// arriving on the internal channel should not trigger a GH refetch (those
+// reflect state the dashboard already learned from the FSM).
+func TestInternalEventMsgIgnoresUnknownEventType(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRMerged, map[string]interface{}{
+			"pr_number": "42",
+		}),
+	}
+
+	_, cmd := m.Update(msg)
+	if cmd == nil {
+		t.Fatal("expected a tea.Cmd (waitForInternalEventCmd) to keep listening")
+	}
+	// The returned cmd should be the single wait command, not a batch with
+	// a fetch. Block on the channel with a short timeout to confirm it is
+	// the wait command (returns no ghStatusMsg even if drained).
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		// Only happens if cmd() returned (e.g. channel closed); ensure it
+		// is NOT a ghStatusMsg or BatchMsg containing a fetch.
+		if _, ok := msg.(ghStatusMsg); ok {
+			t.Errorf("non-invalidation event should not trigger a GH fetch")
+		}
+		if bm, ok := msg.(tea.BatchMsg); ok {
+			if awaitGHStatusMsg(bm, 100*time.Millisecond) {
+				t.Errorf("non-invalidation event should not trigger a GH fetch")
+			}
+		}
+	case <-time.After(200 * time.Millisecond):
+		// Expected: waitForInternalEventCmd blocks on the empty channel.
+	}
+}
+
+// TestInternalEventMsgIdempotentWithExistingFlow checks that an approval
+// event for a PR can be safely delivered after the controller has already
+// transitioned past approval — the handler does not crash, does not double
+// dispatch, and continues to listen. We exercise this by feeding the same
+// event twice and asserting both calls return non-nil commands.
+func TestInternalEventMsgIdempotent(t *testing.T) {
+	prURL := "https://github.com/owner/repo/pull/42"
+	states := []*run.State{
+		{
+			ID:         "20260407-0900-aaaa",
+			Type:       "launch",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			TargetRepo: strPtr("owner/repo"),
+			PRURL:      &prURL,
+		},
+	}
+
+	m := newDashboardModel(run.NewGitDirStore(t.TempDir()), config.Config{}, gh.NewGHCLIClient(""))
+	m.states = states
+	ch := make(chan event.Event, 1)
+	m.internalEventCh = ch
+
+	msg := internalEventMsg{
+		event: event.New("20260407-0900-aaaa", event.PRApprovalChanged, map[string]interface{}{
+			"pr_number": "42",
+		}),
+	}
+
+	_, cmd1 := m.Update(msg)
+	if cmd1 == nil {
+		t.Fatal("first delivery: expected a tea.Cmd")
+	}
+	_, cmd2 := m.Update(msg)
+	if cmd2 == nil {
+		t.Fatal("second delivery: expected a tea.Cmd")
 	}
 }
 

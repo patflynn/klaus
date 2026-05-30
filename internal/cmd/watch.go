@@ -48,6 +48,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRAwaitingApproval, "live", "A PR is ready for human approval"},
 	{event.PRApproved, "live", "A PR was approved"},
 	{event.PRMerged, "live", "A PR merged"},
+	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
 	{"agent:error", "reserved", "Reserved for unrecoverable agent failures (not currently emitted; use agent:needs-attention)"},
 	{"ci:failed", "reserved", "Reserved short name (currently emitted as agent:ci-failed)"},
 	{"ci:passed", "reserved", "Reserved short name (currently emitted as agent:ci-passed)"},
