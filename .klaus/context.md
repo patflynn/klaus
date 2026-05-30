@@ -14,7 +14,7 @@
 ## Entry points
 - `cmd/klaus/main.go` — single binary `klaus`; calls `internal/cmd.Execute()`.
 - `internal/cmd/root.go` — Cobra root command; running `klaus` with no args delegates to `runSession` (`session.go`).
-- Subcommand files in `internal/cmd/` register their own Cobra commands (e.g. `launch.go`, `dashboard.go`, `watch.go`, `merge.go`, `approve.go`, `project.go`, `webhook_setup.go`, `new.go`, `init.go`, `status.go`, `logs.go`, `cleanup.go`, `target.go`, `sync.go`, `pushlog.go`, `pre_review.go`, `event_cmd.go`, `track.go`, `untrack.go`, `notifications.go`, `hidden.go`). Hidden/internal helper commands live in `hidden.go`.
+- Subcommand files in `internal/cmd/` register their own Cobra commands (e.g. `session.go`, `launch.go`, `dashboard.go`, `watch.go`, `merge.go`, `approve.go`, `project.go`, `webhook_setup.go`, `new.go`, `init.go`, `status.go`, `logs.go`, `cleanup.go`, `target.go`, `sync.go`, `pushlog.go`, `pre_review.go`, `event_cmd.go`, `track.go`, `untrack.go`, `notifications.go`, `hidden.go`). Hidden/internal helper commands live in `hidden.go`.
 
 ## Layout
 - `cmd/klaus/` — `main.go` only.
