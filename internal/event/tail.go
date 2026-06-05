@@ -96,7 +96,9 @@ func Tail(ctx context.Context, path string, out chan<- Event) error {
 		return err
 	}
 
-	const poll = 500 * time.Millisecond
+	// fsnotify is reliable on modern OSes; this fallback only exists to catch
+	// rare missed notifications, so a long interval is fine.
+	const poll = 10 * time.Second
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 

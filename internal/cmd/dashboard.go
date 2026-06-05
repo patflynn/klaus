@@ -78,6 +78,7 @@ Keyboard shortcuts:
 			internalCh := make(chan event.Event, 64)
 			model.internalEventCh = internalCh
 			go func() {
+				defer close(internalCh)
 				if err := event.Tail(ctx, model.eventsPath, internalCh); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: event tail stopped: %v\n", err)
 				}

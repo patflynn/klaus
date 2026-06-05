@@ -154,9 +154,9 @@ func shouldInvalidate(eventType string) bool {
 }
 
 // internalEventPRNumber returns the PR number associated with an event,
-// or empty if none. The event Data is map[string]interface{} from JSON,
-// so PR numbers may arrive as either string or float64 depending on the
-// emitter; both forms are tolerated.
+// or empty if none. The event Data is map[string]interface{}; JSON decodes
+// numbers as float64, but events constructed in-process may carry int /
+// int64, so all common numeric forms are tolerated.
 func internalEventPRNumber(ev event.Event) string {
 	if ev.Data == nil {
 		return ""
@@ -164,6 +164,10 @@ func internalEventPRNumber(ev event.Event) string {
 	switch v := ev.Data["pr_number"].(type) {
 	case string:
 		return v
+	case int:
+		return fmt.Sprintf("%d", v)
+	case int64:
+		return fmt.Sprintf("%d", v)
 	case float64:
 		if v == float64(int64(v)) {
 			return fmt.Sprintf("%d", int64(v))
