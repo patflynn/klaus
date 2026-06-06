@@ -38,6 +38,14 @@ PR and it picks up from the WIP commit klaus left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
 
+For a budget-paused PR, klaus continues the previous agent's Claude
+conversation by default (trajectory replay): it restores the stored
+conversation and runs 'claude --resume', avoiding a cold re-exploration of
+the repo. It falls back to a fresh agent when the trajectory is missing,
+oversized, sensitive-skipped, or its session UUID is unknown. Use --no-replay
+to force a fresh agent, --replay to force replay (bypassing the size
+threshold), and --replay-threshold-kb to tune the per-launch size cap.
+
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
 are synced back after completion. Use --local to force local execution, or
@@ -52,11 +60,18 @@ are synced back after completion. Use --local to force local execution, or
 		forceLocal, _ := cmd.Flags().GetBool("local")
 		hostOverride, _ := cmd.Flags().GetString("host")
 		resumeFrom, _ := cmd.Flags().GetString("resume-from")
+		replayFlag, _ := cmd.Flags().GetBool("replay")
+		noReplay, _ := cmd.Flags().GetBool("no-replay")
+		replayThresholdKB, _ := cmd.Flags().GetInt("replay-threshold-kb")
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
 		if !tmux.InSession() {
 			return fmt.Errorf("klaus launch must be run inside a tmux session")
+		}
+
+		if replayFlag && noReplay {
+			return fmt.Errorf("--replay and --no-replay are mutually exclusive")
 		}
 
 		// Host repo — optional when --repo is specified or session target is set
@@ -108,7 +123,7 @@ are synced back after completion. Use --local to force local execution, or
 		// When --repo matches a registered project, use the local path directly.
 		// State is always tracked in the host repo.
 		var (
-			repoRoot      string  // repo dir for git ops (clone or host)
+			repoRoot      string // repo dir for git ops (clone or host)
 			repoName      string
 			defaultBranch string
 			targetRepo    *string
@@ -297,6 +312,44 @@ are synced back after completion. Use --local to force local execution, or
 			// up, skip --resume entirely and let claude start fresh.
 		}
 
+		// Budget-paused PR continuation (issue #261): when launching against a
+		// paused PR with no explicit --resume-from, try to continue the prior
+		// agent's Claude conversation via trajectory replay. The stored
+		// conversation is restored into this worktree's project dir and
+		// claude --resume picks up where the pause happened, avoiding a costly
+		// re-exploration of the repo. Falls back to a fresh agent on any miss.
+		// Replay restores the trajectory onto the local machine, so it only
+		// applies to local execution. When the run is destined for a sandbox
+		// host, claude runs remotely and would not find the restored file —
+		// skip replay and let it start fresh there.
+		intendsSandbox := !forceLocal && (hostOverride != "" || hostCfg.SandboxHost != "")
+		var replayedFromRunID string
+		if resolvedResume == "" && isPRFix && prNumber != "" && !noReplay && !intendsSandbox {
+			threshold := replayThresholdKB
+			if threshold == 0 {
+				threshold = hostCfg.ReplayThresholdKB
+			}
+			decision := resolveBudgetPausedReplay(ctx, replayParams{
+				GitClient:   gitClient,
+				Store:       store,
+				RepoRoot:    repoRoot,
+				DataRef:     hostCfg.DataRef,
+				Worktree:    worktree,
+				PRBranch:    branch,
+				PRNumber:    prNumber,
+				GHRepo:      resolveGHRepo(repoRef, repoRoot),
+				ForceReplay: replayFlag,
+				ThresholdKB: threshold,
+			})
+			if decision.SessionUUID != "" {
+				resolvedResume = decision.SessionUUID
+				replayedFromRunID = decision.SourceRunID
+				fmt.Printf("  replay:   %s\n", decision.Reason)
+			} else {
+				fmt.Printf("  replay:   fresh agent (%s)\n", decision.Reason)
+			}
+		}
+
 		// Build the claude command
 		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, resolvedResume)
 
@@ -398,6 +451,8 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
+		} else if replayedFromRunID != "" {
+			state.OriginalRunID = &replayedFromRunID
 		}
 		if isPRFix {
 			state.Type = "pr-fix"
@@ -710,5 +765,8 @@ func init() {
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
+	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for a budget-paused --pr (continue the prior conversation, bypassing the size threshold)")
+	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for a budget-paused --pr; dispatch a fresh agent instead")
+	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")
 	rootCmd.AddCommand(launchCmd)
 }

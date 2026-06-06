@@ -379,6 +379,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		var ev struct {
 			Type         string  `json:"type"`
 			Subtype      string  `json:"subtype"`
+			SessionID    string  `json:"session_id"`
 			TotalCostUSD float64 `json:"total_cost_usd"`
 			DurationMS   int64   `json:"duration_ms"`
 			Message      *struct {
@@ -405,6 +406,12 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			}
 			if ev.Subtype != "" {
 				resultSubtype = ev.Subtype
+			}
+			// Record the Claude conversation UUID so a later budget-paused
+			// resume can restore the trajectory and run claude --resume.
+			if ev.SessionID != "" {
+				sid := ev.SessionID
+				state.ClaudeSessionID = &sid
 			}
 		case "assistant":
 			if ev.Message != nil {
@@ -549,6 +556,22 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 					fmt.Fprintf(os.Stderr, "  - %s\n", f.Category)
 				}
 				fmt.Fprintf(os.Stderr, "  Use 'klaus push-log %s' to push manually.\n", state.ID)
+			}
+		}
+	}
+
+	// Also capture the resume-able Claude conversation file. This is distinct
+	// from the stream-json log above: claude --resume reads this file (under
+	// ~/.claude/projects/...), not the stdout stream we tee into logs/. Storing
+	// it lets 'klaus launch --pr' continue a budget-paused conversation.
+	if convPath := findResumeConversation(state); convPath != "" {
+		if cf, err := os.Open(convPath); err == nil {
+			findings := scan.CheckSensitivity(cf)
+			cf.Close()
+			if len(findings) == 0 {
+				files["sessions/"+state.ID+".jsonl"] = convPath
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: skipping conversation push for %s: potentially sensitive data detected\n", state.ID)
 			}
 		}
 	}

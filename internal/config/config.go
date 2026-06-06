@@ -25,6 +25,11 @@ type Config struct {
 	SandboxHost         string           `json:"sandbox_host,omitempty"`
 	PRReviewer          string           `json:"pr_reviewer,omitempty"`
 	Webhook             *WebhookConfig   `json:"webhook,omitempty"`
+	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
+	// 'klaus launch --pr' will restore for claude --resume when continuing a
+	// budget-paused PR. Trajectories above this fall back to a fresh agent
+	// unless --replay is passed. Default 300.
+	ReplayThresholdKB int `json:"replay_threshold_kb,omitempty"`
 }
 
 // WebhookConfig configures the GitHub webhook receiver. When present, the
@@ -40,11 +45,11 @@ type WebhookConfig struct {
 
 // PreReviewConfig configures the pre-PR review checks.
 type PreReviewConfig struct {
-	Enabled      *bool    `json:"enabled,omitempty"`         // default: true
-	Linters      []string `json:"linters,omitempty"`         // default: auto-detect from project
-	ReviewModel  string   `json:"review_model,omitempty"`    // default: "haiku"
-	MaxFixRounds int      `json:"max_fix_rounds,omitempty"`  // default: 2
-	BlockOn      string   `json:"block_on,omitempty"`        // default: "high" (block PR on high+ findings)
+	Enabled      *bool    `json:"enabled,omitempty"`        // default: true
+	Linters      []string `json:"linters,omitempty"`        // default: auto-detect from project
+	ReviewModel  string   `json:"review_model,omitempty"`   // default: "haiku"
+	MaxFixRounds int      `json:"max_fix_rounds,omitempty"` // default: 2
+	BlockOn      string   `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
 }
 
 // RequiresApproval returns true if approval is required before merging.
@@ -131,11 +136,12 @@ func (c *Config) PRReviewerOrDefault() string {
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
-		WorktreeBase:     filepath.Join(os.TempDir(), "klaus-sessions"),
-		DefaultBudget:    "5.00",
-		DataRef:          "refs/klaus/data",
-		DefaultBranch:    "main",
-		TrustedReviewers: []string{"gemini-code-assist[bot]"},
+		WorktreeBase:      filepath.Join(os.TempDir(), "klaus-sessions"),
+		DefaultBudget:     "5.00",
+		DataRef:           "refs/klaus/data",
+		DefaultBranch:     "main",
+		TrustedReviewers:  []string{"gemini-code-assist[bot]"},
+		ReplayThresholdKB: 300,
 	}
 }
 
@@ -541,7 +547,6 @@ func sortStrings(s []string) {
 		}
 	}
 }
-
 
 // WriteClaudeSettings writes a .claude/settings.json into the given worktree
 // directory with a statusLine that displays the repo name and current branch.

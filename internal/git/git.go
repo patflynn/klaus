@@ -53,6 +53,39 @@ func FetchBranch(ctx context.Context, repoDir, branch string) error {
 	return err
 }
 
+// FetchDataRef updates the local data ref from origin. It is best-effort:
+// callers should ignore the error (there may be no remote, the ref may not
+// exist remotely, or the local ref may already be current). When the local
+// ref is missing and the remote has it, the ref is created locally.
+func FetchDataRef(ctx context.Context, repoDir, dataRef string) error {
+	_, err := runGitNetwork(ctx, repoDir, "fetch", "origin", dataRef+":"+dataRef, "--quiet")
+	return err
+}
+
+// ReadDataRefFile returns the raw bytes of a file stored in the data ref tree.
+// treePath is the path within the ref's tree (e.g. "sessions/<run-id>.jsonl").
+// It returns an error if the ref or path does not exist. Output is not trimmed,
+// so JSONL content (including trailing newlines) is preserved verbatim.
+func ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]byte, error) {
+	ctx, cancel := ensureTimeout(ctx, localTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "cat-file", "blob", dataRef+":"+treePath)
+	if repoDir != "" {
+		cmd.Dir = repoDir
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("git cat-file timed out after %s", localTimeout)
+		}
+		return nil, fmt.Errorf("reading %s from %s: %w: %s", treePath, dataRef, err, stderr.String())
+	}
+	return stdout.Bytes(), nil
+}
+
 // WorktreeAdd creates a new worktree at path on a new branch based on startPoint.
 // If the branch is already checked out in a stale worktree, it prunes and retries once.
 func WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) error {
