@@ -578,7 +578,7 @@ func TestInstallCommitMsgHook_CoordinatorWorktree(t *testing.T) {
 		{"git", "-C", wtPath, "add", "file.txt"},
 		{"git", "-C", wtPath, "commit", "-m", commitMsg},
 	} {
-		cmd := exec.Command(args[0], args[1:]...)
+		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v\n%s", args, err, out)
 		}

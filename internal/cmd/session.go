@@ -183,6 +183,14 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 				}
 			}
 			fmt.Printf("Recreated worktree at %s\n", worktree)
+		} else if branch != "" {
+			// Worktree already exists (resuming an existing session). Reinstall
+			// the commit-msg hook so sessions created before the hook existed
+			// (or where it was removed) still strip attribution trailers.
+			// InstallCommitMsgHook is idempotent, so this is safe to rerun.
+			if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
+			}
 		}
 
 		// Clear stale tmux pane references from all agent runs in this session.
