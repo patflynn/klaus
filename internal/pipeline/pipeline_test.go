@@ -260,9 +260,15 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if !strings.Contains(launchedPrompt, tc.wantLeadIn) {
 				t.Errorf("prompt missing lead-in %q: %q", tc.wantLeadIn, launchedPrompt)
 			}
-			// Must instruct fetching the comments.
-			if !strings.Contains(launchedPrompt, "gh api repos/owner/repo/pulls/42/comments") {
-				t.Errorf("prompt missing fetch instruction: %q", launchedPrompt)
+			// Must instruct fetching the comments using the literal
+			// {owner}/{repo} placeholder, which gh expands from the worktree's
+			// git remote. It must NOT substitute TargetRepo, which is a project
+			// short name and would yield a 404 path (issue #269).
+			if !strings.Contains(launchedPrompt, "gh api repos/{owner}/{repo}/pulls/42/comments") {
+				t.Errorf("prompt missing placeholder fetch instruction: %q", launchedPrompt)
+			}
+			if strings.Contains(launchedPrompt, "repos/"+tc.status.TargetRepo+"/pulls") {
+				t.Errorf("prompt substitutes TargetRepo into API path (404 risk): %q", launchedPrompt)
 			}
 			// Must instruct replying to each comment.
 			if !strings.Contains(launchedPrompt, "reply to EACH") {
