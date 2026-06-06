@@ -534,6 +534,74 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 	}
 }
 
+// TestInstallCommitMsgHook_CoordinatorWorktree mirrors the coordinator session
+// worktree path (see internal/cmd/session.go): after the worktree is created the
+// commit-msg hook is installed, and a real commit with mixed trailers should have
+// the Claude/Anthropic attribution stripped while a human Co-Authored-By is kept.
+func TestInstallCommitMsgHook_CoordinatorWorktree(t *testing.T) {
+	ctx := context.Background()
+	repo := initTestRepo(t)
+	wtPath := filepath.Join(t.TempDir(), "session-wt")
+
+	if err := WorktreeAdd(ctx, repo, wtPath, "session/test", "main"); err != nil {
+		t.Fatalf("WorktreeAdd: %v", err)
+	}
+	defer WorktreeRemove(ctx, repo, wtPath)
+
+	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+		t.Fatalf("InstallCommitMsgHook: %v", err)
+	}
+
+	// The hook must be active: core.hooksPath set and the commit-msg file present.
+	hooksPath, err := runGit(ctx, wtPath, "config", "core.hooksPath")
+	if err != nil {
+		t.Fatalf("git config core.hooksPath: %v", err)
+	}
+	if hooksPath == "" {
+		t.Fatal("core.hooksPath should be set in the coordinator worktree")
+	}
+	if _, err := os.Stat(filepath.Join(hooksPath, "commit-msg")); err != nil {
+		t.Fatalf("commit-msg hook should exist at %s: %v", hooksPath, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	commitMsg := "coordinator change\n\n" +
+		"Co-Authored-By: Claude Opus 4 (1M context) <noreply@anthropic.com>\n" +
+		"Co-Authored-By: Bob Human <bob@example.com>\n" +
+		"🤖 Generated with Claude Code\n" +
+		"Generated with help from Anthropic"
+
+	for _, args := range [][]string{
+		{"git", "-C", wtPath, "add", "file.txt"},
+		{"git", "-C", wtPath, "commit", "-m", commitMsg},
+	} {
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", args, err, out)
+		}
+	}
+
+	msg, err := runGit(ctx, wtPath, "log", "-1", "--format=%B")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if strings.Contains(msg, "Claude") {
+		t.Errorf("should strip Claude references, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "Anthropic") {
+		t.Errorf("should strip Anthropic references, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "Co-Authored-By: Bob Human") {
+		t.Errorf("should preserve human Co-Authored-By, got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "coordinator change") {
+		t.Errorf("should preserve original message, got:\n%s", msg)
+	}
+}
+
 func TestWorktreeAdd_PrunesStaleAndRetries(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
