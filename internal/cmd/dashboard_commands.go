@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
+	"github.com/patflynn/klaus/internal/config"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
@@ -30,6 +31,9 @@ type fsEventMsg struct{}
 
 type tickMsg struct{}
 
+// reconcileTickMsg fires the slow reconcile heartbeat in webhook-only mode.
+type reconcileTickMsg struct{}
+
 type sandboxStatusMsg struct {
 	hosts map[string]bool // host -> reachable
 }
@@ -45,6 +49,10 @@ type errMsg struct {
 type webhookMsg struct {
 	event webhook.Event
 }
+
+// webhookClosedMsg signals that the webhook event channel was closed, so live
+// webhook consumption has stopped. Surfaced as a non-fatal error in the TUI.
+type webhookClosedMsg struct{}
 
 type trustedCommentsMsg struct {
 	prNumber             string
@@ -98,7 +106,13 @@ func waitForWebhookCmd(ch <-chan webhook.Event) tea.Cmd {
 	return func() tea.Msg {
 		ev, ok := <-ch
 		if !ok {
-			return nil
+			// The webhook channel was closed. Re-reading it would return
+			// immediately forever (a busy-loop), so we do NOT re-arm.
+			// Surface a visible (non-fatal) error instead of going silently
+			// dark — in webhook-only mode this would otherwise permanently
+			// kill all reconcile triggers except the slow heartbeat (see
+			// issue #271).
+			return webhookClosedMsg{}
 		}
 		return webhookMsg{event: ev}
 	}
@@ -113,6 +127,43 @@ func tickCmd() tea.Cmd {
 func tickAfterCmd() tea.Cmd {
 	return tea.Tick(30*time.Second, func(time.Time) tea.Msg {
 		return tickMsg{}
+	})
+}
+
+// defaultReconcileInterval is the slow reconcile heartbeat interval used in
+// webhook-only mode when no override is configured.
+const defaultReconcileInterval = 5 * time.Minute
+
+// shouldScheduleReconcile reports whether the slow reconcile heartbeat should
+// run. It runs only in webhook mode when polling is NOT active: poll mode
+// already re-fetches every 30s (tickMsg), so the heartbeat would be redundant.
+// A non-positive interval disables the heartbeat entirely.
+func shouldScheduleReconcile(useWebhook, pollEnabled bool, interval time.Duration) bool {
+	return useWebhook && !pollEnabled && interval > 0
+}
+
+// reconcileInterval resolves the heartbeat interval from config. A zero value
+// means "use the default"; a negative value disables the heartbeat.
+func reconcileInterval(cfg *config.WebhookConfig) time.Duration {
+	if cfg == nil || cfg.ReconcileIntervalSeconds == 0 {
+		return defaultReconcileInterval
+	}
+	if cfg.ReconcileIntervalSeconds < 0 {
+		return 0 // disabled
+	}
+	return time.Duration(cfg.ReconcileIntervalSeconds) * time.Second
+}
+
+func reconcileTickAfterCmd(interval time.Duration) tea.Cmd {
+	// Defensive guard: tea.Tick fires immediately for a non-positive duration,
+	// so re-arming with interval <= 0 (the disabled-heartbeat sentinel) would
+	// spin an infinite loop of reconcileTickMsg messages and peg the CPU.
+	// Returning nil cleanly disables the heartbeat (bubbletea ignores nil cmds).
+	if interval <= 0 {
+		return nil
+	}
+	return tea.Tick(interval, func(time.Time) tea.Msg {
+		return reconcileTickMsg{}
 	})
 }
 

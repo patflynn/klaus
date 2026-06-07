@@ -43,6 +43,10 @@ When webhook config is present in .klaus/config.json, the dashboard starts
 an HTTP server to receive push events from github-relay instead of polling.
 Set "webhook": {"port": 9800} in config to enable.
 
+In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
+a full status re-fetch every 5 minutes by default (configurable via
+"reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
+
 Keyboard shortcuts:
   q  quit
   r  force refresh`,
@@ -83,6 +87,7 @@ Keyboard shortcuts:
 			model.useWebhook = true
 			model.pollEnabled = cfg.Webhook.PollFallback
 			model.webhookAddr = webhookSrv.Addr()
+			model.reconcileEvery = reconcileInterval(cfg.Webhook)
 
 			go func() {
 				if err := webhookSrv.Serve(); err != nil && err != http.ErrServerClosed {
@@ -145,6 +150,7 @@ type dashboardModel struct {
 	webhookAddr    string              // e.g. "127.0.0.1:9800"
 	useWebhook     bool                // true when webhook server is running
 	pollEnabled    bool                // true when polling is active (default or poll_fallback)
+	reconcileEvery time.Duration       // slow reconcile heartbeat interval (webhook-only mode)
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
@@ -183,6 +189,9 @@ func (m dashboardModel) Init() tea.Cmd {
 	}
 	if m.webhookCh != nil {
 		cmds = append(cmds, waitForWebhookCmd(m.webhookCh))
+	}
+	if shouldScheduleReconcile(m.useWebhook, m.pollEnabled, m.reconcileEvery) {
+		cmds = append(cmds, reconcileTickAfterCmd(m.reconcileEvery))
 	}
 	return tea.Batch(cmds...)
 }
@@ -313,11 +322,36 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitForWebhookCmd(m.webhookCh)
 
+	case webhookClosedMsg:
+		// Live webhook consumption has stopped. Do not re-arm (re-reading a
+		// closed channel busy-loops). Surface it non-fatally; the reconcile
+		// heartbeat, if active, still bounds staleness.
+		m.recentErrors = append(m.recentErrors, dashboardError{
+			Time:    time.Now(),
+			Message: "webhook event channel closed; live webhook updates stopped (reconcile heartbeat still active)",
+		})
+		if len(m.recentErrors) > 3 {
+			m.recentErrors = m.recentErrors[len(m.recentErrors)-3:]
+		}
+		return m, nil
+
 	case trustedCommentsMsg:
 		existing, ok := m.ghStatus[msg.prNumber]
 		if ok {
 			existing.HasNewTrustedComments = msg.hasNewTrustedComments
 		}
+
+	case reconcileTickMsg:
+		// Slow reconcile heartbeat (webhook-only mode). Webhooks are the only
+		// reconcile trigger when poll_fallback is false, so a single dropped
+		// or missed event would strand a PR forever. This periodic full
+		// re-fetch bounds worst-case staleness (see issue #271). It re-arms
+		// itself; it is never scheduled when polling is active (which already
+		// re-fetches every 30s), so there is no double-fetch.
+		return m, tea.Batch(
+			fetchGHStatusCmd(m.ghClient, m.states),
+			reconcileTickAfterCmd(m.reconcileEvery),
+		)
 
 	case tickMsg:
 		// Expire errors older than 3 minutes.
@@ -396,6 +430,8 @@ func (m dashboardModel) View() string {
 		tag := fmt.Sprintf("  webhook: listening on %s", addr)
 		if m.pollEnabled {
 			tag += " + polling: 30s"
+		} else if m.reconcileEvery > 0 {
+			tag += fmt.Sprintf(" + reconcile: %s", formatDuration(m.reconcileEvery))
 		}
 		b.WriteString(dimStyle.Render(tag))
 		b.WriteString("\n")
