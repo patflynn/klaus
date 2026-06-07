@@ -155,6 +155,13 @@ func reconcileInterval(cfg *config.WebhookConfig) time.Duration {
 }
 
 func reconcileTickAfterCmd(interval time.Duration) tea.Cmd {
+	// Defensive guard: tea.Tick fires immediately for a non-positive duration,
+	// so re-arming with interval <= 0 (the disabled-heartbeat sentinel) would
+	// spin an infinite loop of reconcileTickMsg messages and peg the CPU.
+	// Returning nil cleanly disables the heartbeat (bubbletea ignores nil cmds).
+	if interval <= 0 {
+		return nil
+	}
 	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return reconcileTickMsg{}
 	})

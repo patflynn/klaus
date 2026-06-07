@@ -38,6 +38,22 @@ func TestShouldScheduleReconcile(t *testing.T) {
 	}
 }
 
+// TestReconcileTickAfterCmd verifies the defensive guard: a non-positive
+// interval returns a nil command (heartbeat disabled), so the re-arm path can
+// never spin tea.Tick into an immediate-fire infinite loop. A positive interval
+// returns a real command.
+func TestReconcileTickAfterCmd(t *testing.T) {
+	if cmd := reconcileTickAfterCmd(0); cmd != nil {
+		t.Errorf("reconcileTickAfterCmd(0) = non-nil, want nil")
+	}
+	if cmd := reconcileTickAfterCmd(-1 * time.Second); cmd != nil {
+		t.Errorf("reconcileTickAfterCmd(-1s) = non-nil, want nil")
+	}
+	if cmd := reconcileTickAfterCmd(5 * time.Minute); cmd == nil {
+		t.Errorf("reconcileTickAfterCmd(5m) = nil, want non-nil")
+	}
+}
+
 // TestReconcileInterval verifies config resolution: zero/nil → default,
 // negative → disabled (0), positive → that many seconds.
 func TestReconcileInterval(t *testing.T) {
