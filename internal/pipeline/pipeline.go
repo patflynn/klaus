@@ -40,7 +40,7 @@ type PRStatus struct {
 	CI                    string // passing, failing, pending, unknown
 	Conflicts             string // yes, none, unknown
 	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
-	TargetRepo            string // owner/repo for dispatch context
+	TargetRepo            string // canonical project short name (e.g. "klaus") for registered projects, else an owner/repo slug; NOT guaranteed to be a GitHub owner/repo slug — do not use in gh api paths
 	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
 	Labels                []string // GitHub label names; klaus uses "klaus:budget-paused" as a pause signal
 }

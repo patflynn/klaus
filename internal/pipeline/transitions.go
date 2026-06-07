@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/event"
+	ghutil "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -287,7 +288,7 @@ var transitions = []transition{
 			return nil, []ActionDescriptor{{
 				Type:      ActionMergePR,
 				PRNumber:  ps.PRNumber,
-				Repo:      status.TargetRepo,
+				Repo:      dispatchRepo(c, status),
 				PRNumbers: []string{ps.PRNumber},
 			}}
 		},
@@ -332,12 +333,12 @@ var transitions = []transition{
 			descs = append(descs, ActionDescriptor{
 				Type:     ActionSnapshotThreads,
 				PRNumber: ps.PRNumber,
-				Repo:     status.TargetRepo,
+				Repo:     dispatchRepo(c, status),
 			})
 
 			prompt := reviewFixPrompt(
 				fmt.Sprintf("PR #%s in %s has changes requested by reviewers.", ps.PRNumber, status.TargetRepo),
-				status.TargetRepo, ps.PRNumber,
+				ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s", ps.PRNumber)
 			ps.Stage = StageReviewPending
@@ -384,12 +385,12 @@ var transitions = []transition{
 			descs = append(descs, ActionDescriptor{
 				Type:     ActionSnapshotThreads,
 				PRNumber: ps.PRNumber,
-				Repo:     status.TargetRepo,
+				Repo:     dispatchRepo(c, status),
 			})
 
 			prompt := reviewFixPrompt(
 				fmt.Sprintf("PR #%s in %s has review comments from a trusted reviewer that need to be addressed.", ps.PRNumber, status.TargetRepo),
-				status.TargetRepo, ps.PRNumber,
+				ps.PRNumber,
 			)
 			ps.pendingLaunchDetail = fmt.Sprintf("Review fix agent for PR #%s (trusted reviewer)", ps.PRNumber)
 			ps.Stage = StageReviewPending
@@ -641,6 +642,26 @@ func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) 
 	}
 }
 
+// dispatchRepo returns the owner/repo slug to attach to ActionDescriptors whose
+// handlers treat Repo as a real GitHub slug (ActionSnapshotThreads, ActionMergePR).
+// It derives the slug from status.PRURL (always a full GitHub PR URL) because
+// status.TargetRepo holds the canonical project SHORT name (e.g. "klaus") for
+// registered projects, which is NOT a valid owner/repo slug. If the URL can't be
+// parsed it falls back to status.TargetRepo to preserve prior behavior.
+//
+// Note: ActionLaunchAgent intentionally does NOT use this — its handler runs the
+// value through normalizeTargetRepo, which expects the short name.
+func dispatchRepo(c *Controller, status *PRStatus) string {
+	if slug := ghutil.OwnerRepoFromPRURL(status.PRURL); slug != "" {
+		return slug
+	}
+	c.logger.Warn("could not derive owner/repo from PR URL; falling back to TargetRepo",
+		"pr", status.PRURL,
+		"target_repo", status.TargetRepo,
+	)
+	return status.TargetRepo
+}
+
 // reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is
 // the situation-specific opening sentence (e.g. "PR #X has changes requested
 // by reviewers."); the rest of the body is shared so both the changes-requested
@@ -649,16 +670,22 @@ func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) 
 // The "(that you haven't already replied to)" qualifier matters because a fix
 // agent may be re-dispatched (e.g. after CI fails on its first push). Without
 // it the agent may post duplicate replies on threads it already answered.
-func reviewFixPrompt(leadIn, repo, prNumber string) string {
+func reviewFixPrompt(leadIn, prNumber string) string {
+	// The API paths use the literal {owner}/{repo} placeholder, which gh expands
+	// from the worktree's git remote at runtime. We must NOT substitute the
+	// dispatch repo here: PRStatus.TargetRepo is the canonical project short name
+	// (e.g. "klaus") for registered projects, not an owner/repo slug, so it would
+	// produce a 404 path like repos/klaus/pulls/267/comments. The fix agent always
+	// runs inside the PR's worktree, so {owner}/{repo} resolves correctly.
 	return fmt.Sprintf(
 		"%s "+
-			"Fetch the review comments with: gh api repos/%s/pulls/%s/comments\n"+
+			"Fetch the review comments with: gh api repos/{owner}/{repo}/pulls/%s/comments\n"+
 			"Address each comment in the code, then push your fixes.\n"+
 			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
 			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
 			"Use this exact command to reply, substituting the comment id and your explanation:\n"+
-			"  gh api repos/%s/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
-		leadIn, repo, prNumber, repo, prNumber,
+			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
+		leadIn, prNumber, prNumber,
 	)
 }
 

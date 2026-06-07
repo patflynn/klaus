@@ -260,9 +260,15 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if !strings.Contains(launchedPrompt, tc.wantLeadIn) {
 				t.Errorf("prompt missing lead-in %q: %q", tc.wantLeadIn, launchedPrompt)
 			}
-			// Must instruct fetching the comments.
-			if !strings.Contains(launchedPrompt, "gh api repos/owner/repo/pulls/42/comments") {
-				t.Errorf("prompt missing fetch instruction: %q", launchedPrompt)
+			// Must instruct fetching the comments using the literal
+			// {owner}/{repo} placeholder, which gh expands from the worktree's
+			// git remote. It must NOT substitute TargetRepo, which is a project
+			// short name and would yield a 404 path (issue #269).
+			if !strings.Contains(launchedPrompt, "gh api repos/{owner}/{repo}/pulls/42/comments") {
+				t.Errorf("prompt missing placeholder fetch instruction: %q", launchedPrompt)
+			}
+			if strings.Contains(launchedPrompt, "repos/"+tc.status.TargetRepo+"/pulls") {
+				t.Errorf("prompt substitutes TargetRepo into API path (404 risk): %q", launchedPrompt)
 			}
 			// Must instruct replying to each comment.
 			if !strings.Contains(launchedPrompt, "reply to EACH") {
@@ -1318,6 +1324,111 @@ func TestReviewThreadsResolvedAfterAgentCompletion(t *testing.T) {
 	state = c.PipelineStates()["42"]
 	if state != nil && len(state.PendingResolveThreadIDs) != 0 {
 		t.Errorf("expected pending threads cleared, got %d", len(state.PendingResolveThreadIDs))
+	}
+}
+
+// TestSnapshotThreadsUsesOwnerRepoSlugFromPRURL guards against issue where
+// ActionSnapshotThreads was given PRStatus.TargetRepo, which is a canonical
+// project short name (e.g. "klaus") for registered projects, not an owner/repo
+// slug. defaultSnapshotThreads splits the value on "/" and would fail, silently
+// breaking thread resolution. The descriptor must instead carry the owner/repo
+// slug extracted from PRURL.
+func TestSnapshotThreadsUsesOwnerRepoSlugFromPRURL(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		reviewDecision string
+		trusted        bool
+	}{
+		{"changes-requested", "CHANGES_REQUESTED", false},
+		{"trusted-comments", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newTestController(t)
+
+			var gotRepo string
+			c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+				gotRepo = repo
+				return nil, nil
+			})
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+				return "agent-fix", nil
+			})
+
+			statuses := map[string]*PRStatus{
+				"42": {
+					PRNumber:              "42",
+					State:                 "OPEN",
+					CI:                    "passing",
+					ReviewDecision:        tc.reviewDecision,
+					HasNewTrustedComments: tc.trusted,
+					// TargetRepo is a project short name, NOT an owner/repo slug.
+					TargetRepo: "klaus",
+					PRURL:      "https://github.com/patflynn/klaus/pull/42",
+				},
+			}
+			c.HandleGHStatus(context.Background(), statuses, nil)
+
+			if gotRepo != "patflynn/klaus" {
+				t.Errorf("snapshotThreads got repo %q, want owner/repo slug from PRURL %q", gotRepo, "patflynn/klaus")
+			}
+			if strings.Count(gotRepo, "/") != 1 {
+				t.Errorf("snapshot repo %q is not a valid owner/repo slug (need exactly one '/')", gotRepo)
+			}
+		})
+	}
+}
+
+// TestDispatchRepoDerivesSlugFromPRURL covers the slug-extraction helper used to
+// attach a real owner/repo to descriptors whose handlers treat Repo as a GitHub
+// slug. status.TargetRepo may be a bare project short name (e.g. "klaus"), so the
+// slug must come from the PR URL, falling back to TargetRepo only when the URL is
+// unparseable. The parsing itself lives in github.OwnerRepoFromPRURL (the single
+// source of truth, unit-tested in internal/github).
+func TestDispatchRepoDerivesSlugFromPRURL(t *testing.T) {
+	c, _ := newTestController(t)
+	for _, tt := range []struct {
+		name   string
+		status *PRStatus
+		want   string
+	}{
+		{"valid URL overrides bare short name", &PRStatus{PRURL: "https://github.com/patflynn/klaus/pull/270", TargetRepo: "klaus"}, "patflynn/klaus"},
+		{"trailing slash", &PRStatus{PRURL: "https://github.com/patflynn/klaus/", TargetRepo: "klaus"}, "patflynn/klaus"},
+		{"malformed URL falls back to TargetRepo", &PRStatus{PRURL: "not-a-url", TargetRepo: "owner/repo"}, "owner/repo"},
+		{"empty URL falls back to TargetRepo", &PRStatus{PRURL: "", TargetRepo: "owner/repo"}, "owner/repo"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dispatchRepo(c, tt.status); got != tt.want {
+				t.Errorf("dispatchRepo() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMergeDescriptorUsesOwnerRepoSlug locks the audit fix: the ActionMergePR
+// descriptor must carry the owner/repo slug derived from the PR URL, not the bare
+// project short name in TargetRepo.
+func TestMergeDescriptorUsesOwnerRepoSlug(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	var mergeRepo string
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeRepo = repo
+		return nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"270": {
+			PRNumber: "270", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "klaus",
+			PRURL: "https://github.com/patflynn/klaus/pull/270",
+		},
+	}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeRepo != "patflynn/klaus" {
+		t.Errorf("merge repo = %q, want patflynn/klaus", mergeRepo)
 	}
 }
 
