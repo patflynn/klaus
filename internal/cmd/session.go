@@ -178,8 +178,19 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 				if err := gitClient.WorktreeAdd(ctx, baseRepo, worktree, branch, startPoint); err != nil {
 					return fmt.Errorf("recreating worktree: %w", err)
 				}
+				if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
+				}
 			}
 			fmt.Printf("Recreated worktree at %s\n", worktree)
+		} else if branch != "" {
+			// Worktree already exists (resuming an existing session). Reinstall
+			// the commit-msg hook so sessions created before the hook existed
+			// (or where it was removed) still strip attribution trailers.
+			// InstallCommitMsgHook is idempotent, so this is safe to rerun.
+			if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
+			}
 		}
 
 		// Clear stale tmux pane references from all agent runs in this session.
@@ -237,6 +248,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 			if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+			}
+
+			if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 			}
 
 			// Set up Nix dev environment if flake.nix exists
