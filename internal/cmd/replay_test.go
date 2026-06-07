@@ -69,6 +69,7 @@ func storeTrajectoryOnDataRef(t *testing.T, repo, dataRef, runID, content string
 func TestReplayRoundTripEndToEnd(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir checks USERPROFILE first on Windows
 
 	repo := initReplayTestRepo(t)
 	const dataRef = "refs/klaus/data"
@@ -146,6 +147,7 @@ func TestReplayRoundTripEndToEnd(t *testing.T) {
 func TestReplayFallbacks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir checks USERPROFILE first on Windows
 	repo := initReplayTestRepo(t)
 	const dataRef = "refs/klaus/data"
 	const branch = "feature-x"

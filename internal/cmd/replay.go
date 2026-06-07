@@ -33,6 +33,9 @@ import (
 // segment Claude Code uses under ~/.claude/projects. Claude replaces both '/'
 // and '.' with '-'. Verified empirically against Claude Code 2.1.x.
 func encodeProjectPath(cwd string) string {
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
+	}
 	return strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
 }
 
@@ -92,6 +95,9 @@ func findClaudeConversationFile(sessionUUID string) string {
 // back to globbing all project dirs. Returns "" if the UUID is unknown or no
 // file exists.
 func findResumeConversation(state *run.State) string {
+	if state == nil {
+		return ""
+	}
 	uuid := ""
 	if state.ClaudeSessionID != nil {
 		uuid = *state.ClaudeSessionID
@@ -115,21 +121,22 @@ func findResumeConversation(state *run.State) string {
 // extractConversationSessionID reads the sessionId (camelCase) from a
 // conversation-format JSONL blob. Returns "" if none is found.
 func extractConversationSessionID(data []byte) string {
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	// bufio.Reader.ReadBytes avoids the fixed buffer cap of bufio.Scanner,
+	// which would silently stop (bufio.ErrTooLong) on a single line larger
+	// than the cap — tool outputs and system prompts can exceed many MB.
+	r := bufio.NewReader(bytes.NewReader(data))
 	var ev struct {
 		SessionID string `json:"sessionId"`
 	}
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 0 {
+			if uerr := json.Unmarshal(line, &ev); uerr == nil && ev.SessionID != "" {
+				return ev.SessionID
+			}
 		}
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if ev.SessionID != "" {
-			return ev.SessionID
+		if err != nil {
+			break
 		}
 	}
 	return ""
