@@ -159,13 +159,18 @@ func TestParsePullRequest(t *testing.T) {
 }
 
 func TestParsePullRequestReview(t *testing.T) {
+	// Any submitted review must produce an invalidation event regardless of
+	// state — including "commented" (gemini-code-assist submits its review
+	// bundles as state=commented). The trusted-reviewer/timing filtering
+	// lives in the detection layer, not the webhook parser (see issue #271).
+	// Non-"submitted" actions (edited, dismissed) produce no event.
 	tests := []struct {
 		name    string
 		payload string
 		wantLen int
 	}{
 		{
-			name: "approved",
+			name: "submitted approved",
 			payload: `{
 				"action": "submitted",
 				"review": {"state": "approved"},
@@ -175,7 +180,7 @@ func TestParsePullRequestReview(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "changes requested",
+			name: "submitted changes_requested",
 			payload: `{
 				"action": "submitted",
 				"review": {"state": "changes_requested"},
@@ -185,10 +190,40 @@ func TestParsePullRequestReview(t *testing.T) {
 			wantLen: 1,
 		},
 		{
-			name: "commented (ignored)",
+			name: "submitted commented (now emits)",
 			payload: `{
 				"action": "submitted",
 				"review": {"state": "commented"},
+				"pull_request": {"number": 7},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 1,
+		},
+		{
+			name: "submitted commented uppercase COMMENTED",
+			payload: `{
+				"action": "submitted",
+				"review": {"state": "COMMENTED"},
+				"pull_request": {"number": 7},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 1,
+		},
+		{
+			name: "edited (ignored)",
+			payload: `{
+				"action": "edited",
+				"review": {"state": "commented"},
+				"pull_request": {"number": 7},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 0,
+		},
+		{
+			name: "dismissed (ignored)",
+			payload: `{
+				"action": "dismissed",
+				"review": {"state": "changes_requested"},
 				"pull_request": {"number": 7},
 				"repository": {"full_name": "owner/repo"}
 			}`,
@@ -205,6 +240,12 @@ func TestParsePullRequestReview(t *testing.T) {
 			if tt.wantLen > 0 {
 				if events[0].EventType != "pull_request_review" {
 					t.Errorf("expected EventType=pull_request_review, got %q", events[0].EventType)
+				}
+				if events[0].PRNumber != "7" {
+					t.Errorf("expected PRNumber=7, got %q", events[0].PRNumber)
+				}
+				if events[0].Repo != "owner/repo" {
+					t.Errorf("expected Repo=owner/repo, got %q", events[0].Repo)
 				}
 			}
 		})

@@ -36,6 +36,14 @@ type WebhookConfig struct {
 	PollFallback bool   `json:"poll_fallback"` // if true, poll even when webhook is active
 	RelayURL     string `json:"relay_url"`     // public URL of github-relay (e.g. https://example.ts.net)
 	SecretFile   string `json:"secret_file"`   // path to file containing the webhook secret
+
+	// ReconcileIntervalSeconds is the interval for the slow reconcile
+	// heartbeat in webhook-only mode (PollFallback false). A full status
+	// re-fetch runs on this interval to bound worst-case staleness if a
+	// webhook is ever dropped or missed. Default 300 (5 minutes). Ignored
+	// when polling is active (PollFallback true), since polling already
+	// re-fetches every 30s. Set to a negative value to disable entirely.
+	ReconcileIntervalSeconds int `json:"reconcile_interval_seconds"`
 }
 
 // PreReviewConfig configures the pre-PR review checks.

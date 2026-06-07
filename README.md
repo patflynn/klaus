@@ -287,6 +287,22 @@ Both commands require `webhook.relay_url` in your config. `setup` also requires 
 
 The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, and `pull_request_review` events.
 
+Additional webhook config knobs:
+
+- `poll_fallback` (bool, default `false`): when `true`, the dashboard polls GitHub every 30s *in addition* to receiving webhooks.
+- `reconcile_interval_seconds` (int, default `300`): in webhook-only mode (`poll_fallback: false`), a slow reconcile heartbeat runs a full PR status re-fetch on this interval. This bounds worst-case staleness if a webhook is ever dropped or missed — without reverting to full 30s polling. Set to a negative value to disable. Ignored when `poll_fallback` is `true` (polling already re-fetches every 30s).
+
+```json
+{
+  "webhook": {
+    "relay_url": "https://your-relay.example.com",
+    "secret_file": "/path/to/webhook-secret",
+    "poll_fallback": false,
+    "reconcile_interval_seconds": 300
+  }
+}
+```
+
 ### `klaus new`
 
 Creates a new GitHub repo and launches a Claude agent to scaffold it. Reads principles from `.klaus/principles.md` (or built-in defaults). The agent makes all scaffolding decisions based on those principles — no templates. The new project is automatically registered in the project registry.

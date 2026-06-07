@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 )
 
 // Event is an invalidation signal from a GitHub webhook. It carries just
@@ -269,13 +268,13 @@ func parsePullRequestReview(payload json.RawMessage) []Event {
 		return nil
 	}
 
-	// Only signal for meaningful review states.
-	switch strings.ToLower(p.Review.State) {
-	case "approved", "changes_requested":
-		// valid
-	default:
-		return nil
-	}
+	// Emit for any submitted review regardless of state (approved,
+	// changes_requested, commented). Webhooks are invalidation signals; the
+	// trusted-reviewer + review-time/commit-time filtering lives in the
+	// detection layer (hasUnaddressedTrustedComments), not here. Dropping
+	// "commented" reviews stranded trusted-reviewer comments on quiescent
+	// PRs (see issue #271). We only ignore non-"submitted" actions
+	// (e.g. "edited", "dismissed").
 
 	return []Event{{
 		PRNumber:  fmt.Sprintf("%d", p.PullRequest.Number),
