@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/event"
+	ghutil "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -287,7 +288,7 @@ var transitions = []transition{
 			return nil, []ActionDescriptor{{
 				Type:      ActionMergePR,
 				PRNumber:  ps.PRNumber,
-				Repo:      status.TargetRepo,
+				Repo:      dispatchRepo(c, status),
 				PRNumbers: []string{ps.PRNumber},
 			}}
 		},
@@ -332,7 +333,7 @@ var transitions = []transition{
 			descs = append(descs, ActionDescriptor{
 				Type:     ActionSnapshotThreads,
 				PRNumber: ps.PRNumber,
-				Repo:     status.TargetRepo,
+				Repo:     dispatchRepo(c, status),
 			})
 
 			prompt := reviewFixPrompt(
@@ -384,7 +385,7 @@ var transitions = []transition{
 			descs = append(descs, ActionDescriptor{
 				Type:     ActionSnapshotThreads,
 				PRNumber: ps.PRNumber,
-				Repo:     status.TargetRepo,
+				Repo:     dispatchRepo(c, status),
 			})
 
 			prompt := reviewFixPrompt(
@@ -639,6 +640,26 @@ func emitCIPassedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) 
 			"pr_url":    status.PRURL,
 		})
 	}
+}
+
+// dispatchRepo returns the owner/repo slug to attach to ActionDescriptors whose
+// handlers treat Repo as a real GitHub slug (ActionSnapshotThreads, ActionMergePR).
+// It derives the slug from status.PRURL (always a full GitHub PR URL) because
+// status.TargetRepo holds the canonical project SHORT name (e.g. "klaus") for
+// registered projects, which is NOT a valid owner/repo slug. If the URL can't be
+// parsed it falls back to status.TargetRepo to preserve prior behavior.
+//
+// Note: ActionLaunchAgent intentionally does NOT use this — its handler runs the
+// value through normalizeTargetRepo, which expects the short name.
+func dispatchRepo(c *Controller, status *PRStatus) string {
+	if slug := ghutil.OwnerRepoFromPRURL(status.PRURL); slug != "" {
+		return slug
+	}
+	c.logger.Warn("could not derive owner/repo from PR URL; falling back to TargetRepo",
+		"pr", status.PRURL,
+		"target_repo", status.TargetRepo,
+	)
+	return status.TargetRepo
 }
 
 // reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is

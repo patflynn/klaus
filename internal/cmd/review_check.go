@@ -10,17 +10,6 @@ import (
 	"github.com/patflynn/klaus/internal/github"
 )
 
-// ownerRepoFromPRURL extracts "owner/repo" from a full GitHub PR URL.
-func ownerRepoFromPRURL(prURL string) string {
-	prURL = strings.TrimPrefix(prURL, "https://github.com/")
-	prURL = strings.TrimPrefix(prURL, "http://github.com/")
-	parts := strings.Split(prURL, "/")
-	if len(parts) >= 2 {
-		return parts[0] + "/" + parts[1]
-	}
-	return ""
-}
-
 // ghReview represents a single review from the GitHub API.
 type ghReview struct {
 	User        ghUser `json:"user"`

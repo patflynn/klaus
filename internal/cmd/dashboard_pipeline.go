@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -94,14 +94,12 @@ func repoFromState(s *run.State, reg *project.Registry) string {
 	return "(local)"
 }
 
-// repoFromPRURL extracts "owner/repo" from a GitHub PR URL.
+// repoFromPRURL extracts "owner/repo" from a GitHub PR URL, returning the
+// "(unknown)" sentinel when the URL can't be parsed. The parsing itself lives
+// in github.OwnerRepoFromPRURL so there's a single source of truth.
 func repoFromPRURL(prURL string) string {
-	// https://github.com/owner/repo/pull/123
-	prURL = strings.TrimPrefix(prURL, "https://github.com/")
-	prURL = strings.TrimPrefix(prURL, "http://github.com/")
-	parts := strings.Split(prURL, "/")
-	if len(parts) >= 2 {
-		return parts[0] + "/" + parts[1]
+	if slug := github.OwnerRepoFromPRURL(prURL); slug != "" {
+		return slug
 	}
 	return "(unknown)"
 }

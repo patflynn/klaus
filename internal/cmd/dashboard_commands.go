@@ -190,7 +190,7 @@ func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
 	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.
 	if !strings.EqualFold(ps.ReviewDecision, "CHANGES_REQUESTED") &&
 		!strings.EqualFold(ps.ReviewDecision, "APPROVED") {
-		ownerRepo := ownerRepoFromPRURL(prRef)
+		ownerRepo := gh.OwnerRepoFromPRURL(prRef)
 		if ownerRepo != "" {
 			ps.HasNewTrustedComments = hasUnaddressedTrustedComments(ownerRepo, prNumber)
 		}
