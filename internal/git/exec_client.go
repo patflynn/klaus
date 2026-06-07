@@ -78,6 +78,14 @@ func (c *ExecClient) PushDataRef(ctx context.Context, repoDir, dataRef string) e
 	return PushDataRef(ctx, repoDir, dataRef)
 }
 
+func (c *ExecClient) FetchDataRef(ctx context.Context, repoDir, dataRef string) error {
+	return FetchDataRef(ctx, repoDir, dataRef)
+}
+
+func (c *ExecClient) ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]byte, error) {
+	return ReadDataRefFile(ctx, repoDir, dataRef, treePath)
+}
+
 func (c *ExecClient) InstallCommitMsgHook(ctx context.Context, worktreeDir string) error {
 	return InstallCommitMsgHook(ctx, worktreeDir)
 }

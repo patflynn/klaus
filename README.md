@@ -94,6 +94,34 @@ klaus launch --pr <num> "continue the work"
 
 The new agent sees the WIP commit and picks up from there. When the follow-up agent's `_finalize` runs, the `klaus:budget-paused` label is automatically removed and an `agent:resumed` event is emitted. If the follow-up agent *also* exhausts its budget, the cycle repeats (a new WIP commit, label re-applied).
 
+### Trajectory replay
+
+By default, `klaus launch --pr` against a budget-paused PR does more than pick up the WIP commit: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus stores the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) on `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it fetches that blob, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
+
+Replay is best-effort and **falls back to a fresh agent** when any of these hold:
+
+- The trajectory was never pushed (skipped because `klaus` detected potentially sensitive content), or the PR pre-dates this feature.
+- The trajectory is larger than the size threshold (default 300KB; replaying a very large trajectory can cost more than re-exploration). Configure with `replay_threshold_kb` in `~/.klaus/config.json` or `--replay-threshold-kb`.
+- No Claude session UUID could be determined for the paused run.
+- You pass `--no-replay`.
+
+Flags:
+
+```bash
+klaus launch --pr 42 "continue"                       # replay if eligible (default)
+klaus launch --pr 42 --no-replay "continue"           # force a fresh agent
+klaus launch --pr 42 --replay "continue"              # force replay, bypassing the size threshold
+klaus launch --pr 42 --replay-threshold-kb 500 "..."  # raise the per-launch threshold
+```
+
+**Staleness semantics — what you opt into with replay.** The restored conversation is a snapshot from when the previous agent paused, replayed into a *new* worktree at a *different* path:
+
+- **`cwd` / path mismatch.** The trajectory's tool calls reference the original (now-deleted) worktree path; the resumed agent runs in a fresh worktree. `claude` re-anchors to its current working directory, so new file operations are correct, but the conversation history still mentions the old path.
+- **Tool-result staleness.** Cached `Read`/grep results in the history reflect the files *as they were at pause time*. The branch head carries the WIP commit, so current contents may differ. This is the same staleness any long-lived `claude --resume` has; the agent is expected to re-read before relying on stale output. klaus adds no special mitigation beyond restoring the trajectory faithfully.
+- **No prompt-cache benefit.** Resumes happen long after the 5-minute cache TTL, so the replayed history is re-read as fresh input tokens. The size threshold exists precisely to keep that cost below the cost of a fresh re-exploration.
+
+> Note: replay relies on the conversation file being available where finalize runs. For agents executed on a remote `sandbox_host`, the conversation file lives on the sandbox and is not synced back, so those runs fall back to a fresh agent.
+
 To abandon the work, close the draft PR. To redirect, push manual commits to its branch.
 
 There is no separate `klaus resume` or `klaus finalize` command — `klaus launch --pr` is the only resume path, and `_finalize` handles the WIP commit automatically.
