@@ -70,6 +70,21 @@ Keyboard shortcuts:
 		model := newDashboardModel(store, cfg, ghClient)
 		model.shutdownCancel = cancel
 
+		// Tail the session event log so klaus-internal commands (e.g.
+		// `klaus approve`) can wake the dashboard FSM without waiting for
+		// a GitHub webhook. The tail runs even when no webhook server is
+		// configured — it is the invalidation channel for our own CLI.
+		if model.eventsPath != "" {
+			internalCh := make(chan event.Event, 64)
+			model.internalEventCh = internalCh
+			go func() {
+				defer close(internalCh)
+				if err := event.Tail(ctx, model.eventsPath, internalCh); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: event tail stopped: %v\n", err)
+				}
+			}()
+		}
+
 		var webhookSrv *webhook.Server
 		if cfg.Webhook != nil {
 			ch := make(chan webhook.Event, 64)
@@ -145,20 +160,29 @@ type dashboardModel struct {
 	err            error
 	watcher        *fsnotify.Watcher
 	logFile        *os.File
-	shutdownCancel context.CancelFunc  // cancels the shared shutdown context
+	shutdownCancel context.CancelFunc   // cancels the shared shutdown context
 	webhookCh      <-chan webhook.Event // non-nil when webhook mode is active
-	webhookAddr    string              // e.g. "127.0.0.1:9800"
-	useWebhook     bool                // true when webhook server is running
-	pollEnabled    bool                // true when polling is active (default or poll_fallback)
-	reconcileEvery time.Duration       // slow reconcile heartbeat interval (webhook-only mode)
+	webhookAddr    string               // e.g. "127.0.0.1:9800"
+	useWebhook     bool                 // true when webhook server is running
+	pollEnabled    bool                 // true when polling is active (default or poll_fallback)
+	reconcileEvery time.Duration        // slow reconcile heartbeat interval (webhook-only mode)
+	// internalEventCh carries klaus-emitted invalidation events (e.g.
+	// PRApprovalChanged from `klaus approve`). It is symmetric to webhookCh
+	// but sourced from the local event log rather than an HTTP listener,
+	// so internal CLI commands can wake the FSM without waiting for a real
+	// GitHub webhook.
+	internalEventCh <-chan event.Event
+	eventsPath      string // path to events.jsonl for the tail goroutine
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
+	var eventsPath string
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
+		eventsPath = eventLog.Path()
 		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 			logWriter = f
@@ -178,6 +202,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		pipelineCtrl:   ctrl,
 		pipelineStates: make(map[string]*pipeline.PRPipelineState),
 		logFile:        logFile,
+		eventsPath:     eventsPath,
 	}
 }
 
@@ -192,6 +217,9 @@ func (m dashboardModel) Init() tea.Cmd {
 	}
 	if shouldScheduleReconcile(m.useWebhook, m.pollEnabled, m.reconcileEvery) {
 		cmds = append(cmds, reconcileTickAfterCmd(m.reconcileEvery))
+	}
+	if m.internalEventCh != nil {
+		cmds = append(cmds, waitForInternalEventCmd(m.internalEventCh))
 	}
 	return tea.Batch(cmds...)
 }
@@ -334,6 +362,31 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.recentErrors = m.recentErrors[len(m.recentErrors)-3:]
 		}
 		return m, nil
+
+	case internalEventMsg:
+		// Klaus-internal invalidation events are handled symmetrically to
+		// webhooks: a CLI command (e.g. `klaus approve`) signalled that the
+		// pipeline preconditions for a PR may have changed, so we trigger
+		// a targeted re-fetch of GitHub status. That re-fetch funnels into
+		// the same HandleGHStatus path that polling and webhooks use, so
+		// the FSM gets a fresh evaluation without any divergent code path.
+		ev := msg.event
+		prNum := internalEventPRNumber(ev)
+		if shouldInvalidate(ev.Type) && prNum != "" {
+			var matchedStates []*run.State
+			for _, s := range m.states {
+				if extractPRNumber(s) == prNum {
+					matchedStates = append(matchedStates, s)
+				}
+			}
+			if len(matchedStates) > 0 {
+				return m, tea.Batch(
+					fetchGHStatusCmd(m.ghClient, matchedStates),
+					waitForInternalEventCmd(m.internalEventCh),
+				)
+			}
+		}
+		return m, waitForInternalEventCmd(m.internalEventCh)
 
 	case trustedCommentsMsg:
 		existing, ok := m.ghStatus[msg.prNumber]

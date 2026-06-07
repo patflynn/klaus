@@ -3,6 +3,7 @@ package cmd
 import (
 	"testing"
 
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -177,6 +178,103 @@ func TestMarkApproved(t *testing.T) {
 	reloaded, _ := store.Load("20260101-0000-aaaa")
 	if reloaded.Approved == nil || !*reloaded.Approved {
 		t.Error("approval should be persisted")
+	}
+}
+
+// TestMarkApprovedEmitsEvent verifies that approval emits a PRApprovalChanged
+// event to the session event log. This is the invalidation signal the
+// dashboard consumes to wake the pipeline FSM without waiting for a GitHub
+// webhook (see internal/cmd/dashboard.go internalEventMsg handler).
+func TestMarkApprovedEmitsEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	prURL := "https://github.com/owner/repo/pull/42"
+	s := &run.State{
+		ID:        "20260101-0000-aaaa",
+		Prompt:    "fix",
+		Branch:    "b1",
+		PRURL:     &prURL,
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := markApproved(s, store); err != nil {
+		t.Fatalf("markApproved: %v", err)
+	}
+
+	log := event.NewLog(tmpDir)
+	events, err := log.Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+
+	var approval *event.Event
+	for i := range events {
+		if events[i].Type == event.PRApprovalChanged {
+			approval = &events[i]
+			break
+		}
+	}
+	if approval == nil {
+		t.Fatalf("expected a %s event, found %d events of other types", event.PRApprovalChanged, len(events))
+	}
+	if approval.RunID != s.ID {
+		t.Errorf("event run_id = %q, want %q", approval.RunID, s.ID)
+	}
+	if approval.Data["pr_number"] != "42" {
+		t.Errorf("event pr_number = %v, want 42", approval.Data["pr_number"])
+	}
+	if approval.Data["pr_url"] != prURL {
+		t.Errorf("event pr_url = %v, want %q", approval.Data["pr_url"], prURL)
+	}
+}
+
+// TestApproveByPRNumbersEmitsEvent verifies the event is emitted from the
+// real CLI entry point, not just the lower-level helper. This is the path
+// `klaus approve <num>` actually takes.
+func TestApproveByPRNumbersEmitsEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := run.NewHomeDirStoreFromPath(tmpDir)
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+
+	prURL := "https://github.com/owner/repo/pull/42"
+	s := &run.State{
+		ID:        "20260101-0000-aaaa",
+		Prompt:    "fix",
+		Branch:    "b1",
+		PRURL:     &prURL,
+		CreatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := store.Save(s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	allStates, _ := store.List()
+	if err := approveByPRNumbers([]string{"42"}, allStates, store); err != nil {
+		t.Fatalf("approveByPRNumbers: %v", err)
+	}
+
+	log := event.NewLog(tmpDir)
+	events, err := log.Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Type == event.PRApprovalChanged && e.Data["pr_number"] == "42" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected %s event for PR #42, got events: %v", event.PRApprovalChanged, events)
 	}
 }
 

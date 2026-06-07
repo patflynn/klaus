@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -107,9 +108,37 @@ func markApproved(s *run.State, store run.StateStore) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	s.ApprovedAt = &now
 	if store != nil {
-		return store.Save(s)
+		if err := store.Save(s); err != nil {
+			return err
+		}
 	}
+	emitApprovalChanged(store, s)
 	return nil
+}
+
+// emitApprovalChanged writes a PRApprovalChanged event to the session event
+// log so the dashboard FSM wakes without waiting for an unrelated GitHub
+// webhook. The event is informational — failures are logged via stderr but
+// do not fail the approve command, since the state itself is already
+// persisted on disk and the dashboard's polling fallback (when enabled) will
+// pick up the change on the next tick.
+func emitApprovalChanged(store run.StateStore, s *run.State) {
+	hds, ok := store.(*run.HomeDirStore)
+	if !ok {
+		return
+	}
+	data := map[string]interface{}{}
+	if pr := extractPRNumber(s); pr != "" {
+		data["pr_number"] = pr
+	}
+	if s.PRURL != nil {
+		data["pr_url"] = *s.PRURL
+	}
+	data["approved"] = true
+	log := event.NewLog(hds.BaseDir())
+	if err := log.Emit(event.New(s.ID, event.PRApprovalChanged, data)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to emit approval event: %v\n", err)
+	}
 }
 
 // findRunByPR finds a run state matching a PR number in the given store.

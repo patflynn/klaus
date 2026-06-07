@@ -23,6 +23,14 @@ const (
 	PRAwaitingApproval  = "pr:awaiting-approval"
 	PRApproved          = "pr:approved"
 	PRMerged            = "pr:merged"
+	// PRApprovalChanged signals that an external decision about a PR's
+	// merge-readiness has changed (e.g. `klaus approve` flipped an internal
+	// approval flag). It is an invalidation signal — the dashboard reacts by
+	// re-fetching GitHub status and re-evaluating the pipeline FSM, just as
+	// it does for a real webhook. The name is deliberately backend-agnostic
+	// so the same signal can be reused once klaus supports non-GitHub
+	// merge-readiness sources.
+	PRApprovalChanged = "pr:approval-changed"
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have
