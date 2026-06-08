@@ -36,9 +36,12 @@ func TestMain(m *testing.M) {
 }
 
 func runMain(m *testing.M) (int, error) {
-	// Ensure tmux exists — the whole suite is meaningless without it.
+	// Ensure tmux and git exist — the whole suite is meaningless without them.
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return 0, fmt.Errorf("tmux not found in PATH: %w", err)
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return 0, fmt.Errorf("git not found in PATH: %w", err)
 	}
 
 	wd, err := os.Getwd()

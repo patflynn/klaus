@@ -154,7 +154,7 @@ dir=%q
 { for a in "$@"; do printf '%%s\n' "$a"; done; } > "$dir/claude.argv"
 printf '%%s' "$PWD" > "$dir/claude.cwd"
 : > "$dir/claude.started"
-for _ in $(seq 1 600); do
+for _ in {1..600}; do
   [ -f "$dir/claude.release" ] && break
   sleep 0.1
 done
@@ -216,7 +216,7 @@ func (h *Harness) GHArgv() string {
 // user config.
 func (h *Harness) setupGitConfig() {
 	h.t.Helper()
-	cfg := "[user]\n\tname = klaus-e2e\n\temail = klaus-e2e@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n"
+	cfg := "[user]\n\tname = klaus-e2e\n\temail = klaus-e2e@example.com\n[init]\n\tdefaultBranch = main\n[protocol \"file\"]\n\tallow = always\n[safe]\n\tdirectory = *\n"
 	if err := os.WriteFile(filepath.Join(h.Home, ".gitconfig"), []byte(cfg), 0o644); err != nil {
 		h.t.Fatalf("writing gitconfig: %v", err)
 	}
@@ -281,12 +281,19 @@ func (h *Harness) startTmuxServer() {
 		h.t.Fatalf("writing shell wrapper: %v", err)
 	}
 
-	// -f /dev/null ignores any user/system tmux.conf for full isolation.
+	// Start the server and set the global default-shell *before* creating the
+	// session, so even the session's initial pane uses the no-profile wrapper
+	// rather than the system default shell (which could source login profiles).
+	// h.tmux passes -f /dev/null, so the server starts ignoring any
+	// user/system tmux.conf for full isolation. exit-empty must be turned off
+	// in the same command that starts the server, otherwise the freshly started
+	// (session-less) server exits before we can set default-shell.
+	h.tmux("start-server", ";", "set-option", "-g", "exit-empty", "off")
+	h.tmux("set-option", "-g", "default-shell", h.shellWrap)
 	h.tmux("new-session", "-d", "-s", "main", "-x", "200", "-y", "50")
 	h.t.Cleanup(func() {
-		_ = exec.Command("tmux", "-S", h.Sock, "kill-server").Run()
+		_ = exec.Command("tmux", "-S", h.Sock, "-f", "/dev/null", "kill-server").Run()
 	})
-	h.tmux("set-option", "-g", "default-shell", h.shellWrap)
 
 	h.ServerPID = strings.TrimSpace(h.tmux("display-message", "-p", "#{pid}"))
 	panes := h.ListPanes()
@@ -334,7 +341,7 @@ func (h *Harness) RunKlaus(args ...string) RunResult {
 // returns trimmed stdout, failing the test on error.
 func (h *Harness) tmux(args ...string) string {
 	h.t.Helper()
-	full := append([]string{"-S", h.Sock}, args...)
+	full := append([]string{"-S", h.Sock, "-f", "/dev/null"}, args...)
 	out, err := exec.Command("tmux", full...).CombinedOutput()
 	if err != nil {
 		h.t.Fatalf("tmux %v: %v: %s", args, err, out)
