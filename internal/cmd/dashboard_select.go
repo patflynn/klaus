@@ -98,7 +98,7 @@ func (m dashboardModel) coordinatorPane() string {
 		return ""
 	}
 	st, err := m.store.Load(sessionID)
-	if err != nil || st.CoordinatorPane == nil {
+	if err != nil || st == nil || st.CoordinatorPane == nil {
 		return ""
 	}
 	return *st.CoordinatorPane

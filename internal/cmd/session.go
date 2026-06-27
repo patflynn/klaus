@@ -22,10 +22,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	klausSessionIDEnv = "KLAUS_SESSION_ID"
-)
-
 var sessionCmd = &cobra.Command{
 	Use:   "session",
 	Short: "Start or resume an interactive coordinator session",
@@ -376,7 +372,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	claude.Stdin = os.Stdin
 	claude.Stdout = os.Stdout
 	claude.Stderr = os.Stderr
-	claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
+	claude.Env = append(os.Environ(), sessionIDEnv+"="+id)
 	claude.Run() // ignore error — user may exit normally
 
 	fmt.Println()

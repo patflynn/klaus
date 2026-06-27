@@ -11,7 +11,7 @@ import (
 // captureTmux is a tmux.Client that records SendKeys/SelectPane calls so tests
 // can assert on the literal text and pane id sent to the coordinator.
 type captureTmux struct {
-	tmux.ExecClient
+	tmux.Client
 	sentPane  string
 	sentKeys  string
 	focusPane string
