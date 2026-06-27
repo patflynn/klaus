@@ -569,6 +569,33 @@ func TestRenderPRLine(t *testing.T) {
 	}
 }
 
+func TestRenderPRLineHyperlink(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+
+	// With a PR URL, the PR number is wrapped in an OSC 8 hyperlink.
+	withURL := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+	line := m.renderPRLine("42", []*run.State{withURL}, nil)
+	want := hyperlink("https://github.com/o/r/pull/42", "#42   ")
+	if !strings.Contains(line, want) {
+		t.Errorf("expected OSC 8 hyperlink %q in line %q", want, line)
+	}
+
+	// Without a PR URL, there is no escape sequence and the number is plain.
+	noURL := &run.State{ID: "id", Prompt: "fix bug", Type: "launch"}
+	line = m.renderPRLine("42", []*run.State{noURL}, nil)
+	if strings.Contains(line, "\x1b]8;;") {
+		t.Errorf("expected no OSC 8 hyperlink when PRURL is nil, got %q", line)
+	}
+	if !strings.Contains(line, "#42") {
+		t.Errorf("expected plain PR number when PRURL is nil, got %q", line)
+	}
+}
+
 func TestRenderPRLineApproval(t *testing.T) {
 	m := dashboardModel{
 		width:          80,
