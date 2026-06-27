@@ -319,6 +319,13 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		tmuxClient.RenameWindow(ctx, currentPane, windowTitle)
 		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-status", "top")
 		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-format", "#{pane_title}")
+
+		// Persist the coordinator pane so the dashboard can route "discuss"
+		// requests (the 'd' keybinding) to this Claude session.
+		state.CoordinatorPane = &currentPane
+		if err := store.Save(state); err != nil {
+			slog.Warn("failed to persist coordinator pane", "id", state.ID, "err", err)
+		}
 	}
 
 	fmt.Println()

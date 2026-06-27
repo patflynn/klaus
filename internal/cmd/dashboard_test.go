@@ -535,7 +535,7 @@ func TestRenderPRLine(t *testing.T) {
 	}
 
 	// Without GitHub status
-	line := m.renderPRLine("42", []*run.State{s},nil)
+	line := m.renderPRLine("42", []*run.State{s}, nil, false)
 	if !strings.Contains(line, "#42") {
 		t.Error("should contain PR number")
 	}
@@ -553,7 +553,7 @@ func TestRenderPRLine(t *testing.T) {
 		CI:        "passing",
 		Conflicts: "yes",
 	}
-	line = m.renderPRLine("42", []*run.State{s},ps)
+	line = m.renderPRLine("42", []*run.State{s}, ps, false)
 	if !strings.Contains(line, "CI ✓") {
 		t.Error("should show passing CI")
 	}
@@ -563,7 +563,7 @@ func TestRenderPRLine(t *testing.T) {
 
 	// Merged PR
 	ps.State = "MERGED"
-	line = m.renderPRLine("42", []*run.State{s}, ps)
+	line = m.renderPRLine("42", []*run.State{s}, ps, false)
 	if !strings.Contains(line, "MERGED") {
 		t.Error("should show MERGED")
 	}
@@ -579,7 +579,7 @@ func TestRenderPRLineHyperlink(t *testing.T) {
 		Type:   "launch",
 		PRURL:  strPtr("https://github.com/o/r/pull/42"),
 	}
-	line := m.renderPRLine("42", []*run.State{withURL}, nil)
+	line := m.renderPRLine("42", []*run.State{withURL}, nil, false)
 	want := hyperlink("https://github.com/o/r/pull/42", "#42   ")
 	if !strings.Contains(line, want) {
 		t.Errorf("expected OSC 8 hyperlink %q in line %q", want, line)
@@ -587,12 +587,33 @@ func TestRenderPRLineHyperlink(t *testing.T) {
 
 	// Without a PR URL, there is no escape sequence and the number is plain.
 	noURL := &run.State{ID: "id", Prompt: "fix bug", Type: "launch"}
-	line = m.renderPRLine("42", []*run.State{noURL}, nil)
+	line = m.renderPRLine("42", []*run.State{noURL}, nil, false)
 	if strings.Contains(line, "\x1b]8;;") {
 		t.Errorf("expected no OSC 8 hyperlink when PRURL is nil, got %q", line)
 	}
 	if !strings.Contains(line, "#42") {
 		t.Errorf("expected plain PR number when PRURL is nil, got %q", line)
+	}
+}
+
+func TestRenderPRLineSelectedWithHyperlink(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+	s := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+
+	// A selected row must show BOTH the selection gutter marker and keep the
+	// OSC 8 hyperlink on the PR number intact (lipgloss styling must not strip
+	// the hyperlink escape).
+	line := m.renderPRLine("42", []*run.State{s}, nil, true)
+	if !strings.Contains(line, "> ") {
+		t.Errorf("selected row should show the '> ' gutter marker, got %q", line)
+	}
+	if !strings.Contains(line, "\x1b]8;;https://github.com/o/r/pull/42\x1b\\") {
+		t.Errorf("selected row should preserve the OSC 8 hyperlink, got %q", line)
 	}
 }
 
@@ -636,7 +657,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 	}
 
 	// No approval — should not show indicator
-	line := m.renderPRLine("10", []*run.State{base}, &prStatus{State: "OPEN"})
+	line := m.renderPRLine("10", []*run.State{base}, &prStatus{State: "OPEN"}, false)
 	if strings.Contains(line, "approved") {
 		t.Error("should not show approved when not approved")
 	}
@@ -644,7 +665,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 	// Single run approved
 	approvedRun := *base
 	approvedRun.Approved = &approved
-	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "OPEN"})
+	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "OPEN"}, false)
 	if !strings.Contains(line, "approved") {
 		t.Error("should show approved indicator")
 	}
@@ -652,13 +673,13 @@ func TestRenderPRLineApproval(t *testing.T) {
 	// Multiple runs, only second is approved
 	notApprovedRun := *base
 	notApprovedRun.Approved = &notApproved
-	line = m.renderPRLine("10", []*run.State{&notApprovedRun, &approvedRun}, &prStatus{State: "OPEN"})
+	line = m.renderPRLine("10", []*run.State{&notApprovedRun, &approvedRun}, &prStatus{State: "OPEN"}, false)
 	if !strings.Contains(line, "approved") {
 		t.Error("should show approved when any run is approved")
 	}
 
 	// Approved but MERGED — should not show indicator
-	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "MERGED"})
+	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "MERGED"}, false)
 	if strings.Contains(line, "approved") {
 		t.Error("should not show approved for merged PRs")
 	}
