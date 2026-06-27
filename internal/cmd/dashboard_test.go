@@ -596,6 +596,27 @@ func TestRenderPRLineHyperlink(t *testing.T) {
 	}
 }
 
+func TestHyperlinkSanitizesURL(t *testing.T) {
+	// A clean URL is wrapped in the OSC 8 escape sequence.
+	if got := hyperlink("https://example.com/pull/1", "#1"); !strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("clean URL should be wrapped, got %q", got)
+	}
+
+	// URLs with control characters must not be embedded; the plain text is
+	// returned to prevent terminal escape sequence injection.
+	for _, bad := range []string{
+		"https://x\x1b]8;;evil\x1b\\.com",
+		"https://x\nfoo.com",
+		"https://x\rfoo.com",
+		"https://x\x07.com",
+		"", // empty URL
+	} {
+		if got := hyperlink(bad, "#1"); got != "#1" {
+			t.Errorf("hyperlink(%q) = %q, want plain text %q", bad, got, "#1")
+		}
+	}
+}
+
 func TestRenderPRLineApproval(t *testing.T) {
 	m := dashboardModel{
 		width:          80,

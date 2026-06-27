@@ -204,7 +204,19 @@ func renderSandboxStatus(hosts map[string]bool) string {
 // hyperlink wraps text in an OSC 8 terminal hyperlink escape sequence.
 // The escape bytes are invisible and stripped by lipgloss.Width(), so the
 // visible width of the returned string equals that of text.
+//
+// If url is empty or contains any byte outside printable ASCII (32–126), the
+// plain text is returned unwrapped. This guards against terminal escape
+// sequence injection when the URL originates from untrusted input.
 func hyperlink(url, text string) string {
+	if url == "" {
+		return text
+	}
+	for i := 0; i < len(url); i++ {
+		if url[i] < 32 || url[i] > 126 {
+			return text
+		}
+	}
 	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
