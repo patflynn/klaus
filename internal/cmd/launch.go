@@ -306,7 +306,7 @@ are synced back after completion. Use --local to force local execution, or
 		// start a fresh claude session instead of risking a no-op launch.
 		var resolvedResume string
 		if resumeFrom != "" {
-			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s.LogFile != nil {
+			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil {
 				if s.FailureReason != nil {
 					// Don't chain onto a crashed conversation.
 					fmt.Fprintf(os.Stderr, "warning: prior run %s failed (%s); starting fresh instead of resuming\n", resumeFrom, *s.FailureReason)

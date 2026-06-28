@@ -603,6 +603,35 @@ func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
 	}
 }
 
+// TestResumeHandlesNilRunState covers the gemini #277 follow-up: store.Load
+// can return (nil, nil) when the run state is not found (no error, nil state).
+// The resolve block must guard with 's != nil' so it doesn't dereference a nil
+// state via s.LogFile — it should skip resume and launch a fresh session.
+func TestResumeHandlesNilRunState(t *testing.T) {
+	store := &testStateStore{state: nil} // Load returns (nil, nil)
+	resumeFrom := "20260509-1355-6139"
+
+	// Mirror the resolve block in launch.go RunE, including the nil guard.
+	var resolvedResume string
+	if resumeFrom != "" {
+		if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil {
+			if s.FailureReason == nil {
+				if candidate := ExtractClaudeSessionID(*s.LogFile); candidate != "" {
+					resolvedResume = candidate
+				}
+			}
+		}
+	}
+
+	if resolvedResume != "" {
+		t.Errorf("resolvedResume = %q, want empty for nil run state", resolvedResume)
+	}
+	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume)
+	if strings.Contains(cmd, "--resume") {
+		t.Errorf("expected no --resume flag for nil run state, got: %s", cmd)
+	}
+}
+
 // TestStageResumeTranscript covers Bug 1: 'claude --resume' scopes
 // conversation transcripts by working directory, so a resume launched in a new
 // worktree can't find the prior conversation. stageResumeTranscript copies the
