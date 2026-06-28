@@ -118,6 +118,45 @@ func findResumeConversation(state *run.State) string {
 	return findClaudeConversationFile(uuid)
 }
 
+// stageResumeTranscript copies a prior run's Claude conversation transcript
+// into newWorktree's project dir so 'claude --resume <sessionUUID>' launched
+// there can find it. Claude scopes transcripts by working directory, so a
+// resume in a different worktree would otherwise fail with 0 turns.
+//
+// It is best-effort and self-healing: it returns true only when the transcript
+// is present at the destination and ready to resume. On any miss (the source
+// transcript is gone, the project dir can't be resolved, or the copy fails) it
+// returns false so the caller starts a fresh session — a launched agent must
+// never crash because a conversation is missing.
+func stageResumeTranscript(prevState *run.State, sessionUUID, newWorktree string) bool {
+	if !validSessionUUID(sessionUUID) {
+		return false
+	}
+	src := findResumeConversation(prevState)
+	if src == "" {
+		return false
+	}
+	dest := claudeConversationPath(newWorktree, sessionUUID)
+	if dest == "" {
+		return false
+	}
+	if src == dest {
+		// Already in the right place (e.g. same worktree) — nothing to copy.
+		return true
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return false
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return false
+	}
+	if err := os.WriteFile(dest, data, 0o600); err != nil {
+		return false
+	}
+	return true
+}
+
 // extractConversationSessionID reads the sessionId (camelCase) from a
 // conversation-format JSONL blob. Returns "" if none is found.
 func extractConversationSessionID(data []byte) string {

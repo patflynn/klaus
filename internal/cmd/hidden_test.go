@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -409,6 +411,63 @@ not valid json at all
 		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
 	})
 
+	t.Run("marks FailureReason on error_during_execution result", func(t *testing.T) {
+		// Mirrors the real crash: a cross-worktree --resume that exits
+		// instantly with no turns. _finalize must not treat this as success.
+		logContent := `{"type":"system","subtype":"init"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":0,"total_cost_usd":0,"errors":["No conversation found with session ID: deadbeef"]}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		subtype, err := finalizeFromLog(store, state)
+		if err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		if subtype != "error_during_execution" {
+			t.Errorf("subtype = %q, want error_during_execution", subtype)
+		}
+		if state.FailureReason == nil {
+			t.Fatal("expected FailureReason to be set, got nil")
+		}
+		if !strings.Contains(*state.FailureReason, "error_during_execution") {
+			t.Errorf("FailureReason = %q, want it to mention the subtype", *state.FailureReason)
+		}
+		if !strings.Contains(*state.FailureReason, "No conversation found") {
+			t.Errorf("FailureReason = %q, want it to include the first error", *state.FailureReason)
+		}
+		// A crashed run had no PR; PRURL must stay nil.
+		if state.PRURL != nil {
+			t.Errorf("expected nil PRURL on crash, got %q", *state.PRURL)
+		}
+	})
+
+	t.Run("marks FailureReason when is_error is true without a subtype", func(t *testing.T) {
+		logContent := `{"type":"result","is_error":true,"total_cost_usd":0.2,"duration_ms":1000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if _, err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		if state.FailureReason == nil {
+			t.Fatal("expected FailureReason to be set when is_error is true")
+		}
+	})
+
+	t.Run("successful result leaves FailureReason nil and records cost", func(t *testing.T) {
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Done: https://github.com/owner/repo/pull/12"}]}}
+{"type":"result","subtype":"success","is_error":false,"num_turns":7,"total_cost_usd":1.25,"duration_ms":20000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if _, err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		if state.FailureReason != nil {
+			t.Errorf("expected nil FailureReason on success, got %q", *state.FailureReason)
+		}
+		assertCost(t, state, 1.25)
+		assertDuration(t, state, 20000)
+		assertPRURL(t, state, "https://github.com/owner/repo/pull/12")
+	})
+
 	t.Run("extracts PRURL from log when not set before finalization", func(t *testing.T) {
 		// Simulates new-PR mode: state.PRURL is nil until the agent runs
 		// `gh pr create`. Regex extraction fills it in from the log.
@@ -480,6 +539,94 @@ func TestExtractClaudeSessionID(t *testing.T) {
 			t.Errorf("ExtractClaudeSessionID() = %q, want UUID", got)
 		}
 	})
+}
+
+func TestEmitFinalizeEvents(t *testing.T) {
+	cost := 1.5
+	dur := int64(30000)
+	prURL := "https://github.com/owner/repo/pull/42"
+
+	t.Run("failed run emits needs-attention and nothing else", func(t *testing.T) {
+		baseDir := t.TempDir()
+		reason := "error_during_execution: No conversation found"
+		state := &run.State{
+			ID:            "20260628-0900-fail",
+			CostUSD:       &cost,
+			DurationMS:    &dur,
+			PRURL:         &prURL, // even with a stale URL, no pr-created on crash
+			FailureReason: &reason,
+		}
+
+		emitFinalizeEvents(baseDir, state)
+
+		types := eventTypesFor(t, baseDir, state.ID)
+		if len(types) != 1 || types[0] != event.AgentNeedsAttention {
+			t.Fatalf("expected only %q, got %v", event.AgentNeedsAttention, types)
+		}
+	})
+
+	t.Run("successful run with PR emits completed and pr-created", func(t *testing.T) {
+		baseDir := t.TempDir()
+		state := &run.State{
+			ID:         "20260628-0901-ok",
+			CostUSD:    &cost,
+			DurationMS: &dur,
+			PRURL:      &prURL,
+		}
+
+		emitFinalizeEvents(baseDir, state)
+
+		types := eventTypesFor(t, baseDir, state.ID)
+		if !containsEvent(types, event.AgentCompleted) {
+			t.Errorf("expected %q in %v", event.AgentCompleted, types)
+		}
+		if !containsEvent(types, event.AgentPRCreated) {
+			t.Errorf("expected %q in %v", event.AgentPRCreated, types)
+		}
+		if containsEvent(types, event.AgentNeedsAttention) {
+			t.Errorf("did not expect %q in %v", event.AgentNeedsAttention, types)
+		}
+	})
+
+	t.Run("successful run without PR emits completed only", func(t *testing.T) {
+		baseDir := t.TempDir()
+		state := &run.State{
+			ID:         "20260628-0902-nopr",
+			CostUSD:    &cost,
+			DurationMS: &dur,
+		}
+
+		emitFinalizeEvents(baseDir, state)
+
+		types := eventTypesFor(t, baseDir, state.ID)
+		if len(types) != 1 || types[0] != event.AgentCompleted {
+			t.Fatalf("expected only %q, got %v", event.AgentCompleted, types)
+		}
+	})
+}
+
+func eventTypesFor(t *testing.T, baseDir, runID string) []string {
+	t.Helper()
+	evts, err := event.NewLog(baseDir).Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	var types []string
+	for _, e := range evts {
+		if e.RunID == runID {
+			types = append(types, e.Type)
+		}
+	}
+	return types
+}
+
+func containsEvent(types []string, want string) bool {
+	for _, ty := range types {
+		if ty == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeTestLog(t *testing.T, content string) string {

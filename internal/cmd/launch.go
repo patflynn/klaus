@@ -292,24 +292,35 @@ are synced back after completion. Use --local to force local execution, or
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 		// Resolve the Claude session UUID from the previous run's JSONL log.
-		// claude --resume expects a UUID v4, not the klaus run ID. The session
-		// must also still exist on disk under ~/.claude/projects/; if it's
-		// been cleaned up, claude --resume exits at startup with 0 turns.
+		// claude --resume expects a UUID v4, not the klaus run ID.
+		//
+		// Claude Code scopes conversation transcripts by working directory
+		// (~/.claude/projects/<encoded-cwd>/<uuid>.jsonl). This new agent runs
+		// in a fresh worktree, so 'claude --resume' would look in the wrong
+		// project dir and exit at startup with 0 turns ("No conversation found
+		// with session ID"). To make resume work across worktrees we stage the
+		// prior transcript into this worktree's project dir before launching.
+		//
+		// Resume is an OPTIMIZATION, never a requirement: if the prior run
+		// crashed, or its transcript can't be located/copied, we silently
+		// start a fresh claude session instead of risking a no-op launch.
 		var resolvedResume string
 		if resumeFrom != "" {
 			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s.LogFile != nil {
-				candidate := ExtractClaudeSessionID(*s.LogFile)
-				if candidate != "" {
-					if claudeSessionExists(candidate) {
+				if s.FailureReason != nil {
+					// Don't chain onto a crashed conversation.
+					fmt.Fprintf(os.Stderr, "warning: prior run %s failed (%s); starting fresh instead of resuming\n", resumeFrom, *s.FailureReason)
+				} else if candidate := ExtractClaudeSessionID(*s.LogFile); candidate != "" {
+					if stageResumeTranscript(s, candidate, worktree) {
 						resolvedResume = candidate
 					} else {
-						fmt.Fprintf(os.Stderr, "warning: prior Claude session %s no longer exists on disk, starting fresh\n", candidate)
+						fmt.Fprintf(os.Stderr, "warning: could not stage prior Claude conversation %s for resume, starting fresh\n", candidate)
 					}
 				}
 			}
 			// If we couldn't extract a session UUID (e.g., previous agent
-			// also failed with no output) or the session has been cleaned
-			// up, skip --resume entirely and let claude start fresh.
+			// also failed with no output) or the transcript is missing,
+			// skip --resume entirely and let claude start fresh.
 		}
 
 		// Budget-paused PR continuation (issue #261): when launching against a

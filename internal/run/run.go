@@ -38,6 +38,7 @@ type State struct {
 	OriginalRunID   *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
 	ClaudeSessionID *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
 	RepoRoot        *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
+	FailureReason   *string  `json:"failure_reason,omitempty"`    // set when the agent crashed (e.g. error_during_execution); suppresses success events and blocks resume chaining
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.

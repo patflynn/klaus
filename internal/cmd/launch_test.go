@@ -603,6 +603,78 @@ func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
 	}
 }
 
+// TestStageResumeTranscript covers Bug 1: 'claude --resume' scopes
+// conversation transcripts by working directory, so a resume launched in a new
+// worktree can't find the prior conversation. stageResumeTranscript copies the
+// transcript into the new worktree's project dir before launch, and falls back
+// to a fresh session (no --resume) when the source transcript is absent.
+func TestStageResumeTranscript(t *testing.T) {
+	const uuid = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
+
+	t.Run("copies transcript into new worktree project dir", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		oldWorktree := "/tmp/klaus-sessions/klaus/old-run"
+		newWorktree := "/tmp/klaus-sessions/klaus/new-run"
+
+		// Write the prior conversation transcript into the OLD worktree's
+		// project dir, the way claude itself would.
+		src := claudeConversationPath(oldWorktree, uuid)
+		if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+			t.Fatalf("MkdirAll src: %v", err)
+		}
+		if err := os.WriteFile(src, []byte(`{"sessionId":"`+uuid+`"}`+"\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile src: %v", err)
+		}
+
+		prevState := &run.State{
+			ID:              "20260628-1000-old",
+			Worktree:        oldWorktree,
+			ClaudeSessionID: strPtr(uuid),
+		}
+
+		if !stageResumeTranscript(prevState, uuid, newWorktree) {
+			t.Fatal("stageResumeTranscript = false, want true when source transcript exists")
+		}
+
+		dest := claudeConversationPath(newWorktree, uuid)
+		if _, err := os.Stat(dest); err != nil {
+			t.Fatalf("expected transcript copied to %q: %v", dest, err)
+		}
+
+		// With staging done, the launched command resumes the session.
+		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", uuid)
+		if !strings.Contains(cmd, "--resume '"+uuid+"'") {
+			t.Errorf("expected --resume after successful staging, got: %s", cmd)
+		}
+	})
+
+	t.Run("falls back to fresh session when source transcript is absent", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+
+		prevState := &run.State{
+			ID:              "20260628-1000-old",
+			Worktree:        "/tmp/klaus-sessions/klaus/old-run",
+			ClaudeSessionID: strPtr(uuid),
+		}
+
+		newWorktree := "/tmp/klaus-sessions/klaus/new-run"
+		if stageResumeTranscript(prevState, uuid, newWorktree) {
+			t.Fatal("stageResumeTranscript = true, want false when source transcript is missing")
+		}
+
+		// The caller leaves resolvedResume empty, so no --resume flag.
+		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", "")
+		if strings.Contains(cmd, "--resume") {
+			t.Errorf("expected no --resume when staging failed, got: %s", cmd)
+		}
+	})
+}
+
 func TestLaunchCmdHasPRFlag(t *testing.T) {
 	// Verify the --pr flag is registered on the launch command
 	f := launchCmd.Flags().Lookup("pr")
