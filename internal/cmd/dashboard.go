@@ -19,6 +19,7 @@ import (
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/patflynn/klaus/internal/webhook"
 	"github.com/spf13/cobra"
 )
@@ -48,8 +49,11 @@ a full status re-fetch every 5 minutes by default (configurable via
 "reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
 
 Keyboard shortcuts:
-  q  quit
-  r  force refresh`,
+  j / k or ↑ / ↓  move the PR selection
+  a               approve the selected PR
+  d               discuss the selected PR with the coordinator
+  r               force refresh
+  q               quit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
@@ -149,6 +153,8 @@ type dashboardModel struct {
 	store          run.StateStore
 	ghClient       gh.Client
 	tmuxDeps       run.TmuxDeps
+	tmux           tmux.Client // for keyboard-driven actions (discuss)
+	cursor         int         // index into selectablePRs(states) for keyboard selection
 	states         []*run.State
 	ghStatus       map[string]*prStatus // keyed by PR number
 	sandboxHosts   map[string]bool      // host -> reachable
@@ -197,6 +203,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		store:          store,
 		ghClient:       ghClient,
 		tmuxDeps:       run.DefaultTmuxDeps(),
+		tmux:           tmux.NewExecClient(),
 		ghStatus:       make(map[string]*prStatus),
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
@@ -239,6 +246,45 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				loadStatesCmd(m.store),
 				fetchGHStatusCmd(m.ghClient, m.states),
 			)
+		case "up", "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down", "j":
+			if n := len(selectablePRs(m.states)); m.cursor < n-1 {
+				m.cursor++
+			}
+		case "a":
+			// Approve the selected PR immediately (no confirmation).
+			entries := selectablePRs(m.states)
+			if len(entries) == 0 {
+				break
+			}
+			e := entries[clampCursor(m.cursor, len(entries))]
+			if e.state != nil {
+				if err := markApproved(e.state, m.store); err != nil {
+					m.noteError(fmt.Sprintf("approve PR #%s: %v", e.prNum, err))
+				}
+			}
+			// Reload so the row reflects approval immediately; the fsnotify
+			// watcher also catches the save, but this avoids the round-trip lag.
+			return m, loadStatesCmd(m.store)
+		case "d":
+			// Discuss the selected PR with the coordinator: pre-fill a prompt
+			// in the coordinator pane and switch focus there.
+			entries := selectablePRs(m.states)
+			if len(entries) == 0 {
+				break
+			}
+			e := entries[clampCursor(m.cursor, len(entries))]
+			pane := m.coordinatorPane()
+			if pane == "" {
+				m.noteError("coordinator pane unknown (older session; relaunch to enable discuss)")
+				break
+			}
+			if err := m.discussPR(e.prNum, pane); err != nil {
+				m.noteError(fmt.Sprintf("discuss PR #%s: %v", e.prNum, err))
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -246,7 +292,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case statesLoadedMsg:
+		prevEntries := selectablePRs(m.states)
 		m.states = msg.states
+		m.reconcileSelection(prevEntries)
 		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
 		for _, s := range m.states {
 			if s.IsStaleWith(m.tmuxDeps) {
@@ -522,7 +570,7 @@ func (m dashboardModel) View() string {
 
 	// Footer
 	footer := dimStyle.Render(fmt.Sprintf(
-		"  %d/%d agents running | q quit | r refresh",
+		"  %d/%d agents running | j/k move · a approve · d discuss | r refresh · q quit",
 		runningCount, totalCount,
 	))
 	b.WriteString(footer)

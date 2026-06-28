@@ -14,15 +14,16 @@ import (
 // Styling.
 
 var (
-	headerStyle  = lipgloss.NewStyle().Bold(true)
-	repoStyle    = lipgloss.NewStyle().Bold(true)
-	greenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	redStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	cyanStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	sandboxStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	dimRedStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Faint(true)
+	headerStyle   = lipgloss.NewStyle().Bold(true)
+	repoStyle     = lipgloss.NewStyle().Bold(true)
+	greenStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	redStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	yellowStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	cyanStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	sandboxStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimRedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Faint(true)
+	selectedStyle = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("237"))
 )
 
 func (m dashboardModel) renderGroup(g repoGroup) string {
@@ -73,13 +74,18 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 		}
 	}
 
+	// Determine which PR row (if any) is currently selected so it can be
+	// rendered with the highlight gutter.
+	selRepo, selPR, hasSel := m.selectedPR()
+
 	// Render PRs and their agents
 	for _, prNum := range prOrder {
 		agents := prToAgents[prNum]
 		if len(agents) == 0 {
 			continue
 		}
-		b.WriteString(m.renderPRLine(prNum, agents, g.PRMap[prNum]))
+		selected := hasSel && selRepo == g.Repo && selPR == prNum
+		b.WriteString(m.renderPRLine(prNum, agents, g.PRMap[prNum], selected))
 		b.WriteString("\n")
 		for _, s := range agents {
 			if m.isAgentRunning(s) {
@@ -98,8 +104,13 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 	return b.String()
 }
 
-func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prStatus) string {
+func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prStatus, selected bool) string {
 	s := agents[0]
+	// Gutter marker for the cursor-selected row.
+	gutter := "  "
+	if selected {
+		gutter = "> "
+	}
 	// Build the visible PR label first (visible width 6), then wrap only the
 	// visible text in a hyperlink so the OSC 8 escape bytes are not counted in
 	// the %-5s padding and column alignment is preserved.
@@ -107,7 +118,7 @@ func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prSt
 	if s.PRURL != nil && *s.PRURL != "" {
 		prText = hyperlink(*s.PRURL, prText)
 	}
-	prLabel := "  " + prText
+	prLabel := gutter + prText
 	prompt := truncate(s.Prompt, 20)
 
 	state := "OPEN"
@@ -143,7 +154,11 @@ func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prSt
 		parts = append(parts, dimStyle.Render(pipeline.StageLabel(pps.Stage)))
 	}
 
-	return fmt.Sprintf("%s  %-20s  %s", prLabel, prompt, strings.Join(parts, "  "))
+	prefix := fmt.Sprintf("%s  %-20s", prLabel, prompt)
+	if selected {
+		prefix = selectedStyle.Render(prefix)
+	}
+	return fmt.Sprintf("%s  %s", prefix, strings.Join(parts, "  "))
 }
 
 // isAnyRunApproved returns true if any of the given run states has been

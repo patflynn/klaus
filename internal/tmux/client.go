@@ -53,6 +53,12 @@ type Client interface {
 
 	// RenameWindow renames the tmux window containing the target pane.
 	RenameWindow(ctx context.Context, target, name string) error
+
+	// SendKeys types literal text into a pane (does not press Enter).
+	SendKeys(ctx context.Context, paneID, keys string) error
+
+	// SelectPane moves tmux focus to the given pane.
+	SelectPane(ctx context.Context, paneID string) error
 }
 
 // ExecClient implements Client by shelling out to the tmux binary.
@@ -117,4 +123,12 @@ func (c *ExecClient) SetWindowOption(ctx context.Context, target, option, value 
 
 func (c *ExecClient) RenameWindow(ctx context.Context, target, name string) error {
 	return RenameWindow(ctx, target, name)
+}
+
+func (c *ExecClient) SendKeys(ctx context.Context, paneID, keys string) error {
+	return SendKeys(ctx, paneID, keys)
+}
+
+func (c *ExecClient) SelectPane(ctx context.Context, paneID string) error {
+	return SelectPane(ctx, paneID)
 }

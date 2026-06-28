@@ -246,7 +246,7 @@ The status dashboard shows these columns for each run:
 
 ### `klaus dashboard`
 
-Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `q` quit, `r` force refresh.
+Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `j`/`k` (or `↑`/`↓`) move the PR selection, `a` approve the selected PR, `d` discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there), `r` force refresh, `q` quit.
 
 ### `klaus approve`
 

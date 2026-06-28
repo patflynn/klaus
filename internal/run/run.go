@@ -12,31 +12,32 @@ import (
 
 // State represents the persistent state of a single agent run.
 type State struct {
-	ID         string   `json:"id"`
-	Prompt     string   `json:"prompt"`
-	Issue      *string  `json:"issue"`
-	PR         *string  `json:"pr,omitempty"`
-	Branch     string   `json:"branch"`
-	Worktree   string   `json:"worktree"`
-	TmuxPane   *string  `json:"tmux_pane"`
-	Budget     *string  `json:"budget"`
-	LogFile    *string  `json:"log_file"`
-	CreatedAt  string   `json:"created_at"`
-	CostUSD    *float64 `json:"cost_usd"`
-	DurationMS *int64   `json:"duration_ms"`
-	PRURL      *string  `json:"pr_url"`
-	Type       string   `json:"type,omitempty"`
-	TargetRepo *string  `json:"target_repo,omitempty"`
-	CloneDir   *string  `json:"clone_dir,omitempty"`
-	Host           *string  `json:"host,omitempty"`
-	MergedAt       *string  `json:"merged_at,omitempty"`
-	DashboardPane  *string  `json:"dashboard_pane,omitempty"`
-	Approved       *bool    `json:"approved,omitempty"`
-	ApprovedAt     *string  `json:"approved_at,omitempty"`
-	SessionName      *string  `json:"session_name,omitempty"`       // claude -n name, same as run ID
-	OriginalRunID    *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
-	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
-	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
+	ID              string   `json:"id"`
+	Prompt          string   `json:"prompt"`
+	Issue           *string  `json:"issue"`
+	PR              *string  `json:"pr,omitempty"`
+	Branch          string   `json:"branch"`
+	Worktree        string   `json:"worktree"`
+	TmuxPane        *string  `json:"tmux_pane"`
+	Budget          *string  `json:"budget"`
+	LogFile         *string  `json:"log_file"`
+	CreatedAt       string   `json:"created_at"`
+	CostUSD         *float64 `json:"cost_usd"`
+	DurationMS      *int64   `json:"duration_ms"`
+	PRURL           *string  `json:"pr_url"`
+	Type            string   `json:"type,omitempty"`
+	TargetRepo      *string  `json:"target_repo,omitempty"`
+	CloneDir        *string  `json:"clone_dir,omitempty"`
+	Host            *string  `json:"host,omitempty"`
+	MergedAt        *string  `json:"merged_at,omitempty"`
+	DashboardPane   *string  `json:"dashboard_pane,omitempty"`
+	CoordinatorPane *string  `json:"coordinator_pane,omitempty"` // tmux pane running the coordinator/claude session
+	Approved        *bool    `json:"approved,omitempty"`
+	ApprovedAt      *string  `json:"approved_at,omitempty"`
+	SessionName     *string  `json:"session_name,omitempty"`      // claude -n name, same as run ID
+	OriginalRunID   *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
+	ClaudeSessionID *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
+	RepoRoot        *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.

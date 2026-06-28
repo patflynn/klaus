@@ -22,10 +22,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	klausSessionIDEnv = "KLAUS_SESSION_ID"
-)
-
 var sessionCmd = &cobra.Command{
 	Use:   "session",
 	Short: "Start or resume an interactive coordinator session",
@@ -319,6 +315,13 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		tmuxClient.RenameWindow(ctx, currentPane, windowTitle)
 		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-status", "top")
 		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-format", "#{pane_title}")
+
+		// Persist the coordinator pane so the dashboard can route "discuss"
+		// requests (the 'd' keybinding) to this Claude session.
+		state.CoordinatorPane = &currentPane
+		if err := store.Save(state); err != nil {
+			slog.Warn("failed to persist coordinator pane", "id", state.ID, "err", err)
+		}
 	}
 
 	fmt.Println()
@@ -369,7 +372,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	claude.Stdin = os.Stdin
 	claude.Stdout = os.Stdout
 	claude.Stderr = os.Stderr
-	claude.Env = append(os.Environ(), klausSessionIDEnv+"="+id)
+	claude.Env = append(os.Environ(), sessionIDEnv+"="+id)
 	claude.Run() // ignore error — user may exit normally
 
 	fmt.Println()

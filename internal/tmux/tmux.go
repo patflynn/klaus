@@ -194,6 +194,20 @@ func ensureTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, defaultTimeout)
 }
 
+// SendKeys types the given keys into a pane. The -l flag sends the keys
+// literally (as text input) rather than interpreting them as tmux key names,
+// so a string like "WRT PR#583: " is typed verbatim.
+func SendKeys(ctx context.Context, paneID, keys string) error {
+	_, err := runTmux(ctx, "send-keys", "-t", paneID, "-l", keys)
+	return err
+}
+
+// SelectPane moves tmux focus to the given pane.
+func SelectPane(ctx context.Context, paneID string) error {
+	_, err := runTmux(ctx, "select-pane", "-t", paneID)
+	return err
+}
+
 func runTmux(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()
