@@ -15,7 +15,7 @@ func TestBrowserOpenCmd(t *testing.T) {
 	}{
 		{"linux", "xdg-open", []string{url}, false},
 		{"darwin", "open", []string{url}, false},
-		{"windows", "cmd", []string{"/c", "start", url}, false},
+		{"windows", "rundll32", []string{"url.dll,FileProtocolHandler", url}, false},
 		{"plan9", "", nil, true},
 	}
 	for _, c := range cases {
@@ -35,6 +35,20 @@ func TestBrowserOpenCmd(t *testing.T) {
 		}
 		if !reflect.DeepEqual(args, c.wantArgs) {
 			t.Errorf("browserOpenCmd(%q) args = %v, want %v", c.goos, args, c.wantArgs)
+		}
+	}
+}
+
+func TestBrowserOpenCmd_InvalidURL(t *testing.T) {
+	invalidURLs := []string{
+		"ftp://github.com",
+		"file:///etc/passwd",
+		"javascript:alert(1)",
+		"invalid-url",
+	}
+	for _, u := range invalidURLs {
+		if _, _, err := browserOpenCmd("linux", u); err == nil {
+			t.Errorf("expected error for invalid URL %q, got nil", u)
 		}
 	}
 }
