@@ -569,6 +569,54 @@ func TestRenderPRLine(t *testing.T) {
 	}
 }
 
+func TestRenderPRLineHyperlink(t *testing.T) {
+	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
+
+	// With a PR URL, the PR number is wrapped in an OSC 8 hyperlink.
+	withURL := &run.State{
+		ID:     "20260307-0900-aaaa",
+		Prompt: "fix bug",
+		Type:   "launch",
+		PRURL:  strPtr("https://github.com/o/r/pull/42"),
+	}
+	line := m.renderPRLine("42", []*run.State{withURL}, nil)
+	want := hyperlink("https://github.com/o/r/pull/42", "#42   ")
+	if !strings.Contains(line, want) {
+		t.Errorf("expected OSC 8 hyperlink %q in line %q", want, line)
+	}
+
+	// Without a PR URL, there is no escape sequence and the number is plain.
+	noURL := &run.State{ID: "id", Prompt: "fix bug", Type: "launch"}
+	line = m.renderPRLine("42", []*run.State{noURL}, nil)
+	if strings.Contains(line, "\x1b]8;;") {
+		t.Errorf("expected no OSC 8 hyperlink when PRURL is nil, got %q", line)
+	}
+	if !strings.Contains(line, "#42") {
+		t.Errorf("expected plain PR number when PRURL is nil, got %q", line)
+	}
+}
+
+func TestHyperlinkSanitizesURL(t *testing.T) {
+	// A clean URL is wrapped in the OSC 8 escape sequence.
+	if got := hyperlink("https://example.com/pull/1", "#1"); !strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("clean URL should be wrapped, got %q", got)
+	}
+
+	// URLs with control characters must not be embedded; the plain text is
+	// returned to prevent terminal escape sequence injection.
+	for _, bad := range []string{
+		"https://x\x1b]8;;evil\x1b\\.com",
+		"https://x\nfoo.com",
+		"https://x\rfoo.com",
+		"https://x\x07.com",
+		"", // empty URL
+	} {
+		if got := hyperlink(bad, "#1"); got != "#1" {
+			t.Errorf("hyperlink(%q) = %q, want plain text %q", bad, got, "#1")
+		}
+	}
+}
+
 func TestRenderPRLineApproval(t *testing.T) {
 	m := dashboardModel{
 		width:          80,

@@ -100,7 +100,14 @@ func (m dashboardModel) renderGroup(g repoGroup) string {
 
 func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prStatus) string {
 	s := agents[0]
-	prLabel := fmt.Sprintf("  #%-5s", prNum)
+	// Build the visible PR label first (visible width 6), then wrap only the
+	// visible text in a hyperlink so the OSC 8 escape bytes are not counted in
+	// the %-5s padding and column alignment is preserved.
+	prText := fmt.Sprintf("#%-5s", prNum)
+	if s.PRURL != nil && *s.PRURL != "" {
+		prText = hyperlink(*s.PRURL, prText)
+	}
+	prLabel := "  " + prText
 	prompt := truncate(s.Prompt, 20)
 
 	state := "OPEN"
@@ -192,6 +199,25 @@ func renderSandboxStatus(hosts map[string]bool) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, "  ") + "\n"
+}
+
+// hyperlink wraps text in an OSC 8 terminal hyperlink escape sequence.
+// The escape bytes are invisible and stripped by lipgloss.Width(), so the
+// visible width of the returned string equals that of text.
+//
+// If url is empty or contains any byte outside printable ASCII (32–126), the
+// plain text is returned unwrapped. This guards against terminal escape
+// sequence injection when the URL originates from untrusted input.
+func hyperlink(url, text string) string {
+	if url == "" {
+		return text
+	}
+	for i := 0; i < len(url); i++ {
+		if url[i] < 32 || url[i] > 126 {
+			return text
+		}
+	}
+	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
 func stateLabel(state string) string {
