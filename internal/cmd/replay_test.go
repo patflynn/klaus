@@ -248,11 +248,27 @@ func TestReplayFallbacks(t *testing.T) {
 }
 
 func TestEncodeProjectPath(t *testing.T) {
-	// Claude replaces both '/' and '.' with '-'.
-	got := encodeProjectPath("/tmp/klaus-sessions/k/2026.06")
-	want := "-tmp-klaus-sessions-k-2026-06"
-	if got != want {
-		t.Errorf("encodeProjectPath = %q, want %q", got, want)
+	// Claude replaces both '/' and '.' with '-'. These cases are derived from
+	// real ~/.claude/projects/ directory names on this machine.
+	tests := []struct {
+		cwd  string
+		want string
+	}{
+		{"/tmp/klaus-sessions/k/2026.06", "-tmp-klaus-sessions-k-2026-06"},
+		{
+			"/tmp/klaus-sessions/klaus/20260627-1721-bcde1ba8",
+			"-tmp-klaus-sessions-klaus-20260627-1721-bcde1ba8",
+		},
+		{
+			// '/.klaus' becomes '--klaus' because both '/' and '.' map to '-'.
+			"/home/patrick/.klaus/sessions/abc-workspace",
+			"-home-patrick--klaus-sessions-abc-workspace",
+		},
+	}
+	for _, tt := range tests {
+		if got := encodeProjectPath(tt.cwd); got != tt.want {
+			t.Errorf("encodeProjectPath(%q) = %q, want %q", tt.cwd, got, tt.want)
+		}
 	}
 }
 

@@ -97,35 +97,21 @@ var finalizeCmd = &cobra.Command{
 
 		gitClient := git.NewExecClient()
 
-		// For a normal (non-budget) completion against an existing paused
-		// PR, clear the budget-paused label so the dashboard reflects that
-		// the follow-up agent shipped its work. Emit agent:resumed so the
-		// coordinator sees the resumption complete.
-		if !paused && baseDir != "" {
+		// For a normal (non-budget, non-crashed) completion against an
+		// existing paused PR, clear the budget-paused label so the dashboard
+		// reflects that the follow-up agent shipped its work. A crashed
+		// follow-up must NOT clear the label — the PR still needs work.
+		if !paused && state.FailureReason == nil && baseDir != "" {
 			clearLabelIfResumed(ctx, baseDir, state)
 		}
 
-		// Emit events for completed run. For paused runs, agent:completed
+		// Emit terminal events for the run. For paused runs, agent:completed
 		// is intentionally suppressed in favor of agent:paused, since the
 		// run is not "done" — it's parked in a draft PR awaiting continuation.
+		// A crashed run emits agent:needs-attention instead of falsely
+		// reporting agent:completed / agent:pr-created.
 		if baseDir != "" && !paused {
-			completedData := map[string]interface{}{"id": id}
-			if state.CostUSD != nil {
-				completedData["cost_usd"] = *state.CostUSD
-			}
-			if state.DurationMS != nil {
-				completedData["duration_ms"] = *state.DurationMS
-			}
-			emitEvent(baseDir, id, event.AgentCompleted, completedData)
-
-			if state.PRURL != nil && *state.PRURL != "" {
-				prNum := extractPRNumberFromURL(*state.PRURL)
-				emitEvent(baseDir, id, event.AgentPRCreated, map[string]interface{}{
-					"id":        id,
-					"pr_url":    *state.PRURL,
-					"pr_number": prNum,
-				})
-			}
+			emitFinalizeEvents(baseDir, state)
 		}
 		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
 
@@ -137,6 +123,41 @@ var finalizeCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// emitFinalizeEvents emits the terminal events for a finalized, non-paused
+// run. A crashed run (FailureReason set) emits agent:needs-attention and
+// nothing else, so a pipeline never mistakes a crash for a completed,
+// PR-creating run. A normal run emits agent:completed plus agent:pr-created
+// when a PR URL is known.
+func emitFinalizeEvents(baseDir string, state *run.State) {
+	if baseDir == "" {
+		return
+	}
+	if state.FailureReason != nil {
+		emitEvent(baseDir, state.ID, event.AgentNeedsAttention, map[string]interface{}{
+			"id":     state.ID,
+			"reason": *state.FailureReason,
+		})
+		return
+	}
+
+	completedData := map[string]interface{}{"id": state.ID}
+	if state.CostUSD != nil {
+		completedData["cost_usd"] = *state.CostUSD
+	}
+	if state.DurationMS != nil {
+		completedData["duration_ms"] = *state.DurationMS
+	}
+	emitEvent(baseDir, state.ID, event.AgentCompleted, completedData)
+
+	if state.PRURL != nil && *state.PRURL != "" {
+		emitEvent(baseDir, state.ID, event.AgentPRCreated, map[string]interface{}{
+			"id":        state.ID,
+			"pr_url":    *state.PRURL,
+			"pr_number": extractPRNumberFromURL(*state.PRURL),
+		})
+	}
 }
 
 // handleBudgetPauseIfNeeded decides whether the just-finalized run hit its
@@ -377,11 +398,14 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		}
 
 		var ev struct {
-			Type         string  `json:"type"`
-			Subtype      string  `json:"subtype"`
-			SessionID    string  `json:"session_id"`
-			TotalCostUSD float64 `json:"total_cost_usd"`
-			DurationMS   int64   `json:"duration_ms"`
+			Type         string   `json:"type"`
+			Subtype      string   `json:"subtype"`
+			SessionID    string   `json:"session_id"`
+			TotalCostUSD float64  `json:"total_cost_usd"`
+			DurationMS   int64    `json:"duration_ms"`
+			IsError      bool     `json:"is_error"`
+			NumTurns     int      `json:"num_turns"`
+			Errors       []string `json:"errors"`
 			Message      *struct {
 				Content []struct {
 					Type    string `json:"type"`
@@ -406,6 +430,27 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			}
 			if ev.Subtype != "" {
 				resultSubtype = ev.Subtype
+			}
+			// Detect a crashed agent. A result line like
+			// {"is_error":true,"subtype":"error_during_execution","num_turns":0,...}
+			// means claude never did any work (e.g. a cross-worktree --resume
+			// that couldn't find its conversation). Record the failure so
+			// _finalize raises agent:needs-attention instead of falsely
+			// reporting completion. A budget-cap result is handled separately
+			// by the budget-pause heuristic and is not treated as a crash here.
+			if ev.IsError || ev.Subtype == "error_during_execution" {
+				reason := ev.Subtype
+				if reason == "" {
+					reason = "error"
+				}
+				if len(ev.Errors) > 0 && ev.Errors[0] != "" {
+					reason += ": " + ev.Errors[0]
+				}
+				state.FailureReason = &reason
+			} else {
+				// A clean result clears any failure recorded by an earlier
+				// (partial) result line.
+				state.FailureReason = nil
 			}
 			// Record the Claude conversation UUID so a later budget-paused
 			// resume can restore the trajectory and run claude --resume.
