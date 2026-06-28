@@ -131,7 +131,7 @@ var finalizeCmd = &cobra.Command{
 // PR-creating run. A normal run emits agent:completed plus agent:pr-created
 // when a PR URL is known.
 func emitFinalizeEvents(baseDir string, state *run.State) {
-	if baseDir == "" {
+	if state == nil || baseDir == "" {
 		return
 	}
 	if state.FailureReason != nil {

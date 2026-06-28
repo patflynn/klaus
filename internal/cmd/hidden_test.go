@@ -697,6 +697,13 @@ func (s *testStateStore) EnsureDirs() error {
 	return nil
 }
 
+// TestEmitFinalizeEventsNilState covers the gemini #277 follow-up: the finalize
+// path must no-op rather than dereference a nil run state.
+func TestEmitFinalizeEventsNilState(t *testing.T) {
+	// Should return early without panicking.
+	emitFinalizeEvents(t.TempDir(), nil)
+}
+
 func assertPRURL(t *testing.T, state *run.State, want string) {
 	t.Helper()
 	if state.PRURL == nil {
