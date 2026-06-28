@@ -1,4 +1,4 @@
-.PHONY: build test lint vet clean install
+.PHONY: build test test-e2e lint vet clean install
 
 BINARY := klaus
 BUILD_DIR := bin
@@ -11,6 +11,11 @@ build:
 
 test:
 	go test ./...
+
+# End-to-end tests drive the real binary against an isolated tmux server.
+# Kept separate from `test` so the default suite needs no tmux.
+test-e2e:
+	go test -tags e2e ./e2e/...
 
 vet:
 	go vet ./...

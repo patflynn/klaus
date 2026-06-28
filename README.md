@@ -149,6 +149,19 @@ cd klaus
 go build -o ~/.local/bin/klaus ./cmd/klaus/
 ```
 
+## Development
+
+```bash
+make test       # unit tests (go test ./...)
+make test-e2e   # end-to-end tests against a real, isolated tmux server
+make vet        # go vet ./...
+```
+
+The e2e suite (`e2e/`, guarded by the `e2e` build tag so `go test ./...` is
+unaffected) drives the real `klaus` binary against a private tmux server and
+real git repositories, faking only `claude`/`gh`. It requires `tmux` on PATH.
+See [`e2e/README.md`](e2e/README.md) for the design and how to add scenarios.
+
 ## Commands
 
 The coordinator session uses these — you generally don't run them directly:
