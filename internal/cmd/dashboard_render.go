@@ -293,6 +293,77 @@ func shortRunID(id string) string {
 	return id[len(id)-4:]
 }
 
+// webhookSeverity classifies how stale the last webhook delivery is, for the
+// dashboard freshness indicator.
+type webhookSeverity int
+
+const (
+	webhookFresh webhookSeverity = iota // normal/idle — quiet, not necessarily broken
+	webhookStale                        // moderately old — worth a glance
+	webhookDead                         // very old — likely a broken delivery path
+)
+
+// Webhook freshness thresholds. Deliberately generous: a quiet repo is not a
+// broken one, so only escalate once an absence of deliveries is unusually long.
+const (
+	webhookStaleAfter = 30 * time.Minute
+	webhookDeadAfter  = 2 * time.Hour
+)
+
+// webhookFreshnessText returns the humanized indicator text and severity for
+// the last webhook delivery time, evaluated relative to now.
+//
+// Limitation: an absence of webhook events can mean either a genuinely quiet
+// repo or a broken delivery path (relay down, port firewalled, etc.). This
+// indicator only surfaces the AGE of the last delivery so a human can judge —
+// it is NOT a definitive health check.
+func webhookFreshnessText(lastWebhookAt, now time.Time) (string, webhookSeverity) {
+	if lastWebhookAt.IsZero() {
+		return "no events yet", webhookFresh
+	}
+	age := now.Sub(lastWebhookAt)
+	text := "last event " + humanizeDuration(age)
+	switch {
+	case age >= webhookDeadAfter:
+		return text, webhookDead
+	case age >= webhookStaleAfter:
+		return text, webhookStale
+	default:
+		return text, webhookFresh
+	}
+}
+
+// webhookSeverityStyle maps a freshness severity to its lipgloss style.
+func webhookSeverityStyle(sev webhookSeverity) lipgloss.Style {
+	switch sev {
+	case webhookDead:
+		return redStyle
+	case webhookStale:
+		return yellowStyle
+	default:
+		return dimStyle
+	}
+}
+
+// humanizeDuration renders a duration in a single compact unit, e.g. "12s",
+// "5m", "3h", "1d". Negative durations are clamped to "0s".
+func humanizeDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		s := int(d.Seconds())
+		if s < 0 {
+			s = 0
+		}
+		return fmt.Sprintf("%ds", s)
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
 // formatDuration renders a duration as "Xh Ym" or "Xm Ys".
 func formatDuration(d time.Duration) string {
 	d = d.Round(time.Minute)

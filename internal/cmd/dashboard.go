@@ -52,6 +52,7 @@ Keyboard shortcuts:
   j / k or ↑ / ↓  move the PR selection
   a               approve the selected PR
   d               discuss the selected PR with the coordinator
+  o               open the selected PR in a browser
   r               force refresh
   q               quit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -179,6 +180,11 @@ type dashboardModel struct {
 	// GitHub webhook.
 	internalEventCh <-chan event.Event
 	eventsPath      string // path to events.jsonl for the tail goroutine
+	// lastWebhookAt records the wall-clock time of the most recent webhook
+	// delivery (any event). The zero value means none received yet. It drives
+	// the footer freshness indicator; the existing 30s tick re-renders the view
+	// so the displayed age advances without a dedicated timer.
+	lastWebhookAt time.Time
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
@@ -285,6 +291,26 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.discussPR(e.prNum, pane); err != nil {
 				m.noteError(fmt.Sprintf("discuss PR #%s: %v", e.prNum, err))
 			}
+		case "o":
+			// Open the selected PR in the system browser.
+			entries := selectablePRs(m.states)
+			if len(entries) == 0 {
+				break
+			}
+			e := entries[clampCursor(m.cursor, len(entries))]
+			if e.state == nil || e.state.PRURL == nil || *e.state.PRURL == "" {
+				break
+			}
+			url := *e.state.PRURL
+			prNum := e.prNum
+			// Fire-and-forget so Update stays clean and the UI never blocks on
+			// the browser launch. Surface a transient hint on failure.
+			return m, func() tea.Msg {
+				if err := openInBrowser(url); err != nil {
+					return errHintMsg{msg: fmt.Sprintf("open PR #%s: %v", prNum, err)}
+				}
+				return nil
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -374,6 +400,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// via the same code path that polling uses. This eliminates
 		// the class of bugs where the webhook path diverges from polling.
 		ev := msg.event
+		// Record the delivery time for the footer freshness indicator. Every
+		// delivery counts, regardless of PRNumber/type.
+		m.lastWebhookAt = time.Now()
 		if ev.PRNumber != "" {
 			// Find run states that match this PR for a targeted fetch.
 			var matchedStates []*run.State
@@ -478,6 +507,9 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.watcher = msg
 		return m, watchFSCmd(msg)
 
+	case errHintMsg:
+		m.noteError(msg.msg)
+
 	case errMsg:
 		m.err = msg.err
 	}
@@ -535,6 +567,11 @@ func (m dashboardModel) View() string {
 			tag += fmt.Sprintf(" + reconcile: %s", formatDuration(m.reconcileEvery))
 		}
 		b.WriteString(dimStyle.Render(tag))
+		// Freshness indicator: humanized age of the last webhook delivery,
+		// color-coded so a long silence is visible. It re-renders on the
+		// existing 30s tick, so the displayed age advances without a new timer.
+		freshText, sev := webhookFreshnessText(m.lastWebhookAt, time.Now())
+		b.WriteString(webhookSeverityStyle(sev).Render(" · " + freshText))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(dimStyle.Render("  polling: 30s"))
@@ -570,7 +607,7 @@ func (m dashboardModel) View() string {
 
 	// Footer
 	footer := dimStyle.Render(fmt.Sprintf(
-		"  %d/%d agents running | j/k move · a approve · d discuss | r refresh · q quit",
+		"  %d/%d agents running | j/k move · a approve · d discuss · o open | r refresh · q quit",
 		runningCount, totalCount,
 	))
 	b.WriteString(footer)
