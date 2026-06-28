@@ -259,7 +259,9 @@ The status dashboard shows these columns for each run:
 
 ### `klaus dashboard`
 
-Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `j`/`k` (or `↑`/`↓`) move the PR selection, `a` approve the selected PR, `d` discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there), `r` force refresh, `q` quit.
+Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `j`/`k` (or `↑`/`↓`) move the PR selection, `a` approve the selected PR, `d` discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there), `o` open the selected PR in a browser, `r` force refresh, `q` quit.
+
+When webhook mode is enabled, the data-source line shows a freshness indicator for the most recent webhook delivery (e.g. `· last event 5m`), color-coded as it ages (dim under 30m, yellow under 2h, red beyond). Note this surfaces the age of the last delivery, not delivery health — a long silence can mean a quiet repo or a broken delivery path, so it's a hint for a human to judge rather than a definitive check.
 
 ### `klaus approve`
 

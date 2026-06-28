@@ -47,6 +47,13 @@ type errMsg struct {
 	err error
 }
 
+// errHintMsg carries a transient, non-fatal hint to surface in the dashboard
+// (via the recentErrors strip) without triggering the fatal error screen that
+// errMsg does. Used by best-effort background actions like opening a browser.
+type errHintMsg struct {
+	msg string
+}
+
 type webhookMsg struct {
 	event webhook.Event
 }
