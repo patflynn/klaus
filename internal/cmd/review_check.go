@@ -134,9 +134,11 @@ func fetchPRReviews(ownerRepo, prNumber string) []ghReview {
 // fetchReviewIDsWithInlineComments calls gh api to get the inline review
 // comments on a PR and returns the set of review IDs that own at least one.
 // On error it returns nil (no review counts), which fails toward "no dispatch".
+// per_page=100 raises the default page size of 30, which would otherwise drop
+// newer reviews' comments on busy PRs and misread them as body-only.
 func fetchReviewIDsWithInlineComments(ownerRepo, prNumber string) map[int64]bool {
 	client := github.NewGHCLIClient("")
-	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/comments"
+	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/comments?per_page=100"
 	out, err := client.APIGet(context.TODO(), endpoint)
 	if err != nil {
 		return nil
@@ -157,10 +159,12 @@ func fetchReviewIDsWithInlineComments(ownerRepo, prNumber string) map[int64]bool
 // fetchLatestCommitTime calls gh api to get the latest commit time on a PR.
 // It uses the committer date, not the author date: author dates survive
 // rebases unchanged and can be arbitrarily old, which would falsely mark a
-// fresh push as predating the reviews it addresses.
+// fresh push as predating the reviews it addresses. The endpoint returns
+// commits oldest-first with a default page size of 30, so per_page=100 keeps
+// the newest commit in view on PRs with more than 30 commits.
 func fetchLatestCommitTime(ownerRepo, prNumber string) time.Time {
 	client := github.NewGHCLIClient("")
-	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/commits"
+	endpoint := "repos/" + ownerRepo + "/pulls/" + prNumber + "/commits?per_page=100"
 	out, err := client.APIGet(context.TODO(), endpoint)
 	if err != nil {
 		return time.Time{}

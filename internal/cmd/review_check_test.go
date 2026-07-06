@@ -27,9 +27,9 @@ func installFakeGH(t *testing.T, reviews, comments, commits string) {
 
 	script := "#!/bin/sh\n" +
 		"case \"$2\" in\n" +
-		"*/reviews) cat '" + reviewsPath + "' ;;\n" +
-		"*/comments) cat '" + commentsPath + "' ;;\n" +
-		"*/commits) cat '" + commitsPath + "' ;;\n" +
+		"*/reviews*) cat '" + reviewsPath + "' ;;\n" +
+		"*/comments*) cat '" + commentsPath + "' ;;\n" +
+		"*/commits*) cat '" + commitsPath + "' ;;\n" +
 		"*) echo '[]' ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
