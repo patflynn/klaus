@@ -58,6 +58,7 @@ type PRPipelineState struct {
 	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
 	FixAttempts             int       // number of CI-fix agents dispatched that completed without fixing CI
 	RebaseAttempts          int       // number of rebase agents dispatched that completed without resolving conflicts
+	ReviewFixAttempts       int       // number of review-fix agents dispatched that completed without addressing trusted comments
 
 	pendingLaunchDetail string // transient: detail text for pending launch action
 }

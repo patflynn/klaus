@@ -280,6 +280,7 @@ var transitions = []transition{
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
+			ps.ReviewFixAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			setApprovedIfNeeded(c, ps, status)
 			c.markRunStatesApproved(ps.PRNumber, runStates)
@@ -302,6 +303,7 @@ var transitions = []transition{
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
+			ps.ReviewFixAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			setApprovedIfNeeded(c, ps, status)
 			c.markRunStatesApproved(ps.PRNumber, runStates)
@@ -369,6 +371,39 @@ var transitions = []transition{
 	// ── CI passing + trusted comments ───────────────────────────────────
 
 	{
+		Name: "ci-passing/trusted-comments-circuit-breaker-already-stalled",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+			reviewFixAttemptsExhausted,
+			agentNotRunning,
+			inStage(StageStalled),
+		),
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/trusted-comments-circuit-breaker-trip",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+			reviewFixAttemptsExhausted,
+			agentNotRunning,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.Stage = StageStalled
+			c.logger.Warn("review fix agent circuit breaker tripped",
+				"pr", ps.PRNumber,
+				"attempts", ps.ReviewFixAttempts,
+			)
+			return []Action{{
+				Type:   "error",
+				Detail: fmt.Sprintf("PR #%s: %d review fix attempts failed, stopping", ps.PRNumber, ps.ReviewFixAttempts),
+			}}, nil
+		},
+	},
+	{
 		Name: "ci-passing/trusted-comments-dispatch",
 		Guard: allOf(
 			ciPassing,
@@ -380,6 +415,26 @@ var transitions = []transition{
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
+
+			// Count a failed attempt when a previous review-fix agent finished
+			// but the trusted comments are still unaddressed (no new commit
+			// advanced the watermark).
+			if ps.Stage == StageReviewPending && ps.LastAgentID != "" {
+				ps.ReviewFixAttempts++
+			}
+
+			// Re-check circuit breaker after incrementing.
+			if ps.ReviewFixAttempts >= maxFixAttempts {
+				ps.Stage = StageStalled
+				c.logger.Warn("review fix agent circuit breaker tripped",
+					"pr", ps.PRNumber,
+					"attempts", ps.ReviewFixAttempts,
+				)
+				return []Action{{
+					Type:   "error",
+					Detail: fmt.Sprintf("PR #%s: %d review fix attempts failed, stopping", ps.PRNumber, ps.ReviewFixAttempts),
+				}}, nil
+			}
 
 			var descs []ActionDescriptor
 			descs = append(descs, ActionDescriptor{
@@ -404,6 +459,32 @@ var transitions = []transition{
 			return nil, descs
 		},
 	},
+	{
+		Name: "ci-passing/trusted-comments-wait",
+		Guard: allOf(
+			ciPassing,
+			hasTrustedComments,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			ps.FixAttempts = 0
+			ps.RebaseAttempts = 0
+			// Emit CI-passed only when arriving from a CI stage. Unlike
+			// emitCIPassedIfNeeded, StageReviewPending is excluded because this
+			// transition holds that stage across polls while the dispatch above
+			// is gated on cooldown or an in-flight agent — the hold is what lets
+			// the dispatch's attempt counter recognize a re-dispatch (the
+			// awaiting-review transition below would otherwise reset the stage
+			// to ci_passed and emit a spurious awaiting-approval event).
+			if ps.Stage == StageCIFailed || ps.Stage == StageCIPending {
+				c.emitEvent(ps.PRNumber, event.AgentCIPassed, map[string]interface{}{
+					"pr_number": ps.PRNumber,
+					"pr_url":    status.PRURL,
+				})
+				ps.Stage = StageCIPassed
+			}
+			return nil, nil
+		},
+	},
 
 	// ── CI passing + awaiting review ────────────────────────────────────
 
@@ -417,6 +498,10 @@ var transitions = []transition{
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
+			// Reaching here means no trusted comments are pending (the
+			// trusted-comments transitions above match first otherwise), so
+			// any prior review-fix attempts were addressed.
+			ps.ReviewFixAttempts = 0
 			emitCIPassedIfNeeded(c, ps, status)
 			if ps.Stage != StageCIPassed {
 				c.emitEvent(ps.PRNumber, event.PRAwaitingApproval, map[string]interface{}{
@@ -436,6 +521,9 @@ var transitions = []transition{
 		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
+			// No trusted comments pending here (the trusted-comments-wait
+			// transition matches first otherwise).
+			ps.ReviewFixAttempts = 0
 			return nil, nil
 		},
 	},
@@ -451,6 +539,7 @@ var transitions = []transition{
 		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
 			ps.RebaseAttempts = 0
+			ps.ReviewFixAttempts = 0
 			if ps.Stage == StageStalled {
 				ps.Stage = StageCIPending
 			}
@@ -540,6 +629,10 @@ func fixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*
 
 func rebaseAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
 	return ps.RebaseAttempts >= maxFixAttempts
+}
+
+func reviewFixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.ReviewFixAttempts >= maxFixAttempts
 }
 
 // Stage guards.
