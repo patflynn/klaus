@@ -2564,3 +2564,154 @@ func TestStageLabelBudgetPaused(t *testing.T) {
 		t.Errorf("StageLabel(budget_paused) = %q", got)
 	}
 }
+
+// TestTrustedCommentsCircuitBreaker reproduces the production redispatch loop
+// (2026-07-06): a trusted review that never reads as addressed — the fix
+// agent pushes no commit, so HasNewTrustedComments never clears — must stop
+// dispatching after maxFixAttempts agents instead of looping forever.
+func TestTrustedCommentsCircuitBreaker(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return nil, nil
+	})
+
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber:              "42",
+			State:                 "OPEN",
+			CI:                    "passing",
+			ReviewDecision:        "",
+			HasNewTrustedComments: true,
+			TargetRepo:            "owner/repo",
+			PRURL:                 "https://github.com/owner/repo/pull/42",
+		},
+	}
+
+	// Dispatch 1: initial review-fix agent.
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Fatalf("expected 1 launch, got %d", launchCount)
+	}
+
+	cost := 1.0
+	for attempt := 2; attempt <= 3; attempt++ {
+		// Previous agent completed without pushing: comments still unaddressed.
+		runStates := []*run.State{
+			{ID: fmt.Sprintf("agent-%03d", attempt-1), TmuxPane: strPtr("%1"), CostUSD: &cost},
+		}
+
+		// Poll while the dispatch cooldown is still active: must hold
+		// review_pending (not fall back to awaiting-review, which would hide
+		// the completed attempt from the counter) and must not dispatch.
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt-1 {
+			t.Fatalf("attempt %d: dispatched during cooldown, got %d launches", attempt, launchCount)
+		}
+		if st := c.PipelineStates()["42"].Stage; st != StageReviewPending {
+			t.Fatalf("attempt %d: expected review_pending while cooling down, got %s", attempt, st)
+		}
+
+		// Expire the cooldown; comments still unaddressed -> redispatch.
+		c.mu.Lock()
+		c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+		c.mu.Unlock()
+		c.HandleGHStatus(context.Background(), statuses, runStates)
+		if launchCount != attempt {
+			t.Fatalf("attempt %d: expected %d launches, got %d", attempt, attempt, launchCount)
+		}
+	}
+
+	// Agent 3 completes without pushing; the breaker must trip: no 4th dispatch.
+	runStates := []*run.State{
+		{ID: "agent-003", TmuxPane: strPtr("%1"), CostUSD: &cost},
+	}
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions := c.HandleGHStatus(context.Background(), statuses, runStates)
+
+	if launchCount != 3 {
+		t.Errorf("expected circuit breaker to stop at 3 launches, got %d", launchCount)
+	}
+	hasError := false
+	for _, a := range actions {
+		if a.Type == "error" && strings.Contains(a.Detail, "review fix attempts failed") {
+			hasError = true
+		}
+	}
+	if !hasError {
+		t.Error("expected error action from review fix circuit breaker, got:", actions)
+	}
+	if st := c.PipelineStates()["42"].Stage; st != StageStalled {
+		t.Errorf("expected stalled stage, got %s", st)
+	}
+
+	// Subsequent polls stay stalled silently: no dispatch, no repeated error.
+	c.mu.Lock()
+	c.prStates["42"].LastDispatchAt = time.Now().Add(-61 * time.Second)
+	c.mu.Unlock()
+	actions = c.HandleGHStatus(context.Background(), statuses, runStates)
+	if launchCount != 3 {
+		t.Errorf("expected no dispatch while stalled, got %d launches", launchCount)
+	}
+	if len(actions) != 0 {
+		t.Errorf("expected no actions while stalled, got %v", actions)
+	}
+}
+
+// TestTrustedCommentsBreakerResetsWhenAddressed verifies the breaker is not a
+// dead end: once the comments read as addressed (a new push advanced the
+// watermark), the attempt budget resets and a later trusted review can
+// dispatch again.
+func TestTrustedCommentsBreakerResetsWhenAddressed(t *testing.T) {
+	c, _ := newTestController(t)
+
+	launchCount := 0
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		launchCount++
+		return fmt.Sprintf("agent-%03d", launchCount), nil
+	})
+	c.SetSnapshotThreads(func(repo, prNumber string) ([]string, error) {
+		return nil, nil
+	})
+
+	// Seed a PR stalled by the review-fix breaker.
+	c.mu.Lock()
+	c.prStates["42"] = &PRPipelineState{
+		PRNumber:          "42",
+		Stage:             StageStalled,
+		ReviewFixAttempts: maxFixAttempts,
+		SeenCommentIDs:    make(map[int64]bool),
+	}
+	c.mu.Unlock()
+
+	// Comments addressed -> awaiting review, counter reset.
+	statuses := map[string]*PRStatus{
+		"42": {
+			PRNumber: "42", State: "OPEN", CI: "passing",
+			HasNewTrustedComments: false, TargetRepo: "owner/repo",
+		},
+	}
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	state := c.PipelineStates()["42"]
+	if state.ReviewFixAttempts != 0 {
+		t.Errorf("expected ReviewFixAttempts reset to 0 once comments are addressed, got %d", state.ReviewFixAttempts)
+	}
+	if launchCount != 0 {
+		t.Fatalf("expected no launch while comments are addressed, got %d", launchCount)
+	}
+
+	// A fresh trusted review with inline comments dispatches again.
+	statuses["42"].HasNewTrustedComments = true
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if launchCount != 1 {
+		t.Errorf("expected dispatch after breaker reset, got %d launches", launchCount)
+	}
+}
