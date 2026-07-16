@@ -189,6 +189,12 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			}
 		}
 
+		// Re-link the shared coordinator memory: the project dir for this
+		// worktree may have been recreated (or predate memory sharing).
+		if err := config.LinkSharedMemory(worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
+		}
+
 		// Clear stale tmux pane references from all agent runs in this session.
 		// After a tmux restart, pane IDs recycle and point to unrelated panes.
 		agentStates, _ := store.List()
@@ -265,6 +271,10 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		if err := config.PreTrustWorktree(worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
+		}
+
+		if err := config.LinkSharedMemory(worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
 		}
 
 		// Write state
