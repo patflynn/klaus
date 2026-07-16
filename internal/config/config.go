@@ -723,7 +723,7 @@ func migrateMemoryDir(memoryPath, sharedDir string) error {
 		if _, err := os.Lstat(dest); err == nil {
 			continue // shared file wins on collision
 		} else if !os.IsNotExist(err) {
-			return fmt.Errorf("checking shared memory file %s: %w", entry.Name(), err)
+			return fmt.Errorf("checking shared memory file %s: %w", dest, err)
 		}
 		if err := os.Rename(filepath.Join(memoryPath, entry.Name()), dest); err != nil {
 			return fmt.Errorf("migrating memory file %s: %w", entry.Name(), err)
