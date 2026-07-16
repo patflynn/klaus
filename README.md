@@ -34,6 +34,8 @@ Three new tmux panes appear. Each agent works independently in its own worktree,
 
 Klaus is repo-agnostic. You can run it from your home directory and target any repo with `klaus launch --repo owner/repo` or set a session default with `klaus target owner/repo`.
 
+The coordinator's Claude Code persistent memory is shared across sessions: each session's project memory directory (`~/.claude/projects/<encoded-path>/memory`) is symlinked to `~/.klaus/memory`, so what the coordinator learns in one session carries over to the next. Existing memory files from older sessions are migrated into the shared directory when a session is resumed. Launched agents don't share this memory — each agent starts clean.
+
 The session is the experience. The pipeline handles the rest.
 
 ## The PR pipeline

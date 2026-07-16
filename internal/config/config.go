@@ -601,6 +601,12 @@ func WriteClaudeSettings(worktreeDir, repoName string) error {
 	return nil
 }
 
+// encodeProjectPath converts an absolute path into the directory name Claude
+// Code uses under ~/.claude/projects/ (separators and dots become hyphens).
+func encodeProjectPath(absPath string) string {
+	return strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(absPath)
+}
+
 // PreTrustWorktree creates a Claude Code project entry for the given directory
 // so that the workspace trust dialog is not shown when launching Claude
 // interactively. It does two things:
@@ -619,8 +625,7 @@ func PreTrustWorktree(worktreeDir string) error {
 	}
 
 	// Step 1: Create sessions-index.json for the project directory.
-	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(absPath)
-	projectDir := filepath.Join(homeDir, ".claude", "projects", encoded)
+	projectDir := filepath.Join(homeDir, ".claude", "projects", encodeProjectPath(absPath))
 
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return fmt.Errorf("creating project dir: %w", err)
@@ -647,6 +652,81 @@ func PreTrustWorktree(worktreeDir string) error {
 		return fmt.Errorf("setting trust in claude config: %w", err)
 	}
 
+	return nil
+}
+
+// LinkSharedMemory points the Claude Code project memory directory for the
+// given worktree at the shared coordinator memory in ~/.klaus/memory, so the
+// coordinator keeps its persistent memory across sessions even though each
+// session runs in a fresh working directory. Any memory files already present
+// in the project's own memory directory are migrated into the shared
+// directory first (existing shared files win on name collision). Idempotent.
+func LinkSharedMemory(worktreeDir string) error {
+	absPath, err := filepath.Abs(worktreeDir)
+	if err != nil {
+		return fmt.Errorf("resolving worktree path: %w", err)
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("finding home dir: %w", err)
+	}
+
+	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		return fmt.Errorf("creating shared memory dir: %w", err)
+	}
+
+	projectDir := filepath.Join(homeDir, ".claude", "projects", encodeProjectPath(absPath))
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return fmt.Errorf("creating project dir: %w", err)
+	}
+
+	memoryPath := filepath.Join(projectDir, "memory")
+	if fi, err := os.Lstat(memoryPath); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if target, err := os.Readlink(memoryPath); err == nil && target == sharedDir {
+				return nil
+			}
+			if err := os.Remove(memoryPath); err != nil {
+				return fmt.Errorf("removing stale memory symlink: %w", err)
+			}
+		} else if fi.IsDir() {
+			if err := migrateMemoryDir(memoryPath, sharedDir); err != nil {
+				return err
+			}
+			if err := os.RemoveAll(memoryPath); err != nil {
+				return fmt.Errorf("removing old memory dir: %w", err)
+			}
+		} else {
+			if err := os.Remove(memoryPath); err != nil {
+				return fmt.Errorf("removing unexpected memory file: %w", err)
+			}
+		}
+	}
+
+	if err := os.Symlink(sharedDir, memoryPath); err != nil {
+		return fmt.Errorf("creating memory symlink: %w", err)
+	}
+	return nil
+}
+
+// migrateMemoryDir moves the contents of a project-local memory directory
+// into the shared memory directory, skipping entries that already exist there.
+func migrateMemoryDir(memoryPath, sharedDir string) error {
+	entries, err := os.ReadDir(memoryPath)
+	if err != nil {
+		return fmt.Errorf("reading old memory dir: %w", err)
+	}
+	for _, entry := range entries {
+		dest := filepath.Join(sharedDir, entry.Name())
+		if _, err := os.Lstat(dest); err == nil {
+			continue // shared file wins on collision
+		}
+		if err := os.Rename(filepath.Join(memoryPath, entry.Name()), dest); err != nil {
+			return fmt.Errorf("migrating memory file %s: %w", entry.Name(), err)
+		}
+	}
 	return nil
 }
 

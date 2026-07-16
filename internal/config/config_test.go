@@ -910,3 +910,131 @@ func TestInitGlobal(t *testing.T) {
 		t.Errorf("config DefaultBudget = %q, want 5.00", cfg.DefaultBudget)
 	}
 }
+
+func TestLinkSharedMemory(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	if err := LinkSharedMemory(worktreeDir); err != nil {
+		t.Fatalf("LinkSharedMemory() error: %v", err)
+	}
+
+	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
+	if fi, err := os.Stat(sharedDir); err != nil || !fi.IsDir() {
+		t.Fatalf("shared memory dir not created: %v", err)
+	}
+
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
+	target, err := os.Readlink(memoryPath)
+	if err != nil {
+		t.Fatalf("memory path is not a symlink: %v", err)
+	}
+	if target != sharedDir {
+		t.Errorf("symlink target = %q, want %q", target, sharedDir)
+	}
+
+	// Writing through the symlink lands in the shared dir
+	if err := os.WriteFile(filepath.Join(memoryPath, "fact.md"), []byte("fact"), 0o644); err != nil {
+		t.Fatalf("writing through symlink: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sharedDir, "fact.md")); err != nil {
+		t.Errorf("file written through symlink not in shared dir: %v", err)
+	}
+}
+
+func TestLinkSharedMemoryIdempotent(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	if err := LinkSharedMemory(worktreeDir); err != nil {
+		t.Fatalf("first LinkSharedMemory() error: %v", err)
+	}
+	if err := LinkSharedMemory(worktreeDir); err != nil {
+		t.Fatalf("second LinkSharedMemory() error: %v", err)
+	}
+
+	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
+	target, err := os.Readlink(memoryPath)
+	if err != nil {
+		t.Fatalf("memory path is not a symlink after re-link: %v", err)
+	}
+	if target != sharedDir {
+		t.Errorf("symlink target = %q, want %q", target, sharedDir)
+	}
+}
+
+func TestLinkSharedMemoryMigratesExistingDir(t *testing.T) {
+	homeDir := t.TempDir()
+	worktreeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	// Existing per-session memory dir with contents
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
+	if err := os.MkdirAll(memoryPath, 0o755); err != nil {
+		t.Fatalf("creating old memory dir: %v", err)
+	}
+	os.WriteFile(filepath.Join(memoryPath, "MEMORY.md"), []byte("session index"), 0o644)
+	os.WriteFile(filepath.Join(memoryPath, "fact.md"), []byte("session fact"), 0o644)
+	os.WriteFile(filepath.Join(memoryPath, "collide.md"), []byte("session version"), 0o644)
+
+	// Shared dir already has one colliding file
+	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		t.Fatalf("creating shared dir: %v", err)
+	}
+	os.WriteFile(filepath.Join(sharedDir, "collide.md"), []byte("shared version"), 0o644)
+
+	if err := LinkSharedMemory(worktreeDir); err != nil {
+		t.Fatalf("LinkSharedMemory() error: %v", err)
+	}
+
+	// Non-colliding files migrated
+	for name, want := range map[string]string{
+		"MEMORY.md":  "session index",
+		"fact.md":    "session fact",
+		"collide.md": "shared version", // existing shared file wins
+	} {
+		data, err := os.ReadFile(filepath.Join(sharedDir, name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if string(data) != want {
+			t.Errorf("%s = %q, want %q", name, data, want)
+		}
+	}
+
+	// Old dir replaced by symlink
+	target, err := os.Readlink(memoryPath)
+	if err != nil {
+		t.Fatalf("memory path is not a symlink after migration: %v", err)
+	}
+	if target != sharedDir {
+		t.Errorf("symlink target = %q, want %q", target, sharedDir)
+	}
+}
+
+func TestLinkSharedMemoryDottedPath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	worktreeDir := filepath.Join(t.TempDir(), ".klaus", "sessions", "session-123", "workspace")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("creating worktree dir: %v", err)
+	}
+
+	if err := LinkSharedMemory(worktreeDir); err != nil {
+		t.Fatalf("LinkSharedMemory() error: %v", err)
+	}
+
+	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
+	if _, err := os.Readlink(memoryPath); err != nil {
+		t.Fatalf("memory path for dotted worktree is not a symlink: %v", err)
+	}
+}
