@@ -915,6 +915,7 @@ func TestLinkSharedMemory(t *testing.T) {
 	homeDir := t.TempDir()
 	worktreeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	if err := LinkSharedMemory(worktreeDir); err != nil {
 		t.Fatalf("LinkSharedMemory() error: %v", err)
@@ -925,7 +926,7 @@ func TestLinkSharedMemory(t *testing.T) {
 		t.Fatalf("shared memory dir not created: %v", err)
 	}
 
-	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	encoded := encodeProjectPath(worktreeDir)
 	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
 	target, err := os.Readlink(memoryPath)
 	if err != nil {
@@ -948,6 +949,7 @@ func TestLinkSharedMemoryIdempotent(t *testing.T) {
 	homeDir := t.TempDir()
 	worktreeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	if err := LinkSharedMemory(worktreeDir); err != nil {
 		t.Fatalf("first LinkSharedMemory() error: %v", err)
@@ -957,7 +959,7 @@ func TestLinkSharedMemoryIdempotent(t *testing.T) {
 	}
 
 	sharedDir := filepath.Join(homeDir, ".klaus", "memory")
-	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	encoded := encodeProjectPath(worktreeDir)
 	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
 	target, err := os.Readlink(memoryPath)
 	if err != nil {
@@ -972,9 +974,10 @@ func TestLinkSharedMemoryMigratesExistingDir(t *testing.T) {
 	homeDir := t.TempDir()
 	worktreeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	// Existing per-session memory dir with contents
-	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	encoded := encodeProjectPath(worktreeDir)
 	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
 	if err := os.MkdirAll(memoryPath, 0o755); err != nil {
 		t.Fatalf("creating old memory dir: %v", err)
@@ -1022,6 +1025,7 @@ func TestLinkSharedMemoryMigratesExistingDir(t *testing.T) {
 func TestLinkSharedMemoryDottedPath(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	worktreeDir := filepath.Join(t.TempDir(), ".klaus", "sessions", "session-123", "workspace")
 	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
@@ -1032,7 +1036,7 @@ func TestLinkSharedMemoryDottedPath(t *testing.T) {
 		t.Fatalf("LinkSharedMemory() error: %v", err)
 	}
 
-	encoded := strings.NewReplacer(string(filepath.Separator), "-", ".", "-").Replace(worktreeDir)
+	encoded := encodeProjectPath(worktreeDir)
 	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
 	if _, err := os.Readlink(memoryPath); err != nil {
 		t.Fatalf("memory path for dotted worktree is not a symlink: %v", err)
