@@ -35,10 +35,10 @@ var statusCmd = &cobra.Command{
 
 		ghClient := gh.NewGHCLIClient("")
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
-			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
-			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "-----", "------")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
 
 		for _, s := range states {
 			if err := ctx.Err(); err != nil {
@@ -61,7 +61,7 @@ var statusCmd = &cobra.Command{
 			pr := formatPR(s)
 			prompt := truncate(s.Prompt, 40)
 
-			ci, conflicts, merge := "-", "-", "-"
+			ci, conflicts, behind, merge := "-", "-", "-", "-"
 			if prRef := extractPRRef(s); prRef != "" {
 				prState := ghClient.GetState(ctx, prRef)
 				switch prState {
@@ -73,12 +73,16 @@ var statusCmd = &cobra.Command{
 				default:
 					ci = ghClient.GetCI(ctx, prRef)
 					conflicts = ghClient.GetConflicts(ctx, prRef)
-					merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef))
+					behindBy := ghClient.GetCommitsBehind(ctx, prRef)
+					if behindBy > 0 {
+						behind = fmt.Sprintf("%d", behindBy)
+					}
+					merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef), behindBy)
 				}
 			}
 
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-10s  %s\n",
-				s.ID, status, cost, issue, repo, host, pr, ci, conflicts, merge, prompt)
+			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+				s.ID, status, cost, issue, repo, host, pr, ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil
@@ -161,8 +165,10 @@ func extractPRRef(s *run.State) string {
 	return *s.PRURL
 }
 
-// computeMergeStatus determines overall merge readiness.
-func computeMergeStatus(ci, conflicts, reviewDecision string) string {
+// computeMergeStatus determines overall merge readiness. behind is the base-ahead
+// commit count; a would-be-ready-but-behind PR reads "behind N" (rebased at merge)
+// so it is never shown as a clean "ready".
+func computeMergeStatus(ci, conflicts, reviewDecision string, behind int) string {
 	if conflicts == "yes" {
 		return "blocked"
 	}
@@ -176,6 +182,9 @@ func computeMergeStatus(ci, conflicts, reviewDecision string) string {
 		return "pending"
 	}
 	if ci == "passing" && conflicts == "none" && (strings.EqualFold(reviewDecision, "APPROVED") || reviewDecision == "") {
+		if behind > 0 {
+			return fmt.Sprintf("behind %d", behind)
+		}
 		return "ready"
 	}
 	return "pending"

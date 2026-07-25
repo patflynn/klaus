@@ -39,6 +39,7 @@ type PRStatus struct {
 	State                 string // OPEN, MERGED, CLOSED
 	CI                    string // passing, failing, pending, unknown
 	Conflicts             string // yes, none, unknown
+	BehindBy              int    // commits base has that head lacks; >0 = stale-but-mergeable
 	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
 	TargetRepo            string // canonical project short name (e.g. "klaus") for registered projects, else an owner/repo slug; NOT guaranteed to be a GitHub owner/repo slug — do not use in gh api paths
 	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers

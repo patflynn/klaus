@@ -136,6 +136,9 @@ func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prSt
 		if ps.Conflicts == "yes" {
 			parts = append(parts, redStyle.Render("conflicts ✗"))
 		}
+		if ps.BehindBy > 0 {
+			parts = append(parts, dimStyle.Render(fmt.Sprintf("behind %d", ps.BehindBy)))
+		}
 		rd := ps.ReviewDecision
 		if strings.EqualFold(rd, "APPROVED") {
 			parts = append(parts, greenStyle.Render("ready"))

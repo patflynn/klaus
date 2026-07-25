@@ -20,6 +20,7 @@ func testMergeRunner(out *bytes.Buffer) *mergeRunner {
 		getPRTitle:          func(string, string) string { return "Test PR" },
 		getPRCI:             func(string, string) string { return "passing" },
 		getPRConflicts:      func(string, string) string { return "none" },
+		getPRBehind:         func(string, string) int { return 0 },
 		getPRReviewDecision: func(string, string) string { return "APPROVED" },
 		rebaseAndPush:       func(string, string) error { return nil },
 		pollCI:              func(string, string) error { return nil },
@@ -420,6 +421,60 @@ func TestRunHandlesConflictsWithRebase(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Rebasing onto main") {
 		t.Error("should show rebase message")
+	}
+}
+
+func TestRunRebasesBehindButCleanPR(t *testing.T) {
+	var buf bytes.Buffer
+	rebaseCalled := false
+	pollCICalled := false
+	runner := testMergeRunner(&buf)
+	runner.getPRConflicts = func(string, string) string { return "none" }
+	runner.getPRBehind = func(string, string) int { return 2 }
+	runner.rebaseAndPush = func(string, string) error {
+		rebaseCalled = true
+		return nil
+	}
+	runner.pollCI = func(string, string) error {
+		pollCICalled = true
+		return nil
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !rebaseCalled {
+		t.Error("rebaseAndPush should have been called for a behind-but-clean PR")
+	}
+	if !pollCICalled {
+		t.Error("pollCI should have been called after rebase")
+	}
+	if !strings.Contains(buf.String(), "behind main") {
+		t.Errorf("should show behind/rebase message, got: %s", buf.String())
+	}
+}
+
+func TestRunFailingBehindPRStopsBeforeRebase(t *testing.T) {
+	var buf bytes.Buffer
+	rebaseCalled := false
+	runner := testMergeRunner(&buf)
+	runner.getPRCI = func(string, string) string { return "failing" }
+	runner.getPRBehind = func(string, string) int { return 2 }
+	runner.rebaseAndPush = func(string, string) error {
+		rebaseCalled = true
+		return nil
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "CI is failing") {
+		t.Errorf("error should mention CI failing: %v", err)
+	}
+	if rebaseCalled {
+		t.Error("a CI-failing branch must not be rebased for being behind")
 	}
 }
 

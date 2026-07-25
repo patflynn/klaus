@@ -342,6 +342,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				State:                 v.State,
 				CI:                    v.CI,
 				Conflicts:             v.Conflicts,
+				BehindBy:              v.BehindBy,
 				ReviewDecision:        v.ReviewDecision,
 				HasNewTrustedComments: v.HasNewTrustedComments,
 				Labels:                v.Labels,
