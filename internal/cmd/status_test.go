@@ -16,27 +16,30 @@ func TestComputeMergeStatus(t *testing.T) {
 		ci             string
 		conflicts      string
 		reviewDecision string
+		behind         int
 		want           string
 	}{
-		{"all green approved", "passing", "none", "APPROVED", "ready"},
-		{"all green no review", "passing", "none", "", "ready"},
-		{"ci failing", "failing", "none", "APPROVED", "blocked"},
-		{"conflicts", "passing", "yes", "APPROVED", "blocked"},
-		{"changes requested", "passing", "none", "CHANGES_REQUESTED", "blocked"},
-		{"ci pending", "pending", "none", "APPROVED", "pending"},
-		{"review unknown", "passing", "none", "unknown", "pending"},
-		{"ci failing and conflicts", "failing", "yes", "", "blocked"},
-		{"changes requested case insensitive", "passing", "none", "changes_requested", "blocked"},
-		{"unknown CI unknown review", "unknown", "none", "unknown", "pending"},
-		{"unknown CI no conflicts", "unknown", "none", "", "pending"},
+		{"all green approved", "passing", "none", "APPROVED", 0, "ready"},
+		{"all green no review", "passing", "none", "", 0, "ready"},
+		{"ci failing", "failing", "none", "APPROVED", 0, "blocked"},
+		{"conflicts", "passing", "yes", "APPROVED", 0, "blocked"},
+		{"changes requested", "passing", "none", "CHANGES_REQUESTED", 0, "blocked"},
+		{"ci pending", "pending", "none", "APPROVED", 0, "pending"},
+		{"review unknown", "passing", "none", "unknown", 0, "pending"},
+		{"ci failing and conflicts", "failing", "yes", "", 0, "blocked"},
+		{"changes requested case insensitive", "passing", "none", "changes_requested", 0, "blocked"},
+		{"unknown CI unknown review", "unknown", "none", "unknown", 0, "pending"},
+		{"unknown CI no conflicts", "unknown", "none", "", 0, "pending"},
+		{"ready but behind", "passing", "none", "APPROVED", 2, "behind 2"},
+		{"behind ignored when not ready", "failing", "none", "APPROVED", 2, "blocked"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := computeMergeStatus(tt.ci, tt.conflicts, tt.reviewDecision)
+			got := computeMergeStatus(tt.ci, tt.conflicts, tt.reviewDecision, tt.behind)
 			if got != tt.want {
-				t.Errorf("computeMergeStatus(%q, %q, %q) = %q, want %q",
-					tt.ci, tt.conflicts, tt.reviewDecision, got, tt.want)
+				t.Errorf("computeMergeStatus(%q, %q, %q, %d) = %q, want %q",
+					tt.ci, tt.conflicts, tt.reviewDecision, tt.behind, got, tt.want)
 			}
 		})
 	}

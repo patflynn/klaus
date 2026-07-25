@@ -195,9 +195,11 @@ sequentially — important because each merge can create conflicts for the next.
 
 For each PR, the merge flow:
 
-1. **Check readiness** — CI status, conflicts, review decision
-2. **Rebase if needed** — fetch main, create a temp worktree, rebase the PR
-   branch, verify the build compiles, force-push with `--force-with-lease`
+1. **Check readiness** — CI status, conflicts, behind-count, review decision
+2. **Rebase if needed** — when the PR conflicts *or* is behind the base branch:
+   fetch main, create a temp worktree, rebase the PR branch, run the merge
+   verification (`merge_verify_command` if set, else `go build ./...` when a
+   `go.mod` exists, else skip), force-push with `--force-with-lease`
 3. **Wait for CI** — poll every 30s, up to a 10-minute timeout
 4. **Merge** — via `gh pr merge` (default: squash)
 5. **Update state** — mark the run as merged so the dashboard reflects it

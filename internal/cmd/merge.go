@@ -28,6 +28,7 @@ type mergeRunner struct {
 	getPRTitle          func(string, string) string
 	getPRCI             func(string, string) string
 	getPRConflicts      func(string, string) string
+	getPRBehind         func(string, string) int
 	getPRReviewDecision func(string, string) string
 	rebaseAndPush       func(string, string) error
 	mergePR             func(string, string, bool, string) error
@@ -52,6 +53,9 @@ func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag 
 		},
 		getPRConflicts: func(pr, repo string) string {
 			return gh.NewGHCLIClient(repo).GetConflicts(ctx, pr)
+		},
+		getPRBehind: func(pr, repo string) int {
+			return gh.NewGHCLIClient(repo).GetCommitsBehind(ctx, pr)
 		},
 		getPRReviewDecision: func(pr, repo string) string {
 			return gh.NewGHCLIClient(repo).GetReviewDecision(ctx, pr)
@@ -293,12 +297,9 @@ func rebaseAndPush(prNumber string, repo string) error {
 		return fmt.Errorf("rebase conflicts: %s", strings.TrimSpace(stderr.String()))
 	}
 
-	buildCmd := exec.Command("go", "build", "./...")
-	buildCmd.Dir = worktreePath
-	var buildStderr bytes.Buffer
-	buildCmd.Stderr = &buildStderr
-	if err := buildCmd.Run(); err != nil {
-		return fmt.Errorf("build failed after rebase: %s", strings.TrimSpace(buildStderr.String()))
+	cfg, _ := config.Load(repoRoot)
+	if err := verifyRebasedWorktree(worktreePath, cfg.MergeVerifyCmd()); err != nil {
+		return err
 	}
 
 	pushCmd := exec.Command("git", "push", "--force-with-lease")
@@ -310,6 +311,34 @@ func rebaseAndPush(prNumber string, repo string) error {
 	}
 
 	return nil
+}
+
+// verifyRebasedWorktree sanity-checks the rebased branch before force-push.
+// Precedence: configured merge_verify_command (via sh -c) > `go build ./...`
+// iff a go.mod exists > skip (non-Go repo with no command — rely on CI).
+func verifyRebasedWorktree(worktreePath string, verifyCmd *string) error {
+	var cmd *exec.Cmd
+	switch {
+	case verifyCmd != nil:
+		cmd = exec.Command("sh", "-c", *verifyCmd)
+	case fileExists(filepath.Join(worktreePath, "go.mod")):
+		cmd = exec.Command("go", "build", "./...")
+	default:
+		return nil
+	}
+	cmd.Dir = worktreePath
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("merge verification failed after rebase: %s", strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// fileExists reports whether path exists.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // defaultPollCI polls CI checks until they pass or timeout.
@@ -351,13 +380,14 @@ func (r *mergeRunner) dryRun(prNumbers []string) error {
 		title := r.getPRTitle(prNum, repo)
 		ci := r.getPRCI(prNum, repo)
 		conflicts := r.getPRConflicts(prNum, repo)
+		behind := r.getPRBehind(prNum, repo)
 		review := r.getPRReviewDecision(prNum, repo)
-		status := computeMergeStatus(ci, conflicts, review)
+		status := computeMergeStatus(ci, conflicts, review, behind)
 
 		repoLabel := formatRepoLabel(repo)
 		fmt.Fprintf(r.out, "  %d. PR #%s [%s]: %s\n", i+1, prNum, repoLabel, title)
-		fmt.Fprintf(r.out, "     CI: %s | Conflicts: %s | Review: %s | Merge: %s\n",
-			ci, conflicts, review, status)
+		fmt.Fprintf(r.out, "     CI: %s | Conflicts: %s | Behind: %d | Review: %s | Merge: %s\n",
+			ci, conflicts, behind, review, status)
 	}
 	return nil
 }
@@ -375,10 +405,11 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 
 		ci := r.getPRCI(prNum, repo)
 		conflicts := r.getPRConflicts(prNum, repo)
+		behind := r.getPRBehind(prNum, repo)
 		review := r.getPRReviewDecision(prNum, repo)
 
-		fmt.Fprintf(r.out, "  CI: %s | Conflicts: %s | Review: %s\n",
-			ci, conflicts, review)
+		fmt.Fprintf(r.out, "  CI: %s | Conflicts: %s | Behind: %d | Review: %s\n",
+			ci, conflicts, behind, review)
 
 		// Check approval gate
 		if !r.forceApproval && r.checkApproval != nil && !r.checkApproval(prNum) {
@@ -409,7 +440,8 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 			return r.stopQueue(prNum, "changes requested in review", prNumbers[i+1:])
 		}
 
-		// Handle conflicts via rebase
+		// Rebase when conflicting, or behind-but-clean (stale CI vs current main).
+		// CI-failing-without-conflicts stops first: don't rebase a broken branch.
 		if conflicts == "yes" {
 			fmt.Fprintf(r.out, "  Rebasing onto main...\n")
 			if err := r.rebaseAndPush(prNum, repo); err != nil {
@@ -422,6 +454,15 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 		} else if ci == "failing" {
 			// CI failing without conflicts — can't fix automatically
 			return r.stopQueue(prNum, "CI is failing", prNumbers[i+1:])
+		} else if behind > 0 {
+			fmt.Fprintf(r.out, "  Branch is %d commit(s) behind main; rebasing...\n", behind)
+			if err := r.rebaseAndPush(prNum, repo); err != nil {
+				return r.stopQueue(prNum, fmt.Sprintf("rebase failed: %v", err), prNumbers[i+1:])
+			}
+			fmt.Fprintf(r.out, "  Waiting for CI after rebase...\n")
+			if err := r.pollCI(prNum, repo); err != nil {
+				return r.stopQueue(prNum, fmt.Sprintf("CI after rebase: %v", err), prNumbers[i+1:])
+			}
 		} else if ci != "passing" {
 			// CI pending or unknown — wait
 			fmt.Fprintf(r.out, "  Waiting for CI...\n")

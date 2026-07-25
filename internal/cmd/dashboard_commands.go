@@ -81,6 +81,7 @@ type prStatus struct {
 	State                 string // OPEN, MERGED, CLOSED
 	CI                    string // passing, failing, pending, unknown
 	Conflicts             string // yes, none, unknown
+	BehindBy              int    // commits base has that head lacks; >0 = stale-but-mergeable
 	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
 	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
 	Labels                []string // applied PR labels (used to surface klaus:budget-paused)
@@ -299,6 +300,7 @@ func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
 	}
 	ps.CI = client.GetCI(ctx, prRef)
 	ps.Conflicts = client.GetConflicts(ctx, prRef)
+	ps.BehindBy = client.GetCommitsBehind(ctx, prRef)
 	ps.ReviewDecision = client.GetReviewDecision(ctx, prRef)
 	ps.Labels = client.GetLabels(ctx, prRef)
 

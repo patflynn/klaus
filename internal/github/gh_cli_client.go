@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -144,6 +145,78 @@ func (c *GHCLIClient) GetConflicts(ctx context.Context, prRef string) string {
 		return "none"
 	}
 	return "unknown"
+}
+
+// GetCommitsBehind returns how many commits the PR's base branch has that the
+// PR head lacks (0 on any error). Detects behind-but-non-conflicting branches,
+// which GitHub reports as MERGEABLE so GetConflicts never flags them. Two gh
+// calls: refs from `pr view`, then `compare/base...head`'s .behind_by.
+func (c *GHCLIClient) GetCommitsBehind(ctx context.Context, prRef string) int {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	args := c.ghArgs([]string{"pr", "view", "--json", "baseRefName,headRefName,headRepositoryOwner",
+		"-q", `.baseRefName + "\t" + .headRefName + "\t" + (.headRepositoryOwner.login // "")`}, prRef)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return 0
+	}
+	base, head, headOwner, ok := parseRefsLine(out.String())
+	if !ok {
+		return 0
+	}
+
+	// Base repo owner/repo: prefer the PR URL (correct in multi-repo dashboards),
+	// then the constructor slug, then gh's inferred repo. NOT TargetRepo.
+	owner, repo := "", ""
+	if slug := OwnerRepoFromPRURL(prRef); slug != "" {
+		owner, repo, _ = strings.Cut(slug, "/")
+	} else if strings.Contains(c.repo, "/") {
+		owner, repo, _ = strings.Cut(c.repo, "/")
+	} else if o, r, err := c.GetRepoOwnerAndName(ctx); err == nil {
+		owner, repo = o, r
+	}
+	if owner == "" || repo == "" {
+		return 0
+	}
+
+	// Fork heads compare as headOwner:headRef.
+	if headOwner != "" && headOwner != owner {
+		head = headOwner + ":" + head
+	}
+	cmpCmd := exec.CommandContext(ctx, "gh", "api",
+		fmt.Sprintf("repos/%s/%s/compare/%s...%s", owner, repo, base, head), "-q", ".behind_by")
+	var cmpOut bytes.Buffer
+	cmpCmd.Stdout = &cmpOut
+	if err := cmpCmd.Run(); err != nil {
+		return 0
+	}
+	return parseBehindBy(cmpOut.String())
+}
+
+// parseRefsLine parses the tab-joined "base\thead\theadOwner" from GetCommitsBehind's
+// pr-view query. ok is false when base or head is missing.
+func parseRefsLine(s string) (base, head, headOwner string, ok bool) {
+	parts := strings.SplitN(strings.TrimSpace(s), "\t", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", false
+	}
+	if len(parts) == 3 {
+		headOwner = parts[2]
+	}
+	return parts[0], parts[1], headOwner, true
+}
+
+// parseBehindBy parses the .behind_by integer from `gh api compare` output,
+// returning 0 for blank/non-numeric input.
+func parseBehindBy(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // GetReviewDecision fetches the review decision for a PR.

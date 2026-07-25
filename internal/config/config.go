@@ -14,17 +14,21 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase        string           `json:"worktree_base"`
-	DefaultBudget       string           `json:"default_budget"`
-	DataRef             string           `json:"data_ref"`
-	DefaultBranch       string           `json:"default_branch"`
-	TrustedReviewers    []string         `json:"trusted_reviewers"`
-	RequireApproval     *bool            `json:"require_approval,omitempty"`
-	AutoMergeOnApproval *bool            `json:"auto_merge_on_approval,omitempty"`
-	PreReview           *PreReviewConfig `json:"pre_review,omitempty"`
-	SandboxHost         string           `json:"sandbox_host,omitempty"`
-	PRReviewer          string           `json:"pr_reviewer,omitempty"`
-	Webhook             *WebhookConfig   `json:"webhook,omitempty"`
+	WorktreeBase        string   `json:"worktree_base"`
+	DefaultBudget       string   `json:"default_budget"`
+	DataRef             string   `json:"data_ref"`
+	DefaultBranch       string   `json:"default_branch"`
+	TrustedReviewers    []string `json:"trusted_reviewers"`
+	RequireApproval     *bool    `json:"require_approval,omitempty"`
+	AutoMergeOnApproval *bool    `json:"auto_merge_on_approval,omitempty"`
+	// MergeVerifyCommand runs in the rebased worktree during merge to sanity-check
+	// the branch before force-push. Unset → `go build ./...` iff a go.mod exists,
+	// else skip (rely on CI). Empty string is treated as unset.
+	MergeVerifyCommand *string          `json:"merge_verify_command,omitempty"`
+	PreReview          *PreReviewConfig `json:"pre_review,omitempty"`
+	SandboxHost        string           `json:"sandbox_host,omitempty"`
+	PRReviewer         string           `json:"pr_reviewer,omitempty"`
+	Webhook            *WebhookConfig   `json:"webhook,omitempty"`
 	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
 	// 'klaus launch --pr' will restore for claude --resume when continuing a
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
@@ -76,6 +80,15 @@ func (c *Config) AutoMergesOnApproval() bool {
 		return false
 	}
 	return *c.AutoMergeOnApproval
+}
+
+// MergeVerifyCmd returns the configured merge verification command, or nil when
+// unset/blank (caller falls back to go build iff a go.mod is present).
+func (c *Config) MergeVerifyCmd() *string {
+	if c.MergeVerifyCommand == nil || strings.TrimSpace(*c.MergeVerifyCommand) == "" {
+		return nil
+	}
+	return c.MergeVerifyCommand
 }
 
 // PreReviewEnabled returns whether pre-review is enabled (default: true).

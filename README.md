@@ -257,7 +257,8 @@ The status dashboard shows these columns for each run:
 |--------|--------|---------|
 | CI | `passing` / `failing` / `pending` / `unknown` | CI check status for the PR |
 | CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
-| MERGE | `ready` / `blocked` / `pending` | Overall merge readiness (combines CI, conflicts, and review status) |
+| BEHIND | `-` / `N` | Commits the base branch has that the PR head lacks (stale-but-mergeable when >0) |
+| MERGE | `ready` / `behind N` / `blocked` / `pending` | Overall merge readiness (combines CI, conflicts, behind-ness, and review status) |
 
 ### `klaus dashboard`
 
@@ -277,7 +278,7 @@ klaus approve --run 20260328-1603-a3f2  # approve by run ID
 
 ### `klaus merge`
 
-Sequentially merges a list of PRs. Handles conflicts by rebasing onto main, verifying the build, and force-pushing. Waits for CI to pass before merging (up to 10 min).
+Sequentially merges a list of PRs. Rebases onto main when a PR conflicts *or* is behind the base branch, verifies the rebased branch, and force-pushes. Waits for CI to pass before merging (up to 10 min). Verification runs `merge_verify_command` when configured, else `go build ./...` when the repo has a `go.mod`, else nothing (relying on CI — so non-Go repos merge cleanly).
 
 By default, PRs must be approved with `klaus approve` before merging. Unapproved PRs trigger an interactive prompt (or are skipped with `--yes`).
 
@@ -369,9 +370,12 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "default_branch": "main",
   "trusted_reviewers": ["gemini-code-assist[bot]"],
   "require_approval": true,
-  "auto_merge_on_approval": false
+  "auto_merge_on_approval": false,
+  "merge_verify_command": "nix build"
 }
 ```
+
+`merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 
 **`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
 

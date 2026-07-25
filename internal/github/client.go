@@ -11,6 +11,7 @@ type Client interface {
 	// PR queries
 	GetCI(ctx context.Context, prRef string) string
 	GetConflicts(ctx context.Context, prRef string) string
+	GetCommitsBehind(ctx context.Context, prRef string) int
 	GetReviewDecision(ctx context.Context, prRef string) string
 	GetState(ctx context.Context, prRef string) string
 	GetLabels(ctx context.Context, prRef string) []string
