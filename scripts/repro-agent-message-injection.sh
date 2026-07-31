@@ -83,9 +83,17 @@ done
 inject "$PANE"
 sleep 5
 touch "$DIR/go"
-sleep 40
 
-TRANSCRIPT=$(ls -t "$HOME/.claude/projects/$(echo "$DIR" | tr '/.' '--')"/*.jsonl 2>/dev/null | head -1 || true)
+# Poll rather than sleeping a fixed amount: the transcript is written as the
+# turn progresses, so a fixed wait risks reporting ABSENT before it lands.
+PROJECT_DIR="$HOME/.claude/projects/$(echo "$DIR" | tr '/.' '--')"
+TRANSCRIPT=""
+for _ in $(seq 60); do
+  TRANSCRIPT=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1 || true)
+  [ -n "$TRANSCRIPT" ] && grep -q "$MARKER" "$TRANSCRIPT" && break
+  sleep 2
+done
+
 if [ -n "$TRANSCRIPT" ] && grep -q "$MARKER" "$TRANSCRIPT"; then
   echo "RESULT: marker FOUND in interactive transcript (as a queued_command attachment):"
   grep -o "\"type\":\"queued_command\".\{0,160\}" "$TRANSCRIPT" | head -1
