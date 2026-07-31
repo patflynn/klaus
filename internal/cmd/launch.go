@@ -39,10 +39,15 @@ used directly. Otherwise, the repo is cloned from GitHub.
 
 Use --pr to push fixes to an existing PR's branch instead of creating a new
 PR. The agent will commit and push to the PR branch directly. This is also
-how you resume a budget-paused PR: launch a fresh agent against the paused
-PR and it picks up from the WIP commit klaus left on the branch. When the
+how you resume a budget-paused PR: relaunch against the paused PR and the
+follow-up picks up from the WIP commit klaus left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
+
+Use --resume-from <run-id> to continue a previous run's Claude conversation in
+a fresh worktree, paused or not — the follow-up keeps what the earlier agent
+learned instead of re-exploring the repo. It starts fresh if that run crashed
+or its transcript cannot be located.
 
 For a budget-paused PR, klaus continues the previous agent's Claude
 conversation by default (trajectory replay): it restores the stored
