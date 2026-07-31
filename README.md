@@ -126,7 +126,10 @@ klaus launch --pr 42 --replay-threshold-kb 500 "..."  # raise the per-launch thr
 
 To abandon the work, close the draft PR. To redirect, push manual commits to its branch.
 
-There is no separate `klaus resume` or `klaus finalize` command — `klaus launch --pr` is the only resume path, and `_finalize` handles the WIP commit automatically.
+There is no subcommand named `klaus resume` or `klaus finalize` — resuming happens through flags on `klaus launch`, and `_finalize` handles the WIP commit automatically:
+
+- `klaus launch --pr <num> "..."` resumes a budget-paused PR (WIP commit + trajectory replay, as above).
+- `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. It starts fresh if the prior run crashed or its transcript can't be located.
 
 ## Install
 
@@ -172,6 +175,7 @@ The coordinator session uses these — you generally don't run them directly:
 |---------|---------|
 | `klaus session` | Start an interactive coordinator session |
 | `klaus launch "<prompt>"` | Spawn an autonomous agent |
+| `klaus launch --prompt-file <path>` | Spawn an agent with the prompt read from a file |
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
@@ -205,6 +209,19 @@ klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 ```
 
 The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
+
+### `klaus launch --prompt-file`
+
+Read the agent's prompt from a file instead of the positional argument. The file is read verbatim, so backticks, quotes, `$VAR`, and newlines survive intact:
+
+```bash
+klaus launch --prompt-file /tmp/task.md
+klaus launch --prompt-file /tmp/task.md --issue 42 --budget 10
+```
+
+Prefer this for long or technical prompts. A prompt passed as a shell argument goes through the shell first — in zsh, backticks inside a double-quoted string are command substitution, so code spans are deleted or replaced by command output before klaus sees them, and the agent gets a briefing with holes exactly where the detail was.
+
+The positional prompt and `--prompt-file` are mutually exclusive: passing both, or neither, is an error. Everything downstream — the stored prompt in run state, `--issue`/`--pr` composition, budget handling — behaves identically either way.
 
 ### `klaus launch --repo`
 

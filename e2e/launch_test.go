@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -120,4 +121,93 @@ func waitPaneGone(t *testing.T, h *Harness, pane string, timeout time.Duration) 
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Errorf("pane %s still alive after %s; panes: %v", pane, timeout, h.ListPanes())
+}
+
+// TestLaunchPromptFile covers the failure --prompt-file exists to prevent: a
+// prompt full of backticks passed as a shell argument is mangled by the shell
+// (in zsh, backticks inside double quotes are command substitution) long before
+// klaus sees it. Read from a file, the prompt must reach run state — and the
+// agent — byte for byte.
+func TestLaunchPromptFile(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	const prompt = "Fix `ValidateToken()` in internal/auth/verify.go:87 —\n" +
+		"it uses `Before()` where it should use `After()`.\n" +
+		"Do not touch $HOME handling; run `go test ./...` before pushing.\n"
+	promptPath := filepath.Join(h.E2EDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+		t.Fatalf("writing prompt file: %v", err)
+	}
+
+	res := h.RunKlaus("launch", "--prompt-file", promptPath, "--budget", "7.50")
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	ids := h.RunIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 run, got %d: %v", len(ids), ids)
+	}
+	runID := ids[0]
+
+	st, err := h.ReadState(runID)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if st.Prompt != prompt {
+		t.Errorf("state prompt does not match the file byte for byte:\n got: %q\nwant: %q", st.Prompt, prompt)
+	}
+	// Everything else downstream behaves as it does for a positional prompt.
+	if st.Budget == nil || *st.Budget != "7.50" {
+		t.Errorf("Budget = %v, want 7.50", st.Budget)
+	}
+	if st.Branch == "" || st.Worktree == "" || st.TmuxPane == nil {
+		t.Errorf("state incomplete: branch=%q worktree=%q pane=%v", st.Branch, st.Worktree, st.TmuxPane)
+	}
+
+	// The agent is actually briefed with the full text, backticks intact.
+	h.WaitForClaudeStart(30 * time.Second)
+	if argv := h.ClaudeArgv(); !strings.Contains(argv, prompt) {
+		t.Errorf("claude argv missing the file prompt\n--- argv ---\n%s", argv)
+	}
+
+	h.ReleaseClaude()
+	h.WaitForState(runID, func(s *run.State) bool { return s.TmuxPane == nil }, 30*time.Second)
+}
+
+// TestLaunchPromptSourceErrors asserts the prompt source is unambiguous: both
+// sources or neither is a clear error and no agent is launched.
+func TestLaunchPromptSourceErrors(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	promptPath := filepath.Join(h.E2EDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("do the thing\n"), 0o644); err != nil {
+		t.Fatalf("writing prompt file: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"both sources", []string{"launch", "do the thing", "--prompt-file", promptPath}},
+		{"no source", []string{"launch"}},
+		{"missing file", []string{"launch", "--prompt-file", filepath.Join(h.E2EDir, "nope.md")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.RunKlaus(tc.args...)
+			if res.ExitCode == 0 {
+				t.Fatalf("launch %v exited 0, want a failure\nstdout:\n%s", tc.args, res.Stdout)
+			}
+			if !strings.Contains(res.Stderr, "prompt") {
+				t.Errorf("stderr should name the problem, got:\n%s", res.Stderr)
+			}
+		})
+	}
+
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
 }

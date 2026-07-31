@@ -373,14 +373,57 @@ will create a PR when done. You are the planner and researcher; agents are the b
 
 ## Launching agents
 
+This is the complete flag set of ` + "`klaus launch`" + ` — there are no others:
+
 ` + "```" + `
-klaus launch "<prompt>"                     # launch an agent
-klaus launch --issue <number> "<prompt>"    # reference a GitHub issue
-klaus launch --pr <number> "<prompt>"       # push fixes to an existing PR
-klaus launch --budget <usd> "<prompt>"      # set a spend cap
+klaus launch "<prompt>"                       # launch an agent
+klaus launch --prompt-file <path>             # read the prompt from a file instead of the argument
+klaus launch --issue <number> ...             # reference a GitHub issue
+klaus launch --pr <number> ...                # push fixes to an existing PR's branch
+klaus launch --budget <usd> ...               # spend cap in USD (default from config)
+klaus launch --repo <name|owner/repo> ...     # target a registered project or another GitHub repo
+klaus launch --resume-from <run-id> ...       # continue a previous agent's Claude conversation
+klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold
+klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
+klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
+klaus launch --local ...                      # force local execution even if a sandbox is configured
+klaus launch --host <name> ...                # override the configured sandbox host
 ` + "```" + `
 
 **Always use --issue when working on a GitHub issue.** The agent needs the issue context.
+
+**Use --prompt-file for anything long or technical.** A prompt passed as a shell
+argument goes through the shell first: in zsh, backticks inside a double-quoted
+string are command substitution, so every code span in your prompt is deleted or
+replaced by command output before klaus sees it, and the agent is briefed from a
+prompt full of holes exactly where the detail was. Write the prompt to a file and
+pass ` + "`--prompt-file`" + ` — the file is read verbatim. The positional prompt and
+--prompt-file are mutually exclusive; passing both, or neither, is an error.
+
+### Continuing an agent instead of restarting it
+
+Correcting an agent does NOT require killing it and re-briefing a cold one:
+
+- ` + "`klaus launch --resume-from <run-id> \"<new instructions>\"`" + ` continues that
+  run's Claude conversation in a fresh worktree — the new agent keeps everything
+  the previous one learned and just receives the correction. Use this whenever an
+  agent went the wrong way but its exploration is still worth keeping. The
+  follow-up gets its own branch and PR unless you also pass --pr. It falls back to
+  a fresh agent if the prior run crashed or its transcript can't be found.
+- ` + "`klaus launch --pr <num> \"<prompt>\"`" + ` against a budget-paused PR does the
+  same thing automatically via **trajectory replay**: klaus stores each run's
+  conversation on ` + "`refs/klaus/data`" + ` at finalize time, and on relaunch it restores
+  that transcript into the new worktree and resumes it. It falls back to a fresh
+  agent when the trajectory is missing, sensitive-skipped, has no known session
+  UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
+  a very large transcript can cost more to replay than to re-explore). Replay is
+  local-only — sandbox runs always start fresh.
+- ` + "`--replay`" + ` forces replay past the size threshold; ` + "`--no-replay`" + ` forces a fresh
+  agent; ` + "`--replay-threshold-kb`" + ` tunes the cap for one launch. Launch prints which
+  path it took on the ` + "`replay:`" + ` line.
+
+Killing an agent and relaunching from scratch throws away its context and pays for
+re-exploration; reach for it only when the prior conversation is genuinely worthless.
 {{if not .RepoName}}
 When not in a git repo, you must specify a target repository:
 ` + "```" + `
@@ -402,6 +445,10 @@ the issue thread. Then write a prompt that includes:
 3. **Acceptance criteria** — what does "done" look like?
 4. **Constraints** — e.g., "don't change the public API", "add integration tests"
 
+A prompt this detailed almost always contains backticked identifiers, so write it to
+a file and launch with ` + "`--prompt-file`" + `. Passing it as a shell argument risks losing
+exactly the technical detail that makes it useful.
+
 Example — **bad prompt**:
 ` + "```" + `
 klaus launch "fix the auth bug"
@@ -419,12 +466,12 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 
 - ` + "`klaus status`" + ` — check on running agents
 - ` + "`klaus logs <run-id>`" + ` — view agent output
-- ` + "`klaus cleanup <run-id>`" + ` — clean up finished runs
-- ` + "`klaus target [owner/repo | project-name]`" + ` — get/set default target repo
-- ` + "`klaus approve <pr-number> [...]`" + ` — approve PRs for merging
-- ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially
-- ` + "`klaus track <pr-number> [--repo <repo>]`" + ` — add existing PR to dashboard for pipeline monitoring
-- ` + "`klaus untrack <pr-number>`" + ` — stop tracking a PR
+- ` + "`klaus cleanup <run-id> | --all [--force]`" + ` — clean up finished runs (` + "`--force`" + ` also kills running ones, discarding their conversation — prefer ` + "`--resume-from`" + ` to redirect a running agent)
+- ` + "`klaus target [owner/repo | project-name] [--clear]`" + ` — get/set default target repo
+- ` + "`klaus approve <pr-number> [...] | --all | --run <run-id>`" + ` — approve PRs for merging
+- ` + "`klaus merge <pr-number> [...]`" + ` — merge PRs sequentially (` + "`--dry-run`" + `, ` + "`--merge-method`" + `, ` + "`--repo`" + `, ` + "`--force`" + `, ` + "`--yes`" + `, ` + "`--no-delete-branch`" + `)
+- ` + "`klaus track <pr-ref> [...] [--repo <repo>]`" + ` — add existing PRs to the dashboard for pipeline monitoring; a pr-ref is a number, a PR URL, or owner/repo#number
+- ` + "`klaus untrack <pr-number> [...]`" + ` — stop tracking PRs
 - ` + "`klaus dashboard`" + ` — open live dashboard
 
 ## How the pipeline works
@@ -459,7 +506,7 @@ Events arrive only while the REPL is idle between turns. If a flurry lands durin
 - The dashboard watches this directory via fsnotify — new/modified files appear instantly
 - To add an existing PR without launching an agent, use ` + "`klaus track <pr-number> --repo <repo>`" + `
 - Run states track: ID, prompt, branch, worktree, PR URL, type, target repo, cost, duration, approval/merge status
-- State types: ` + "`session`" + ` (coordinator), ` + "`launch`" + ` (agent), ` + "`pr-fix`" + ` (fix agent), ` + "`track`" + ` (monitored PR)
+- State types: ` + "`session`" + ` (coordinator), ` + "`pr-fix`" + ` (agent launched with --pr), ` + "`track`" + ` (monitored PR); a plain agent run has no type set
 
 ## Approval and merge workflow
 
@@ -491,13 +538,18 @@ Agents that exceed their ` + "`--budget`" + ` are paused by:
 
 The work is safe in the draft PR. To continue:
 
-- ` + "`klaus launch --pr <num> \"continue the work\"`" + ` dispatches a fresh agent against the PR's branch. The new agent re-orients from the WIP commit and finishes the work. This is cheaper than human intervention but does cost one re-exploration of the repo.
+- ` + "`klaus launch --pr <num> \"continue the work\"`" + ` relaunches against the PR's branch. By default this replays the paused agent's conversation, so the follow-up continues from where the pause happened; when replay is ineligible it falls back to a fresh agent that re-orients from the WIP commit and pays one re-exploration of the repo. Launch prints which of the two it chose on the ` + "`replay:`" + ` line.
 - Close the PR in GitHub to abandon.
 - Add commits manually to the PR branch if you want to redirect.
 
 The ` + "`klaus:budget-paused`" + ` label is automatically cleared when a follow-up agent ` + "`_finalize`" + `s. If you see the label persist after a launch, that's a signal the follow-up itself failed (paused or crashed).
 
-There is NO ` + "`klaus resume`" + ` or ` + "`klaus finalize`" + ` command. The draft PR plus label IS the persisted state; ` + "`klaus launch --pr`" + ` is the resume path.
+There is no subcommand named ` + "`klaus resume`" + ` or ` + "`klaus finalize`" + ` — but resuming an agent's work IS supported, through flags on ` + "`klaus launch`" + `:
+
+- ` + "`--pr <num>`" + ` — resume a budget-paused PR. The draft PR plus label IS the persisted state: the branch carries the WIP commit, and the stored trajectory carries the conversation when replay is eligible.
+- ` + "`--resume-from <run-id>`" + ` — continue any prior run's Claude conversation, paused or not. This is how you correct an agent without losing what it already learned.
+
+Both cost a relaunch (new worktree, new pane). Neither costs a cold re-exploration of the repo unless the conversation is unavailable and it falls back to a fresh agent.
 
 ## Gotchas and common issues
 
