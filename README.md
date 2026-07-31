@@ -385,6 +385,10 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 
 ## Under the hood
 
+- **Agents run headless** — `claude -p` with the prompt in argv, so there is no
+  way to type at a running agent. Correcting one mid-run means relaunching with
+  `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
+  for why in-place messaging isn't offered and what it would take
 - **Worktrees** isolate each agent — they can't step on each other or your working tree
 - **tmux panes** give live visibility into each agent's progress
 - **JSONL logs** are saved for replay and post-run analysis
