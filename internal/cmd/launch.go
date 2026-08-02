@@ -22,10 +22,16 @@ import (
 )
 
 var launchCmd = &cobra.Command{
-	Use:   "launch \"<prompt>\" [flags]",
+	Use:   "launch \"<prompt>\" | --prompt-file <path> [flags]",
 	Short: "Launch an autonomous Claude Code agent",
 	Long: `Creates a git worktree, launches Claude Code in autonomous mode in a new
 tmux pane, and tracks the run state. Must be run inside a tmux session.
+
+The prompt comes either from the positional argument or from --prompt-file
+<path>; exactly one of the two is required. Prefer --prompt-file for long or
+technical prompts: in zsh a backtick inside a double-quoted argument is command
+substitution, so code spans in a shell-quoted prompt are silently mangled before
+klaus ever sees them. File contents are used verbatim.
 
 Use --repo to launch an agent against a different repository. If the name
 matches a registered project (no owner/ prefix), the project's local path is
@@ -33,10 +39,15 @@ used directly. Otherwise, the repo is cloned from GitHub.
 
 Use --pr to push fixes to an existing PR's branch instead of creating a new
 PR. The agent will commit and push to the PR branch directly. This is also
-how you resume a budget-paused PR: launch a fresh agent against the paused
-PR and it picks up from the WIP commit klaus left on the branch. When the
+how you resume a budget-paused PR: relaunch against the paused PR and the
+follow-up picks up from the WIP commit klaus left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
+
+Use --resume-from <run-id> to continue a previous run's Claude conversation in
+a fresh worktree, paused or not — the follow-up keeps what the earlier agent
+learned instead of re-exploring the repo. It starts fresh if that run crashed
+or its transcript cannot be located.
 
 For a budget-paused PR, klaus continues the previous agent's Claude
 conversation by default (trajectory replay): it restores the stored
@@ -50,9 +61,13 @@ When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
 are synced back after completion. Use --local to force local execution, or
 --host to override the configured sandbox host.`,
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		prompt := args[0]
+		promptFile, _ := cmd.Flags().GetString("prompt-file")
+		prompt, err := resolvePrompt(args, promptFile)
+		if err != nil {
+			return err
+		}
 		issue, _ := cmd.Flags().GetString("issue")
 		budget, _ := cmd.Flags().GetString("budget")
 		repoRef, _ := cmd.Flags().GetString("repo")
@@ -520,6 +535,30 @@ are synced back after completion. Use --local to force local execution, or
 	},
 }
 
+// resolvePrompt returns the agent prompt from either the positional argument or
+// --prompt-file. Exactly one source must be given: both is ambiguous, neither
+// leaves the agent with no briefing. File contents are used verbatim so that
+// backticks and other shell metacharacters survive intact.
+func resolvePrompt(args []string, promptFile string) (string, error) {
+	switch {
+	case len(args) > 0 && promptFile != "":
+		return "", fmt.Errorf("prompt given twice: pass it as an argument or with --prompt-file, not both")
+	case promptFile != "":
+		data, err := os.ReadFile(promptFile)
+		if err != nil {
+			return "", fmt.Errorf("reading prompt file: %w", err)
+		}
+		if strings.TrimSpace(string(data)) == "" {
+			return "", fmt.Errorf("prompt file %s is empty", promptFile)
+		}
+		return string(data), nil
+	case len(args) > 0:
+		return args[0], nil
+	default:
+		return "", fmt.Errorf("no prompt: pass it as an argument or with --prompt-file <path>")
+	}
+}
+
 func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
 		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
@@ -769,6 +808,7 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 }
 
 func init() {
+	launchCmd.Flags().String("prompt-file", "", "Read the prompt from a file instead of the positional argument (avoids shell mangling of backticks); mutually exclusive with it")
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR (also the way to resume a budget-paused PR — the agent picks up from the WIP commit)")
 	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")

@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/spf13/pflag"
 )
 
 func TestFormatPaneTitle(t *testing.T) {
@@ -713,4 +715,104 @@ func TestLaunchCmdHasPRFlag(t *testing.T) {
 	if f.DefValue != "" {
 		t.Errorf("--pr default value should be empty, got %q", f.DefValue)
 	}
+}
+
+// TestSessionPromptDocumentsEveryLaunchFlag keeps the coordinator system prompt
+// in step with the CLI. A coordinator only knows the flags its prompt names: the
+// prompt once listed four of them, so --resume-from was invisible and agents were
+// killed and re-briefed cold when they could have been continued.
+func TestSessionPromptDocumentsEveryLaunchFlag(t *testing.T) {
+	flagToken := regexp.MustCompile(`--[a-z][a-z0-9-]*`)
+
+	for _, tc := range []struct {
+		name     string
+		repoName string
+	}{
+		{"in a repo", "klaus"},
+		{"scratch workspace", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Empty repoRoot: no .klaus/session-prompt.md, so the built-in
+			// template renders.
+			prompt, err := config.RenderSessionPrompt(t.TempDir(), config.PromptVars{
+				RunID:    "20260731-1804-b437",
+				Branch:   "agent/20260731-1804-b437",
+				RepoName: tc.repoName,
+			})
+			if err != nil {
+				t.Fatalf("rendering session prompt: %v", err)
+			}
+
+			documented := map[string]bool{}
+			for _, tok := range flagToken.FindAllString(prompt, -1) {
+				documented[tok] = true
+			}
+
+			launchCmd.Flags().VisitAll(func(f *pflag.Flag) {
+				if !documented["--"+f.Name] {
+					t.Errorf("klaus launch --%s is not documented in the coordinator session prompt", f.Name)
+				}
+			})
+		})
+	}
+}
+
+func TestResolvePrompt(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "prompt.md")
+	// Backticks and $VAR are exactly what a shell-quoted prompt loses.
+	body := "Fix `ValidateToken()` in internal/auth/verify.go\n\nUse $HOME, not ~.\n"
+	if err := os.WriteFile(file, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("file contents are used verbatim", func(t *testing.T) {
+		got, err := resolvePrompt(nil, file)
+		if err != nil {
+			t.Fatalf("resolvePrompt: %v", err)
+		}
+		if got != body {
+			t.Errorf("prompt = %q, want %q", got, body)
+		}
+	})
+
+	t.Run("positional argument still works", func(t *testing.T) {
+		got, err := resolvePrompt([]string{"do the thing"}, "")
+		if err != nil {
+			t.Fatalf("resolvePrompt: %v", err)
+		}
+		if got != "do the thing" {
+			t.Errorf("prompt = %q", got)
+		}
+	})
+
+	t.Run("both sources is an error", func(t *testing.T) {
+		_, err := resolvePrompt([]string{"do the thing"}, file)
+		if err == nil || !strings.Contains(err.Error(), "--prompt-file") {
+			t.Errorf("err = %v, want an error naming --prompt-file", err)
+		}
+	})
+
+	t.Run("neither source is an error", func(t *testing.T) {
+		_, err := resolvePrompt(nil, "")
+		if err == nil || !strings.Contains(err.Error(), "--prompt-file") {
+			t.Errorf("err = %v, want an error naming --prompt-file", err)
+		}
+	})
+
+	t.Run("missing file is an error", func(t *testing.T) {
+		if _, err := resolvePrompt(nil, filepath.Join(dir, "nope.md")); err == nil {
+			t.Error("expected an error for a missing prompt file")
+		}
+	})
+
+	t.Run("whitespace-only file is an error", func(t *testing.T) {
+		blank := filepath.Join(dir, "blank.md")
+		if err := os.WriteFile(blank, []byte("  \n\t\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resolvePrompt(nil, blank); err == nil {
+			t.Error("expected an error for an empty prompt file")
+		}
+	})
 }
