@@ -81,6 +81,13 @@ func TestLaunchLifecycle(t *testing.T) {
 			t.Errorf("claude argv missing %q\n--- argv ---\n%s", want, argv)
 		}
 	}
+	// With neither flag nor config set, the claude command must not carry
+	// --model/--effort at all — claude's own resolution applies unchanged.
+	for _, absent := range []string{"--model", "--effort"} {
+		if strings.Contains(argv, absent) {
+			t.Errorf("claude argv should not carry %q when unset\n--- argv ---\n%s", absent, argv)
+		}
+	}
 
 	// Let the agent finish; the pipeline runs _format-stream then _finalize.
 	h.ReleaseClaude()
@@ -174,6 +181,80 @@ func TestLaunchPromptFile(t *testing.T) {
 
 	h.ReleaseClaude()
 	h.WaitForState(runID, func(s *run.State) bool { return s.TmuxPane == nil }, 30*time.Second)
+}
+
+// TestLaunchModelEffort covers per-launch model/effort selection: config
+// defaults apply when a flag is unset, a flag overrides the config default,
+// the values reach the claude argv, and the run state records what the run
+// executed under.
+func TestLaunchModelEffort(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	// Config sets defaults for both; the launch overrides only --effort.
+	h.AmendRepoConfig(map[string]any{
+		"default_agent_model":  "claude-config-model",
+		"default_agent_effort": "high",
+	})
+
+	res := h.RunKlaus("launch", "add retries to the fetcher", "--effort", "low")
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	ids := h.RunIDs()
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 run, got %d: %v", len(ids), ids)
+	}
+
+	h.WaitForClaudeStart(30 * time.Second)
+	argv := h.ClaudeArgv()
+	// Config default applies for the model; the flag wins for effort.
+	if !strings.Contains(argv, "--model\nclaude-config-model\n") {
+		t.Errorf("claude argv missing config-default model\n--- argv ---\n%s", argv)
+	}
+	if !strings.Contains(argv, "--effort\nlow\n") {
+		t.Errorf("claude argv missing flag-override effort\n--- argv ---\n%s", argv)
+	}
+	if strings.Contains(argv, "--effort\nhigh\n") {
+		t.Errorf("config effort should be overridden by the flag\n--- argv ---\n%s", argv)
+	}
+
+	// Run state records what the run executed under.
+	st, err := h.ReadState(ids[0])
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if st.Model == nil || *st.Model != "claude-config-model" {
+		t.Errorf("state Model = %v, want claude-config-model", st.Model)
+	}
+	if st.Effort == nil || *st.Effort != "low" {
+		t.Errorf("state Effort = %v, want low", st.Effort)
+	}
+
+	h.ReleaseClaude()
+	h.WaitForState(ids[0], func(s *run.State) bool { return s.TmuxPane == nil }, 30*time.Second)
+}
+
+// TestLaunchInvalidEffort asserts an effort outside the claude CLI's set is
+// rejected up front: non-zero exit, an error naming the valid values, and no
+// run recorded.
+func TestLaunchInvalidEffort(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+
+	res := h.RunKlaus("launch", "do the thing", "--effort", "turbo")
+	if res.ExitCode == 0 {
+		t.Fatalf("launch with invalid effort exited 0\nstdout:\n%s", res.Stdout)
+	}
+	for _, want := range []string{"turbo", "low", "medium", "high", "xhigh", "max"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr should mention %q, got:\n%s", want, res.Stderr)
+		}
+	}
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
 }
 
 // TestLaunchPromptSourceErrors asserts the prompt source is unambiguous: both

@@ -57,6 +57,14 @@ oversized, sensitive-skipped, or its session UUID is unknown. Use --no-replay
 to force a fresh agent, --replay to force replay (bypassing the size
 threshold), and --replay-threshold-kb to tune the per-launch size cap.
 
+Use --model and --effort to pick the model and reasoning effort for the
+agent's claude run — e.g. a cheap mechanical task on a smaller model at low
+effort. Effort must be one of: low, medium, high, xhigh, max. The model is
+passed through verbatim; claude itself rejects unknown models. When a flag is
+unset, the config default (default_agent_model / default_agent_effort in
+.klaus/config.json) applies; when neither is set, the flag is omitted and
+claude's own resolution applies.
+
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
 are synced back after completion. Use --local to force local execution, or
@@ -75,6 +83,8 @@ are synced back after completion. Use --local to force local execution, or
 		forceLocal, _ := cmd.Flags().GetBool("local")
 		hostOverride, _ := cmd.Flags().GetString("host")
 		resumeFrom, _ := cmd.Flags().GetString("resume-from")
+		model, _ := cmd.Flags().GetString("model")
+		effort, _ := cmd.Flags().GetString("effort")
 		replayFlag, _ := cmd.Flags().GetBool("replay")
 		noReplay, _ := cmd.Flags().GetBool("no-replay")
 		replayThresholdKB, _ := cmd.Flags().GetInt("replay-threshold-kb")
@@ -118,6 +128,15 @@ are synced back after completion. Use --local to force local execution, or
 
 		if budget == "" {
 			budget = hostCfg.DefaultBudget
+		}
+		if model == "" {
+			model = hostCfg.DefaultAgentModel
+		}
+		if effort == "" {
+			effort = hostCfg.DefaultAgentEffort
+		}
+		if err := validateEffort(effort); err != nil {
+			return err
 		}
 
 		store, err := sessionStore()
@@ -377,7 +396,7 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		// Build the claude command
-		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, resolvedResume)
+		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, resolvedResume, model, effort)
 
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
 		// For cross-repo launches with a host repo, finalize must run from the
@@ -474,6 +493,8 @@ are synced back after completion. Use --local to force local execution, or
 			TargetRepo:  normalizedTarget,
 			CloneDir:    cloneDirPtr,
 			SessionName: &id,
+			Model:       stringPtr(model),
+			Effort:      stringPtr(effort),
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
@@ -527,6 +548,12 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Printf("  host:     local\n")
 		}
 		fmt.Printf("  budget:   $%s\n", budget)
+		if model != "" {
+			fmt.Printf("  model:    %s\n", model)
+		}
+		if effort != "" {
+			fmt.Printf("  effort:   %s\n", effort)
+		}
 		fmt.Printf("  log:      %s\n", logFile)
 		fmt.Println()
 		fmt.Printf("Agent %s is running. Use 'klaus status' to check progress.\n", id)
@@ -573,13 +600,38 @@ func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id 
 	)
 }
 
-func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeSessionName string) string {
+// validEfforts is the claude CLI's accepted --effort set.
+var validEfforts = []string{"low", "medium", "high", "xhigh", "max"}
+
+// validateEffort accepts empty (flag omitted) or one of validEfforts.
+func validateEffort(effort string) error {
+	if effort == "" {
+		return nil
+	}
+	for _, v := range validEfforts {
+		if effort == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid effort %q: valid values are %s", effort, strings.Join(validEfforts, ", "))
+}
+
+// buildClaudeCommand assembles the agent's claude invocation. model and effort
+// are passed through only when non-empty, so an unset value leaves claude's
+// own model/effort resolution unchanged.
+func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeSessionName, model, effort string) string {
 	parts := []string{
 		"claude", "-p",
 		"-n", shellQuote(runID),
 	}
 	if resumeSessionName != "" {
 		parts = append(parts, "--resume", shellQuote(resumeSessionName), "--fork-session")
+	}
+	if model != "" {
+		parts = append(parts, "--model", shellQuote(model))
+	}
+	if effort != "" {
+		parts = append(parts, "--effort", shellQuote(effort))
 	}
 	parts = append(parts,
 		"--dangerously-skip-permissions",
@@ -819,5 +871,7 @@ func init() {
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for a budget-paused --pr (continue the prior conversation, bypassing the size threshold)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for a budget-paused --pr; dispatch a fresh agent instead")
 	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")
+	launchCmd.Flags().String("model", "", "Model for the agent's claude run, passed through verbatim (default from config default_agent_model; unset = claude's own default)")
+	launchCmd.Flags().String("effort", "", "Reasoning effort for the agent: low, medium, high, xhigh, or max (default from config default_agent_effort; unset = claude's own default)")
 	rootCmd.AddCommand(launchCmd)
 }

@@ -179,6 +179,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
+| `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
@@ -230,6 +231,17 @@ Launch an agent against a different GitHub repository. The repo is cloned (or fe
 ```bash
 klaus launch --repo owner/repo "Fix the bug in their API"
 ```
+
+### `klaus launch --model` / `--effort`
+
+Pick the model and reasoning effort for the agent's `claude` run — e.g. a cheap mechanical task on a smaller model at low effort while a large build keeps the big one:
+
+```bash
+klaus launch --model claude-haiku-4-5 --effort low "Update the CHANGELOG for v1.2"
+klaus launch --effort max "Redesign the pipeline state machine"
+```
+
+`--effort` must be one of `low`, `medium`, `high`, `xhigh`, `max`. The model is passed through verbatim — `claude` itself rejects unknown models. Per-repo defaults come from `default_agent_model` / `default_agent_effort` in `.klaus/config.json`, with the flag overriding config; agents dispatched by the pipeline (`klaus launch --pr` fix agents) pick up the config defaults too. When neither flag nor config sets a value, the `claude` command carries no `--model`/`--effort` at all, so claude's own resolution applies unchanged. The chosen values are recorded in the run state.
 
 ### Sandbox (remote execution)
 
@@ -388,11 +400,15 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "trusted_reviewers": ["gemini-code-assist[bot]"],
   "require_approval": true,
   "auto_merge_on_approval": false,
-  "merge_verify_command": "nix build"
+  "merge_verify_command": "nix build",
+  "default_agent_model": "claude-sonnet-5",
+  "default_agent_effort": "medium"
 }
 ```
 
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
+
+`default_agent_model` / `default_agent_effort` set the `claude --model` / `--effort` for launched agents when the launch doesn't pass the corresponding flag. When unset, the flag is omitted from the `claude` command entirely.
 
 **`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
 
