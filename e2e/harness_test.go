@@ -280,7 +280,10 @@ func (h *Harness) AmendRepoConfig(extra map[string]any) {
 	for k, v := range extra {
 		cfg[k] = v
 	}
-	out, _ := json.MarshalIndent(cfg, "", "  ")
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		h.t.Fatalf("marshaling repo config: %v", err)
+	}
 	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
 		h.t.Fatalf("writing repo config: %v", err)
 	}
