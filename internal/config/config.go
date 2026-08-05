@@ -34,6 +34,12 @@ type Config struct {
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
 	// unless --replay is passed. Default 300.
 	ReplayThresholdKB int `json:"replay_threshold_kb,omitempty"`
+	// DefaultAgentModel and DefaultAgentEffort are passed to launched agents
+	// as claude --model / --effort when the launch doesn't set the
+	// corresponding flag. Empty means the flag is omitted entirely and
+	// claude's own resolution applies.
+	DefaultAgentModel  string `json:"default_agent_model,omitempty"`
+	DefaultAgentEffort string `json:"default_agent_effort,omitempty"`
 }
 
 // WebhookConfig configures the GitHub webhook receiver. When present, the
@@ -386,11 +392,17 @@ klaus launch --resume-from <run-id> ...       # continue a previous agent's Clau
 klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold
 klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
+klaus launch --model <name> ...               # model for the agent's claude run (default from config; unset = claude's own default)
+klaus launch --effort <level> ...             # reasoning effort: low|medium|high|xhigh|max (default from config; unset = claude's own default)
 klaus launch --local ...                      # force local execution even if a sandbox is configured
 klaus launch --host <name> ...                # override the configured sandbox host
 ` + "```" + `
 
 **Always use --issue when working on a GitHub issue.** The agent needs the issue context.
+
+**Match model and effort to the task.** A cheap mechanical task (doc fix, capture
+task, small refactor) can run a smaller model at low effort, while a large build
+should keep the default; leave both flags unset to use the configured defaults.
 
 **Use --prompt-file for anything long or technical.** A prompt passed as a shell
 argument goes through the shell first: in zsh, backticks inside a double-quoted

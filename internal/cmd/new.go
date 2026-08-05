@@ -98,6 +98,16 @@ func runNew(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading principles: %w", err)
 	}
 
+	// Scaffold agents pick up the configured model/effort defaults (there are
+	// no per-launch flags on klaus new). Validate before creating the repo.
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		return err
+	}
+	if err := validateEffort(cfg.DefaultAgentEffort); err != nil {
+		return err
+	}
+
 	// Load project registry to determine clone directory
 	reg, regErr := project.Load()
 
@@ -160,7 +170,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// Build claude command
 	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
-	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, "")
+	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, "", cfg.DefaultAgentModel, cfg.DefaultAgentEffort)
 
 	// Build pane command — no finalize prefix (new repo, no state ref setup)
 	selfBin := "klaus"

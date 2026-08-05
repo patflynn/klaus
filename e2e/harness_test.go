@@ -263,6 +263,29 @@ func (h *Harness) writeRepoConfig() {
 	h.git(h.RepoDir, "push", "-q", "origin", "main")
 }
 
+// AmendRepoConfig merges the given keys into the sandbox repo's
+// .klaus/config.json. No commit is needed: klaus loads config from the host
+// repo's working tree.
+func (h *Harness) AmendRepoConfig(extra map[string]any) {
+	h.t.Helper()
+	path := filepath.Join(h.RepoDir, ".klaus", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		h.t.Fatalf("reading repo config: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		h.t.Fatalf("parsing repo config: %v", err)
+	}
+	for k, v := range extra {
+		cfg[k] = v
+	}
+	out, _ := json.MarshalIndent(cfg, "", "  ")
+	if err := os.WriteFile(path, append(out, '\n'), 0o644); err != nil {
+		h.t.Fatalf("writing repo config: %v", err)
+	}
+}
+
 // startTmuxServer launches an isolated tmux server on h.Sock and points its
 // panes at a no-profile shell wrapper so they inherit BinDir-first PATH and the
 // temp HOME (the user's login shell would otherwise reset PATH via the Nix

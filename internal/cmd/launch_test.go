@@ -452,7 +452,7 @@ func TestLaunchCmdHasSandboxFlags(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_SessionNaming(t *testing.T) {
-	cmd := buildClaudeCommand("sys prompt", "5", "do stuff", "20260405-1200-abcd", "")
+	cmd := buildClaudeCommand("sys prompt", "5", "do stuff", "20260405-1200-abcd", "", "", "")
 	if !strings.Contains(cmd, "-n '20260405-1200-abcd'") {
 		t.Errorf("expected -n flag with run ID, got: %s", cmd)
 	}
@@ -465,7 +465,7 @@ func TestBuildClaudeCommand_SessionNaming(t *testing.T) {
 }
 
 func TestBuildClaudeCommand_WithResume(t *testing.T) {
-	cmd := buildClaudeCommand("sys prompt", "5", "fix CI", "20260405-1200-efgh", "20260405-1100-abcd")
+	cmd := buildClaudeCommand("sys prompt", "5", "fix CI", "20260405-1200-efgh", "20260405-1100-abcd", "", "")
 	if !strings.Contains(cmd, "-n '20260405-1200-efgh'") {
 		t.Errorf("expected -n flag with new run ID, got: %s", cmd)
 	}
@@ -474,6 +474,46 @@ func TestBuildClaudeCommand_WithResume(t *testing.T) {
 	}
 	if !strings.Contains(cmd, "--fork-session") {
 		t.Errorf("expected --fork-session flag, got: %s", cmd)
+	}
+}
+
+func TestBuildClaudeCommand_ModelAndEffort(t *testing.T) {
+	t.Run("both passed through when set", func(t *testing.T) {
+		cmd := buildClaudeCommand("sys", "5", "do stuff", "20260805-0900-abcd", "", "claude-sonnet-5", "low")
+		if !strings.Contains(cmd, "--model 'claude-sonnet-5'") {
+			t.Errorf("expected --model flag, got: %s", cmd)
+		}
+		if !strings.Contains(cmd, "--effort 'low'") {
+			t.Errorf("expected --effort flag, got: %s", cmd)
+		}
+	})
+
+	t.Run("absent when unset so claude's own resolution applies", func(t *testing.T) {
+		cmd := buildClaudeCommand("sys", "5", "do stuff", "20260805-0900-abcd", "", "", "")
+		if strings.Contains(cmd, "--model") {
+			t.Errorf("expected no --model flag when unset, got: %s", cmd)
+		}
+		if strings.Contains(cmd, "--effort") {
+			t.Errorf("expected no --effort flag when unset, got: %s", cmd)
+		}
+	})
+}
+
+func TestValidateEffort(t *testing.T) {
+	for _, valid := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+		if err := validateEffort(valid); err != nil {
+			t.Errorf("validateEffort(%q) = %v, want nil", valid, err)
+		}
+	}
+	err := validateEffort("turbo")
+	if err == nil {
+		t.Fatal("validateEffort(\"turbo\") = nil, want error")
+	}
+	// The error must name the valid values.
+	for _, want := range []string{"turbo", "low", "medium", "high", "xhigh", "max"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q should mention %q", err, want)
+		}
 	}
 }
 
@@ -583,7 +623,7 @@ func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
 	}
 
 	// The downstream claude command should NOT include --resume.
-	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume)
+	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume, "", "")
 	if strings.Contains(cmd, "--resume") {
 		t.Errorf("expected no --resume flag when session is missing, got: %s", cmd)
 	}
@@ -599,7 +639,7 @@ func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
 	if !claudeSessionExists(orphanUUID) {
 		t.Fatal("claudeSessionExists should now return true after creating the file")
 	}
-	cmdResumed := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", orphanUUID)
+	cmdResumed := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", orphanUUID, "", "")
 	if !strings.Contains(cmdResumed, "--resume '"+orphanUUID+"'") {
 		t.Errorf("expected --resume flag when session exists, got: %s", cmdResumed)
 	}
@@ -628,7 +668,7 @@ func TestResumeHandlesNilRunState(t *testing.T) {
 	if resolvedResume != "" {
 		t.Errorf("resolvedResume = %q, want empty for nil run state", resolvedResume)
 	}
-	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume)
+	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume, "", "")
 	if strings.Contains(cmd, "--resume") {
 		t.Errorf("expected no --resume flag for nil run state, got: %s", cmd)
 	}
@@ -676,7 +716,7 @@ func TestStageResumeTranscript(t *testing.T) {
 		}
 
 		// With staging done, the launched command resumes the session.
-		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", uuid)
+		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", uuid, "", "")
 		if !strings.Contains(cmd, "--resume '"+uuid+"'") {
 			t.Errorf("expected --resume after successful staging, got: %s", cmd)
 		}
@@ -699,7 +739,7 @@ func TestStageResumeTranscript(t *testing.T) {
 		}
 
 		// The caller leaves resolvedResume empty, so no --resume flag.
-		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", "")
+		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", "", "", "")
 		if strings.Contains(cmd, "--resume") {
 			t.Errorf("expected no --resume when staging failed, got: %s", cmd)
 		}
