@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/patflynn/klaus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/patflynn/klaus/actions/workflows/ci.yml)
 
-Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Start a normal Claude Code session that can fan out work to parallel autonomous agents, each in its own git worktree and tmux pane.
+Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Start a normal Claude Code session that can fan out work to parallel autonomous agents, each in its own git worktree and its own tmux pane in a detached session — off your screen, but still yours to inspect.
 
 ## Quick start
 
@@ -19,14 +19,14 @@ You: We need to fix the flaky auth test, add dark mode to settings,
 Claude: [runs klaus launch for each task]
 ```
 
-Three new tmux panes appear. Each agent works independently in its own worktree, pushes a branch, and opens a PR. Your coordinator session stays focused on the big picture.
+Three agents start in the background. Each works independently in its own worktree, pushes a branch, and opens a PR. Your window is untouched — the agents' tmux panes live in a separate detached session, and you watch them through the dashboard, `klaus status`, and `klaus logs`.
 
 ## What happens when you run `klaus`
 
 1. **In a repo:** a fresh git worktree is created from `origin/main`. **Anywhere else:** a scratch workspace under `~/.klaus/sessions/`
 2. Claude Code starts interactively in that workspace
 3. You talk to Claude as usual — it has `klaus` on PATH
-4. When Claude runs `klaus launch`, a new tmux pane splits off with an autonomous agent
+4. When Claude runs `klaus launch`, an autonomous agent starts in a detached tmux session — off your screen, but still a real process you can inspect and kill
 5. Agents push branches and open PRs — `klaus dashboard` picks them up automatically
 6. The pipeline monitors CI, dispatches fix agents on failure, and auto-merges when approved
 7. Your job shifts from babysitting agents to reviewing and approving PRs
@@ -402,13 +402,16 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "auto_merge_on_approval": false,
   "merge_verify_command": "nix build",
   "default_agent_model": "claude-sonnet-5",
-  "default_agent_effort": "medium"
+  "default_agent_effort": "medium",
+  "agent_display": "detached"
 }
 ```
 
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 
 `default_agent_model` / `default_agent_effort` set the `claude --model` / `--effort` for launched agents when the launch doesn't pass the corresponding flag. When unset, the flag is omitted from the `claude` command entirely.
+
+`agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 
 **`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
 
@@ -423,7 +426,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
   for why in-place messaging isn't offered and what it would take
 - **Worktrees** isolate each agent — they can't step on each other or your working tree
-- **tmux panes** give live visibility into each agent's progress
+- **tmux panes** manage each agent's process lifecycle. They live in a detached `klaus-agents-<session-id>` session owned by the tmux server, so they cost you no screen space and agents survive the coordinator exiting (`agent_display: "pane"` splits your window instead)
 - **JSONL logs** are saved for replay and post-run analysis
 - **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting
 - **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts sync to the repo's data ref

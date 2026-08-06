@@ -58,6 +58,69 @@ func SplitWindowSized(ctx context.Context, targetPane, dir, command, orientation
 	return out, nil
 }
 
+// detachedWidth and detachedHeight size the detached agents session. Nobody
+// watches these panes, but capture-pane (klaus logs) reads what they rendered,
+// so they get a roomy window rather than tmux's 80x24 default.
+const (
+	detachedWidth  = "200"
+	detachedHeight = "50"
+)
+
+// SessionExists reports whether a tmux session with exactly this name exists.
+func SessionExists(ctx context.Context, session string) bool {
+	_, err := runTmux(ctx, "has-session", "-t", "="+session)
+	return err == nil
+}
+
+// NewDetachedWindow creates a window running command in the named detached
+// session, creating that session if it does not exist yet. Returns the new
+// pane ID. The command runs in dir.
+func NewDetachedWindow(ctx context.Context, session, window, dir, command string) (string, error) {
+	if !SessionExists(ctx, session) {
+		out, err := runTmux(ctx,
+			"new-session", "-d", "-s", session, "-n", window,
+			"-x", detachedWidth, "-y", detachedHeight,
+			"-c", dir, "-P", "-F", "#{pane_id}", command)
+		if err == nil {
+			return out, nil
+		}
+		// Concurrent launches race here: another one may have created the
+		// session between the check and now. Only that is recoverable.
+		if !SessionExists(ctx, session) {
+			return "", fmt.Errorf("new-session: %w", err)
+		}
+	}
+	out, err := runTmux(ctx,
+		"new-window", "-t", session+":", "-n", window, "-d",
+		"-c", dir, "-P", "-F", "#{pane_id}", command)
+	if err != nil {
+		return "", fmt.Errorf("new-window: %w", err)
+	}
+	return out, nil
+}
+
+// SessionPanes returns the pane IDs in the named session, or an error if the
+// session does not exist.
+func SessionPanes(ctx context.Context, session string) ([]string, error) {
+	out, err := runTmux(ctx, "list-panes", "-s", "-t", "="+session, "-F", "#{pane_id}")
+	if err != nil {
+		return nil, fmt.Errorf("list-panes: %w", err)
+	}
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			panes = append(panes, s)
+		}
+	}
+	return panes, nil
+}
+
+// KillSession kills a tmux session by name.
+func KillSession(ctx context.Context, session string) error {
+	_, err := runTmux(ctx, "kill-session", "-t", "="+session)
+	return err
+}
+
 // SetPaneTitle sets the title of a tmux pane.
 // Uses select-pane -T which correctly handles titles with spaces,
 // unlike set-option -p pane-title which breaks in tmux 3.6+.

@@ -40,6 +40,36 @@ type Config struct {
 	// claude's own resolution applies.
 	DefaultAgentModel  string `json:"default_agent_model,omitempty"`
 	DefaultAgentEffort string `json:"default_agent_effort,omitempty"`
+	// AgentDisplay controls where launched agent panes live. "detached" (the
+	// default) gives each agent a window in a detached tmux session, so the
+	// coordinator's window is never split; "pane" splits the coordinator's
+	// window as klaus used to. Empty means "detached".
+	AgentDisplay string `json:"agent_display,omitempty"`
+}
+
+// Agent display modes for Config.AgentDisplay.
+const (
+	AgentDisplayDetached = "detached"
+	AgentDisplayPane     = "pane"
+)
+
+// AgentDisplayMode returns the configured agent display mode, defaulting to
+// "detached". Callers should ValidateAgentDisplay first to reject typos.
+func (c *Config) AgentDisplayMode() string {
+	if c.AgentDisplay == AgentDisplayPane {
+		return AgentDisplayPane
+	}
+	return AgentDisplayDetached
+}
+
+// ValidateAgentDisplay rejects an agent_display value klaus does not know.
+// Empty is valid and means the default.
+func ValidateAgentDisplay(v string) error {
+	switch v {
+	case "", AgentDisplayDetached, AgentDisplayPane:
+		return nil
+	}
+	return fmt.Errorf("invalid agent_display %q: must be %q or %q", v, AgentDisplayDetached, AgentDisplayPane)
 }
 
 // WebhookConfig configures the GitHub webhook receiver. When present, the
@@ -532,7 +562,7 @@ Events arrive only while the REPL is idle between turns. If a flurry lands durin
 ## Agent lifecycle
 
 What happens after ` + "`klaus launch`" + `:
-1. Creates an isolated git worktree and tmux pane
+1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
 2. Agent runs Claude Code in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
 4. Events are emitted (agent:completed, agent:pr-created)

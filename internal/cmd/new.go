@@ -107,6 +107,9 @@ func runNew(cmd *cobra.Command, args []string) error {
 	if err := validateEffort(cfg.DefaultAgentEffort); err != nil {
 		return err
 	}
+	if err := config.ValidateAgentDisplay(cfg.AgentDisplay); err != nil {
+		return err
+	}
 
 	// Load project registry to determine clone directory
 	reg, regErr := project.Load()
@@ -183,24 +186,11 @@ func runNew(cmd *cobra.Command, args []string) error {
 		name,
 	)
 
-	// Launch in tmux pane
-	currentPane := os.Getenv("TMUX_PANE")
-	paneID, err := tmuxClient.SplitWindow(ctx, currentPane, repoDir, paneCmd)
+	// Launch the scaffolding agent's tmux pane (detached by default)
+	paneID, _, err := startAgentPane(ctx, tmuxClient, cfg.AgentDisplayMode(),
+		id, repoDir, paneCmd, FormatPaneTitle(id, "", "new "+name))
 	if err != nil {
-		return fmt.Errorf("creating tmux pane: %w", err)
-	}
-
-	if err := tmuxClient.SetPaneTitle(ctx, paneID, FormatPaneTitle(id, "", "new "+name)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to set pane title: %v\n", err)
-	}
-	if err := tmuxClient.SetWindowOption(ctx, paneID, "automatic-rename", "off"); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to disable automatic rename: %v\n", err)
-	}
-	if err := tmuxClient.LockPaneTitle(ctx, paneID); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: failed to lock pane title: %v\n", err)
-	}
-	if err := tmuxClient.RebalanceLayout(ctx, currentPane); err != nil {
-		return fmt.Errorf("rebalancing tmux layout: %w", err)
+		return err
 	}
 
 	// Save state
