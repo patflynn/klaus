@@ -27,6 +27,12 @@ var launchCmd = &cobra.Command{
 	Long: `Creates a git worktree, launches Claude Code in autonomous mode in a new
 tmux pane, and tracks the run state. Must be run inside a tmux session.
 
+The agent's pane goes into a detached tmux session (klaus-agents-<session-id>),
+so your window is never split — watch agents with the dashboard, 'klaus status',
+and 'klaus logs'. Because the tmux server owns that session, agents keep running
+if the coordinator exits. Set agent_display to "pane" in .klaus/config.json to
+split the current window instead.
+
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
 technical prompts: in zsh a backtick inside a double-quoted argument is command
@@ -136,6 +142,9 @@ are synced back after completion. Use --local to force local execution, or
 			effort = hostCfg.DefaultAgentEffort
 		}
 		if err := validateEffort(effort); err != nil {
+			return err
+		}
+		if err := config.ValidateAgentDisplay(hostCfg.AgentDisplay); err != nil {
 			return err
 		}
 
@@ -436,31 +445,22 @@ are synced back after completion. Use --local to force local execution, or
 			paneCmd = buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id)
 		}
 
-		// Launch in tmux pane, targeting the pane that ran this command
-		currentPane := os.Getenv("TMUX_PANE")
-		paneID, err := tmuxClient.SplitWindow(ctx, currentPane, worktree, paneCmd)
+		// Launch the agent's tmux pane. Detached by default (its own window in
+		// the agents session); splitFrom is non-empty only when agent_display
+		// is "pane" and the coordinator's window was split.
+		paneID, splitFrom, err := startAgentPane(ctx, tmuxClient, hostCfg.AgentDisplayMode(),
+			id, worktree, paneCmd, FormatPaneTitle(id, issue, prompt))
 		if err != nil {
-			return fmt.Errorf("creating tmux pane: %w", err)
-		}
-
-		if err := tmuxClient.SetPaneTitle(ctx, paneID, FormatPaneTitle(id, issue, prompt)); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to set pane title: %v\n", err)
-		}
-		if err := tmuxClient.SetWindowOption(ctx, paneID, "automatic-rename", "off"); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to disable automatic rename: %v\n", err)
-		}
-		if err := tmuxClient.LockPaneTitle(ctx, paneID); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to lock pane title: %v\n", err)
-		}
-		if err := tmuxClient.RebalanceLayout(ctx, currentPane); err != nil {
-			return fmt.Errorf("rebalancing tmux layout: %w", err)
+			return err
 		}
 
 		// Keep the dashboard pane pinned at the bottom. RebalanceLayout uses
 		// even-vertical which treats all panes equally, so the dashboard may
 		// end up in the middle. Load the session state to find the dashboard
 		// pane, then swap it to the last position if needed.
-		pinDashboardToBottom(ctx, currentPane, store, tmuxClient)
+		if splitFrom != "" {
+			pinDashboardToBottom(ctx, splitFrom, store, tmuxClient)
+		}
 
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)

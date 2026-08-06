@@ -398,6 +398,48 @@ func (h *Harness) PaneExists(paneID string) bool {
 	return false
 }
 
+// AgentsSession is the detached tmux session klaus puts agent panes in.
+func (h *Harness) AgentsSession() string {
+	return "klaus-agents-" + h.SessionID
+}
+
+// SessionExists reports whether a tmux session with this exact name exists on
+// the isolated server.
+func (h *Harness) SessionExists(name string) bool {
+	h.t.Helper()
+	err := exec.Command("tmux", "-S", h.Sock, "-f", "/dev/null", "has-session", "-t", "="+name).Run()
+	return err == nil
+}
+
+// SessionPanes returns the pane ids belonging to the named session.
+func (h *Harness) SessionPanes(name string) []string {
+	h.t.Helper()
+	if !h.SessionExists(name) {
+		return nil
+	}
+	out := h.tmux("list-panes", "-s", "-t", "="+name, "-F", "#{pane_id}")
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			panes = append(panes, s)
+		}
+	}
+	return panes
+}
+
+// WindowPanes returns the pane ids in the window containing the given pane.
+func (h *Harness) WindowPanes(paneID string) []string {
+	h.t.Helper()
+	out := h.tmux("list-panes", "-t", paneID, "-F", "#{pane_id}")
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			panes = append(panes, s)
+		}
+	}
+	return panes
+}
+
 // PaneTitle returns the title of the given pane.
 func (h *Harness) PaneTitle(paneID string) string {
 	h.t.Helper()

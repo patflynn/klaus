@@ -18,6 +18,19 @@ type Client interface {
 	// size is passed to tmux's -l flag (e.g. "30%" or "15").
 	SplitWindowSized(ctx context.Context, targetPane, dir, command, orientation, size string) (string, error)
 
+	// SessionExists reports whether a tmux session with exactly this name exists.
+	SessionExists(ctx context.Context, session string) bool
+
+	// NewDetachedWindow creates a window running command in the named detached
+	// session, creating that session if it does not exist yet.
+	NewDetachedWindow(ctx context.Context, session, window, dir, command string) (string, error)
+
+	// SessionPanes returns the pane IDs in the named session.
+	SessionPanes(ctx context.Context, session string) ([]string, error)
+
+	// KillSession kills a tmux session by name.
+	KillSession(ctx context.Context, session string) error
+
 	// SetPaneTitle sets the title of a tmux pane.
 	SetPaneTitle(ctx context.Context, paneID, title string) error
 
@@ -75,6 +88,22 @@ func (c *ExecClient) SplitWindow(ctx context.Context, targetPane, dir, command s
 
 func (c *ExecClient) SplitWindowSized(ctx context.Context, targetPane, dir, command, orientation, size string) (string, error) {
 	return SplitWindowSized(ctx, targetPane, dir, command, orientation, size)
+}
+
+func (c *ExecClient) SessionExists(ctx context.Context, session string) bool {
+	return SessionExists(ctx, session)
+}
+
+func (c *ExecClient) NewDetachedWindow(ctx context.Context, session, window, dir, command string) (string, error) {
+	return NewDetachedWindow(ctx, session, window, dir, command)
+}
+
+func (c *ExecClient) SessionPanes(ctx context.Context, session string) ([]string, error) {
+	return SessionPanes(ctx, session)
+}
+
+func (c *ExecClient) KillSession(ctx context.Context, session string) error {
+	return KillSession(ctx, session)
 }
 
 func (c *ExecClient) SetPaneTitle(ctx context.Context, paneID, title string) error {

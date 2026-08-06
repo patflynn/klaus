@@ -19,7 +19,8 @@ var cleanupCmd = &cobra.Command{
 deleting local branches, and removing state files.
 
 Use --all to clean up all runs. Runs with active tmux panes are skipped
-by default; pass --force to remove them anyway.`,
+by default; pass --force to remove them anyway. With --all, the detached
+agents tmux session is removed too once no remaining run holds a pane in it.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		force, _ := cmd.Flags().GetBool("force")
@@ -65,6 +66,7 @@ func cleanupAll(ctx context.Context, root string, store run.StateStore, gitClien
 			fmt.Printf("  warning: failed to clean up %s: %v\n", s.ID, err)
 		}
 	}
+	killEmptyAgentsSession(ctx, store, tc)
 	return nil
 }
 
