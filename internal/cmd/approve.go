@@ -13,8 +13,9 @@ import (
 
 var approveCmd = &cobra.Command{
 	Use:   "approve <pr-number> [<pr-number>...]",
-	Short: "Approve PRs for merging",
+	Short: "Approve PRs for merging (operator task)",
 	Long: `Marks PRs as approved so they can be merged with 'klaus merge'.
+Approval is a human task that exists only to ensure that all changes are gated by operator approval.
 
 Accepts PR numbers, or use --run to approve by run ID.
 Use --all to approve all merge-ready PRs.`,

@@ -196,7 +196,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus webhook setup [project]` | Create missing webhooks for registered projects |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
 | `klaus watch` | Stream pipeline events line-by-line (designed for Claude Code's Monitor tool) |
-| `klaus approve <pr>...` | Approve PRs for merging |
+| `klaus approve <pr>...` | Approve PRs for merging (operator task) |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
 
@@ -297,7 +297,7 @@ When webhook mode is enabled, the data-source line shows a freshness indicator f
 
 ### `klaus approve`
 
-Mark PRs as approved for merging. By default, `klaus merge` requires approval before merging.
+Mark PRs as approved for merging. PR approval is a human task that exists only to ensure that all changes are gated by operator approval. By default, `klaus merge` requires approval before merging.
 
 ```bash
 klaus approve 42 43                  # approve specific PRs
