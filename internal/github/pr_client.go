@@ -66,3 +66,16 @@ func MergeArgs(prNumber, mergeMethod string, deleteBranch bool, repo string) []s
 	args = append(args, "--", prNumber)
 	return args
 }
+
+// UpdateBranchArgs builds the `gh pr update-branch` arg list. This is the
+// native GitHub "Update branch" operation: it merges the base branch into the
+// PR head so a behind-but-mergeable PR satisfies an up-to-date-branch
+// protection rule.
+func UpdateBranchArgs(prNumber, repo string) []string {
+	args := []string{"pr", "update-branch"}
+	if repo != "" {
+		args = append(args, "--repo", repo)
+	}
+	args = append(args, "--", prNumber)
+	return args
+}

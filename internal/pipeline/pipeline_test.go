@@ -2715,3 +2715,330 @@ func TestTrustedCommentsBreakerResetsWhenAddressed(t *testing.T) {
 		t.Errorf("expected dispatch after breaker reset, got %d launches", launchCount)
 	}
 }
+
+// ── Auto-merge retry loop (issue #292) ──────────────────────────────────
+
+// readEvents returns every event the controller emitted to its event log.
+// newTestController roots the log at <dir>/session.
+func readEvents(t *testing.T, dir string) []event.Event {
+	t.Helper()
+	evts, err := event.NewLog(filepath.Join(dir, "session")).Read()
+	if err != nil {
+		t.Fatalf("reading event log: %v", err)
+	}
+	return evts
+}
+
+func countEvents(evts []event.Event, typ string) int {
+	n := 0
+	for _, e := range evts {
+		if e.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// expireMergeBackoff rewinds the last auto-merge attempt so the next poll is
+// past the retry window, standing in for waiting out mergeRetryBackoff.
+func expireMergeBackoff(c *Controller, prNumber string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ps := c.prStates[prNumber]; ps != nil {
+		ps.LastMergeAttemptAt = time.Now().Add(-2 * mergeRetryBackoff)
+	}
+}
+
+// TestApprovedBehindPRDoesNotFloodApprovedEvents reproduces cosmo #734
+// (2026-08-22): an approved, CI-green, conflict-free PR that is behind its
+// base branch used to re-emit pr:approved on every ~3s poll, flooding
+// `klaus watch`. The event must be emitted once per approval edge.
+func TestApprovedBehindPRDoesNotFloodApprovedEvents(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	// Behind by 1: mergeable, but an up-to-date-branch protection rule
+	// rejects the merge until the branch is updated.
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+			TargetRepo: "owner/repo",
+		},
+	}
+
+	for i := 0; i < 20; i++ {
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+
+	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 1 {
+		t.Errorf("expected exactly 1 pr:approved event across 20 polls, got %d", got)
+	}
+	if updateCount != 1 {
+		t.Errorf("expected 1 branch update (backoff gates the rest), got %d", updateCount)
+	}
+	if mergeCount != 0 {
+		t.Errorf("expected no merge attempt while the PR is behind, got %d", mergeCount)
+	}
+}
+
+// TestBehindPRUpdatesBranchThenMerges covers the happy path for a behind PR:
+// update the branch, and once GitHub reports it caught up, merge it.
+func TestBehindPRUpdatesBranchThenMerges(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	var updatedPR, updatedRepo string
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updatedPR, updatedRepo = prNumber, repo
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return nil
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+		TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	actions := c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if updatedPR != "734" || updatedRepo != "owner/repo" {
+		t.Errorf("expected branch update for PR #734 in owner/repo, got %q in %q", updatedPR, updatedRepo)
+	}
+	if mergeCount != 0 {
+		t.Fatalf("expected no merge on the poll that updates the branch, got %d", mergeCount)
+	}
+	hasUpdate := false
+	for _, a := range actions {
+		if a.Type == "update-branch" {
+			hasUpdate = true
+		}
+	}
+	if !hasUpdate {
+		t.Errorf("expected an update-branch action, got %v", actions)
+	}
+
+	// GitHub now reports the branch caught up; the merge lands on a later poll.
+	status.BehindBy = 0
+	expireMergeBackoff(c, "734")
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 1 {
+		t.Errorf("expected 1 merge once the PR is no longer behind, got %d", mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageMerged {
+		t.Errorf("expected stage merged, got %s", got)
+	}
+}
+
+// TestFailingMergeBacksOffThenStalls is the other half of #292: a merge that
+// can never succeed must not be retried on every poll, and must stall loudly
+// once the attempt budget is spent instead of looping forever.
+func TestFailingMergeBacksOffThenStalls(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+		},
+	}
+
+	// First attempt, then a burst of polls inside the backoff window.
+	for i := 0; i < 10; i++ {
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != 1 {
+		t.Fatalf("expected the backoff to hold the retry count at 1, got %d", mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageApproved {
+		t.Errorf("expected a failed merge to fall back to approved, got %s", got)
+	}
+
+	// Wait out the backoff for each remaining attempt in the budget.
+	for i := 0; i < maxMergeAttempts-1; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Fatalf("expected %d merge attempts, got %d", maxMergeAttempts, mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Fatalf("expected stage stalled after the budget is spent, got %s", got)
+	}
+
+	// Budget spent: further polls neither retry nor re-notify.
+	for i := 0; i < 10; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Errorf("expected no merge attempts past the budget, got %d", mergeCount)
+	}
+
+	evts := readEvents(t, dir)
+	if got := countEvents(evts, event.PipelineStalled); got != 1 {
+		t.Errorf("expected exactly 1 pipeline:stalled event, got %d", got)
+	}
+	if got := countEvents(evts, event.PRApproved); got != 1 {
+		t.Errorf("expected exactly 1 pr:approved event, got %d", got)
+	}
+	for _, e := range evts {
+		if e.Type != event.PipelineStalled {
+			continue
+		}
+		if reason, _ := e.Data["reason"].(string); !strings.Contains(reason, "auto-merge failed") {
+			t.Errorf("expected a stall reason naming auto-merge, got %q", reason)
+		}
+	}
+}
+
+// TestFailingBranchUpdateStalls covers the same circuit breaker on the
+// behind-PR path: a branch update that keeps failing must stall rather than
+// retry forever.
+func TestFailingBranchUpdateStalls(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return fmt.Errorf("merge conflict between base and head")
+	})
+
+	statuses := map[string]*PRStatus{
+		"734": {
+			PRNumber: "734", State: "OPEN", CI: "passing",
+			ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+			TargetRepo: "owner/repo",
+		},
+	}
+
+	for i := 0; i < maxMergeAttempts+5; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+
+	if updateCount != maxMergeAttempts {
+		t.Errorf("expected %d branch update attempts, got %d", maxMergeAttempts, updateCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Errorf("expected stage stalled, got %s", got)
+	}
+	if got := countEvents(readEvents(t, dir), event.PipelineStalled); got != 1 {
+		t.Errorf("expected exactly 1 pipeline:stalled event, got %d", got)
+	}
+}
+
+// TestReApprovalReEmitsAndResetsMergeBudget checks the edge really is an edge:
+// losing and regaining approval is a new transition, so pr:approved fires
+// again and auto-merge gets a fresh attempt budget.
+func TestReApprovalReEmitsAndResetsMergeBudget(t *testing.T) {
+	c, dir := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		return "agent-001", nil
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	if mergeCount != 1 {
+		t.Fatalf("expected 1 merge attempt, got %d", mergeCount)
+	}
+
+	// Approval is dismissed by a new push, then re-granted.
+	status.ReviewDecision = "REVIEW_REQUIRED"
+	c.HandleGHStatus(context.Background(), statuses, nil)
+	status.ReviewDecision = "APPROVED"
+	c.HandleGHStatus(context.Background(), statuses, nil)
+
+	if mergeCount != 2 {
+		t.Errorf("expected re-approval to reset the merge budget and retry immediately, got %d attempts", mergeCount)
+	}
+	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 2 {
+		t.Errorf("expected 2 pr:approved events (one per approval edge), got %d", got)
+	}
+}
+
+// TestBranchUpdateDoesNotSpendMergeBudget keeps catching up with a moving base
+// branch from eating the auto-merge retry budget — a PR behind a busy base
+// must still get its full set of merge attempts once it is caught up.
+func TestBranchUpdateDoesNotSpendMergeBudget(t *testing.T) {
+	c, _ := newTestController(t)
+	c.SetAutoMergeOnApproval(true)
+
+	updateCount := 0
+	c.SetUpdateBranch(func(ctx context.Context, repo, prNumber string) error {
+		updateCount++
+		return nil
+	})
+	mergeCount := 0
+	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
+		mergeCount++
+		return fmt.Errorf("Pull request is not mergeable")
+	})
+
+	status := &PRStatus{
+		PRNumber: "734", State: "OPEN", CI: "passing",
+		ReviewDecision: "APPROVED", Conflicts: "none", BehindBy: 1,
+		TargetRepo: "owner/repo",
+	}
+	statuses := map[string]*PRStatus{"734": status}
+
+	// The base branch moves twice while CI re-runs.
+	for i := 0; i < 2; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if updateCount != 2 {
+		t.Fatalf("expected 2 branch updates, got %d", updateCount)
+	}
+
+	// Caught up: the merge budget is untouched, so all attempts are available.
+	status.BehindBy = 0
+	for i := 0; i < maxMergeAttempts+2; i++ {
+		expireMergeBackoff(c, "734")
+		c.HandleGHStatus(context.Background(), statuses, nil)
+	}
+	if mergeCount != maxMergeAttempts {
+		t.Errorf("expected %d merge attempts after catching up, got %d", maxMergeAttempts, mergeCount)
+	}
+	if got := c.PipelineStates()["734"].Stage; got != StageStalled {
+		t.Errorf("expected stage stalled once the merge budget is spent, got %s", got)
+	}
+}

@@ -53,11 +53,12 @@ PR created → CI pending → CI passed → Approved → Merged
 - **CI fails** — a fix agent is dispatched automatically (via `--pr`) to push a correction
 - **Review comments** — an agent is dispatched to address requested changes
 - **Approved + CI green + no conflicts** — auto-merge (when `auto_merge_on_approval` is enabled)
+- **Behind the base branch** — the branch is updated from base first, then merged once CI re-runs
 - **Merge conflicts** — a rebase agent resolves them before merging
 
 When a `pr-fix` run is already active on a PR — including coordinator-launched runs from `klaus launch --pr` — the pipeline will not auto-dispatch additional fix or rebase agents on it. This prevents races during multi-step refactors where intermediate commits may fail CI before the run completes.
 
-Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`. Budget-exhausted agents land in `budget_paused` — see [Budget pause and resume](#budget-pause-and-resume) below.
+Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`. Budget-exhausted agents land in `budget_paused` — see [Budget pause and resume](#budget-pause-and-resume) below. A PR whose merge or branch update keeps failing is retried once a minute for three attempts, then moves to `stalled` and emits a single `pipeline:stalled` event for a human to pick up.
 
 You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
@@ -70,6 +71,7 @@ klaus watch                          # default filter, follow new events
 klaus watch --since-start            # replay everything in the file, then follow
 klaus watch --filter pr:merged       # narrow to a single event type (repeatable)
 klaus watch --filter-out pr:approved # subtract from the default filter
+klaus watch --filter pipeline:stalled # only PRs the pipeline gave up on
 klaus watch --json                   # raw JSONL passthrough
 klaus watch --list-types             # show live and reserved event types
 ```

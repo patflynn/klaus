@@ -31,6 +31,12 @@ const (
 	// so the same signal can be reused once klaus supports non-GitHub
 	// merge-readiness sources.
 	PRApprovalChanged = "pr:approval-changed"
+	// PipelineStalled signals that the pipeline gave up on a PR after
+	// exhausting its retry budget (fix, rebase, review-fix or auto-merge
+	// attempts). It is emitted once per entry into the stalled stage, so a
+	// coordinator watching the channel gets one loud notification instead of
+	// a per-poll stream, and knows the PR now needs a human.
+	PipelineStalled = "pipeline:stalled"
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have

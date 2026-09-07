@@ -26,13 +26,14 @@ import (
 // types that aren't emitted yet (reserved entries) so the filter remains
 // forward-compatible as the pipeline grows.
 var defaultWatchFilter = []string{
-	event.AgentPRCreated, // live
-	"agent:error",        // reserved
-	event.PRApproved,     // live
-	event.PRMerged,       // live
-	"ci:failed",          // reserved (closest live equivalent: agent:ci-failed)
-	"ci:passed",          // reserved (closest live equivalent: agent:ci-passed)
-	"pr:comment",         // reserved
+	event.AgentPRCreated,  // live
+	"agent:error",         // reserved
+	event.PRApproved,      // live
+	event.PRMerged,        // live
+	event.PipelineStalled, // live
+	"ci:failed",           // reserved (closest live equivalent: agent:ci-failed)
+	"ci:passed",           // reserved (closest live equivalent: agent:ci-passed)
+	"pr:comment",          // reserved
 }
 
 // knownEventTypes maps event types to a one-line description and whether the
@@ -49,6 +50,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRApproved, "live", "A PR was approved"},
 	{event.PRMerged, "live", "A PR merged"},
 	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
+	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
 	{"agent:error", "reserved", "Reserved for unrecoverable agent failures (not currently emitted; use agent:needs-attention)"},
 	{"ci:failed", "reserved", "Reserved short name (currently emitted as agent:ci-failed)"},
 	{"ci:passed", "reserved", "Reserved short name (currently emitted as agent:ci-passed)"},
@@ -73,7 +75,7 @@ followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
   agent:pr-created, agent:error, pr:approved, pr:merged,
-  ci:failed, ci:passed, pr:comment
+  pipeline:stalled, ci:failed, ci:passed, pr:comment
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -446,6 +448,17 @@ func eventSummary(evt event.Event) string {
 			return fmt.Sprintf("PR #%s merged", prNum)
 		}
 		return "PR merged"
+	case event.PipelineStalled:
+		reason := get("reason")
+		switch {
+		case prNum != "" && reason != "":
+			return fmt.Sprintf("PR #%s stalled — %s", prNum, reason)
+		case prNum != "":
+			return fmt.Sprintf("PR #%s stalled", prNum)
+		case reason != "":
+			return fmt.Sprintf("pipeline stalled — %s", reason)
+		}
+		return "pipeline stalled"
 	}
 
 	// Generic fallback: list known fields in a stable order.

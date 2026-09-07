@@ -166,6 +166,21 @@ Key behaviors:
   is approved with passing CI and no conflicts, the controller merges it
   automatically (calls `klaus merge --yes`). Disabled by default.
 
+- **Behind the base branch** — an approved PR that is conflict-free but behind
+  its base is updated first (`gh pr update-branch`), which satisfies an
+  up-to-date-branch protection rule; the merge happens on a later poll once
+  GitHub reports the PR caught up and CI has re-run.
+
+- **Auto-merge retries** — merge attempts and branch updates each get their own
+  budget of 3 tries per approval, spaced at least 60 seconds apart, so a merge
+  that cannot succeed is not retried on every poll. When a budget is spent the
+  PR moves to `stalled` and a single `pipeline:stalled` event is emitted with
+  the reason. Losing and regaining approval resets both budgets.
+
+- **Event edges** — `pr:approved` is emitted once per approval, not once per
+  poll: a failed merge moves the PR out of `approved` and back again, which
+  would otherwise flood `klaus watch` with duplicate notifications.
+
 ## 4. Review & Approval
 
 Klaus distinguishes between GitHub review approval and internal approval:

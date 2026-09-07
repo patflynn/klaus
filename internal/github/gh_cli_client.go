@@ -349,6 +349,25 @@ func (c *GHCLIClient) Merge(ctx context.Context, prNumber, mergeMethod string, d
 	return nil
 }
 
+// UpdateBranch merges the base branch into the PR head branch, clearing a
+// behind-by count without rewriting the PR's history.
+func (c *GHCLIClient) UpdateBranch(ctx context.Context, prNumber string) error {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	args := UpdateBranchArgs(prNumber, c.repo)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("gh pr update-branch: %w: %s", wrapTimeoutErr(ctx, "gh pr update-branch", err), msg)
+		}
+		return fmt.Errorf("gh pr update-branch: %w", wrapTimeoutErr(ctx, "gh pr update-branch", err))
+	}
+	return nil
+}
+
 // FetchPRReviewComments fetches review comments for a PR.
 func (c *GHCLIClient) FetchPRReviewComments(ctx context.Context, owner, repo, prNumber string) ([]PRReviewComment, error) {
 	path := fmt.Sprintf("repos/%s/%s/pulls/%s/comments", owner, repo, prNumber)

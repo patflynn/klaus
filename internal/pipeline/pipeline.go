@@ -60,8 +60,12 @@ type PRPipelineState struct {
 	FixAttempts             int       // number of CI-fix agents dispatched that completed without fixing CI
 	RebaseAttempts          int       // number of rebase agents dispatched that completed without resolving conflicts
 	ReviewFixAttempts       int       // number of review-fix agents dispatched that completed without addressing trusted comments
+	MergeAttempts           int       // number of auto-merge attempts made since approval
+	BranchUpdateAttempts    int       // number of base-branch updates attempted since approval
+	LastMergeAttemptAt      time.Time // when the last merge or branch-update attempt was made (backoff guard)
 
 	pendingLaunchDetail string // transient: detail text for pending launch action
+	approvedEmitted     bool   // pr:approved already emitted for the current approval
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -79,6 +83,7 @@ const (
 	ActionMergePR
 	ActionCleanupWorktrees
 	ActionSnapshotThreads
+	ActionUpdateBranch
 )
 
 // ActionDescriptor is a pure data description of a side-effect to perform.
@@ -108,6 +113,7 @@ type Controller struct {
 	// Injectable runners for testing.
 	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
+	updateBranch    func(ctx context.Context, repo, prNumber string) error
 	snapshotThreads func(repo, prNumber string) ([]string, error)
 	resolveThread   func(threadID string) error
 }
@@ -123,6 +129,7 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 	}
 	c.launchAgent = c.defaultLaunchAgent
 	c.mergePRs = c.defaultMergePRs
+	c.updateBranch = c.defaultUpdateBranch
 	c.snapshotThreads = c.defaultSnapshotThreads
 	c.resolveThread = func(threadID string) error {
 		return ghutil.NewGHCLIClient("").ResolveReviewThread(context.TODO(), threadID)
@@ -154,6 +161,13 @@ func (c *Controller) SetMergePRs(fn func(ctx context.Context, repo string, prNum
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.mergePRs = fn
+}
+
+// SetUpdateBranch overrides the branch-update runner (for testing).
+func (c *Controller) SetUpdateBranch(fn func(ctx context.Context, repo, prNumber string) error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.updateBranch = fn
 }
 
 // SetSnapshotThreads overrides thread snapshot fetching (for testing).
@@ -223,6 +237,19 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			threadResolvePRs = append(threadResolvePRs, ps)
 		}
 
+		// Approval-edge bookkeeping: once the PR is no longer approved, the
+		// next approval is a fresh transition, so allow pr:approved to be
+		// emitted again and give auto-merge a fresh attempt budget. Keeping
+		// this in one place is what makes pr:approved edge-triggered — the
+		// stage alone can't carry it, because a failed merge legitimately
+		// moves an approved PR out of (and back into) StageApproved.
+		if !isApproved(c, ps, status, runStates) {
+			ps.approvedEmitted = false
+			ps.MergeAttempts = 0
+			ps.BranchUpdateAttempts = 0
+			ps.LastMergeAttemptAt = time.Time{}
+		}
+
 		prevStage := ps.Stage
 		evalActions, evalDescs := c.evaluate(ps, status, runStates)
 		actions = append(actions, evalActions...)
@@ -257,8 +284,13 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		repo     string
 		err      error
 	}
+	type updateResult struct {
+		prNumber string
+		err      error
+	}
 	var launchResults []launchResult
 	var mergeResults []mergeResult
+	var updateResults []updateResult
 
 	for _, desc := range descriptors {
 		switch desc.Type {
@@ -286,6 +318,13 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			mergeResults = append(mergeResults, mergeResult{
 				prNumber: desc.PRNumber,
 				repo:     desc.Repo,
+				err:      err,
+			})
+
+		case ActionUpdateBranch:
+			err := c.updateBranch(ctx, desc.Repo, desc.PRNumber)
+			updateResults = append(updateResults, updateResult{
+				prNumber: desc.PRNumber,
 				err:      err,
 			})
 		}
@@ -316,6 +355,20 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		}
 	}
 
+	for _, ur := range updateResults {
+		ps := c.prStates[ur.prNumber]
+		if ps == nil {
+			continue
+		}
+		if ur.err != nil {
+			c.logger.Error("branch update failed", "pr", ur.prNumber, "err", ur.err)
+			c.stallIfExhausted(ps, ps.BranchUpdateAttempts, fmt.Sprintf("branch update failed after %d attempts", ps.BranchUpdateAttempts))
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: branch update failed", ur.prNumber), Error: truncateError(ur.err.Error(), 120)})
+		} else {
+			actions = append(actions, Action{Type: "update-branch", Detail: fmt.Sprintf("Updated PR #%s from base branch", ur.prNumber)})
+		}
+	}
+
 	for _, mr := range mergeResults {
 		ps := c.prStates[mr.prNumber]
 		if ps == nil {
@@ -323,7 +376,11 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		}
 		if mr.err != nil {
 			c.logger.Error("auto-merge failed", "pr", mr.prNumber, "err", mr.err)
-			ps.Stage = StageStalled
+			// Drop back to approved so the next poll re-evaluates instead of
+			// re-entering merging immediately; the backoff and attempt budget
+			// on the auto-merge transition gate the retry.
+			ps.Stage = StageApproved
+			c.stallIfExhausted(ps, ps.MergeAttempts, fmt.Sprintf("auto-merge failed after %d attempts", ps.MergeAttempts))
 			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", mr.prNumber), Error: truncateError(mr.err.Error(), 120)})
 		} else {
 			ps.Stage = StageMerged
@@ -392,6 +449,18 @@ const retryBackoff = 60 * time.Second
 // dispatchCooldown is the minimum time between agent dispatches for the same PR.
 const dispatchCooldown = 60 * time.Second
 
+// maxMergeAttempts bounds how many auto-merge attempts — and, separately, how
+// many base-branch updates — the controller makes for a single approval before
+// stalling the PR. A PR that can never reach a mergeable state stalls loudly
+// instead of retrying forever. The budgets are separate so a PR that is merely
+// behind a fast-moving base doesn't spend its merge attempts catching up.
+const maxMergeAttempts = 3
+
+// mergeRetryBackoff is the minimum time between auto-merge attempts for the
+// same PR. Without it the dashboard's ~3s GH poll would retry a failing merge
+// on every tick.
+const mergeRetryBackoff = 60 * time.Second
+
 // evaluate checks the current GH status and determines transitions + action
 // descriptors. It performs NO I/O — all side-effects are described as
 // ActionDescriptor values for the caller to execute outside the lock.
@@ -426,6 +495,38 @@ func (c *Controller) handleLaunchRetry(ps *PRPipelineState) bool {
 		"max", maxLaunchRetries,
 	)
 	return true
+}
+
+// stall moves a PR into StageStalled and emits pipeline:stalled on the
+// transition edge. Re-entering an already-stalled state is a no-op, so a
+// coordinator watching `klaus watch` gets exactly one notification per stall
+// rather than one per poll.
+func (c *Controller) stall(ps *PRPipelineState, prURL, reason string) {
+	if ps.Stage == StageStalled {
+		return
+	}
+	ps.Stage = StageStalled
+	data := map[string]interface{}{
+		"pr_number": ps.PRNumber,
+		"reason":    reason,
+	}
+	if prURL != "" {
+		data["pr_url"] = prURL
+	}
+	c.emitEvent(ps.PRNumber, event.PipelineStalled, data)
+}
+
+// stallIfExhausted stalls the PR once the given attempt budget is spent. Below
+// the budget the PR stays approved and is retried after the backoff window.
+func (c *Controller) stallIfExhausted(ps *PRPipelineState, attempts int, reason string) {
+	if attempts < maxMergeAttempts {
+		return
+	}
+	c.logger.Warn("auto-merge circuit breaker tripped",
+		"pr", ps.PRNumber,
+		"attempts", attempts,
+	)
+	c.stall(ps, "", reason)
 }
 
 // cleanupStaleWorktrees removes worktrees from completed runs that match the given PR number.
@@ -555,6 +656,10 @@ func (c *Controller) defaultMergePRs(ctx context.Context, repo string, prNumbers
 		return fmt.Errorf("klaus merge: %w: %s", err, string(out))
 	}
 	return nil
+}
+
+func (c *Controller) defaultUpdateBranch(ctx context.Context, repo, prNumber string) error {
+	return ghutil.NewGHCLIClient(repo).UpdateBranch(ctx, prNumber)
 }
 
 // extractAgentID attempts to pull the run ID from "Launching agent <id>..." output.

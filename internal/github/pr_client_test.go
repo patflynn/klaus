@@ -255,3 +255,33 @@ func TestGetCI_GhCommandFails(t *testing.T) {
 		t.Errorf("GetCI() with gh failure = %q, want %q", got, "unknown")
 	}
 }
+
+func TestUpdateBranchArgs(t *testing.T) {
+	tests := []struct {
+		name     string
+		prNumber string
+		repo     string
+		want     []string
+	}{
+		{
+			name:     "no repo",
+			prNumber: "42",
+			want:     []string{"pr", "update-branch", "--", "42"},
+		},
+		{
+			name:     "with repo",
+			prNumber: "734",
+			repo:     "owner/repo",
+			want:     []string{"pr", "update-branch", "--repo", "owner/repo", "--", "734"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := UpdateBranchArgs(tt.prNumber, tt.repo)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("UpdateBranchArgs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
