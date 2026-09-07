@@ -11,7 +11,6 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestFinalizeWorktreeCleanup(t *testing.T) {
@@ -145,17 +144,6 @@ func TestKillAgentPane(t *testing.T) {
 			t.Errorf("expected no KillPane calls, got %v", tc.killedPanes)
 		}
 	})
-}
-
-// fakeTmux is a minimal tmux.Client for testing killAgentPane.
-type fakeTmux struct {
-	tmux.ExecClient
-	killedPanes []string
-}
-
-func (f *fakeTmux) KillPane(_ context.Context, id string) error {
-	f.killedPanes = append(f.killedPanes, id)
-	return nil
 }
 
 func TestExtractPRNumberFromURL(t *testing.T) {

@@ -7,6 +7,11 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
+// sessionIDEnv names the klaus session a process belongs to. Agent panes
+// export it (see tmuxSessionEnvPrefix), so every process an agent starts in
+// its worktree inherits it — including `go test`. Anything that turns this
+// value into a tmux target (agentsSessionName) must therefore never be handed
+// a real tmux client from a test; see e2e/README.md and issue #295.
 const sessionIDEnv = "KLAUS_SESSION_ID"
 
 // tmuxSessionEnvPrefix returns a shell snippet that exports KLAUS_SESSION_ID

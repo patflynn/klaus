@@ -7,7 +7,6 @@ import (
 
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestComputeMergeStatus(t *testing.T) {
@@ -115,7 +114,7 @@ func TestDetermineStatus(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := &fakeTmux{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := determineStatus(ctx, tt.s, tc)

@@ -20,7 +20,9 @@ deleting local branches, and removing state files.
 
 Use --all to clean up all runs. Runs with active tmux panes are skipped
 by default; pass --force to remove them anyway. With --all, the detached
-agents tmux session is removed too once no remaining run holds a pane in it.`,
+agents tmux session is removed too — but only once no remaining run holds a
+pane in it and no pane in it is still running a command, so a session with
+live agents is never torn down.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		all, _ := cmd.Flags().GetBool("all")
 		force, _ := cmd.Flags().GetBool("force")

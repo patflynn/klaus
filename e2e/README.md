@@ -35,6 +35,22 @@ or `~/.klaus`:
 
 Unique socket name + temp `HOME` per test ⇒ the tests run in parallel safely.
 
+### Why isolation matters for the *unit* tests too
+
+Agent panes export `KLAUS_SESSION_ID` into the pane's shell
+(`tmuxSessionEnvPrefix`), so **everything a klaus agent runs inside its
+worktree inherits the coordinator's session id** — including `go test`. Any
+test that hands a real tmux client a session name derived from that variable
+(`agentsSessionName()`) is aiming at the live `klaus-agents-<session-id>`
+session that every running agent lives in. That is how the unit suite once
+killed every agent on the machine (issue #295).
+
+Unit tests in `internal/cmd` therefore use `isolatedTmux(t)`: an in-memory
+`tmux.Client` plus a pinned `KLAUS_SESSION_ID`.
+`TestUnitTestsNeverUseRealTmux` fails the build if a test in that package
+reaches for the exec-backed client instead. The e2e suite is where real tmux
+belongs, and it gets a private server per test.
+
 ### The one tmux subtlety
 
 tmux runs pane commands through the configured *default-shell*. A login shell

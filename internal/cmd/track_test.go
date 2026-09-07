@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestParsePRRef(t *testing.T) {
@@ -239,7 +238,7 @@ func TestDetermineStatusTrack(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := &fakeTmux{}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := determineStatus(ctx, tt.s, tc)
