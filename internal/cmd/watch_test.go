@@ -506,3 +506,32 @@ func TestWatchPreservesOrder(t *testing.T) {
 	wg.Wait()
 	p.stopSIGTERM(t)
 }
+
+// TestWatchStreamsPipelineStalled checks that a stalled pipeline reaches a
+// coordinator through the default filter — the whole point of emitting the
+// event once per stall instead of flooding pr:approved (issue #292).
+func TestWatchStreamsPipelineStalled(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	touchEventsFile(t, sessionDir)
+	em := newEmitter(sessionDir)
+
+	p := startWatch(t, bin, sessionID, home)
+	time.Sleep(300 * time.Millisecond)
+
+	em.emit(t, "734", event.PipelineStalled, map[string]interface{}{
+		"pr_number": "734",
+		"reason":    "auto-merge failed after 3 attempts",
+		"pr_url":    "https://github.com/owner/repo/pull/734",
+	})
+
+	line := p.nextLine(t, 5*time.Second)
+	if !strings.Contains(line, "pipeline:stalled") {
+		t.Errorf("expected pipeline:stalled line, got %q", line)
+	}
+	if !strings.Contains(line, "PR #734 stalled — auto-merge failed after 3 attempts") {
+		t.Errorf("expected formatted stall summary, got %q", line)
+	}
+
+	p.stopSIGTERM(t)
+}

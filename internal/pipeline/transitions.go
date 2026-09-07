@@ -86,8 +86,8 @@ var transitions = []transition{
 			fixAttemptsExhausted,
 			agentNotRunning,
 		),
-		Apply: func(c *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
-			ps.Stage = StageStalled
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			c.stall(ps, status.PRURL, fmt.Sprintf("%d CI fix attempts failed", ps.FixAttempts))
 			c.logger.Warn("fix agent circuit breaker tripped",
 				"pr", ps.PRNumber,
 				"attempts", ps.FixAttempts,
@@ -114,7 +114,7 @@ var transitions = []transition{
 
 			// Re-check circuit breaker after incrementing.
 			if ps.FixAttempts >= maxFixAttempts {
-				ps.Stage = StageStalled
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d CI fix attempts failed", ps.FixAttempts))
 				c.logger.Warn("fix agent circuit breaker tripped",
 					"pr", ps.PRNumber,
 					"attempts", ps.FixAttempts,
@@ -215,7 +215,7 @@ var transitions = []transition{
 
 			// Re-check rebase circuit breaker after incrementing.
 			if ps.RebaseAttempts >= maxFixAttempts {
-				ps.Stage = StageStalled
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d rebase attempts failed", ps.RebaseAttempts))
 				c.logger.Warn("rebase agent circuit breaker tripped",
 					"pr", ps.PRNumber,
 					"attempts", ps.RebaseAttempts,
@@ -270,21 +270,72 @@ var transitions = []transition{
 	// ── CI passing + approved + no conflicts → merge ────────────────────
 
 	{
+		Name: "ci-passing/approved-merge-exhausted",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+			noConflicts,
+			autoMergeEnabled,
+			mergeBudgetExhausted,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+			// stall() is edge-triggered, so the poll that spends the last
+			// attempt emits pipeline:stalled once and later polls are silent.
+			if status.BehindBy > 0 {
+				c.stall(ps, status.PRURL, fmt.Sprintf("branch update failed after %d attempts", ps.BranchUpdateAttempts))
+			} else {
+				c.stall(ps, status.PRURL, fmt.Sprintf("auto-merge failed after %d attempts", ps.MergeAttempts))
+			}
+			return nil, nil
+		},
+	},
+	{
+		Name: "ci-passing/approved-behind-update-branch",
+		Guard: allOf(
+			ciPassing,
+			isApproved,
+			noConflicts,
+			autoMergeEnabled,
+			isBehind,
+			mergeBackoffExpired,
+		),
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
+			approvedBookkeeping(c, ps, status, runStates)
+
+			// The PR is mergeable but its head lacks commits from the base
+			// branch, which an up-to-date-branch protection rule rejects.
+			// Update the branch first; the merge happens on a later poll once
+			// BehindBy is back to 0 and CI has re-run.
+			ps.BranchUpdateAttempts++
+			ps.LastMergeAttemptAt = time.Now()
+			c.logger.Info("updating behind PR branch before auto-merge",
+				"pr", ps.PRNumber,
+				"behind", status.BehindBy,
+				"attempt", ps.BranchUpdateAttempts,
+			)
+			return nil, []ActionDescriptor{{
+				Type:     ActionUpdateBranch,
+				PRNumber: ps.PRNumber,
+				Repo:     dispatchRepo(c, status),
+			}}
+		},
+	},
+	{
 		Name: "ci-passing/approved-auto-merge",
 		Guard: allOf(
 			ciPassing,
 			isApproved,
 			noConflicts,
 			autoMergeEnabled,
+			notBehind,
+			mergeBackoffExpired,
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
-			ps.FixAttempts = 0
-			ps.RebaseAttempts = 0
-			ps.ReviewFixAttempts = 0
-			emitCIPassedIfNeeded(c, ps, status)
-			setApprovedIfNeeded(c, ps, status)
-			c.markRunStatesApproved(ps.PRNumber, runStates)
+			approvedBookkeeping(c, ps, status, runStates)
 
+			ps.MergeAttempts++
+			ps.LastMergeAttemptAt = time.Now()
 			ps.Stage = StageMerging
 			return nil, []ActionDescriptor{{
 				Type:      ActionMergePR,
@@ -294,6 +345,8 @@ var transitions = []transition{
 			}}
 		},
 	},
+	// Also the resting state for an approved PR waiting out the auto-merge
+	// backoff between attempts.
 	{
 		Name: "ci-passing/approved-no-auto-merge",
 		Guard: allOf(
@@ -301,12 +354,7 @@ var transitions = []transition{
 			isApproved,
 		),
 		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) ([]Action, []ActionDescriptor) {
-			ps.FixAttempts = 0
-			ps.RebaseAttempts = 0
-			ps.ReviewFixAttempts = 0
-			emitCIPassedIfNeeded(c, ps, status)
-			setApprovedIfNeeded(c, ps, status)
-			c.markRunStatesApproved(ps.PRNumber, runStates)
+			approvedBookkeeping(c, ps, status, runStates)
 			return nil, nil
 		},
 	},
@@ -391,8 +439,8 @@ var transitions = []transition{
 			reviewFixAttemptsExhausted,
 			agentNotRunning,
 		),
-		Apply: func(c *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
-			ps.Stage = StageStalled
+		Apply: func(c *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			c.stall(ps, status.PRURL, fmt.Sprintf("%d review fix attempts failed", ps.ReviewFixAttempts))
 			c.logger.Warn("review fix agent circuit breaker tripped",
 				"pr", ps.PRNumber,
 				"attempts", ps.ReviewFixAttempts,
@@ -425,7 +473,7 @@ var transitions = []transition{
 
 			// Re-check circuit breaker after incrementing.
 			if ps.ReviewFixAttempts >= maxFixAttempts {
-				ps.Stage = StageStalled
+				c.stall(ps, status.PRURL, fmt.Sprintf("%d review fix attempts failed", ps.ReviewFixAttempts))
 				c.logger.Warn("review fix agent circuit breaker tripped",
 					"pr", ps.PRNumber,
 					"attempts", ps.ReviewFixAttempts,
@@ -635,6 +683,25 @@ func reviewFixAttemptsExhausted(_ *Controller, ps *PRPipelineState, _ *PRStatus,
 	return ps.ReviewFixAttempts >= maxFixAttempts
 }
 
+// Auto-merge attempt guards.
+
+// mergeBudgetExhausted reports whether the attempt budget for the step the PR
+// currently needs — a base-branch update while it is behind, otherwise the
+// merge itself — is spent.
+func mergeBudgetExhausted(_ *Controller, ps *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	if status.BehindBy > 0 {
+		return ps.BranchUpdateAttempts >= maxMergeAttempts
+	}
+	return ps.MergeAttempts >= maxMergeAttempts
+}
+
+// mergeBackoffExpired gates auto-merge retries so a merge that cannot succeed
+// in the PR's current state is re-attempted once per backoff window instead of
+// on every GH poll.
+func mergeBackoffExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.LastMergeAttemptAt.IsZero() || time.Since(ps.LastMergeAttemptAt) > mergeRetryBackoff
+}
+
 // Stage guards.
 
 func inStage(s Stage) guardFunc {
@@ -715,6 +782,18 @@ func noConflicts(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.S
 	return status.Conflicts != "yes"
 }
 
+// Base-freshness guards. A PR can be conflict-free yet still behind its base
+// branch; branch protection rules that require an up-to-date branch reject a
+// merge in that state.
+
+func isBehind(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.BehindBy > 0
+}
+
+func notBehind(_ *Controller, _ *PRPipelineState, status *PRStatus, _ []*run.State) bool {
+	return status.BehindBy <= 0
+}
+
 // Controller config guards.
 
 func autoMergeEnabled(c *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
@@ -782,14 +861,38 @@ func reviewFixPrompt(leadIn, prNumber string) string {
 	)
 }
 
-// setApprovedIfNeeded transitions to StageApproved and emits the approval
-// event if not already in an approved/merging/rebase stage.
+// approvedBookkeeping is the shared prelude for every transition that observes
+// an approved PR: reset the agent-attempt budgets that approval invalidates,
+// emit the CI-passed and approval edges, and mirror the approval into run state.
+func approvedBookkeeping(c *Controller, ps *PRPipelineState, status *PRStatus, runStates []*run.State) {
+	ps.FixAttempts = 0
+	ps.RebaseAttempts = 0
+	ps.ReviewFixAttempts = 0
+	emitCIPassedIfNeeded(c, ps, status)
+	setApprovedIfNeeded(c, ps, status)
+	c.markRunStatesApproved(ps.PRNumber, runStates)
+}
+
+// setApprovedIfNeeded emits pr:approved on the approval edge and moves the PR
+// into StageApproved.
+//
+// The emission is keyed off ps.approvedEmitted rather than the stage, because
+// the stage is not a reliable edge signal: a failed auto-merge moves an
+// approved PR out of StageApproved and the next poll moves it back, which
+// would re-emit pr:approved on every poll for as long as the merge keeps
+// failing. ps.approvedEmitted is cleared in HandleGHStatus when the PR stops
+// being approved, so a genuine re-approval emits again.
+//
+// StageStalled is preserved so a tripped circuit breaker stays observable.
 func setApprovedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) {
-	if ps.Stage != StageApproved && ps.Stage != StageMerging && ps.Stage != StageNeedsRebase {
-		ps.Stage = StageApproved
+	if !ps.approvedEmitted {
+		ps.approvedEmitted = true
 		c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
 			"pr_number": ps.PRNumber,
 			"pr_url":    status.PRURL,
 		})
+	}
+	if ps.Stage != StageMerging && ps.Stage != StageNeedsRebase && ps.Stage != StageStalled {
+		ps.Stage = StageApproved
 	}
 }

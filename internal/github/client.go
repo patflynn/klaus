@@ -21,6 +21,7 @@ type Client interface {
 
 	// PR mutations
 	Merge(ctx context.Context, prNumber, mergeMethod string, deleteBranch bool) error
+	UpdateBranch(ctx context.Context, prNumber string) error
 
 	// Review operations
 	FetchPRReviewComments(ctx context.Context, owner, repo, prNumber string) ([]PRReviewComment, error)
