@@ -32,6 +32,7 @@ type mergeRunner struct {
 	getPRReviewDecision func(string, string) string
 	rebaseAndPush       func(string, string) error
 	mergePR             func(string, string, bool, string) error
+	updateBranch        func(string, string) error
 	pollCI              func(string, string) error
 	markMerged          func(prNumber string)
 	resolveRepo         func(prNumber string) string
@@ -63,6 +64,9 @@ func newMergeRunner(out io.Writer, in io.Reader, store run.StateStore, repoFlag 
 		rebaseAndPush: rebaseAndPush,
 		mergePR: func(prNumber, mergeMethod string, deleteBranch bool, repo string) error {
 			return gh.NewGHCLIClient(repo).Merge(ctx, prNumber, mergeMethod, deleteBranch)
+		},
+		updateBranch: func(prNumber, repo string) error {
+			return gh.NewGHCLIClient(repo).UpdateBranch(ctx, prNumber)
 		},
 		pollCI:        defaultPollCI,
 		markMerged:    markRunsMerged(store),
@@ -189,11 +193,18 @@ var mergeCmd = &cobra.Command{
 4. Merges with the specified method (default: squash)
 5. Moves to the next PR
 
+A branch that is merely behind main is merged as-is: rebasing it would rewrite
+history and dismiss the approval the merge depends on. If GitHub refuses the
+merge because the branch must be up to date, klaus runs GitHub's "Update
+branch" (a merge from main, not a rebase), waits for CI, and merges again.
+
 If a rebase fails or CI times out, stops and reports the stuck PR.
 
 Use --repo to specify the target repository when running outside a git repo
 (e.g. from a klaus session workspace). If PRs were created by klaus agents,
-the repo is auto-detected from run state.`,
+the repo is auto-detected from run state. Rebasing needs a checkout: klaus
+uses the current repo, a registered project, or clones under
+worktree_base/.repos, so merge does not have to run inside a clone.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -216,9 +227,13 @@ the repo is auto-detected from run state.`,
 		runner.forceApproval = force
 		runner.yesFlag = yes
 
-		// Load config to check require_approval setting
-		repoRoot, _ := git.RepoRoot()
-		cfg, err := config.Load(repoRoot)
+		// Load config (require_approval, merge_verify_command) from the target
+		// repo rather than the current directory, so merging another repo's PRs
+		// from a klaus session workspace still honours that repo's settings.
+		// existingRepoDir never clones: when the repo has no local checkout,
+		// repoDir is empty and only global config applies.
+		repoDir := existingRepoDir(runner.resolveRepo(args[0]))
+		cfg, err := config.Load(repoDir)
 		if err != nil {
 			return fmt.Errorf("could not load configuration: %w", err)
 		}
@@ -242,7 +257,6 @@ func validateMergeMethod(method string) error {
 	}
 }
 
-
 // rebaseAndPush rebases a PR branch onto origin/main, verifies compilation,
 // and force-pushes using a temporary worktree.
 func rebaseAndPush(prNumber string, repo string) error {
@@ -252,9 +266,12 @@ func rebaseAndPush(prNumber string, repo string) error {
 		return fmt.Errorf("getting branch: %w", err)
 	}
 
-	repoRoot, err := git.RepoRoot()
+	// The rebase needs a real checkout to build a worktree from. Resolve it
+	// from the PR's repo (current checkout, registered project, or a clone
+	// under worktree_base/.repos) so merge works outside a git directory.
+	repoRoot, err := resolveRepoDir(ctx, repo)
 	if err != nil {
-		return fmt.Errorf("could not determine git repository root: %w", err)
+		return fmt.Errorf("could not find a checkout to rebase in: %w", err)
 	}
 
 	gitClient := git.NewExecClient()
@@ -440,13 +457,20 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 			return r.stopQueue(prNum, "changes requested in review", prNumbers[i+1:])
 		}
 
-		// Rebase when conflicting, or behind-but-clean (stale CI vs current main).
+		// Conflicts are the only reason to rewrite history. The rebase
+		// force-push creates a new head, and under a policy that dismisses
+		// reviews on new commits that costs the PR the very approval the merge
+		// depends on — so a branch that is merely behind main is left alone.
+		// GitHub merges a behind branch as-is unless the repo requires branches
+		// to be up to date; that refusal is handled below by a server-side
+		// branch update, which preserves approvals where policy allows.
 		// CI-failing-without-conflicts stops first: don't rebase a broken branch.
 		if conflicts == "yes" {
 			fmt.Fprintf(r.out, "  Rebasing onto main...\n")
 			if err := r.rebaseAndPush(prNum, repo); err != nil {
 				return r.stopQueue(prNum, fmt.Sprintf("rebase failed: %v", err), prNumbers[i+1:])
 			}
+			behind = 0 // the rebased head sits on top of main
 			fmt.Fprintf(r.out, "  Waiting for CI after rebase...\n")
 			if err := r.pollCI(prNum, repo); err != nil {
 				return r.stopQueue(prNum, fmt.Sprintf("CI after rebase: %v", err), prNumbers[i+1:])
@@ -454,15 +478,6 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 		} else if ci == "failing" {
 			// CI failing without conflicts — can't fix automatically
 			return r.stopQueue(prNum, "CI is failing", prNumbers[i+1:])
-		} else if behind > 0 {
-			fmt.Fprintf(r.out, "  Branch is %d commit(s) behind main; rebasing...\n", behind)
-			if err := r.rebaseAndPush(prNum, repo); err != nil {
-				return r.stopQueue(prNum, fmt.Sprintf("rebase failed: %v", err), prNumbers[i+1:])
-			}
-			fmt.Fprintf(r.out, "  Waiting for CI after rebase...\n")
-			if err := r.pollCI(prNum, repo); err != nil {
-				return r.stopQueue(prNum, fmt.Sprintf("CI after rebase: %v", err), prNumbers[i+1:])
-			}
 		} else if ci != "passing" {
 			// CI pending or unknown — wait
 			fmt.Fprintf(r.out, "  Waiting for CI...\n")
@@ -471,8 +486,7 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 			}
 		}
 
-		fmt.Fprintf(r.out, "  Merging (%s)...\n", mergeMethod)
-		if err := r.mergePR(prNum, mergeMethod, deleteBranch, repo); err != nil {
+		if err := r.mergeWithBranchUpdate(prNum, mergeMethod, deleteBranch, repo, behind); err != nil {
 			return r.stopQueue(prNum, fmt.Sprintf("merge failed: %v", err), prNumbers[i+1:])
 		}
 		fmt.Fprintf(r.out, "  Merged PR #%s.\n", prNum)
@@ -483,6 +497,57 @@ func (r *mergeRunner) run(prNumbers []string, mergeMethod string, deleteBranch b
 
 	fmt.Fprintf(r.out, "\nAll %d PRs merged successfully.\n", len(prNumbers))
 	return nil
+}
+
+// mergeWithBranchUpdate merges a PR, retrying once through GitHub's
+// "Update branch" when the merge is refused because the branch is behind its
+// base. The update merges main into the head server-side, so unlike a rebase
+// and force-push it does not rewrite history — which is what lets an existing
+// approval survive on repos that dismiss reviews for rewritten heads.
+func (r *mergeRunner) mergeWithBranchUpdate(prNum, mergeMethod string, deleteBranch bool, repo string, behind int) error {
+	fmt.Fprintf(r.out, "  Merging (%s)...\n", mergeMethod)
+	err := r.mergePR(prNum, mergeMethod, deleteBranch, repo)
+	if err == nil {
+		return nil
+	}
+	// Only worth retrying when the branch really is behind: an update-branch
+	// call on an up-to-date PR is rejected, and the original refusal is the
+	// more useful error to report.
+	if behind <= 0 || r.updateBranch == nil || !mergeRefusedForStaleBranch(err) {
+		return err
+	}
+
+	fmt.Fprintf(r.out, "  Merge refused while %d commit(s) behind main; updating branch from main...\n", behind)
+	if updateErr := r.updateBranch(prNum, repo); updateErr != nil {
+		return fmt.Errorf("%w (updating branch from main also failed: %v)", err, updateErr)
+	}
+	fmt.Fprintf(r.out, "  Waiting for CI after branch update...\n")
+	if ciErr := r.pollCI(prNum, repo); ciErr != nil {
+		return fmt.Errorf("CI after branch update: %w", ciErr)
+	}
+	fmt.Fprintf(r.out, "  Merging (%s)...\n", mergeMethod)
+	return r.mergePR(prNum, mergeMethod, deleteBranch, repo)
+}
+
+// mergeRefusedForStaleBranch reports whether a merge failure looks like one an
+// "Update branch" would clear. GitHub does not always name the stale branch: a
+// PR blocked by "require branches to be up to date" surfaces through gh as the
+// same generic base-branch-policy message as any other blocked merge, so that
+// text is matched too. Callers gate on the PR actually being behind, which is
+// what keeps the generic match from firing on unrelated blocks.
+func mergeRefusedForStaleBranch(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, phrase := range []string{
+		"not up to date",
+		"out of date",
+		"base branch policy prohibits the merge",
+		"base branch was modified",
+	} {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // stopQueue reports which PR is stuck and lists remaining unmerged PRs.

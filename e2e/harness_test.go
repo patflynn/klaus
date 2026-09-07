@@ -347,8 +347,15 @@ func (h *Harness) env() []string {
 // test on a non-zero exit (callers assert as needed).
 func (h *Harness) RunKlaus(args ...string) RunResult {
 	h.t.Helper()
+	return h.RunKlausIn(h.RepoDir, args...)
+}
+
+// RunKlausIn is RunKlaus with an explicit working directory, for commands that
+// must behave correctly outside a git checkout (E2EDir is not a repo).
+func (h *Harness) RunKlausIn(dir string, args ...string) RunResult {
+	h.t.Helper()
 	cmd := exec.Command(klausBinary, args...)
-	cmd.Dir = h.RepoDir
+	cmd.Dir = dir
 	cmd.Env = h.env()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -361,6 +368,17 @@ func (h *Harness) RunKlaus(args ...string) RunResult {
 		h.t.Fatalf("running klaus %v: %v", args, err)
 	}
 	return res
+}
+
+// RegisterProject registers a local checkout in the temp HOME's project
+// registry via the real `klaus project add`, so commands that resolve a repo
+// through the registry (merge, for one) can find it.
+func (h *Harness) RegisterProject(ref, path string) {
+	h.t.Helper()
+	res := h.RunKlaus("project", "add", ref, "--path", path, "--description", "e2e sandbox")
+	if res.ExitCode != 0 {
+		h.t.Fatalf("registering project %s: exit %d\n%s%s", ref, res.ExitCode, res.Stdout, res.Stderr)
+	}
 }
 
 // tmux runs a control-plane tmux command against the isolated server and

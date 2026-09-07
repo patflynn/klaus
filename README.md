@@ -309,9 +309,15 @@ klaus approve --run 20260328-1603-a3f2  # approve by run ID
 
 ### `klaus merge`
 
-Sequentially merges a list of PRs. Rebases onto main when a PR conflicts *or* is behind the base branch, verifies the rebased branch, and force-pushes. Waits for CI to pass before merging (up to 10 min). Verification runs `merge_verify_command` when configured, else `go build ./...` when the repo has a `go.mod`, else nothing (relying on CI — so non-Go repos merge cleanly).
+Sequentially merges a list of PRs. Waits for CI to pass before merging (up to 10 min).
+
+A PR that only *conflicts* is rebased onto main, verified, and force-pushed. Verification runs `merge_verify_command` when configured, else `go build ./...` when the repo has a `go.mod`, else nothing (relying on CI — so non-Go repos merge cleanly).
+
+A PR that is merely *behind* main is merged as-is. Rebasing it would force-push a new head, which under a branch policy that dismisses reviews on new commits throws away the approval the merge depends on. If GitHub then refuses the merge because the branch must be up to date, klaus runs GitHub's "Update branch" (a merge from main, which keeps the head and the approval intact), waits for CI, and merges again.
 
 By default, PRs must be approved with `klaus approve` before merging. Unapproved PRs trigger an interactive prompt (or are skipped with `--yes`).
+
+`klaus merge` does not have to run inside a clone: pass `--repo owner/repo` (or let the repo be auto-detected from run state) and klaus resolves the checkout it needs — the current repo, a registered project, or a fresh clone under `worktree_base/.repos`. The target repo's `.klaus/config.json` is what applies, not the current directory's.
 
 ```bash
 klaus merge 42 43 44
@@ -321,7 +327,7 @@ klaus merge --force 42               # bypass approval check
 klaus merge --yes 42 43              # skip unapproved PRs without prompting
 ```
 
-Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`, `--force` (bypass approval), `--yes` (skip unapproved).
+Flags: `--dry-run`, `--merge-method` (squash/merge/rebase), `--no-delete-branch`, `--repo` (target repo for all PRs), `--force` (bypass approval), `--yes` (skip unapproved).
 
 ### `klaus project`
 
