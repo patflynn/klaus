@@ -344,13 +344,20 @@ func (c *GHCLIClient) Merge(ctx context.Context, prNumber, mergeMethod string, d
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		// Include stderr: GitHub explains *why* it refused (out-of-date branch,
+		// failing required checks, ...) and callers branch on that text.
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("gh pr merge: %w: %s", wrapTimeoutErr(ctx, "gh pr merge", err), msg)
+		}
 		return fmt.Errorf("gh pr merge: %w", wrapTimeoutErr(ctx, "gh pr merge", err))
 	}
 	return nil
 }
 
-// UpdateBranch merges the base branch into the PR head branch, clearing a
-// behind-by count without rewriting the PR's history.
+// UpdateBranch merges the base branch into the PR's head branch server-side,
+// the same thing GitHub's "Update branch" button does. Unlike a local rebase
+// and force-push it adds a merge commit instead of rewriting the head, which is
+// what lets an existing approval survive where the repo's policy allows it.
 func (c *GHCLIClient) UpdateBranch(ctx context.Context, prNumber string) error {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()

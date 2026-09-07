@@ -91,6 +91,8 @@ func TestSomething(t *testing.T) {
 Key `Harness` helpers (see `harness_test.go`):
 
 - `RunKlaus(args...)` — run the real binary with the isolated env, return stdout/stderr/exit
+- `RunKlausIn(dir, args...)` — same, from an explicit CWD (e.g. `E2EDir`, which is not a git repo)
+- `RegisterProject(ref, path)` — register a checkout in the temp HOME's project registry
 - `ReadState(id)` / `WaitForState(id, pred, timeout)` / `RunIDs()` — inspect run state
 - `ListPanes()` / `PaneExists(id)` / `PaneTitle(id)` — query the isolated tmux server
 - `WaitForClaudeStart` / `ReleaseClaude` / `ClaudeArgv` / `GHArgv` — coordinate the stubs

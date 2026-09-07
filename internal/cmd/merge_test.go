@@ -424,15 +424,52 @@ func TestRunHandlesConflictsWithRebase(t *testing.T) {
 	}
 }
 
-func TestRunRebasesBehindButCleanPR(t *testing.T) {
+func TestRunMergesBehindButCleanPRWithoutRebasing(t *testing.T) {
 	var buf bytes.Buffer
 	rebaseCalled := false
-	pollCICalled := false
+	updateCalled := false
 	runner := testMergeRunner(&buf)
 	runner.getPRConflicts = func(string, string) string { return "none" }
 	runner.getPRBehind = func(string, string) int { return 2 }
 	runner.rebaseAndPush = func(string, string) error {
 		rebaseCalled = true
+		return nil
+	}
+	runner.updateBranch = func(string, string) error {
+		updateCalled = true
+		return nil
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	// Rebasing rewrites the head and can dismiss the approval the merge needs,
+	// so a behind-but-clean branch is merged as-is.
+	if rebaseCalled {
+		t.Error("a behind-but-clean PR must not be rebased")
+	}
+	if updateCalled {
+		t.Error("update-branch is only for a merge GitHub refused")
+	}
+}
+
+func TestRunUpdatesBranchWhenMergeRefusedForStaleBranch(t *testing.T) {
+	var buf bytes.Buffer
+	merges := 0
+	updateCalled := false
+	pollCICalled := false
+	runner := testMergeRunner(&buf)
+	runner.getPRBehind = func(string, string) int { return 2 }
+	runner.mergePR = func(string, string, bool, string) error {
+		merges++
+		if merges == 1 {
+			return fmt.Errorf("gh pr merge: exit status 1: Base branch policy prohibits the merge")
+		}
+		return nil
+	}
+	runner.updateBranch = func(string, string) error {
+		updateCalled = true
 		return nil
 	}
 	runner.pollCI = func(string, string) error {
@@ -444,14 +481,83 @@ func TestRunRebasesBehindButCleanPR(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if !rebaseCalled {
-		t.Error("rebaseAndPush should have been called for a behind-but-clean PR")
+	if !updateCalled {
+		t.Error("a refused merge on a behind branch should trigger update-branch")
 	}
 	if !pollCICalled {
-		t.Error("pollCI should have been called after rebase")
+		t.Error("pollCI should have been called after the branch update")
 	}
-	if !strings.Contains(buf.String(), "behind main") {
-		t.Errorf("should show behind/rebase message, got: %s", buf.String())
+	if merges != 2 {
+		t.Errorf("mergePR called %d times, want 2 (refused, then retried)", merges)
+	}
+	if !strings.Contains(buf.String(), "updating branch from main") {
+		t.Errorf("should report the branch update, got: %s", buf.String())
+	}
+}
+
+func TestRunDoesNotUpdateBranchWhenUpToDate(t *testing.T) {
+	var buf bytes.Buffer
+	updateCalled := false
+	runner := testMergeRunner(&buf)
+	runner.getPRBehind = func(string, string) int { return 0 }
+	runner.mergePR = func(string, string, bool, string) error {
+		return fmt.Errorf("gh pr merge: Base branch policy prohibits the merge")
+	}
+	runner.updateBranch = func(string, string) error {
+		updateCalled = true
+		return nil
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// GitHub rejects update-branch on an up-to-date PR; the original refusal is
+	// the useful error to report.
+	if updateCalled {
+		t.Error("update-branch must not run for a PR that is not behind")
+	}
+	if !strings.Contains(err.Error(), "Base branch policy") {
+		t.Errorf("should report the original merge refusal: %v", err)
+	}
+}
+
+func TestRunReportsUpdateBranchFailure(t *testing.T) {
+	var buf bytes.Buffer
+	runner := testMergeRunner(&buf)
+	runner.getPRBehind = func(string, string) int { return 3 }
+	runner.mergePR = func(string, string, bool, string) error {
+		return fmt.Errorf("gh pr merge: not up to date with the base branch")
+	}
+	runner.updateBranch = func(string, string) error {
+		return fmt.Errorf("HTTP 422: merge conflict between base and head")
+	}
+
+	err := runner.run([]string{"1"}, "squash", true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not up to date") || !strings.Contains(err.Error(), "merge conflict") {
+		t.Errorf("error should carry both the refusal and the update failure: %v", err)
+	}
+}
+
+func TestMergeRefusedForStaleBranch(t *testing.T) {
+	tests := []struct {
+		msg  string
+		want bool
+	}{
+		{"gh pr merge: Base branch policy prohibits the merge", true},
+		{"Pull request is not mergeable: the head branch is not up to date", true},
+		{"the base branch was modified", true},
+		{"GraphQL: Pull Request is out of date", true},
+		{"gh pr merge: required status check \"build\" is failing", false},
+		{"gh pr merge: exit status 1", false},
+	}
+	for _, tt := range tests {
+		if got := mergeRefusedForStaleBranch(fmt.Errorf("%s", tt.msg)); got != tt.want {
+			t.Errorf("mergeRefusedForStaleBranch(%q) = %v, want %v", tt.msg, got, tt.want)
+		}
 	}
 }
 
