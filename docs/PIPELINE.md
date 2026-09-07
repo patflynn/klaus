@@ -177,8 +177,9 @@ Klaus distinguishes between GitHub review approval and internal approval:
   `trusted_reviewers`. When a trusted reviewer leaves comments (even without
   formal "changes requested"), the pipeline dispatches a fix agent.
 
-- **`klaus approve`** — marks PRs as ready for merge in the internal state. This
-  is the coordinator's way of saying "I've reviewed this, go ahead."
+- **`klaus approve`** — marks PRs as ready for merge in the internal state. PR approval
+  is strictly a human task — it exists only to ensure that all changes are gated
+  by operator approval before merging. The coordinator session must never approve PRs.
 
 - **`require_approval`** — when `true` (the default), `klaus merge` won't merge
   a PR unless it's been approved via `klaus approve` or GitHub review. Set to
@@ -274,4 +275,4 @@ You: klaus merge 40 41 42
 
 The key insight: the coordinator does the thinking, agents do the building, and
 the pipeline handles the mechanical work of CI monitoring, review response, and
-conflict resolution. You focus on research, prompt quality, and final approval.
+conflict resolution. The human operator provides final approval to gate all changes.

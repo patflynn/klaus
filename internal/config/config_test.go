@@ -187,6 +187,15 @@ func TestRenderSessionPromptDefault(t *testing.T) {
 	if !strings.Contains(prompt, "klaus cleanup") {
 		t.Error("prompt should contain klaus cleanup instruction")
 	}
+	if strings.Contains(prompt, "- **Approve and merge** PRs") {
+		t.Error("prompt should not instruct coordinator to approve PRs")
+	}
+	if !strings.Contains(prompt, "PR approval is strictly a human operator task") {
+		t.Error("prompt should state that PR approval is strictly a human operator task")
+	}
+	if !strings.Contains(prompt, "Never run `klaus approve`") {
+		t.Error("prompt should instruct coordinator to never run klaus approve")
+	}
 }
 
 func TestRenderSessionPromptCustomTemplate(t *testing.T) {
