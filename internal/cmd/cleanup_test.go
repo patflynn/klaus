@@ -10,7 +10,6 @@ import (
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestCleanupAllSkipsActiveRuns(t *testing.T) {
@@ -21,7 +20,7 @@ func TestCleanupAllSkipsActiveRuns(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := isolatedTmux(t)
 
 	// Make run-2 active
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
@@ -56,7 +55,7 @@ func TestCleanupAllForceRemovesActiveRuns(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := isolatedTmux(t)
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return s.ID == "run-2" }}
 
 	output := captureStdout(t, func() {
@@ -85,7 +84,7 @@ func TestCleanupOneSkipsActiveRun(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := isolatedTmux(t)
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	output := captureStdout(t, func() {
@@ -108,7 +107,7 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	tc := tmux.NewExecClient()
+	tc := isolatedTmux(t)
 	deps := CleanupDeps{IsRunActive: func(s *run.State) bool { return true }}
 
 	captureStdout(t, func() {
@@ -123,8 +122,8 @@ func TestCleanupOneForceRemovesActiveRun(t *testing.T) {
 }
 
 func TestIsRunActiveWithSessionEnv(t *testing.T) {
+	tc := isolatedTmux(t)
 	t.Setenv(sessionIDEnv, "sess-123")
-	tc := tmux.NewExecClient()
 
 	// Session run matching current session ID should be active
 	s := &run.State{ID: "sess-123", Type: "session"}
@@ -146,7 +145,7 @@ func TestIsRunActiveWithSessionEnv(t *testing.T) {
 }
 
 func TestIsRunActiveWithDashboardPane(t *testing.T) {
-	tc := tmux.NewExecClient()
+	tc := isolatedTmux(t)
 
 	// A run with no panes should not be active
 	s := &run.State{ID: "run-1"}
@@ -175,7 +174,7 @@ func newFakeStore(states ...*run.State) *fakeStore {
 	return s
 }
 
-func (f *fakeStore) Save(s *run.State) error     { f.states[s.ID] = s; return nil }
+func (f *fakeStore) Save(s *run.State) error { f.states[s.ID] = s; return nil }
 func (f *fakeStore) Load(id string) (*run.State, error) {
 	s, ok := f.states[id]
 	if !ok {

@@ -15,6 +15,12 @@ import (
 // agent panes. It is per-klaus-session so concurrent coordinators never share
 // windows, and it is owned by the tmux server — so agents survive the
 // coordinator exiting.
+//
+// Careful: agent panes export KLAUS_SESSION_ID (see tmuxSessionEnvPrefix), so
+// every process an agent starts inside its worktree — including `go test` —
+// inherits the coordinator's session id and resolves this to the live agents
+// session. Tests must never let a real tmux client see this name; use a fake
+// tmux client and t.Setenv(sessionIDEnv, ...) to pin it.
 func agentsSessionName() string {
 	id := os.Getenv(sessionIDEnv)
 	if id == "" {
@@ -64,11 +70,24 @@ func startAgentPane(ctx context.Context, tc tmux.Client, mode, runID, dir, paneC
 // run holds a pane in it. tmux already destroys a session whose last window
 // closes; this covers leftovers (e.g. a window whose command exited into a
 // shell) so `klaus cleanup --all` leaves nothing behind.
+//
+// The store is only advisory — it can be stale, or belong to a different
+// klaus session entirely — so the tmux server gets the final say: a session
+// with any pane still running a command is never killed.
 func killEmptyAgentsSession(ctx context.Context, store run.StateStore, tc tmux.Client) {
 	name := agentsSessionName()
 	panes, err := tc.SessionPanes(ctx, name)
 	if err != nil {
 		return // session does not exist — nothing to do
+	}
+
+	// The tmux server is the truth: a pane whose command is still running
+	// belongs to a live agent, whatever the store says about it.
+	for _, p := range panes {
+		if tc.PaneExists(ctx, p) && !tc.PaneIsIdle(ctx, p) {
+			fmt.Printf("  keeping agents tmux session %s (pane %s still running)\n", name, p)
+			return
+		}
 	}
 
 	states, err := store.List()
@@ -83,6 +102,7 @@ func killEmptyAgentsSession(ctx context.Context, store run.StateStore, tc tmux.C
 	}
 	for _, p := range panes {
 		if held[p] {
+			fmt.Printf("  keeping agents tmux session %s (pane %s still held by a run)\n", name, p)
 			return
 		}
 	}

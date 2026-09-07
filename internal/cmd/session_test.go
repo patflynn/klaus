@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/run"
-	"github.com/patflynn/klaus/internal/tmux"
 )
 
 func TestDashboardPaneCommand(t *testing.T) {
@@ -218,31 +217,6 @@ func TestResumeClaudeArgs(t *testing.T) {
 	}
 }
 
-// stubTmuxClient is a minimal tmux.Client for testing waitForAgents.
-type stubTmuxClient struct {
-	tmux.ExecClient
-	existingPanes map[string]bool
-	killedPanes   []string
-}
-
-func (s *stubTmuxClient) PaneExists(_ context.Context, id string) bool {
-	return s.existingPanes[id]
-}
-
-func (s *stubTmuxClient) PaneIsDead(_ context.Context, _ string) bool {
-	return false
-}
-
-func (s *stubTmuxClient) PaneIsIdle(_ context.Context, _ string) bool {
-	return false
-}
-
-func (s *stubTmuxClient) KillPane(_ context.Context, id string) error {
-	s.killedPanes = append(s.killedPanes, id)
-	delete(s.existingPanes, id)
-	return nil
-}
-
 func TestCheckRunningAgents_ReturnsRunning(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := run.NewHomeDirStoreFromPath(tmpDir)
@@ -273,7 +247,7 @@ func TestCheckRunningAgents_ReturnsRunning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tc := &stubTmuxClient{existingPanes: map[string]bool{"%10": true}}
+	tc := &fakeTmux{runningPanes: map[string]bool{"%10": true}}
 	running := checkRunningAgents(context.Background(), store, tc)
 
 	if len(running) != 1 {
@@ -301,7 +275,7 @@ func TestCheckRunningAgents_NoAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tc := &stubTmuxClient{existingPanes: map[string]bool{}}
+	tc := &fakeTmux{}
 	running := checkRunningAgents(context.Background(), store, tc)
 
 	if len(running) != 0 {
@@ -328,7 +302,7 @@ func TestCheckRunningAgents_SkipsSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tc := &stubTmuxClient{existingPanes: map[string]bool{"%20": true}}
+	tc := &fakeTmux{runningPanes: map[string]bool{"%20": true}}
 	running := checkRunningAgents(context.Background(), store, tc)
 
 	if len(running) != 0 {
@@ -355,7 +329,7 @@ func TestCheckRunningAgents_NonBlocking(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tc := &stubTmuxClient{existingPanes: map[string]bool{"%99": true}}
+	tc := &fakeTmux{runningPanes: map[string]bool{"%99": true}}
 
 	done := make(chan struct{})
 	go func() {
