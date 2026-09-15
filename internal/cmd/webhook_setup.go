@@ -20,6 +20,7 @@ var webhookEvents = []string{
 	"check_suite",
 	"pull_request",
 	"pull_request_review",
+	"issue_comment",
 }
 
 // ghHook represents a GitHub repository webhook from the API.

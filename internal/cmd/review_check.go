@@ -8,6 +8,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/pipeline"
 )
 
 // ghReview represents a single review from the GitHub API.
@@ -23,9 +24,59 @@ type ghUser struct {
 }
 
 // ghReviewComment represents an inline review comment from the GitHub
-// pulls comments API. Only the parent review ID is needed here.
+// pulls comments API. Only the parent review ID and body are needed here.
 type ghReviewComment struct {
-	PullRequestReviewID int64 `json:"pull_request_review_id"`
+	PullRequestReviewID int64  `json:"pull_request_review_id"`
+	Body                string `json:"body"`
+}
+
+// ghIssueComment represents a PR conversation comment from the GitHub issues
+// comments API (a PR is an issue, so its top-level thread lives there).
+type ghIssueComment struct {
+	User      ghUser `json:"user"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// ghPullRequest represents the fields of a PR from the GitHub pulls API that
+// review detection needs.
+type ghPullRequest struct {
+	User ghUser `json:"user"`
+}
+
+// isAgentReply reports whether a comment body was posted by a klaus fix agent.
+// Agents run gh as the operator, who is often a trusted reviewer, so the
+// author login can't tell their replies apart; the prompt has them tag each
+// reply with pipeline.AgentReplyMarker instead. Counting those replies would
+// make every agent reply look like fresh trusted feedback and redispatch.
+func isAgentReply(body string) bool {
+	return strings.Contains(body, pipeline.AgentReplyMarker)
+}
+
+// isOptedIn reports whether a conversation comment explicitly asks for a fix:
+// its first non-blank line is pipeline.FixCommand (optionally followed by
+// text), or some line is exactly pipeline.ActionableMarker. Both must stand on
+// their own line, so a reply that quotes an opted-in comment ("> /klaus fix")
+// doesn't inherit the opt-in.
+func isOptedIn(body string) bool {
+	first := true
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == pipeline.ActionableMarker {
+			return true
+		}
+		if first {
+			first = false
+			if rest, ok := strings.CutPrefix(line, pipeline.FixCommand); ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ghCommit represents a commit from the GitHub pulls commits API.
@@ -41,9 +92,12 @@ type ghCommitActor struct {
 	Date string `json:"date"`
 }
 
-// hasUnaddressedTrustedComments checks whether a PR has inline review
-// comments from trusted reviewers that haven't been addressed by a
-// subsequent push.
+// hasUnaddressedTrustedComments checks whether a PR has comments from trusted
+// reviewers that haven't been addressed by a subsequent push. Both inline
+// review comments and PR conversation comments count. Conversation comments
+// by the PR author count only when opted in (see isOptedIn), because the
+// operator and fix agents share that account; inline review comments don't
+// treat the author specially.
 func hasUnaddressedTrustedComments(ownerRepo, prNumber string) bool {
 	cfg, err := config.Load("")
 	if err != nil || len(cfg.TrustedReviewers) == 0 {
@@ -55,10 +109,31 @@ func hasUnaddressedTrustedComments(ownerRepo, prNumber string) bool {
 		trustedSet[r] = true
 	}
 
-	// Fetch reviews.
+	latestTrustedCommentTime := latestTrustedReviewTime(ownerRepo, prNumber, trustedSet)
+	if t := latestTrustedConversationCommentTime(ownerRepo, prNumber, trustedSet); t.After(latestTrustedCommentTime) {
+		latestTrustedCommentTime = t
+	}
+	if latestTrustedCommentTime.IsZero() {
+		return false
+	}
+
+	// Fetch the latest commit timestamp.
+	latestCommitTime := fetchLatestCommitTime(ownerRepo, prNumber)
+	if latestCommitTime.IsZero() {
+		// Can't determine commit time; assume comments are unaddressed.
+		return true
+	}
+
+	// Comments are unaddressed if the latest trusted comment is after the latest commit.
+	return latestTrustedCommentTime.After(latestCommitTime)
+}
+
+// latestTrustedReviewTime returns the submission time of the most recent
+// actionable review from a trusted reviewer, or the zero time if there is none.
+func latestTrustedReviewTime(ownerRepo, prNumber string, trustedSet map[string]bool) time.Time {
 	reviews := fetchPRReviews(ownerRepo, prNumber)
 	if len(reviews) == 0 {
-		return false
+		return time.Time{}
 	}
 
 	// Collect trusted reviewer reviews with state COMMENTED or CHANGES_REQUESTED.
@@ -74,20 +149,19 @@ func hasUnaddressedTrustedComments(ownerRepo, prNumber string) bool {
 		candidates = append(candidates, r)
 	}
 	if len(candidates) == 0 {
-		return false
+		return time.Time{}
 	}
 
 	// Only reviews with at least one inline comment are actionable. A
 	// body-only review (e.g. gemini-code-assist's summary COMMENTED review)
 	// gives a fix agent nothing to address: the agent correctly pushes no
-	// commit, so the commit-time watermark below never advances and the
-	// review would read as "unaddressed" forever, redispatching fix agents
-	// in a loop. Body-only CHANGES_REQUESTED reviews still flip GitHub's
+	// commit, so the commit-time watermark never advances and the review
+	// would read as "unaddressed" forever, redispatching fix agents in a
+	// loop. Body-only CHANGES_REQUESTED reviews still flip GitHub's
 	// reviewDecision and are handled by the changes-requested path instead.
 	reviewsWithInline := fetchReviewIDsWithInlineComments(ownerRepo, prNumber)
 
-	// Find the most recent actionable trusted review.
-	var latestTrustedReviewTime time.Time
+	var latest time.Time
 	for _, r := range candidates {
 		if !reviewsWithInline[r.ID] {
 			continue
@@ -96,24 +170,54 @@ func hasUnaddressedTrustedComments(ownerRepo, prNumber string) bool {
 		if err != nil {
 			continue
 		}
-		if t.After(latestTrustedReviewTime) {
-			latestTrustedReviewTime = t
+		if t.After(latest) {
+			latest = t
 		}
 	}
+	return latest
+}
 
-	if latestTrustedReviewTime.IsZero() {
-		return false
+// latestTrustedConversationCommentTime returns the last-updated time of the
+// most recent actionable PR conversation comment from a trusted reviewer, or
+// the zero time if there is none.
+//
+// A comment by the PR author is actionable only when opted in: the operator
+// and fix agents post through the same account, so an agent reply that omits
+// or mangles pipeline.AgentReplyMarker must not read as fresh feedback. The
+// marker check stays as a second guard. If the PR author can't be fetched,
+// every comment is held to the opt-in rule, failing toward "no dispatch".
+//
+// updated_at (which equals created_at for unedited comments) is the
+// watermark, so a reviewer editing an older comment after the latest push to
+// add feedback is picked up.
+func latestTrustedConversationCommentTime(ownerRepo, prNumber string, trustedSet map[string]bool) time.Time {
+	comments := fetchPRConversationComments(ownerRepo, prNumber)
+	if len(comments) == 0 {
+		return time.Time{}
 	}
+	author := fetchPRAuthor(ownerRepo, prNumber)
 
-	// Fetch the latest commit timestamp.
-	latestCommitTime := fetchLatestCommitTime(ownerRepo, prNumber)
-	if latestCommitTime.IsZero() {
-		// Can't determine commit time; assume comments are unaddressed.
-		return true
+	var latest time.Time
+	for _, c := range comments {
+		if !trustedSet[c.User.Login] || isAgentReply(c.Body) {
+			continue
+		}
+		if (author == "" || c.User.Login == author) && !isOptedIn(c.Body) {
+			continue
+		}
+		ts := c.UpdatedAt
+		if ts == "" {
+			ts = c.CreatedAt
+		}
+		t, err := time.Parse(time.RFC3339, ts)
+		if err != nil {
+			continue
+		}
+		if t.After(latest) {
+			latest = t
+		}
 	}
-
-	// Comments are unaddressed if the latest trusted review is after the latest commit.
-	return latestTrustedReviewTime.After(latestCommitTime)
+	return latest
 }
 
 // fetchPRReviews calls gh api to get reviews for a PR.
@@ -132,8 +236,10 @@ func fetchPRReviews(ownerRepo, prNumber string) []ghReview {
 }
 
 // fetchReviewIDsWithInlineComments calls gh api to get the inline review
-// comments on a PR and returns the set of review IDs that own at least one.
-// On error it returns nil (no review counts), which fails toward "no dispatch".
+// comments on a PR and returns the set of review IDs that own at least one
+// comment not written by a fix agent. A reply posted through the replies
+// endpoint creates its own review, so without that exclusion an agent's reply
+// would make the review read as fresh trusted feedback. On error it returns nil (no review counts), which fails toward "no dispatch".
 // per_page=100 raises the default page size of 30, which would otherwise drop
 // newer reviews' comments on busy PRs and misread them as body-only.
 func fetchReviewIDsWithInlineComments(ownerRepo, prNumber string) map[int64]bool {
@@ -149,11 +255,44 @@ func fetchReviewIDsWithInlineComments(ownerRepo, prNumber string) map[int64]bool
 	}
 	ids := make(map[int64]bool, len(comments))
 	for _, c := range comments {
-		if c.PullRequestReviewID != 0 {
+		if c.PullRequestReviewID != 0 && !isAgentReply(c.Body) {
 			ids[c.PullRequestReviewID] = true
 		}
 	}
 	return ids
+}
+
+// fetchPRConversationComments calls gh api to get the PR conversation
+// comments, which GitHub serves from the issues API. On error it returns nil,
+// which fails toward "no dispatch". per_page=100 raises the default page size
+// of 30 so newer comments on busy PRs stay in view (results are oldest-first).
+func fetchPRConversationComments(ownerRepo, prNumber string) []ghIssueComment {
+	client := github.NewGHCLIClient("")
+	endpoint := "repos/" + ownerRepo + "/issues/" + prNumber + "/comments?per_page=100"
+	out, err := client.APIGet(context.TODO(), endpoint)
+	if err != nil {
+		return nil
+	}
+	var comments []ghIssueComment
+	if err := json.Unmarshal(out, &comments); err != nil {
+		return nil
+	}
+	return comments
+}
+
+// fetchPRAuthor calls gh api to get the login of the PR's author, or "" on
+// error.
+func fetchPRAuthor(ownerRepo, prNumber string) string {
+	client := github.NewGHCLIClient("")
+	out, err := client.APIGet(context.TODO(), "repos/"+ownerRepo+"/pulls/"+prNumber)
+	if err != nil {
+		return ""
+	}
+	var pr ghPullRequest
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return ""
+	}
+	return pr.User.Login
 }
 
 // fetchLatestCommitTime calls gh api to get the latest commit time on a PR.

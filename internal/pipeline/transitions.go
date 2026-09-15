@@ -834,6 +834,24 @@ func dispatchRepo(c *Controller, status *PRStatus) string {
 	return status.TargetRepo
 }
 
+// AgentReplyMarker is embedded in every reply a review-fix agent posts. Agents
+// run gh as the operator, who is often a trusted reviewer, so the comment
+// author can't distinguish an agent's reply from real feedback; review
+// detection skips comments carrying this marker. It is an HTML comment so it
+// doesn't render on GitHub.
+const AgentReplyMarker = "<!-- klaus-agent-reply -->"
+
+// FixCommand and ActionableMarker are the two ways a PR author opts a PR
+// conversation comment in as review feedback. The operator and fix agents post
+// through the same account, so author conversation comments are ignored by
+// review detection unless the first non-blank line is FixCommand or a line
+// consists of ActionableMarker alone. Comments from trusted reviewers other
+// than the PR author need neither.
+const (
+	FixCommand       = "/klaus fix"
+	ActionableMarker = "<!-- klaus-actionable -->"
+)
+
 // reviewFixPrompt builds the prompt sent to a review-fix agent. The leadIn is
 // the situation-specific opening sentence (e.g. "PR #X has changes requested
 // by reviewers."); the rest of the body is shared so both the changes-requested
@@ -851,13 +869,22 @@ func reviewFixPrompt(leadIn, prNumber string) string {
 	// runs inside the PR's worktree, so {owner}/{repo} resolves correctly.
 	return fmt.Sprintf(
 		"%s "+
-			"Fetch the review comments with: gh api repos/{owner}/{repo}/pulls/%s/comments\n"+
+			"Review comments come in two kinds; fetch both:\n"+
+			"  inline review comments: gh api repos/{owner}/{repo}/pulls/%s/comments\n"+
+			"  PR conversation comments: gh api repos/{owner}/{repo}/issues/%s/comments\n"+
+			"Ignore comments whose body contains %s — those are earlier agent replies.\n"+
+			"Conversation comments from the PR author are feedback only if their first line is %s or a line is exactly %s; ignore the author's other conversation comments.\n"+
 			"Address each comment in the code, then push your fixes.\n"+
 			"After pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. "+
 			"If a comment was intentionally not addressed, reply explaining why it was discounted.\n"+
-			"Use this exact command to reply, substituting the comment id and your explanation:\n"+
-			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation>'",
-		leadIn, prNumber, prNumber,
+			"End every reply body with the line %s so klaus doesn't mistake your reply for new review feedback. Never start a reply with %s or copy a %s line into it; link to the original comment instead of quoting such lines.\n"+
+			"Use this exact command to reply to an inline comment, substituting the comment id and your explanation:\n"+
+			"  gh api repos/{owner}/{repo}/pulls/%s/comments/{commentId}/replies -f body='<explanation> %s'\n"+
+			"A conversation comment has no reply thread; reply with a new PR comment that quotes or links the original:\n"+
+			"  gh pr comment %s --body '<quote or link to the original> <explanation> %s'",
+		leadIn, prNumber, prNumber, AgentReplyMarker, FixCommand, ActionableMarker,
+		AgentReplyMarker, FixCommand, ActionableMarker,
+		prNumber, AgentReplyMarker, prNumber, AgentReplyMarker,
 	)
 }
 
