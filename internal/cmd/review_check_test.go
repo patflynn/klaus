@@ -4,14 +4,23 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/patflynn/klaus/internal/pipeline"
 )
 
 // installFakeGH puts a fake `gh` binary on PATH that serves canned JSON for
-// the three pulls API endpoints hasUnaddressedTrustedComments hits, so the
+// the pulls API endpoints hasUnaddressedTrustedComments hits, so the
 // real fetch + parse + decision path runs end-to-end. It also points HOME at
 // an empty dir so config.Load falls back to defaults, which trust
 // gemini-code-assist[bot].
 func installFakeGH(t *testing.T, reviews, comments, commits string) {
+	t.Helper()
+	installFakeGHWithConversation(t, reviews, comments, `[]`, commits)
+}
+
+// installFakeGHWithConversation is installFakeGH plus canned PR conversation
+// comments, served from the issues comments endpoint.
+func installFakeGHWithConversation(t *testing.T, reviews, comments, conversation, commits string) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, content string) string {
@@ -23,11 +32,13 @@ func installFakeGH(t *testing.T, reviews, comments, commits string) {
 	}
 	reviewsPath := write("reviews.json", reviews)
 	commentsPath := write("comments.json", comments)
+	conversationPath := write("conversation.json", conversation)
 	commitsPath := write("commits.json", commits)
 
 	script := "#!/bin/sh\n" +
 		"case \"$2\" in\n" +
 		"*/reviews*) cat '" + reviewsPath + "' ;;\n" +
+		"*/issues/*/comments*) cat '" + conversationPath + "' ;;\n" +
 		"*/comments*) cat '" + commentsPath + "' ;;\n" +
 		"*/commits*) cat '" + commitsPath + "' ;;\n" +
 		"*) echo '[]' ;;\n" +
@@ -100,5 +111,61 @@ func TestHasUnaddressedTrustedComments_UntrustedReviewer(t *testing.T) {
 	)
 	if hasUnaddressedTrustedComments("owner/repo", "42") {
 		t.Error("untrusted reviewer's comments must not trigger dispatch")
+	}
+}
+
+// Production repro (2026-09-14): the operator, a trusted reviewer, left review
+// feedback as PR conversation comments (issues API) rather than inline review
+// comments, and nothing was dispatched.
+func TestHasUnaddressedTrustedComments_ConversationComment(t *testing.T) {
+	installFakeGHWithConversation(t,
+		`[]`,
+		`[]`,
+		`[{"user": {"login": "gemini-code-assist[bot]"}, "body": "please rename this", "created_at": "2026-09-14T10:00:00Z"}]`,
+		`[{"commit": {"committer": {"date": "2026-09-14T09:00:00Z"}}}]`,
+	)
+	if !hasUnaddressedTrustedComments("owner/repo", "22") {
+		t.Error("trusted conversation comment with no newer commit must count as unaddressed")
+	}
+}
+
+func TestHasUnaddressedTrustedComments_ConversationCommentAddressedByNewerCommit(t *testing.T) {
+	installFakeGHWithConversation(t,
+		`[]`,
+		`[]`,
+		`[{"user": {"login": "gemini-code-assist[bot]"}, "body": "please rename this", "created_at": "2026-09-14T10:00:00Z"}]`,
+		`[{"commit": {"committer": {"date": "2026-09-14T11:00:00Z"}}}]`,
+	)
+	if hasUnaddressedTrustedComments("owner/repo", "22") {
+		t.Error("conversation comment followed by a newer commit must count as addressed")
+	}
+}
+
+func TestHasUnaddressedTrustedComments_UntrustedConversationComment(t *testing.T) {
+	installFakeGHWithConversation(t,
+		`[]`,
+		`[]`,
+		`[{"user": {"login": "drive-by-user"}, "body": "please rename this", "created_at": "2026-09-14T10:00:00Z"}]`,
+		`[{"commit": {"committer": {"date": "2026-09-14T09:00:00Z"}}}]`,
+	)
+	if hasUnaddressedTrustedComments("owner/repo", "22") {
+		t.Error("untrusted user's conversation comment must not trigger dispatch")
+	}
+}
+
+// Fix agents post as the operator, so their replies carry a trusted login and
+// land after the push. Counting them would redispatch a fix agent on every
+// reply it writes.
+func TestHasUnaddressedTrustedComments_IgnoresAgentReplies(t *testing.T) {
+	reply := `"done, renamed ` + pipeline.AgentReplyMarker + `"`
+	installFakeGHWithConversation(t,
+		`[{"id": 200, "user": {"login": "gemini-code-assist[bot]"}, "state": "COMMENTED", "submitted_at": "2026-09-14T12:00:00Z"}]`,
+		`[{"pull_request_review_id": 200, "body": `+reply+`}]`,
+		`[{"user": {"login": "gemini-code-assist[bot]"}, "body": "please rename this", "created_at": "2026-09-14T10:00:00Z"},
+		  {"user": {"login": "gemini-code-assist[bot]"}, "body": `+reply+`, "created_at": "2026-09-14T12:00:00Z"}]`,
+		`[{"commit": {"committer": {"date": "2026-09-14T11:00:00Z"}}}]`,
+	)
+	if hasUnaddressedTrustedComments("owner/repo", "22") {
+		t.Error("agent replies (inline or conversation) newer than the push must not count as unaddressed")
 	}
 }

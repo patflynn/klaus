@@ -270,6 +270,18 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			if strings.Contains(launchedPrompt, "repos/"+tc.status.TargetRepo+"/pulls") {
 				t.Errorf("prompt substitutes TargetRepo into API path (404 risk): %q", launchedPrompt)
 			}
+			// Must also cover PR conversation comments, which live in the
+			// issues API and are replied to with a new PR comment.
+			if !strings.Contains(launchedPrompt, "gh api repos/{owner}/{repo}/issues/42/comments") {
+				t.Errorf("prompt missing conversation comment fetch instruction: %q", launchedPrompt)
+			}
+			if !strings.Contains(launchedPrompt, "gh pr comment 42 --body") {
+				t.Errorf("prompt missing conversation comment reply command: %q", launchedPrompt)
+			}
+			// Replies must carry the marker review detection uses to skip them.
+			if !strings.Contains(launchedPrompt, AgentReplyMarker) {
+				t.Errorf("prompt missing agent reply marker: %q", launchedPrompt)
+			}
 			// Must instruct replying to each comment.
 			if !strings.Contains(launchedPrompt, "reply to EACH") {
 				t.Errorf("prompt missing reply-to-each instruction: %q", launchedPrompt)
@@ -290,11 +302,11 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 		})
 	}
 
-	// The shared body (everything from "Fetch the review comments" onward)
+	// The shared body (everything from "Review comments come in two kinds" onward)
 	// must be identical across both dispatch paths so reviewers see consistent
 	// instructions regardless of which transition fired.
 	bodyOf := func(p string) string {
-		i := strings.Index(p, "Fetch the review comments")
+		i := strings.Index(p, "Review comments come in two kinds")
 		if i < 0 {
 			t.Fatalf("prompt has no shared body: %q", p)
 		}

@@ -16,7 +16,7 @@ import (
 type Event struct {
 	PRNumber  string // PR number, e.g. "42"; empty for repo-wide events (e.g. push)
 	Repo      string // owner/repo
-	EventType string // "check_run", "check_suite", "pull_request", "pull_request_review", "push"
+	EventType string // "check_run", "check_suite", "pull_request", "pull_request_review", "issue_comment", "push"
 }
 
 // Server is an HTTP server that receives GitHub webhook payloads from a relay
@@ -135,6 +135,8 @@ func parseEvent(eventType string, payload json.RawMessage) []Event {
 		return parsePullRequest(payload)
 	case "pull_request_review":
 		return parsePullRequestReview(payload)
+	case "issue_comment":
+		return parseIssueComment(payload)
 	case "push":
 		return parsePush(payload)
 	default:
@@ -186,6 +188,15 @@ type pullRequestReviewPayload struct {
 	PullRequest struct {
 		Number int `json:"number"`
 	} `json:"pull_request"`
+	Repository repoPayload `json:"repository"`
+}
+
+type issueCommentPayload struct {
+	Action string `json:"action"`
+	Issue  struct {
+		Number      int              `json:"number"`
+		PullRequest *json.RawMessage `json:"pull_request"`
+	} `json:"issue"`
 	Repository repoPayload `json:"repository"`
 }
 
@@ -280,6 +291,28 @@ func parsePullRequestReview(payload json.RawMessage) []Event {
 		PRNumber:  fmt.Sprintf("%d", p.PullRequest.Number),
 		Repo:      p.Repository.FullName,
 		EventType: "pull_request_review",
+	}}
+}
+
+func parseIssueComment(payload json.RawMessage) []Event {
+	var p issueCommentPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil
+	}
+	// Only newly created comments, matching pull_request_review which ignores
+	// edits. GitHub sends issue_comment for plain issues too; only an issue
+	// carrying a pull_request object is a PR conversation comment.
+	if p.Action != "created" || p.Issue.PullRequest == nil {
+		return nil
+	}
+
+	// Like pull_request_review, this is only an invalidation signal: the
+	// trusted-reviewer and commit-time filtering of conversation comments
+	// lives in hasUnaddressedTrustedComments.
+	return []Event{{
+		PRNumber:  fmt.Sprintf("%d", p.Issue.Number),
+		Repo:      p.Repository.FullName,
+		EventType: "issue_comment",
 	}}
 }
 

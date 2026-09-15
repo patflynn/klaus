@@ -190,7 +190,15 @@ Klaus distinguishes between GitHub review approval and internal approval:
 
 - **Trusted reviewers** — configured in `.klaus/config.json` under
   `trusted_reviewers`. When a trusted reviewer leaves comments (even without
-  formal "changes requested"), the pipeline dispatches a fix agent.
+  formal "changes requested"), the pipeline dispatches a fix agent. Both
+  inline review comments and PR conversation comments (the top-level thread
+  on the PR) count. A comment counts as addressed once a commit is pushed
+  after it. The PR author gets no special treatment: only membership in
+  `trusted_reviewers` matters. Fix-agent replies are tagged with a hidden
+  `<!-- klaus-agent-reply -->` marker and ignored, since agents post as the
+  operator. In webhook mode, the relay must forward `pull_request_review`
+  (inline review comments) and `issue_comment` (conversation comments) events
+  for these to be picked up without waiting for the reconcile heartbeat.
 
 - **`klaus approve`** — marks PRs as ready for merge in the internal state. PR approval
   is strictly a human task — it exists only to ensure that all changes are gated

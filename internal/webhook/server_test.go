@@ -252,6 +252,107 @@ func TestParsePullRequestReview(t *testing.T) {
 	}
 }
 
+func TestParseIssueComment(t *testing.T) {
+	// A PR conversation comment arrives as issue_comment with an
+	// issue.pull_request object. It must re-evaluate that PR so trusted
+	// reviewer conversation comments dispatch fixes; comments on plain
+	// issues and non-"created" actions produce no event.
+	tests := []struct {
+		name    string
+		payload string
+		wantLen int
+	}{
+		{
+			name: "created on PR",
+			payload: `{
+				"action": "created",
+				"issue": {"number": 22, "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/22"}},
+				"comment": {"body": "please rename this", "user": {"login": "patflynn"}},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 1,
+		},
+		{
+			name: "created on plain issue (ignored)",
+			payload: `{
+				"action": "created",
+				"issue": {"number": 22},
+				"comment": {"body": "me too", "user": {"login": "patflynn"}},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 0,
+		},
+		{
+			name: "edited on PR (ignored)",
+			payload: `{
+				"action": "edited",
+				"issue": {"number": 22, "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/22"}},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := parseEvent("issue_comment", json.RawMessage(tt.payload))
+			if len(events) != tt.wantLen {
+				t.Fatalf("expected %d events, got %d", tt.wantLen, len(events))
+			}
+			if tt.wantLen > 0 {
+				want := Event{PRNumber: "22", Repo: "owner/repo", EventType: "issue_comment"}
+				if events[0] != want {
+					t.Errorf("got %+v, want %+v", events[0], want)
+				}
+			}
+		})
+	}
+}
+
+// TestServerIssueComment posts issue_comment deliveries through the real
+// HTTP handler: a PR conversation comment yields an event, a plain-issue
+// comment yields none.
+func TestServerIssueComment(t *testing.T) {
+	ch := make(chan Event, 10)
+	srv := NewServer(0, "/webhook/github", ch)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/webhook/github", srv.handleWebhook)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	post := func(payload string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, ts.URL+"/webhook/github", bytes.NewBufferString(payload))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-GitHub-Event", "issue_comment")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+	}
+
+	post(`{"action": "created", "issue": {"number": 9}, "repository": {"full_name": "test/repo"}}`)
+	select {
+	case ev := <-ch:
+		t.Fatalf("plain issue comment must not emit an event, got %+v", ev)
+	default:
+	}
+
+	post(`{"action": "created", "issue": {"number": 24, "pull_request": {}}, "repository": {"full_name": "test/repo"}}`)
+	select {
+	case ev := <-ch:
+		if ev.PRNumber != "24" || ev.Repo != "test/repo" || ev.EventType != "issue_comment" {
+			t.Errorf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for issue_comment event")
+	}
+}
+
 func TestParsePush(t *testing.T) {
 	t.Run("default branch push", func(t *testing.T) {
 		payload := `{

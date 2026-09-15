@@ -368,7 +368,7 @@ Both commands require `webhook.relay_url` in your config. `setup` also requires 
 }
 ```
 
-The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, and `pull_request_review` events.
+The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, `pull_request_review`, and `issue_comment` events. `pull_request_review` and `issue_comment` are what let comments from `trusted_reviewers` dispatch fix agents promptly: both inline review comments and PR conversation comments count. Webhooks created before `issue_comment` was added don't include it; add it to the hook's events in GitHub (or to your relay's forwarded events).
 
 Additional webhook config knobs:
 
@@ -414,6 +414,8 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "agent_display": "detached"
 }
 ```
+
+`trusted_reviewers` lists GitHub logins whose comments dispatch a fix agent even without a formal "changes requested" review. Both inline review comments and PR conversation comments count. A comment stops counting once a newer commit is pushed.
 
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 
