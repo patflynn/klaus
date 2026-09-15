@@ -256,7 +256,7 @@ func TestParseIssueComment(t *testing.T) {
 	// A PR conversation comment arrives as issue_comment with an
 	// issue.pull_request object. It must re-evaluate that PR so trusted
 	// reviewer conversation comments dispatch fixes; comments on plain
-	// issues and non-"created" actions produce no event.
+	// issues and actions other than "created"/"edited" produce no event.
 	tests := []struct {
 		name    string
 		payload string
@@ -283,9 +283,31 @@ func TestParseIssueComment(t *testing.T) {
 			wantLen: 0,
 		},
 		{
-			name: "edited on PR (ignored)",
+			// A reviewer may edit an older comment to add feedback after the
+			// latest push; detection watermarks on updated_at, so the edit
+			// must trigger a re-evaluation.
+			name: "edited on PR",
 			payload: `{
 				"action": "edited",
+				"issue": {"number": 22, "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/22"}},
+				"comment": {"body": "please rename this, and the test too", "user": {"login": "patflynn"}},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 1,
+		},
+		{
+			name: "edited on plain issue (ignored)",
+			payload: `{
+				"action": "edited",
+				"issue": {"number": 22},
+				"repository": {"full_name": "owner/repo"}
+			}`,
+			wantLen: 0,
+		},
+		{
+			name: "deleted on PR (ignored)",
+			payload: `{
+				"action": "deleted",
 				"issue": {"number": 22, "pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/22"}},
 				"repository": {"full_name": "owner/repo"}
 			}`,
@@ -350,6 +372,23 @@ func TestServerIssueComment(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for issue_comment event")
+	}
+
+	post(`{"action": "edited", "issue": {"number": 9}, "repository": {"full_name": "test/repo"}}`)
+	select {
+	case ev := <-ch:
+		t.Fatalf("edited plain issue comment must not emit an event, got %+v", ev)
+	default:
+	}
+
+	post(`{"action": "edited", "issue": {"number": 25, "pull_request": {}}, "repository": {"full_name": "test/repo"}}`)
+	select {
+	case ev := <-ch:
+		if ev.PRNumber != "25" || ev.Repo != "test/repo" || ev.EventType != "issue_comment" {
+			t.Errorf("unexpected event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for edited issue_comment event")
 	}
 }
 

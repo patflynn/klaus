@@ -299,10 +299,15 @@ func parseIssueComment(payload json.RawMessage) []Event {
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return nil
 	}
-	// Only newly created comments, matching pull_request_review which ignores
-	// edits. GitHub sends issue_comment for plain issues too; only an issue
-	// carrying a pull_request object is a PR conversation comment.
-	if p.Action != "created" || p.Issue.PullRequest == nil {
+	// Created and edited comments both count: a trusted reviewer may edit an
+	// older comment to add feedback, and detection watermarks conversation
+	// comments on updated_at. Deletions are ignored. GitHub sends issue_comment
+	// for plain issues too; only an issue carrying a pull_request object is a
+	// PR conversation comment.
+	if p.Action != "created" && p.Action != "edited" {
+		return nil
+	}
+	if p.Issue.PullRequest == nil {
 		return nil
 	}
 

@@ -193,12 +193,32 @@ Klaus distinguishes between GitHub review approval and internal approval:
   formal "changes requested"), the pipeline dispatches a fix agent. Both
   inline review comments and PR conversation comments (the top-level thread
   on the PR) count. A comment counts as addressed once a commit is pushed
-  after it. The PR author gets no special treatment: only membership in
-  `trusted_reviewers` matters. Fix-agent replies are tagged with a hidden
-  `<!-- klaus-agent-reply -->` marker and ignored, since agents post as the
-  operator. In webhook mode, the relay must forward `pull_request_review`
-  (inline review comments) and `issue_comment` (conversation comments) events
-  for these to be picked up without waiting for the reconcile heartbeat.
+  after it. Conversation comments are compared by their last-edited time, so
+  a reviewer editing an older comment after the latest push to add feedback
+  is picked up.
+
+  **PR-author conversation comments are opt-in.** The operator and fix agents
+  post through the same GitHub account, so a conversation comment by the PR
+  author is ignored, even if the author is in `trusted_reviewers`, unless it
+  opts in in one of two ways:
+  - its first non-blank line is a `/klaus fix` command (optionally followed by
+    text), or
+  - it contains the hidden marker `<!-- klaus-actionable -->` on a line of its
+    own.
+
+  Quoted lines (`> /klaus fix`) don't opt in, so a reply quoting the original
+  stays inert. Conversation comments from trusted reviewers who are not the PR
+  author count without opting in. Fix-agent replies are also tagged with a
+  hidden `<!-- klaus-agent-reply -->` marker and ignored, but correctness
+  doesn't rest on it: an agent reply that loses its marker is still an
+  author comment without opt-in. Inline review comments don't apply the author
+  rule; they count by `trusted_reviewers` membership and the agent-reply
+  marker as before.
+
+  In webhook mode, the relay must forward `pull_request_review` (inline
+  review comments) and `issue_comment` (conversation comments, created or
+  edited) events for these to be picked up without waiting for the reconcile
+  heartbeat.
 
 - **`klaus approve`** — marks PRs as ready for merge in the internal state. PR approval
   is strictly a human task — it exists only to ensure that all changes are gated

@@ -368,7 +368,7 @@ Both commands require `webhook.relay_url` in your config. `setup` also requires 
 }
 ```
 
-The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, `pull_request_review`, and `issue_comment` events. `pull_request_review` and `issue_comment` are what let comments from `trusted_reviewers` dispatch fix agents promptly: both inline review comments and PR conversation comments count. Webhooks created before `issue_comment` was added don't include it; add it to the hook's events in GitHub (or to your relay's forwarded events).
+The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, `pull_request_review`, and `issue_comment` events. `pull_request_review` and `issue_comment` are what let comments from `trusted_reviewers` dispatch fix agents promptly: both inline review comments and PR conversation comments count (conversation comments are re-evaluated when created or edited). Webhooks created before `issue_comment` was added don't include it; add it to the hook's events in GitHub (or to your relay's forwarded events).
 
 Additional webhook config knobs:
 
@@ -415,7 +415,9 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 }
 ```
 
-`trusted_reviewers` lists GitHub logins whose comments dispatch a fix agent even without a formal "changes requested" review. Both inline review comments and PR conversation comments count. A comment stops counting once a newer commit is pushed.
+`trusted_reviewers` lists GitHub logins whose comments dispatch a fix agent even without a formal "changes requested" review. Both inline review comments and PR conversation comments count. A comment stops counting once a newer commit is pushed; editing a comment counts as new, so feedback added to an older comment after the latest push is picked up.
+
+Conversation comments by the PR author are the exception: the operator and fix agents post through the same GitHub account, so an author's conversation comment is ignored unless it opts in, even when the author is in `trusted_reviewers`. Opt in either by starting the comment with a `/klaus fix` line, or by putting the hidden marker `<!-- klaus-actionable -->` on a line of its own. Quoted lines (`> /klaus fix`) don't count. Trusted reviewers other than the PR author need no opt-in, and inline review comments are unaffected by this rule.
 
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 
