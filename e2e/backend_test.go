@@ -50,9 +50,7 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 				if strings.Contains(argv, "--max-budget-usd") || !strings.Contains(argv, "test-model") || !strings.Contains(argv, "task 'quoted' $(false)") {
 					t.Fatalf("bad args: %s", argv)
 				}
-				if err := os.WriteFile(filepath.Join(h.E2EDir, "claude.release"), nil, 0600); err != nil {
-					t.Fatal(err)
-				}
+				releaseBackendWorkers(t, h)
 				st := h.WaitForState(ids[0], func(s *run.State) bool { return s.DurationMS != nil }, 15*time.Second)
 				if st.Backend != kind || st.Budget != nil || st.CostUSD != nil {
 					t.Fatalf("incorrect backend/budget/cost: %+v", st)
@@ -145,9 +143,7 @@ func TestCoordinatorBackendSelection(t *testing.T) {
 			if !found {
 				t.Fatal("worker state missing")
 			}
-			if err := os.WriteFile(filepath.Join(h.E2EDir, "claude.release"), nil, 0600); err != nil {
-				t.Fatal(err)
-			}
+			releaseBackendWorkers(t, h)
 
 		})
 	}
@@ -188,9 +184,7 @@ func TestBackendDefaultsAndValidation(t *testing.T) {
 			if strings.Contains(args, "claude-only-model") || strings.Contains(args, "\nmax\n") || !strings.Contains(args, "backend-model") {
 				t.Fatalf("wrong backend defaults: %s", args)
 			}
-			if err := os.WriteFile(filepath.Join(h.E2EDir, "claude.release"), nil, 0600); err != nil {
-				t.Fatal(err)
-			}
+			releaseBackendWorkers(t, h)
 		})
 	}
 }
@@ -212,5 +206,32 @@ func TestCoordinatorFailureStillTearsDown(t *testing.T) {
 				t.Fatalf("orphaned dashboard: %v", panes)
 			}
 		})
+	}
+}
+
+// Wait through the entire finalizer, not just its first state update: it still
+// syncs git refs and removes the worktree after recording duration. Letting
+// TempDir cleanup race those writes can fail with "directory not empty".
+func releaseBackendWorkers(t *testing.T, h *Harness) {
+	t.Helper()
+	var workers []*run.State
+	for _, id := range h.RunIDs() {
+		st, err := h.ReadState(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Type != "session" && st.TmuxPane != nil {
+			workers = append(workers, st)
+		}
+	}
+	if len(workers) == 0 {
+		t.Fatal("no worker panes to release")
+	}
+	if err := os.WriteFile(filepath.Join(h.E2EDir, "claude.release"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range workers {
+		h.WaitForState(st.ID, func(s *run.State) bool { return s.DurationMS != nil && s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+		waitPaneGone(t, h, *st.TmuxPane, 30*time.Second)
 	}
 }
