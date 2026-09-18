@@ -12,35 +12,38 @@ import (
 
 // State represents the persistent state of a single agent run.
 type State struct {
-	ID              string   `json:"id"`
-	Prompt          string   `json:"prompt"`
-	Issue           *string  `json:"issue"`
-	PR              *string  `json:"pr,omitempty"`
-	Branch          string   `json:"branch"`
-	Worktree        string   `json:"worktree"`
-	TmuxPane        *string  `json:"tmux_pane"`
-	Budget          *string  `json:"budget"`
-	LogFile         *string  `json:"log_file"`
-	CreatedAt       string   `json:"created_at"`
-	CostUSD         *float64 `json:"cost_usd"`
-	DurationMS      *int64   `json:"duration_ms"`
-	PRURL           *string  `json:"pr_url"`
-	Type            string   `json:"type,omitempty"`
-	TargetRepo      *string  `json:"target_repo,omitempty"`
-	CloneDir        *string  `json:"clone_dir,omitempty"`
-	Host            *string  `json:"host,omitempty"`
-	MergedAt        *string  `json:"merged_at,omitempty"`
-	DashboardPane   *string  `json:"dashboard_pane,omitempty"`
-	CoordinatorPane *string  `json:"coordinator_pane,omitempty"` // tmux pane running the coordinator/claude session
-	Approved        *bool    `json:"approved,omitempty"`
-	ApprovedAt      *string  `json:"approved_at,omitempty"`
-	SessionName     *string  `json:"session_name,omitempty"`      // claude -n name, same as run ID
-	OriginalRunID   *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
-	ClaudeSessionID *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
-	RepoRoot        *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
-	FailureReason   *string  `json:"failure_reason,omitempty"`    // set when the agent crashed (e.g. error_during_execution); suppresses success events and blocks resume chaining
-	Model           *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
-	Effort          *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
+	Backend          string   `json:"backend,omitempty"`       // Empty in old state means Claude.
+	AgentBackend     string   `json:"agent_backend,omitempty"` // Session worker default.
+	BackendSessionID *string  `json:"backend_session_id,omitempty"`
+	ID               string   `json:"id"`
+	Prompt           string   `json:"prompt"`
+	Issue            *string  `json:"issue"`
+	PR               *string  `json:"pr,omitempty"`
+	Branch           string   `json:"branch"`
+	Worktree         string   `json:"worktree"`
+	TmuxPane         *string  `json:"tmux_pane"`
+	Budget           *string  `json:"budget"`
+	LogFile          *string  `json:"log_file"`
+	CreatedAt        string   `json:"created_at"`
+	CostUSD          *float64 `json:"cost_usd"`
+	DurationMS       *int64   `json:"duration_ms"`
+	PRURL            *string  `json:"pr_url"`
+	Type             string   `json:"type,omitempty"`
+	TargetRepo       *string  `json:"target_repo,omitempty"`
+	CloneDir         *string  `json:"clone_dir,omitempty"`
+	Host             *string  `json:"host,omitempty"`
+	MergedAt         *string  `json:"merged_at,omitempty"`
+	DashboardPane    *string  `json:"dashboard_pane,omitempty"`
+	CoordinatorPane  *string  `json:"coordinator_pane,omitempty"` // tmux pane running the coordinator/claude session
+	Approved         *bool    `json:"approved,omitempty"`
+	ApprovedAt       *string  `json:"approved_at,omitempty"`
+	SessionName      *string  `json:"session_name,omitempty"`      // claude -n name, same as run ID
+	OriginalRunID    *string  `json:"original_run_id,omitempty"`   // run ID this was forked from
+	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
+	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
+	FailureReason    *string  `json:"failure_reason,omitempty"`    // set when the agent crashed (e.g. error_during_execution); suppresses success events and blocks resume chaining
+	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
+	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.

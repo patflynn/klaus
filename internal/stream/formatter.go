@@ -9,10 +9,11 @@ import (
 
 // Event represents a parsed JSONL event from Claude's stream-json output.
 type Event struct {
-	Type    string          `json:"type"`
-	Subtype string          `json:"subtype,omitempty"`
-	Model   string          `json:"model,omitempty"`
-	Message *AssistantMsg   `json:"message,omitempty"`
+	Content string        `json:"content,omitempty"`
+	Type    string        `json:"type"`
+	Subtype string        `json:"subtype,omitempty"`
+	Model   string        `json:"model,omitempty"`
+	Message *AssistantMsg `json:"message,omitempty"`
 
 	// Result fields
 	TotalCostUSD *float64 `json:"total_cost_usd,omitempty"`
@@ -58,11 +59,13 @@ func FormatStream(r io.Reader, w io.Writer) error {
 // FormatLine formats a single JSONL line and writes it to w.
 func FormatLine(line string, w io.Writer) {
 	var ev Event
-	if err := json.Unmarshal([]byte(line), &ev); err != nil {
+	if err := json.Unmarshal(NormalizeLine([]byte(line)), &ev); err != nil {
 		return
 	}
 
 	switch ev.Type {
+	case "text_delta":
+		fmt.Fprint(w, ev.Content)
 	case "system":
 		if ev.Subtype == "init" {
 			model := ev.Model
@@ -96,7 +99,13 @@ func FormatLine(line string, w io.Writer) {
 		}
 		durationS := float64(durationMS) / 1000.0
 		fmt.Fprintln(w)
-		fmt.Fprintf(w, "── done (%.1fs, $%.4f) ──\n", durationS, cost)
+		if ev.Subtype == "error_during_execution" {
+			fmt.Fprintln(w, "── agent failed ──")
+		} else if ev.TotalCostUSD == nil {
+			fmt.Fprintln(w, "── done (cost unavailable) ──")
+		} else {
+			fmt.Fprintf(w, "── done (%.1fs, $%.4f) ──\n", durationS, cost)
+		}
 	}
 }
 

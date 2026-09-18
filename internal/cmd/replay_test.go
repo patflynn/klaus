@@ -134,7 +134,7 @@ func TestReplayRoundTripEndToEnd(t *testing.T) {
 
 	// The downstream claude command resumes the restored session.
 	cmd := buildClaudeCommand("sys", "5", "continue", "20260601-1100-bbbb", decision.SessionUUID, "", "")
-	if !strings.Contains(cmd, "--resume '"+sessionID+"'") {
+	if !strings.Contains(cmd, "'--resume' '"+sessionID+"'") {
 		t.Errorf("claude command missing --resume %s: %s", sessionID, cmd)
 	}
 	if !strings.Contains(cmd, "--fork-session") {

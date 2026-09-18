@@ -305,7 +305,8 @@ func TestFinalizeBudgetPauseEmitsEvents(t *testing.T) {
 	logFile := filepath.Join(store.LogDir(), runID+".jsonl")
 	logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"working..."}]}}
-{"type":"result","subtype":"error_max_turns","total_cost_usd":4.95,"duration_ms":30000}
+{"type":"result","subtype":"error_max_turns","is_error":true,"total_cost_usd":4.95,"duration_ms":30000}
+{"type":"klaus_exit","exit_code":1}
 `
 	if err := os.WriteFile(logFile, []byte(logContent), 0644); err != nil {
 		t.Fatalf("writing log: %v", err)
@@ -496,4 +497,3 @@ func TestFinalizeClearsBudgetPausedLabel(t *testing.T) {
 		t.Error("should not run pause flow on a successful completion")
 	}
 }
-

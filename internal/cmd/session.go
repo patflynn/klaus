@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
@@ -42,7 +43,7 @@ from inside the session to target specific repositories.`,
 var newSessionCmd = &cobra.Command{
 	Use:   "new",
 	Short: "Start a fresh coordinator session",
-	Long: `Creates a new isolated worktree and starts a fresh interactive Claude Code session
+	Long: `Creates a new isolated worktree and starts a fresh interactive coordinator session
 with no prior conversation context.
 
 This is the same as the old default behavior of 'klaus' — use this when you
@@ -73,6 +74,24 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		return err
 	}
 
+	backendFlag, _ := cmd.Flags().GetString("backend")
+	backendName := backendFlag
+	if backendName == "" {
+		backendName = cfg.DefaultCoordinatorBackend
+	}
+	kind, err := backend.Parse(backendName)
+	if err != nil {
+		return err
+	}
+	workerFlag, _ := cmd.Flags().GetString("agent-backend")
+	workerName := workerFlag
+	if workerName == "" {
+		workerName = cfg.DefaultAgentBackend
+	}
+	workerKind, err := backend.Parse(workerName)
+	if err != nil {
+		return err
+	}
 	sessionsDir, err := run.SessionsDir()
 	if err != nil {
 		return err
@@ -137,12 +156,26 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	var state *run.State
 
 	if resuming {
-		// Load existing state — only carry forward Claude session ID,
+		// Load existing state — carry forward backend conversation IDs,
 		// worktree path, and repo root. All ephemeral state (pane IDs,
 		// etc.) starts clean to avoid stale references after tmux restarts.
 		prevState, err := store.Load(id)
 		if err != nil {
 			return fmt.Errorf("loading session state: %w", err)
+		}
+		previousKind, parseErr := backend.Parse(prevState.Backend)
+		if parseErr != nil {
+			return parseErr
+		}
+		if backendFlag != "" && kind != previousKind {
+			return fmt.Errorf("session %s uses %s; use klaus new --backend %s for a new conversation", id, previousKind, kind)
+		}
+		kind = previousKind
+		if workerFlag == "" && prevState.AgentBackend != "" {
+			workerKind, err = backend.Parse(prevState.AgentBackend)
+			if err != nil {
+				return err
+			}
 		}
 		worktree = prevState.Worktree
 		branch = prevState.Branch
@@ -191,7 +224,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		// Re-link the shared coordinator memory: the project dir for this
 		// worktree may have been recreated (or predate memory sharing).
-		if err := config.LinkSharedMemory(worktree); err != nil {
+		if err := linkBackendMemory(kind, worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
 		}
 
@@ -210,14 +243,17 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 		// Build clean state, carrying forward only what matters
 		state = &run.State{
-			ID:              id,
-			Type:            "session",
-			Prompt:          "(interactive session)",
-			Branch:          branch,
-			Worktree:        worktree,
-			CreatedAt:       prevState.CreatedAt,
-			RepoRoot:        prevState.RepoRoot,
-			ClaudeSessionID: prevState.ClaudeSessionID,
+			Backend:          string(kind),
+			AgentBackend:     string(workerKind),
+			ID:               id,
+			Type:             "session",
+			Prompt:           "(interactive session)",
+			Branch:           branch,
+			Worktree:         worktree,
+			CreatedAt:        prevState.CreatedAt,
+			RepoRoot:         prevState.RepoRoot,
+			ClaudeSessionID:  prevState.ClaudeSessionID,
+			BackendSessionID: prevState.BackendSessionID,
 		}
 		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving refreshed session state: %w", err)
@@ -248,7 +284,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			fmt.Printf("  worktree: %s\n", worktree)
 			fmt.Printf("  branch:   %s\n", branch)
 
-			if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+			if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 			}
 
@@ -269,11 +305,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			fmt.Printf("  workspace: %s\n", worktree)
 		}
 
-		if err := config.PreTrustWorktree(worktree); err != nil {
+		if err := trustBackendWorktree(kind, worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not pre-trust worktree: %v\n", err)
 		}
 
-		if err := config.LinkSharedMemory(worktree); err != nil {
+		if err := linkBackendMemory(kind, worktree); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not link shared memory: %v\n", err)
 		}
 
@@ -284,13 +320,15 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			repoRoot = &root
 		}
 		state = &run.State{
-			ID:        id,
-			Type:      "session",
-			Prompt:    "(interactive session)",
-			Branch:    branch,
-			Worktree:  worktree,
-			CreatedAt: createdAt,
-			RepoRoot:  repoRoot,
+			Backend:      string(kind),
+			AgentBackend: string(workerKind),
+			ID:           id,
+			Type:         "session",
+			Prompt:       "(interactive session)",
+			Branch:       branch,
+			Worktree:     worktree,
+			CreatedAt:    createdAt,
+			RepoRoot:     repoRoot,
 		}
 		if err := store.Save(state); err != nil {
 			return fmt.Errorf("saving state: %w", err)
@@ -314,6 +352,9 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		return fmt.Errorf("rendering session prompt: %w", err)
 	}
 
+	if kind != backend.Claude {
+		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Claude Code Monitor is unavailable. Use klaus watch through your supported background tools, or klaus status and klaus logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
+	}
 	// Configure tmux window for better situational awareness
 	currentPane := os.Getenv("TMUX_PANE")
 	if currentPane != "" {
@@ -327,7 +368,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		tmuxClient.SetWindowOption(ctx, currentPane, "pane-border-format", "#{pane_title}")
 
 		// Persist the coordinator pane so the dashboard can route "discuss"
-		// requests (the 'd' keybinding) to this Claude session.
+		// requests (the 'd' keybinding) to this coordinator session.
 		state.CoordinatorPane = &currentPane
 		if err := store.Save(state); err != nil {
 			slog.Warn("failed to persist coordinator pane", "id", state.ID, "err", err)
@@ -335,11 +376,11 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 
 	fmt.Println()
-	fmt.Println("Starting interactive Claude Code session...")
+	fmt.Printf("Starting interactive %s session...\n", kind)
 	fmt.Println("  Use 'klaus launch' from inside to spawn workers.")
 	fmt.Println()
 
-	// Launch dashboard in a bottom pane before starting Claude.
+	// Launch dashboard in a bottom pane before starting the coordinator.
 	var dashPane string
 	if currentPane != "" {
 		dashCmd := fmt.Sprintf("KLAUS_SESSION_ID=%s klaus dashboard", id)
@@ -355,35 +396,47 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		}
 	}
 
-	// Run claude interactively in the worktree, passing session ID to children.
-	// Use --session-id to assign a stable UUID so we can resume later.
-	claudeArgs := []string{
-		"--dangerously-skip-permissions",
-		"-n", id,
-		"--append-system-prompt", sessionPrompt,
-	}
-	if resuming && state.ClaudeSessionID != nil && *state.ClaudeSessionID != "" {
-		claudeArgs = append(claudeArgs, "--resume", *state.ClaudeSessionID)
-	} else if resuming {
-		claudeArgs = append(claudeArgs, "--continue")
-	} else {
-		// New session: generate a UUID and pass it so we can resume by ID later
-		csID := genUUIDv4()
-		if csID != "" {
-			claudeArgs = append(claudeArgs, "--session-id", csID)
-			state.ClaudeSessionID = &csID
+	opts := backend.Options{SystemPrompt: sessionPrompt, RunID: id, Continue: resuming}
+	if kind == backend.Claude {
+		if state.ClaudeSessionID != nil {
+			opts.ResumeID = *state.ClaudeSessionID
+		}
+		if !resuming {
+			opts.ResumeID = genUUIDv4()
+			state.ClaudeSessionID = stringPtr(opts.ResumeID)
 			if err := store.Save(state); err != nil {
-				slog.Warn("failed to save state with claude session ID", "id", state.ID, "err", err)
+				return err
 			}
 		}
 	}
-	claude := exec.Command("claude", claudeArgs...)
-	claude.Dir = worktree
-	claude.Stdin = os.Stdin
-	claude.Stdout = os.Stdout
-	claude.Stderr = os.Stderr
-	claude.Env = append(os.Environ(), sessionIDEnv+"="+id)
-	claude.Run() // ignore error — user may exit normally
+	if kind == backend.Agy && resuming {
+		if state.BackendSessionID != nil {
+			opts.ResumeID = *state.BackendSessionID
+		}
+		if opts.ResumeID == "" {
+			opts.ResumeID = backend.AgyConversationID(worktree)
+		}
+		if opts.ResumeID == "" {
+			fmt.Fprintln(os.Stderr, "warning: no agy conversation recorded for this workspace; starting fresh")
+		}
+	}
+	fmt.Printf("Coordinator: %s; default workers: %s\n", kind, workerKind)
+	argv := kind.Coordinator(opts)
+	coordinator := exec.Command(argv[0], argv[1:]...)
+	coordinator.Dir = worktree
+	coordinator.Stdin = os.Stdin
+	coordinator.Stdout = os.Stdout
+	coordinator.Stderr = os.Stderr
+	coordinator.Env = append(os.Environ(), sessionIDEnv+"="+id, "KLAUS_AGENT_BACKEND="+string(workerKind))
+	coordinatorErr := coordinator.Run()
+	if kind == backend.Agy {
+		if sid := backend.AgyConversationID(worktree); sid != "" {
+			state.BackendSessionID = &sid
+			if err := store.Save(state); err != nil {
+				return err
+			}
+		}
+	}
 
 	fmt.Println()
 	fmt.Printf("Session %s ended.\n", id)
@@ -409,6 +462,9 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		fmt.Printf("  Worktree preserved at: %s\n", worktree)
 	}
 	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
+	if coordinatorErr != nil {
+		return fmt.Errorf("%s coordinator exited: %w", kind, coordinatorErr)
+	}
 	return nil
 }
 
@@ -484,6 +540,10 @@ func genUUIDv4() string {
 }
 
 func init() {
+	for _, c := range []*cobra.Command{rootCmd, sessionCmd, newSessionCmd} {
+		c.Flags().String("backend", "", "Coordinator backend: claude, codex, or agy (default from config; saved on session)")
+		c.Flags().String("agent-backend", "", "Default worker backend: claude, codex, or agy (independent of coordinator)")
+	}
 	sessionCmd.Flags().Bool("continue", false, "Resume the most recent coordinator session")
 	sessionCmd.Flags().String("resume", "", "Resume a specific session by ID")
 	rootCmd.AddCommand(sessionCmd)
