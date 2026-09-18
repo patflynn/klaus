@@ -212,7 +212,7 @@ To abandon the work, close the draft PR. To redirect, push manual commits to its
 There is no subcommand named `klaus resume` or `klaus finalize` — resuming happens through flags on `klaus launch`, and `_finalize` handles the WIP commit automatically:
 
 - `klaus launch --pr <num> "..."` resumes a budget-paused PR (WIP commit + trajectory replay, as above).
-- `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. It starts fresh if the prior run crashed or its transcript can't be located.
+- `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. Prior errors produce a warning but do not prevent resume. It starts fresh if the transcript can't be located or staged (Claude), or the local thread ID is missing (Codex).
 
 ## Install
 

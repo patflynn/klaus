@@ -454,15 +454,9 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			if ev.Subtype != "" {
 				resultSubtype = ev.Subtype
 			}
-			// Detect a crashed agent. A result line like
-			// {"is_error":true,"subtype":"error_during_execution","num_turns":0,...}
-			// means claude never did any work (e.g. a cross-worktree --resume
-			// that couldn't find its conversation). Record the failure so
-			// _finalize raises agent:needs-attention instead of falsely
-			// reporting completion. A budget-cap result is handled separately
-			// by the budget-pause heuristic and is not treated as a crash here.
+			// Claude session limits can report success with is_error set.
 			limitStop := isClaudeRun(state) && (ev.Subtype == "error_max_budget_usd" || ev.Subtype == "error_max_turns")
-			if !limitStop && (ev.IsError || ev.Subtype == "error_during_execution") {
+			if ev.Subtype != "success" && !limitStop && (ev.IsError || ev.Subtype == "error_during_execution") {
 				reason := ev.Subtype
 				if reason == "" {
 					reason = "error"
@@ -472,8 +466,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 				}
 				state.FailureReason = &reason
 			} else {
-				// A clean result clears any failure recorded by an earlier
-				// (partial) result line.
+				// Clean results and limit stops clear earlier failures.
 				state.FailureReason = nil
 			}
 			// Record the Claude conversation UUID so a later budget-paused

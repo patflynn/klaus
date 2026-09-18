@@ -53,8 +53,9 @@ automatically.
 
 Use --resume-from <run-id> to continue a previous run's Claude conversation in
 a fresh worktree, paused or not — the follow-up keeps what the earlier agent
-learned instead of re-exploring the repo. It starts fresh if that run crashed
-or its transcript cannot be located.
+learned instead of re-exploring the repo. Prior errors produce a warning but
+do not prevent resume. It starts fresh if the transcript cannot be located
+or staged.
 
 For a budget-paused PR, klaus continues the previous agent's Claude
 conversation by default (trajectory replay): it restores the stored
@@ -352,36 +353,12 @@ are synced back after completion. Use --local to force local execution, or
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
-		// Resolve the Claude session UUID from the previous run's JSONL log.
-		// claude --resume expects a UUID v4, not the klaus run ID.
-		//
-		// Claude Code scopes conversation transcripts by working directory
-		// (~/.claude/projects/<encoded-cwd>/<uuid>.jsonl). This new agent runs
-		// in a fresh worktree, so 'claude --resume' would look in the wrong
-		// project dir and exit at startup with 0 turns ("No conversation found
-		// with session ID"). To make resume work across worktrees we stage the
-		// prior transcript into this worktree's project dir before launching.
-		//
-		// Resume is an OPTIMIZATION, never a requirement: if the prior run
-		// crashed, or its transcript can't be located/copied, we silently
-		// start a fresh claude session instead of risking a no-op launch.
+		// Stage the prior Claude transcript for the new worktree.
 		var resolvedResume string
 		if resumeFrom != "" && kind == backend.Claude {
-			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil && (s.Backend == "" || s.Backend == string(backend.Claude)) {
-				if s.FailureReason != nil {
-					// Don't chain onto a crashed conversation.
-					fmt.Fprintf(os.Stderr, "warning: prior run %s failed (%s); starting fresh instead of resuming\n", resumeFrom, *s.FailureReason)
-				} else if candidate := ExtractClaudeSessionID(*s.LogFile); candidate != "" {
-					if stageResumeTranscript(s, candidate, worktree) {
-						resolvedResume = candidate
-					} else {
-						fmt.Fprintf(os.Stderr, "warning: could not stage prior Claude conversation %s for resume, starting fresh\n", candidate)
-					}
-				}
+			if prior, err := store.Load(resumeFrom); err == nil {
+				resolvedResume = resolveResumeID(prior, kind, worktree)
 			}
-			// If we couldn't extract a session UUID (e.g., previous agent
-			// also failed with no output) or the transcript is missing,
-			// skip --resume entirely and let claude start fresh.
 		}
 
 		// Budget-paused PR continuation (issue #261): when launching against a
@@ -423,8 +400,8 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		if kind == backend.Codex && resumeFrom != "" && !intendsSandbox {
-			if prior, err := store.Load(resumeFrom); err == nil && prior.Backend == string(kind) && prior.Host == nil && prior.FailureReason == nil && prior.BackendSessionID != nil {
-				resolvedResume = *prior.BackendSessionID
+			if prior, err := store.Load(resumeFrom); err == nil {
+				resolvedResume = resolveResumeID(prior, kind, worktree)
 			}
 		}
 		// Build the selected backend command.
@@ -602,10 +579,35 @@ are synced back after completion. Use --local to force local execution, or
 	},
 }
 
-// resolvePrompt returns the agent prompt from either the positional argument or
-// --prompt-file. Exactly one source must be given: both is ambiguous, neither
-// leaves the agent with no briefing. File contents are used verbatim so that
-// backticks and other shell metacharacters survive intact.
+// resolveResumeID preserves resumable conversations even after an error.
+func resolveResumeID(prior *run.State, kind backend.Kind, worktree string) string {
+	if prior == nil {
+		return ""
+	}
+	var resumeID string
+	switch kind {
+	case backend.Claude:
+		if prior.LogFile == nil || (prior.Backend != "" && prior.Backend != string(kind)) {
+			return ""
+		}
+		resumeID = ExtractClaudeSessionID(*prior.LogFile)
+		if resumeID != "" && !stageResumeTranscript(prior, resumeID, worktree) {
+			fmt.Fprintf(os.Stderr, "warning: could not stage prior Claude conversation %s for resume, starting fresh\n", resumeID)
+			return ""
+		}
+	case backend.Codex:
+		if prior.Backend != string(kind) || prior.Host != nil || prior.BackendSessionID == nil {
+			return ""
+		}
+		resumeID = *prior.BackendSessionID
+	}
+	if resumeID != "" && prior.FailureReason != nil {
+		fmt.Fprintf(os.Stderr, "warning: prior run %s ended with %s; resuming its conversation\n", prior.ID, *prior.FailureReason)
+	}
+	return resumeID
+}
+
+// resolvePrompt requires exactly one prompt source and preserves file contents.
 func resolvePrompt(args []string, promptFile string) (string, error) {
 	switch {
 	case len(args) > 0 && promptFile != "":
