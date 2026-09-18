@@ -255,8 +255,10 @@ merging stops and reports the stuck PR plus remaining unmerged PRs.
 
 After an agent completes:
 
-- **Worktrees** are removed automatically during finalization. The branch is
-  cleaned up too (the PR branch on the remote stays).
+- **Worktrees** are removed automatically during finalization. The local
+  branch is deleted only when it has no commits beyond the default branch or
+  `origin`'s live tip matches it (the PR branch on the remote stays). Runs without a PR get a WIP commit and push first and
+  emit `agent:needs-attention`.
 
 - **State files** persist at `~/.klaus/sessions/{session-id}/runs/{run-id}.json`
   — these power the dashboard and contain cost, duration, PR URL, and approval

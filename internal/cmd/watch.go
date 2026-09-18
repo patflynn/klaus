@@ -428,11 +428,14 @@ func eventSummary(evt event.Event) string {
 		}
 		return "CI failed"
 	case event.AgentNeedsAttention:
-		reason := get("reason")
-		if reason != "" {
-			return fmt.Sprintf("needs attention — %s", reason)
+		msg := "needs attention"
+		if reason := get("reason"); reason != "" {
+			msg += " — " + reason
 		}
-		return "needs attention"
+		if branch := get("branch"); branch != "" {
+			msg += fmt.Sprintf(" (branch %s)", branch)
+		}
+		return msg
 	case event.PRAwaitingApproval:
 		if prNum != "" {
 			return fmt.Sprintf("PR #%s awaiting approval", prNum)

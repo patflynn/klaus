@@ -19,6 +19,8 @@ const (
 	networkTimeout = 2 * time.Minute
 	// localTimeout is for git commands that operate on local data (worktree, branch, rev-parse).
 	localTimeout = 30 * time.Second
+	// verifyTimeout bounds best-effort remote checks at finalize.
+	verifyTimeout = 20 * time.Second
 )
 
 // RepoRoot returns the top-level directory of the git repository.
@@ -278,6 +280,41 @@ func MergeFastForward(ctx context.Context, repoDir string) error {
 // callers should check HasUpstream first.
 func CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error) {
 	out, err := runGit(ctx, repoDir, "rev-list", "--count", "HEAD..@{u}")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parsing rev-list --count output %q: %w", out, err)
+	}
+	return n, nil
+}
+
+// CommitsAhead returns the number of commits on ref not reachable from base.
+func CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error) {
+	return revListCount(ctx, repoDir, base+".."+ref)
+}
+
+// BranchPushed reports whether origin's branch tip equals the local tip. It
+// asks the remote (ls-remote), not cached origin/* refs; an error means
+// unverified.
+func BranchPushed(ctx context.Context, repoDir, branch string) (bool, error) {
+	local, err := runGit(ctx, repoDir, "rev-parse", "--verify", "refs/heads/"+branch)
+	if err != nil {
+		return false, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
+	defer cancel()
+	out, err := runGitNetwork(ctx, repoDir, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	if err != nil {
+		return false, err
+	}
+	remote, _, _ := strings.Cut(out, "\t")
+	return remote == local, nil
+}
+
+func revListCount(ctx context.Context, repoDir string, args ...string) (int, error) {
+	out, err := runGit(ctx, repoDir, append([]string{"rev-list", "--count"}, args...)...)
 	if err != nil {
 		return 0, err
 	}

@@ -329,6 +329,7 @@ func TestAgentStatusLabel(t *testing.T) {
 	}{
 		{"with PR", &run.State{PRURL: strPtr("https://github.com/o/r/pull/1")}, "PR"},
 		{"no PR", &run.State{}, "EXITED"},
+		{"needs attention", &run.State{NeedsAttention: strPtr("no_pr"), PRURL: strPtr("https://github.com/o/r/pull/1")}, "ATTN"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

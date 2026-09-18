@@ -49,6 +49,13 @@ type Client interface {
 	// behind its upstream. Returns 0 if already up-to-date.
 	CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error)
 
+	// CommitsAhead returns the number of commits on ref not reachable from base.
+	CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error)
+
+	// BranchPushed reports whether origin's branch tip equals the local tip,
+	// checked against the remote itself; an error means unverified.
+	BranchPushed(ctx context.Context, repoDir, branch string) (bool, error)
+
 	// EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 	// initial commit if it doesn't.
 	EnsureDataRef(ctx context.Context, repoDir, dataRef string) error

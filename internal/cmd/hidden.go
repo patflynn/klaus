@@ -98,6 +98,16 @@ var finalizeCmd = &cobra.Command{
 
 		gitClient := git.NewExecClient()
 
+		// No PR (or a crash): the worktree may hold the only copy of the work.
+		var salvage *salvageResult
+		if !paused && (state.PRURL == nil || *state.PRURL == "" || state.FailureReason != nil) {
+			salvage = salvageUnfinishedWork(ctx, budgetPauseRunner, gitClient, state, cfg.DefaultBranch)
+		}
+		// Persist before the data-ref sync, which reads the state file.
+		if err := store.Save(state); err != nil {
+			slog.Warn("failed to save state before sync", "id", state.ID, "err", err)
+		}
+
 		// For a normal (non-budget, non-crashed) completion against an
 		// existing paused PR, clear the budget-paused label so the dashboard
 		// reflects that the follow-up agent shipped its work. A crashed
@@ -109,14 +119,19 @@ var finalizeCmd = &cobra.Command{
 		// Emit terminal events for the run. For paused runs, agent:completed
 		// is intentionally suppressed in favor of agent:paused, since the
 		// run is not "done" — it's parked in a draft PR awaiting continuation.
-		// A crashed run emits agent:needs-attention instead of falsely
-		// reporting agent:completed / agent:pr-created.
+		// A crashed or salvaged run emits agent:needs-attention instead of
+		// falsely reporting agent:completed / agent:pr-created.
 		if baseDir != "" && !paused {
-			emitFinalizeEvents(baseDir, state)
+			emitFinalizeEvents(baseDir, state, salvage)
 		}
 		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
 
-		cleanupWorktree(ctx, store, gitClient, state)
+		if salvage != nil && salvage.dirty {
+			// WIP commit failed; removing the worktree would discard it.
+			fmt.Fprintf(os.Stderr, "warning: keeping worktree %s: uncommitted changes could not be committed\n", state.Worktree)
+		} else {
+			cleanupWorktree(ctx, store, gitClient, state, salvage != nil)
+		}
 
 		// Kill the tmux pane — _finalize is the last command in the pipeline,
 		// so this is safe. The pane would otherwise stay open indefinitely.
@@ -127,12 +142,25 @@ var finalizeCmd = &cobra.Command{
 }
 
 // emitFinalizeEvents emits the terminal events for a finalized, non-paused
-// run. A crashed run (FailureReason set) emits agent:needs-attention and
-// nothing else, so a pipeline never mistakes a crash for a completed,
-// PR-creating run. A normal run emits agent:completed plus agent:pr-created
-// when a PR URL is known.
-func emitFinalizeEvents(baseDir string, state *run.State) {
+// run. A salvaged or crashed run (FailureReason set) emits
+// agent:needs-attention and nothing else, so a pipeline never mistakes it for
+// a completed, PR-creating run. A normal run emits agent:completed plus
+// agent:pr-created when a PR URL is known.
+func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult) {
 	if state == nil || baseDir == "" {
+		return
+	}
+	if salvage != nil {
+		data := map[string]interface{}{
+			"id":     state.ID,
+			"branch": state.Branch,
+			"pushed": salvage.pushed,
+			"reason": salvage.reason,
+		}
+		if salvage.dirty {
+			data["worktree"] = state.Worktree
+		}
+		emitEvent(baseDir, state.ID, event.AgentNeedsAttention, data)
 		return
 	}
 	if state.FailureReason != nil {
@@ -316,10 +344,100 @@ func clearLabelIfResumed(ctx context.Context, baseDir string, state *run.State) 
 	emitEvent(baseDir, state.ID, event.AgentResumed, data)
 }
 
+// salvageResult describes unfinished work finalize preserved.
+type salvageResult struct {
+	reason string // no_pr, session_limit, or the crash's FailureReason
+	pushed bool   // branch tip is on origin
+	dirty  bool   // WIP commit failed; worktree still holds uncommitted changes
+}
+
+// salvageUnfinishedWork commits a dirty worktree as WIP and best-effort pushes
+// the branch; cleanupWorktree then keeps any branch still unpushed. Returns nil
+// when there is no work beyond the default branch. Never pushes onto a known
+// PR, so WIP can't land on a live review.
+func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, state *run.State, defaultBranch string) *salvageResult {
+	wt, branch := state.Worktree, state.Branch
+	if wt == "" || branch == "" {
+		return nil
+	}
+	if _, err := os.Stat(wt); err != nil {
+		return nil
+	}
+
+	res := &salvageResult{reason: "no_pr"}
+	if state.FailureReason != nil {
+		res.reason = *state.FailureReason
+	}
+	if state.LogFile != nil && hitSessionLimit(*state.LogFile) {
+		res.reason = "session_limit"
+	}
+
+	if _, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: salvage WIP commit: %v\n", err)
+		res.dirty = true
+	}
+	// Unknown ahead count (error) is treated as work.
+	if ahead, err := gc.CommitsAhead(ctx, wt, "origin/"+defaultBranch, branch); err == nil && ahead == 0 && !res.dirty {
+		return nil
+	}
+
+	hasPR := state.PRURL != nil && *state.PRURL != ""
+	if ok, err := gc.BranchPushed(ctx, wt, branch); err == nil && ok {
+		res.pushed = true // origin tip == local tip, e.g. direct-push repos
+	} else if !hasPR {
+		if _, err := r.Git(ctx, wt, "push", "-u", "origin", branch); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: salvage push of %s: %v\n", branch, err)
+		} else {
+			res.pushed = true
+		}
+	}
+
+	where := "local only"
+	if res.pushed {
+		where = "pushed"
+	}
+	note := fmt.Sprintf("%s; branch %s preserved (%s)", res.reason, branch, where)
+	if res.dirty {
+		note += "; uncommitted changes left in " + wt
+	}
+	state.NeedsAttention = &note
+	return res
+}
+
+// sessionLimitRegex matches Claude usage-limit stops, e.g.
+// "You've hit your session limit · resets 4:20pm".
+var sessionLimitRegex = regexp.MustCompile(`(?i)hit your (session |weekly |usage )?limit|usage limit reached`)
+
+// hitSessionLimit reports whether the log's last result event is a
+// usage-limit stop (reported as subtype success, so no budget pause).
+func hitSessionLimit(logPath string) bool {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	hit := false
+	for scanner.Scan() {
+		var ev struct {
+			Type   string `json:"type"`
+			Result string `json:"result"`
+		}
+		if json.Unmarshal(stream.NormalizeLine(scanner.Bytes()), &ev) != nil || ev.Type != "result" {
+			continue
+		}
+		hit = sessionLimitRegex.MatchString(ev.Result)
+	}
+	return hit
+}
+
 // cleanupWorktree removes the agent's worktree and local branch after
-// completion. The state file and logs are preserved. It is idempotent —
-// if the worktree is already gone, the state is still cleared.
-func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State) {
+// completion. The state file and logs are preserved. The branch is kept when
+// keepBranch is set or branchDeletable can't prove its work is safe. It is
+// idempotent — if the worktree is already gone, the state is still cleared.
+func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State, keepBranch bool) {
 	if state.Worktree == "" {
 		return
 	}
@@ -335,8 +453,10 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	if err := gitClient.WorktreeRemove(ctx, gitRoot, state.Worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
-	if state.Branch != "" {
-		if err := gitClient.BranchDelete(ctx, gitRoot, state.Branch); err != nil {
+	if state.Branch != "" && !keepBranch {
+		if ok, err := branchDeletable(ctx, gitClient, gitRoot, state.Branch); !ok {
+			slog.Warn("keeping branch: work not verified on origin", "id", state.ID, "branch", state.Branch, "err", err)
+		} else if err := gitClient.BranchDelete(ctx, gitRoot, state.Branch); err != nil {
 			slog.Warn("failed to delete branch during cleanup", "id", state.ID, "branch", state.Branch, "err", err)
 		}
 	}
@@ -344,6 +464,16 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	if err := store.Save(state); err != nil {
 		slog.Warn("failed to save state after worktree cleanup", "id", state.ID, "err", err)
 	}
+}
+
+// branchDeletable: no commits beyond origin/<default>, or origin's live tip
+// equals the local tip. Unverifiable (error) means keep.
+func branchDeletable(ctx context.Context, gc git.Client, root, branch string) (bool, error) {
+	cfg, _ := config.Load(root)
+	if n, err := gc.CommitsAhead(ctx, root, "origin/"+cfg.DefaultBranch, branch); err == nil && n == 0 {
+		return true, nil
+	}
+	return gc.BranchPushed(ctx, root, branch)
 }
 
 // killAgentPane kills the tmux pane associated with the agent. State is
