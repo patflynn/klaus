@@ -111,7 +111,7 @@ func TestParseMarker(t *testing.T) {
 const fakeSHA = "d139283518cdbd801aa20a97868da29a2417178e"
 
 // fakePR installs a fake gh serving PR o/r#7 (recording the posted review) and a fake codex that checks it runs read-only in an empty dir.
-// Review bodies prefixed "drive-by:" come from another login. FAKE_CODEX_HOLD makes codex wait for $FAKE_DIR/release; $FAKE_DIR/reviews-after.json, if present, replaces the review list while codex runs.
+// Review bodies prefixed "drive-by:" come from another login. FAKE_CODEX_HOLD makes codex wait for $FAKE_DIR/release; $FAKE_DIR/{reviews,pr}-after.json, if present, replace the served JSON while codex runs.
 func fakePR(t *testing.T, reviews []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -148,7 +148,7 @@ cat > "$FAKE_DIR/prompt"
 if [ -n "$FAKE_CODEX_HOLD" ]; then
   i=0; while [ ! -e "$FAKE_DIR/release" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
 fi
-[ -e "$FAKE_DIR/reviews-after.json" ] && cp "$FAKE_DIR/reviews-after.json" "$FAKE_DIR/reviews.json"
+for f in reviews pr; do [ -e "$FAKE_DIR/$f-after.json" ] && cp "$FAKE_DIR/$f-after.json" "$FAKE_DIR/$f.json"; done
 printf '%s' '{"verdict":"Matches intent.","findings":[{"severity":"high","file":"app.go","line":5,"description":"inline one"},{"severity":"low","file":"app.go","line":20,"description":"folded one"}],"summary":"two issues"}' > "$out"
 `, 0o755)
 	t.Setenv("FAKE_DIR", dir)
@@ -228,21 +228,31 @@ func TestRunPRReview(t *testing.T) {
 	}
 }
 
-// Another session posts for the same head while the model runs: the pre-post re-check must refuse, keeping the findings.
+// State changes while the model runs: the pre-post re-check must refuse, keeping the findings.
 func TestRunPRReviewRechecksBeforePost(t *testing.T) {
-	dir := fakePR(t, nil)
-	if err := os.WriteFile(filepath.Join(dir, "reviews-after.json"), []byte(reviewsJSON([]string{Marker{Backend: "codex", SHA: fakeSHA}.String()})), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	result, err := RunPRReview(context.Background(), "o/r", "7", postOpts(t))
-	if !errors.Is(err, ErrAlreadyReviewed) {
-		t.Fatalf("err = %v, want ErrAlreadyReviewed", err)
-	}
-	if result == nil || result.Verdict != "Matches intent." {
-		t.Errorf("refused post must still return the review: %+v", result)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "posted.json")); err == nil {
-		t.Error("posted despite a concurrent review of the same head")
+	for name, tt := range map[string]struct {
+		file, content string
+		wantErr       error
+	}{
+		"another session posted for this head": {"reviews-after.json", reviewsJSON([]string{Marker{Backend: "codex", SHA: fakeSHA}.String()}), ErrAlreadyReviewed},
+		"head moved":                           {"pr-after.json", `{"title":"Add greeting","head":{"sha":"feedface"}}`, ErrHeadMoved},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := fakePR(t, nil)
+			if err := os.WriteFile(filepath.Join(dir, tt.file), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			result, err := RunPRReview(context.Background(), "o/r", "7", postOpts(t))
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if result == nil || result.Verdict != "Matches intent." {
+				t.Errorf("refused post must still return the review: %+v", result)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "posted.json")); err == nil {
+				t.Error("posted despite the re-check failing")
+			}
+		})
 	}
 }
 

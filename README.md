@@ -140,7 +140,8 @@ and approval stays with `klaus approve`. Posted inline findings feed the normal
 trusted-review fix loop (see [docs/PIPELINE.md](docs/PIPELINE.md#4-review--approval)).
 Posting is refused when the same reviewer already reviewed the PR's head
 commit, or when the PR already has `max_rounds` cross-reviews posted from your
-gh account. That check runs again right before posting. A per-PR lock under the
+gh account. That check runs again right before posting, along with a check that
+the PR head hasn't moved, so stale findings are never posted after a push. A per-PR lock under the
 session directory makes a second concurrent `--post` in the same session fail
 immediately.
 

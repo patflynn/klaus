@@ -23,6 +23,7 @@ const (
 var (
 	ErrAlreadyReviewed = errors.New("head commit already cross-reviewed by this backend")
 	ErrMaxRounds       = errors.New("cross-review round limit reached")
+	ErrHeadMoved       = errors.New("PR head moved during review; not posting stale findings")
 )
 
 // Marker is the metadata in a cross-review's hidden marker line.
@@ -104,10 +105,8 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 		return nil, err
 	}
 	if opts.Post { // inline lines must belong to commit_id
-		if again, err := fetchPR(ctx, gh, repo, prNumber); err != nil {
+		if err := checkHead(ctx, gh, repo, prNumber, pr.Head.SHA); err != nil {
 			return nil, err
-		} else if again.Head.SHA != pr.Head.SHA {
-			return nil, fmt.Errorf("PR #%s head moved from %.7s to %.7s while fetching its diff; retry", prNumber, pr.Head.SHA, again.Head.SHA)
 		}
 	}
 	if strings.TrimSpace(diff) == "" {
@@ -133,6 +132,10 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 	}
 
 	// Re-check: the lock is per session, and the model run can take minutes.
+	// Stale findings posted after a push would read as unaddressed and dispatch a fix agent.
+	if err := checkHead(ctx, gh, repo, prNumber, pr.Head.SHA); err != nil {
+		return result, err
+	}
 	if err := checkRounds(ctx, gh, repo, prNumber, pr.Head.SHA, opts); err != nil {
 		return result, err
 	}
@@ -159,6 +162,17 @@ func fetchPR(ctx context.Context, gh *github.GHCLIClient, repo, prNumber string)
 		return nil, fmt.Errorf("parsing PR #%s: %w", prNumber, err)
 	}
 	return &pr, nil
+}
+
+func checkHead(ctx context.Context, gh *github.GHCLIClient, repo, prNumber, sha string) error {
+	pr, err := fetchPR(ctx, gh, repo, prNumber)
+	if err != nil {
+		return err
+	}
+	if pr.Head.SHA != sha {
+		return fmt.Errorf("%w: PR #%s %.7s → %.7s; rerun", ErrHeadMoved, prNumber, sha, pr.Head.SHA)
+	}
+	return nil
 }
 
 // checkRounds refuses a post that would repeat this backend on the same head or exceed opts.MaxRounds, so review → fix → review cannot spin.
