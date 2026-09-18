@@ -22,8 +22,9 @@ func OneShot(k Kind, o OneShotOptions) ([]string, error) {
 			a = append(a, "--session-id", o.SessionID)
 		}
 	case Codex:
-		a = []string{"codex", "exec", "--sandbox", "read-only", "-c", `approval_policy="never"`,
-			"-c", "mcp_servers={}", "-c", "features.apps=false", "-c", "features.plugins=false", "-c", "features.hooks=false", "-c", "features.multi_agent=false",
+		// User-configured MCP, hooks, and plugins bypass filesystem-only isolation.
+		a = []string{"codex", "exec", "--ignore-user-config", "--sandbox", "read-only", "-c", `approval_policy="never"`,
+			"-c", "features.apps=false", "-c", "features.plugins=false", "-c", "features.hooks=false", "-c", "features.multi_agent=false",
 			"-c", "developer_instructions=" + tomlString(o.SystemPrompt)}
 		if o.ResumeID != "" {
 			a = append(a, "resume", o.ResumeID)

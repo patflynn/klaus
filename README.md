@@ -173,9 +173,11 @@ Configure selection and the default role in `~/.klaus/config.json` or
 }
 ```
 
-Codex uses its read-only sandbox with MCP, apps, plugins, hooks, and subagents
-disabled; Claude uses safe mode (no custom hooks/plugins) and exposes only
-Read/Grep/Glob; agy
+Codex uses its read-only sandbox and `--ignore-user-config` to avoid loading
+MCP servers from `$CODEX_HOME/config.toml`; authentication still uses
+`CODEX_HOME`. Model and effort come from Klaus flags/defaults, and apps, plugins,
+hooks, and subagents are explicitly disabled. Claude uses safe mode (no custom
+hooks/plugins) and exposes only Read/Grep/Glob; agy
 uses plan mode and a temporary primary-agent definition exposing only file reads
 and search. The agy definition is removed after the call; large prompts travel
 in that definition to avoid the OS argument-size limit.

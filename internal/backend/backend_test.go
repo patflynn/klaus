@@ -133,7 +133,10 @@ func TestOneShot(t *testing.T) {
 						require("--resume\nprior-id")
 					}
 				case Codex:
-					require("mcp_servers={}", "features.apps=false", "features.plugins=false", "features.hooks=false", "features.multi_agent=false", "exec\n--sandbox\nread-only", `approval_policy="never"`, `developer_instructions="system"`, `model_reasoning_effort="high"`)
+					if strings.Contains(joined, "mcp_servers={}") {
+						t.Fatalf("ineffective MCP override: %q", argv)
+					}
+					require("--ignore-user-config", "features.apps=false", "features.plugins=false", "features.hooks=false", "features.multi_agent=false", "--sandbox\nread-only", `approval_policy="never"`, `developer_instructions="system"`, `model_reasoning_effort="high"`)
 					if mode == "one-shot" {
 						require("--ephemeral")
 					} else if strings.Contains(joined, "--ephemeral") {
