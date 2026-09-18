@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/patflynn/klaus/internal/backend"
 )
@@ -107,41 +108,22 @@ func TestParseMarker(t *testing.T) {
 	}
 }
 
-// Fake gh serves PR o/r#7 and records the posted review; fake codex checks it runs read-only in an empty dir.
-func TestRunPRReview(t *testing.T) {
-	const sha = "d139283518cdbd801aa20a97868da29a2417178e"
-	other := Marker{Backend: "codex", SHA: "0000000"}.String()
-	tests := []struct {
-		name    string
-		reviews []string
-		wantErr error
-	}{
-		{name: "posts one COMMENT review", reviews: []string{"LGTM", other}},
-		{name: "ignores markers copied by other users", reviews: []string{other, "drive-by:" + other, "drive-by:" + Marker{Backend: "codex", SHA: sha}.String()}},
-		{name: "same backend already reviewed head", reviews: []string{Marker{Backend: "codex", SHA: sha}.String()}, wantErr: ErrAlreadyReviewed},
-		{name: "round limit", reviews: []string{other, Marker{Backend: "agy", SHA: "1111111"}.String()}, wantErr: ErrMaxRounds},
+const fakeSHA = "d139283518cdbd801aa20a97868da29a2417178e"
+
+// fakePR installs a fake gh serving PR o/r#7 (recording the posted review) and a fake codex that checks it runs read-only in an empty dir.
+// Review bodies prefixed "drive-by:" come from another login. FAKE_CODEX_HOLD makes codex wait for $FAKE_DIR/release; $FAKE_DIR/reviews-after.json, if present, replaces the review list while codex runs.
+func fakePR(t *testing.T, reviews []string) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, content string, mode os.FileMode) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), mode); err != nil {
+			t.Fatal(err)
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			write := func(name, content string, mode os.FileMode) {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), mode); err != nil {
-					t.Fatal(err)
-				}
-			}
-			var reviews []map[string]any
-			for _, b := range tt.reviews {
-				login := "operator"
-				if rest, ok := strings.CutPrefix(b, "drive-by:"); ok {
-					login, b = "drive-by", rest
-				}
-				reviews = append(reviews, map[string]any{"body": b, "user": map[string]string{"login": login}})
-			}
-			rj, _ := json.Marshal(reviews)
-			write("reviews.json", string(rj), 0o644)
-			write("pr.json", `{"title":"Add greeting","body":"Adds New().","head":{"sha":"`+sha+`"}}`, 0o644)
-			write("diff", gitDiffFixture(t), 0o644)
-			write("gh", `#!/bin/sh
+	write("reviews.json", reviewsJSON(reviews), 0o644)
+	write("pr.json", `{"title":"Add greeting","body":"Adds New().","head":{"sha":"`+fakeSHA+`"}}`, 0o644)
+	write("diff", gitDiffFixture(t), 0o644)
+	write("gh", `#!/bin/sh
 case "$1 $2" in
 "pr diff") cat "$FAKE_DIR/diff" ;;
 "api repos/o/r/pulls/7") cat "$FAKE_DIR/pr.json" ;;
@@ -151,7 +133,7 @@ case "$1 $2" in
 *) echo "unexpected gh $*" >&2; exit 1 ;;
 esac
 `, 0o755)
-			write("codex", `#!/bin/sh
+	write("codex", `#!/bin/sh
 out=; sandbox=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -163,12 +145,50 @@ done
 [ "$sandbox" = read-only ] || exit 3
 [ -z "$(ls -A .)" ] || exit 4
 cat > "$FAKE_DIR/prompt"
+if [ -n "$FAKE_CODEX_HOLD" ]; then
+  i=0; while [ ! -e "$FAKE_DIR/release" ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+fi
+[ -e "$FAKE_DIR/reviews-after.json" ] && cp "$FAKE_DIR/reviews-after.json" "$FAKE_DIR/reviews.json"
 printf '%s' '{"verdict":"Matches intent.","findings":[{"severity":"high","file":"app.go","line":5,"description":"inline one"},{"severity":"low","file":"app.go","line":20,"description":"folded one"}],"summary":"two issues"}' > "$out"
 `, 0o755)
-			t.Setenv("FAKE_DIR", dir)
-			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_DIR", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return dir
+}
 
-			result, err := RunPRReview(context.Background(), "o/r", "7", PROptions{Backend: backend.Codex, Post: true})
+func reviewsJSON(bodies []string) string {
+	reviews := []map[string]any{}
+	for _, b := range bodies {
+		login := "operator"
+		if rest, ok := strings.CutPrefix(b, "drive-by:"); ok {
+			login, b = "drive-by", rest
+		}
+		reviews = append(reviews, map[string]any{"body": b, "user": map[string]string{"login": login}})
+	}
+	data, _ := json.Marshal(reviews)
+	return string(data)
+}
+
+func postOpts(t *testing.T) PROptions {
+	return PROptions{Backend: backend.Codex, Post: true, LockDir: t.TempDir()}
+}
+
+func TestRunPRReview(t *testing.T) {
+	other := Marker{Backend: "codex", SHA: "0000000"}.String()
+	tests := []struct {
+		name    string
+		reviews []string
+		wantErr error
+	}{
+		{name: "posts one COMMENT review", reviews: []string{"LGTM", other}},
+		{name: "ignores markers copied by other users", reviews: []string{other, "drive-by:" + other, "drive-by:" + Marker{Backend: "codex", SHA: fakeSHA}.String()}},
+		{name: "same backend already reviewed head", reviews: []string{Marker{Backend: "codex", SHA: fakeSHA}.String()}, wantErr: ErrAlreadyReviewed},
+		{name: "round limit", reviews: []string{other, Marker{Backend: "agy", SHA: "1111111"}.String()}, wantErr: ErrMaxRounds},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := fakePR(t, tt.reviews)
+			result, err := RunPRReview(context.Background(), "o/r", "7", postOpts(t))
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tt.wantErr)
@@ -198,7 +218,7 @@ printf '%s' '{"verdict":"Matches intent.","findings":[{"severity":"high","file":
 			if err := json.Unmarshal(data, &posted); err != nil {
 				t.Fatal(err)
 			}
-			if posted.Event != "COMMENT" || posted.CommitID != sha || len(posted.Comments) != 1 || posted.Comments[0].Line != 5 {
+			if posted.Event != "COMMENT" || posted.CommitID != fakeSHA || len(posted.Comments) != 1 || posted.Comments[0].Line != 5 {
 				t.Errorf("posted = %+v", posted)
 			}
 			if !strings.Contains(posted.Body, "folded one") || !strings.Contains(posted.Body, CrossReviewMarker) {
@@ -206,4 +226,66 @@ printf '%s' '{"verdict":"Matches intent.","findings":[{"severity":"high","file":
 			}
 		})
 	}
+}
+
+// Another session posts for the same head while the model runs: the pre-post re-check must refuse, keeping the findings.
+func TestRunPRReviewRechecksBeforePost(t *testing.T) {
+	dir := fakePR(t, nil)
+	if err := os.WriteFile(filepath.Join(dir, "reviews-after.json"), []byte(reviewsJSON([]string{Marker{Backend: "codex", SHA: fakeSHA}.String()})), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := RunPRReview(context.Background(), "o/r", "7", postOpts(t))
+	if !errors.Is(err, ErrAlreadyReviewed) {
+		t.Fatalf("err = %v, want ErrAlreadyReviewed", err)
+	}
+	if result == nil || result.Verdict != "Matches intent." {
+		t.Errorf("refused post must still return the review: %+v", result)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "posted.json")); err == nil {
+		t.Error("posted despite a concurrent review of the same head")
+	}
+}
+
+func TestRunPRReviewLock(t *testing.T) {
+	dir := fakePR(t, nil)
+	t.Setenv("FAKE_CODEX_HOLD", "1")
+	opts := postOpts(t)
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := RunPRReview(context.Background(), "o/r", "7", opts)
+		first <- err
+	}()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) { // first run is inside the model call
+		if _, err := os.Stat(filepath.Join(dir, "prompt")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("first review never reached the model")
+		}
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := RunPRReview(context.Background(), "o/r", "7", opts)
+		second <- err
+	}()
+	if err := <-second; !errors.Is(err, ErrLocked) {
+		t.Fatalf("concurrent run: err = %v, want ErrLocked", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-first; err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "posted.json")); err != nil {
+		t.Error("lock holder did not post")
+	}
+	unlock, err := lockPR(opts.LockDir, "o/r", "7")
+	if err != nil {
+		t.Fatalf("lock not released: %v", err)
+	}
+	unlock()
 }

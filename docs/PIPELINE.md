@@ -234,7 +234,10 @@ Klaus distinguishes between GitHub review approval and internal approval:
   Findings that don't land on a diff line go in the body for the operator.
   `klaus review` itself refuses to post twice for the same reviewer and head
   commit or beyond `cross_review.max_rounds` (default 2), counting only marker
-  reviews by the operator's account, so review → fix → review cannot spin. The pipeline does not dispatch cross-reviews on its own
+  reviews by the operator's account, so review → fix → review cannot spin.
+  Within a session, a lock file per PR (`locks/review-<owner>-<repo>-<n>.lock`)
+  covers the whole check → review → post span, and the check runs again just
+  before posting. The pipeline does not dispatch cross-reviews on its own
   yet; `review.RunPRReview` is the hook for that.
 
 - **`klaus approve`** — marks PRs as ready for merge in the internal state. PR approval

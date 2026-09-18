@@ -1,6 +1,7 @@
 package review
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,10 +22,10 @@ func TestChooseReviewer(t *testing.T) {
 	}{
 		{
 			name:     "explicit review_backend wins even when missing from PATH",
-			onPath:   []string{"claude", "codex"},
+			onPath:   []string{"claude"},
 			author:   backend.Claude,
-			cfg:      config.Config{BackendDefaults: map[string]config.BackendDefaults{"claude": {ReviewBackend: "agy"}, "agy": {ReviewModel: "gemini-pro"}}},
-			wantKind: backend.Agy, wantModel: "gemini-pro",
+			cfg:      config.Config{BackendDefaults: map[string]config.BackendDefaults{"claude": {ReviewBackend: "codex"}, "codex": {ReviewModel: "m1"}}},
+			wantKind: backend.Codex, wantModel: "m1",
 		},
 		{
 			name:     "order skips the author",
@@ -35,15 +36,15 @@ func TestChooseReviewer(t *testing.T) {
 		{
 			name:     "order skips CLIs missing from PATH",
 			onPath:   []string{"claude", "agy"},
-			author:   backend.Claude,
-			wantKind: backend.Agy,
+			author:   backend.Agy,
+			wantKind: backend.Claude, wantModel: "haiku",
 		},
 		{
-			name:     "configured order and review_model",
+			name:     "order skips agy until it can review read-only",
 			onPath:   []string{"claude", "codex", "agy"},
 			author:   backend.Claude,
-			cfg:      config.Config{CrossReview: &config.CrossReviewConfig{Order: []string{"agy", "codex"}}, BackendDefaults: map[string]config.BackendDefaults{"agy": {ReviewModel: "m"}}},
-			wantKind: backend.Agy, wantModel: "m",
+			cfg:      config.Config{CrossReview: &config.CrossReviewConfig{Order: []string{"agy", "codex"}}, BackendDefaults: map[string]config.BackendDefaults{"codex": {ReviewModel: "m"}}},
+			wantKind: backend.Codex, wantModel: "m",
 		},
 		{
 			name:     "falls back to the author's family when nothing else is installed",
@@ -76,6 +77,21 @@ func TestChooseReviewer(t *testing.T) {
 				t.Errorf("ChooseReviewer(%s) = %s %q, want %s %q", tt.author, kind, model, tt.wantKind, tt.wantModel)
 			}
 		})
+	}
+}
+
+func TestChooseReviewerRefusesAgy(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for name, tt := range map[string]struct {
+		author backend.Kind
+		cfg    config.Config
+	}{
+		"explicit review_backend":  {backend.Claude, config.Config{BackendDefaults: map[string]config.BackendDefaults{"claude": {ReviewBackend: "agy"}}}},
+		"agy author, no other CLI": {backend.Agy, config.Config{}},
+	} {
+		if _, _, err := ChooseReviewer(tt.author, tt.cfg); !errors.Is(err, ErrAgyReviewer) {
+			t.Errorf("%s: err = %v, want ErrAgyReviewer", name, err)
+		}
 	}
 }
 

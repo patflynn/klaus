@@ -62,6 +62,7 @@ type PROptions struct {
 	Model     string       // "" → CLI default
 	Post      bool         // submit one COMMENT review
 	MaxRounds int          // posted cross-reviews allowed per PR; ≤0 → 2
+	LockDir   string       // required with Post: per-PR lock held from eligibility check to post
 }
 
 type prInfo struct {
@@ -73,8 +74,21 @@ type prInfo struct {
 }
 
 // RunPRReview reviews PR prNumber of repo ("owner/repo") from its diff alone, in an empty temp dir, and with opts.Post submits one COMMENT review (never APPROVE/REQUEST_CHANGES).
-// A failed post still returns the result alongside the error.
+// A refused or failed post still returns the result alongside the error.
 func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*ReviewResult, error) {
+	if err := CheckReviewer(opts.Backend); err != nil {
+		return nil, err
+	}
+	if opts.Post {
+		if opts.LockDir == "" {
+			return nil, errors.New("RunPRReview: Post requires LockDir")
+		}
+		unlock, err := lockPR(opts.LockDir, repo, prNumber)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	gh := github.NewGHCLIClient(repo)
 	pr, err := fetchPR(ctx, gh, repo, prNumber)
 	if err != nil {
@@ -118,6 +132,10 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 		return result, nil
 	}
 
+	// Re-check: the lock is per session, and the model run can take minutes.
+	if err := checkRounds(ctx, gh, repo, prNumber, pr.Head.SHA, opts); err != nil {
+		return result, err
+	}
 	req := buildPRReview(result, DiffLines(diff), Marker{Backend: string(opts.Backend), Model: opts.Model, SHA: pr.Head.SHA})
 	resp, err := gh.APIPostJSON(ctx, "repos/"+repo+"/pulls/"+prNumber+"/reviews", req)
 	if err != nil {

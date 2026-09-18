@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -96,13 +97,18 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 	return parseReviewResponse(text)
 }
 
+// ErrAgyReviewer: agy has no read-only mode here yet.
+var ErrAgyReviewer = errors.New("agy reviewer requires read-only agent support, pending #307")
+
 // runReviewer runs one read-only, non-persistent review turn with a backend CLI in dir and returns its final message. Empty model → CLI default.
 func runReviewer(ctx context.Context, kind backend.Kind, model, systemPrompt, userPrompt, dir string) (string, error) {
 	var argv []string
 	var stdin, lastMessage string
 	switch kind {
 	case backend.Claude:
-		argv = []string{"claude", "-p", "--output-format", "text", "--system-prompt", systemPrompt, "--no-session-persistence"}
+		// Read/search tools only, no customizations, MCP, or slash commands.
+		argv = []string{"claude", "-p", "--safe-mode", "--output-format", "text", "--system-prompt", systemPrompt,
+			"--tools", "Read,Grep,Glob", "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"}
 		stdin = userPrompt
 	case backend.Codex:
 		tmp, err := os.MkdirTemp("", "klaus-review-")
@@ -111,11 +117,11 @@ func runReviewer(ctx context.Context, kind backend.Kind, model, systemPrompt, us
 		}
 		defer os.RemoveAll(tmp)
 		lastMessage = filepath.Join(tmp, "response.json")
-		// --skip-git-repo-check: PR reviews run in an empty temp dir, not a checkout.
-		argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--output-last-message", lastMessage}
+		// --skip-git-repo-check: PR reviews run in an empty temp dir. --ignore-user-config: no MCP/hooks/plugins; auth still loads.
+		argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "--skip-git-repo-check", "--ignore-user-config", "--output-last-message", lastMessage}
 		stdin = systemPrompt + "\n\n" + userPrompt
 	case backend.Agy:
-		argv = []string{"agy", "--add-dir", ".", "--print", systemPrompt + "\n\n" + userPrompt, "--output-format", "text"}
+		return "", ErrAgyReviewer
 	default:
 		return "", fmt.Errorf("unknown review backend %q", kind)
 	}
