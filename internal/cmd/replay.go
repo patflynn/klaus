@@ -95,10 +95,7 @@ func findClaudeConversationFile(sessionUUID string) string {
 // back to globbing all project dirs. Returns "" if the UUID is unknown or no
 // file exists.
 func findResumeConversation(state *run.State) string {
-	if !isClaudeRun(state) {
-		return ""
-	}
-	if state == nil {
+	if state == nil || !isClaudeRun(state) {
 		return ""
 	}
 	uuid := ""

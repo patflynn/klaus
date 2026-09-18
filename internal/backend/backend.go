@@ -2,8 +2,8 @@
 package backend
 
 import (
+	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 )
 
@@ -65,7 +65,7 @@ func (k Kind) Worker(o Options) []string {
 		if o.ResumeID != "" {
 			a = append(a, "fork", o.ResumeID)
 		}
-		a = append(a, "--json", "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions="+strconv.Quote(o.SystemPrompt))
+		a = append(a, "--json", "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions="+tomlString(o.SystemPrompt))
 	case Agy:
 		a = []string{"agy", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "24h"}
 	}
@@ -93,11 +93,16 @@ func (k Kind) Coordinator(o Options) []string {
 	case Codex:
 		a = []string{"codex"}
 		if o.Continue {
+			// Klaus allocates a distinct workspace per coordinator; do not add --all.
 			a = append(a, "resume", "--last")
 		}
-		a = append(a, "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions="+strconv.Quote(o.SystemPrompt))
+		a = append(a, "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions="+tomlString(o.SystemPrompt))
 	case Agy:
-		a = []string{"agy", "--dangerously-skip-permissions", "--prompt-interactive", o.SystemPrompt}
+		prompt := o.SystemPrompt
+		if o.Continue && o.ResumeID != "" {
+			prompt = "Klaus coordinator session resumed. Continue using the existing coordinator instructions; use klaus status to refresh worker state."
+		}
+		a = []string{"agy", "--dangerously-skip-permissions", "--prompt-interactive", prompt}
 		if o.Continue && o.ResumeID != "" {
 			a = append(a, "--conversation", o.ResumeID)
 		}
@@ -111,7 +116,7 @@ func (k Kind) modelArgs(a []string, o Options) []string {
 	}
 	if o.Effort != "" {
 		if k == Codex {
-			a = append(a, "-c", "model_reasoning_effort="+strconv.Quote(o.Effort))
+			a = append(a, "-c", "model_reasoning_effort="+tomlString(o.Effort))
 		} else {
 			a = append(a, "--effort", o.Effort)
 		}
@@ -126,4 +131,10 @@ func ShellCommand(args []string) string {
 		quoted[i] = "'" + strings.ReplaceAll(a, "'", "'\\''") + "'"
 	}
 	return strings.Join(quoted, " ")
+}
+
+// JSON string quoting uses TOML-compatible Unicode escapes for control characters.
+func tomlString(s string) string {
+	b, _ := json.Marshal(s)
+	return strings.ReplaceAll(string(b), "\x7f", `\u007f`)
 }

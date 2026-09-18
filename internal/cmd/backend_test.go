@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"github.com/patflynn/klaus/internal/backend"
 	"os"
 	"os/exec"
@@ -35,5 +36,40 @@ func TestRemoteBackendShellBoundary(t *testing.T) {
 	}
 	if !strings.Contains(string(out), prompt) || !strings.Contains(string(out), `"exit_code":0`) {
 		t.Fatalf("transport corrupted output: %s", out)
+	}
+}
+
+func TestClaudeLimitExitPreservesResult(t *testing.T) {
+	for _, subtype := range []string{"error_max_budget_usd", "error_max_turns", "success", "error_during_execution"} {
+		t.Run(subtype, func(t *testing.T) {
+			log := `{"type":"result","subtype":"` + subtype + `","is_error":` + fmt.Sprint(subtype != "success") + `,"total_cost_usd":4.99,"session_id":"previous-conversation"}
+{"type":"klaus_exit","exit_code":1}
+`
+			state, store := setupFinalizeTest(t, log)
+			budget := "5.00"
+			state.Budget = &budget
+			got, err := finalizeFromLog(store, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != subtype {
+				t.Fatalf("subtype %q replaced with %q", subtype, got)
+			}
+			if (state.FailureReason != nil) != (subtype == "error_during_execution") {
+				t.Fatalf("wrong failure classification: %+v", state)
+			}
+			if subtype == "error_max_budget_usd" && !isBudgetExhausted(state, got) {
+				t.Fatal("budget pause lost")
+			}
+			if state.ClaudeSessionID == nil {
+				t.Fatal("resume identity lost")
+			}
+		})
+	}
+}
+
+func TestFindResumeConversationNil(t *testing.T) {
+	if got := findResumeConversation(nil); got != "" {
+		t.Fatal(got)
 	}
 }

@@ -437,9 +437,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			}
 		}
 	}
-	if coordinatorErr != nil {
-		return fmt.Errorf("%s coordinator exited: %w", kind, coordinatorErr)
-	}
 
 	fmt.Println()
 	fmt.Printf("Session %s ended.\n", id)
@@ -465,6 +462,9 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		fmt.Printf("  Worktree preserved at: %s\n", worktree)
 	}
 	fmt.Printf("  To clean up: klaus cleanup %s\n", id)
+	if coordinatorErr != nil {
+		return fmt.Errorf("%s coordinator exited: %w", kind, coordinatorErr)
+	}
 	return nil
 }
 

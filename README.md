@@ -81,7 +81,9 @@ agy workers use a 24-hour print timeout instead of its short CLI default.
 when a compatible conversation is unavailable, the worker starts fresh. Use
 `--pr` to continue the actual branch changes. agy coordinator IDs are recovered
 from its workspace cache; missing cache metadata starts a fresh conversation
-with a warning rather than attaching to an unrelated conversation.
+with a warning rather than attaching to an unrelated conversation. A resumed
+agy coordinator receives a short continuation prompt instead of repeating the
+original instructions.
 
 Pre-PR peer review uses the worker's backend, so Codex and agy workers do not
 require Claude to be installed. Authenticate each selected CLI beforehand and
@@ -163,6 +165,9 @@ When an agent exhausts its `--budget` cap, klaus does not silently kill the work
 3. Opens a draft PR — or updates the existing one — and applies the `klaus:budget-paused` label.
 4. Posts a one-line PR comment explaining the pause and how to continue.
 5. Cleans up the worktree and tmux pane.
+
+Claude structured result events remain authoritative when the process exits
+nonzero after reaching its budget or turn limit; those stops remain resumable.
 
 The draft PR + label is the persisted state — klaus does not keep an in-process "paused" status. The dashboard surfaces these as **budget paused, awaiting decision** via the pipeline FSM (which reads the label off GitHub).
 

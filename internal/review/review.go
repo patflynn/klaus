@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/patflynn/klaus/internal/backend"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+
+	"github.com/patflynn/klaus/internal/backend"
 )
 
 // ReviewConfig configures the peer review agent.
@@ -81,6 +84,15 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 	}
 
 	prompt := buildReviewPrompt(diff)
+	var lastMessage string
+	if kind == backend.Codex {
+		dir, err := os.MkdirTemp("", "klaus-review-")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(dir)
+		lastMessage = filepath.Join(dir, "response.json")
+	}
 
 	cmd := exec.Command("claude",
 		"-p",
@@ -92,7 +104,7 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 	if kind != backend.Claude {
 		argv := []string{"agy", "--print", reviewSystemPrompt + "\n\n" + prompt, "--output-format", "text"}
 		if kind == backend.Codex {
-			argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "-"}
+			argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "--output-last-message", lastMessage, "-"}
 		}
 		if model != "" {
 			argv = append(argv, "--model", model)
@@ -114,6 +126,13 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 		return nil, fmt.Errorf("calling %s CLI: %w; stderr: %s", kind, err, stderr.String())
 	}
 
+	if lastMessage != "" {
+		data, err := os.ReadFile(lastMessage)
+		if err != nil {
+			return nil, fmt.Errorf("reading Codex review response: %w", err)
+		}
+		return parseReviewResponse(string(data))
+	}
 	return parseReviewResponse(stdout.String())
 }
 

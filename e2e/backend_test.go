@@ -159,6 +159,7 @@ func TestBackendDefaultsAndValidation(t *testing.T) {
 			t.Parallel()
 			h := NewHarness(t)
 			h.AmendRepoConfig(map[string]any{
+				"default_budget":        "",
 				"default_agent_backend": kind,
 				"default_agent_model":   "claude-only-model",
 				"default_agent_effort":  "max",
@@ -179,6 +180,9 @@ func TestBackendDefaultsAndValidation(t *testing.T) {
 			if res.ExitCode != 0 {
 				t.Fatalf("launch: %s%s", res.Stdout, res.Stderr)
 			}
+			if strings.Contains(res.Stderr, "default_budget does not apply") {
+				t.Fatal("warned about an empty default budget")
+			}
 			h.WaitForClaudeStart(15 * time.Second)
 			args := h.ClaudeArgv()
 			if strings.Contains(args, "claude-only-model") || strings.Contains(args, "\nmax\n") || !strings.Contains(args, "backend-model") {
@@ -186,6 +190,26 @@ func TestBackendDefaultsAndValidation(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(h.E2EDir, "claude.release"), nil, 0600); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestCoordinatorFailureStillTearsDown(t *testing.T) {
+	for _, kind := range []string{"claude", "codex", "agy"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			h.WriteStub(kind, "#!/bin/sh\nexit 7\n")
+			res := h.RunKlausIn(h.E2EDir, "new", "--backend", kind)
+			if res.ExitCode == 0 || !strings.Contains(res.Stderr, "exit status 7") {
+				t.Fatalf("missing exit error: %+v", res)
+			}
+			if !strings.Contains(res.Stdout, "No agents running.") || !strings.Contains(res.Stdout, "To clean up:") {
+				t.Fatalf("teardown skipped: %+v", res)
+			}
+			if panes := h.ListPanes(); len(panes) != 1 {
+				t.Fatalf("orphaned dashboard: %v", panes)
 			}
 		})
 	}

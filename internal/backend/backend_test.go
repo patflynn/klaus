@@ -63,3 +63,29 @@ func TestAgyWorkspaceResume(t *testing.T) {
 		t.Fatal(args)
 	}
 }
+
+func TestCodexPromptControlCharacters(t *testing.T) {
+	prompt := "bell\a vertical\v nul\x00 delete\x7f tab\t line\n unicode café"
+	argv := Codex.Coordinator(Options{SystemPrompt: prompt})
+	for _, arg := range argv {
+		if encoded, ok := strings.CutPrefix(arg, "developer_instructions="); ok {
+			if strings.Contains(encoded, "\x7f") || strings.Contains(encoded, `\x`) || strings.Contains(encoded, `\a`) || strings.Contains(encoded, `\v`) {
+				t.Fatalf("Go-only TOML escapes: %s", encoded)
+			}
+			var decoded string
+			if err := json.Unmarshal([]byte(encoded), &decoded); err != nil || decoded != prompt {
+				t.Fatalf("prompt changed: %q, %v", decoded, err)
+			}
+			return
+		}
+	}
+	t.Fatal("instructions missing")
+}
+
+func TestAgyResumeDoesNotRepeatInstructions(t *testing.T) {
+	argv := Agy.Coordinator(Options{SystemPrompt: "long original instructions", Continue: true, ResumeID: "conversation"})
+	joined := strings.Join(argv, "\n")
+	if strings.Contains(joined, "long original instructions") || !strings.Contains(joined, "session resumed") || !strings.Contains(joined, "--conversation\nconversation") {
+		t.Fatal(argv)
+	}
+}

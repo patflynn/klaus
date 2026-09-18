@@ -428,6 +428,11 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		}
 		switch ev.Type {
 		case "klaus_exit":
+			// Claude structured results distinguish a limit stop from a crash.
+			// Preserve that classification even when the process exits nonzero.
+			if isClaudeRun(state) && sawResult {
+				break
+			}
 			if ev.ExitCode != 0 {
 				reason := fmt.Sprintf("%s exited with status %d", state.Backend, ev.ExitCode)
 				state.FailureReason = &reason
@@ -456,7 +461,8 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			// _finalize raises agent:needs-attention instead of falsely
 			// reporting completion. A budget-cap result is handled separately
 			// by the budget-pause heuristic and is not treated as a crash here.
-			if ev.IsError || ev.Subtype == "error_during_execution" {
+			limitStop := isClaudeRun(state) && (ev.Subtype == "error_max_budget_usd" || ev.Subtype == "error_max_turns")
+			if !limitStop && (ev.IsError || ev.Subtype == "error_during_execution") {
 				reason := ev.Subtype
 				if reason == "" {
 					reason = "error"

@@ -11,9 +11,17 @@ func TestReviewSelectedBackend(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			stub := `#!/bin/sh
-for arg in "$@"; do
- if [ "$arg" = haiku ]; then exit 19; fi
+output=
+while [ "$#" -gt 0 ]; do
+ if [ "$1" = haiku ]; then exit 19; fi
+ if [ "$1" = --output-last-message ]; then shift; output=$1; fi
+ shift
 done
+if [ -n "$output" ]; then
+ printf '%s\n' '{"findings":[],"summary":"reviewed"}' > "$output"
+ printf '%s\n' 'progress chatter, not JSON'
+ exit 0
+fi
 printf '%s\n' '{"findings":[],"summary":"reviewed"}'
 `
 			if err := os.WriteFile(filepath.Join(dir, kind), []byte(stub), 0700); err != nil {

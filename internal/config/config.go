@@ -446,8 +446,8 @@ klaus launch --replay --pr <n> ...            # force trajectory replay, bypassi
 klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
 klaus launch --backend <name>               # worker CLI: claude, codex, or agy; independent of coordinator
-klaus launch --model <name> ...               # model for the selected worker backend (default from config; unset = claude's own default)
-klaus launch --effort <level> ...             # reasoning effort: low|medium|high|xhigh|max (default from config; unset = claude's own default)
+klaus launch --model <name> ...               # model for the selected worker backend (default from config; unset = backend default)
+klaus launch --effort <level> ...             # effort: agy low|medium|high; Codex also minimal|xhigh; Claude also xhigh|max (unset = backend default)
 klaus launch --local ...                      # force local execution even if a sandbox is configured
 klaus launch --host <name> ...                # override the configured sandbox host
 ` + "```" + `

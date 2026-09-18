@@ -145,7 +145,9 @@ are synced back after completion. Use --local to force local execution, or
 			if replayFlag {
 				return fmt.Errorf("--replay is only supported by the claude backend")
 			}
-			fmt.Fprintf(os.Stderr, "%s does not enforce dollar budgets; default_budget does not apply\n", kind)
+			if hostCfg.DefaultBudget != "" {
+				fmt.Fprintf(os.Stderr, "%s does not enforce dollar budgets; default_budget does not apply\n", kind)
+			}
 		}
 		if budget == "" {
 			budget = hostCfg.DefaultBudget
