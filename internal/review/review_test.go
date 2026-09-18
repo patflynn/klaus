@@ -63,6 +63,21 @@ func TestParseReviewResponse_noFindings(t *testing.T) {
 	}
 }
 
+// Real haiku output: prose, a fenced object, then more prose with Go braces.
+func TestParseReviewResponse_proseWrapped(t *testing.T) {
+	input := "Looking at this diff, I found a bug:\n\n```json\n{\n  \"findings\": [{\"severity\": \"Critical\", \"file\": \"a.go\", \"line\": 147, \"description\": \"x\"}],\n  \"summary\": \"one\"\n}\n```\n\nFix:\n```go\nif operator == nil {\n    operator = &login\n}\n```"
+	result, err := parseReviewResponse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Severity != "critical" || result.Summary != "one" {
+		t.Errorf("result = %+v", result)
+	}
+	if _, err := parseReviewResponse("I would use {} here, nothing else."); err == nil {
+		t.Error("prose with no review object must not parse as an empty review")
+	}
+}
+
 func TestParseReviewResponse_malformed(t *testing.T) {
 	input := "this is not json at all"
 	result, err := parseReviewResponse(input)

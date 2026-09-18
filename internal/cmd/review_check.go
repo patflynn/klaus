@@ -141,17 +141,17 @@ func latestTrustedReviewTime(ownerRepo, prNumber string, trustedSet map[string]b
 	// A `klaus review --post` review is trusted when the operator's gh account
 	// posted it; the marker alone is not, or anyone could trigger fix agents.
 	var candidates []ghReview
-	var operator *string
+	operator, looked := "", false
 	for _, r := range reviews {
 		if !trustedSet[r.User.Login] {
 			if !strings.Contains(r.Body, pipeline.CrossReviewMarker) {
 				continue
 			}
-			if operator == nil {
-				login, _ := github.NewGHCLIClient("").GetAuthenticatedUser(context.TODO())
-				operator = &login
+			if !looked { // lazy: one gh call, only when a marker review is present
+				operator, _ = github.NewGHCLIClient("").GetAuthenticatedUser(context.TODO())
+				looked = true
 			}
-			if *operator == "" || r.User.Login != *operator {
+			if operator == "" || r.User.Login != operator {
 				continue
 			}
 		}

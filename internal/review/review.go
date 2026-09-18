@@ -179,9 +179,8 @@ func parseReviewResponse(text string) (*ReviewResult, error) {
 
 	var result ReviewResult
 	if err := json.Unmarshal([]byte(text), &result); err != nil {
-		// Some CLIs wrap the object in prose; retry on the outermost braces.
-		i, j := strings.Index(text, "{"), strings.LastIndex(text, "}")
-		if i < 0 || j <= i || json.Unmarshal([]byte(text[i:j+1]), &result) != nil {
+		raw := embeddedReviewObject(text)
+		if raw == "" || json.Unmarshal([]byte(raw), &result) != nil {
 			return nil, fmt.Errorf("failed to parse review response: %w; response text: %q", err, text)
 		}
 	}
@@ -192,4 +191,21 @@ func parseReviewResponse(text string) (*ReviewResult, error) {
 	}
 
 	return &result, nil
+}
+
+// embeddedReviewObject finds the first JSON object with a findings or summary key in prose-wrapped output; trailing text is ignored.
+func embeddedReviewObject(text string) string {
+	for i := strings.IndexByte(text, '{'); i >= 0; {
+		dec := json.NewDecoder(strings.NewReader(text[i:]))
+		var probe map[string]json.RawMessage
+		if dec.Decode(&probe) == nil && (probe["findings"] != nil || probe["summary"] != nil) {
+			return text[i : i+int(dec.InputOffset())]
+		}
+		next := strings.IndexByte(text[i+1:], '{')
+		if next < 0 {
+			break
+		}
+		i += 1 + next
+	}
+	return ""
 }
