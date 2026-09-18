@@ -100,6 +100,15 @@ func initGitRepo(t *testing.T, dir string) {
 	runGitCmd(t, dir, "commit", "--allow-empty", "-m", "init")
 }
 
+// repoWithOrigin creates an empty git repo whose origin is origin.
+func repoWithOrigin(t *testing.T, origin string) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGitCmd(t, dir, "init", "-q")
+	runGitCmd(t, dir, "remote", "add", "origin", origin)
+	return dir
+}
+
 // runGitCmd runs a git command in the given directory.
 func runGitCmd(t *testing.T, dir string, args ...string) {
 	t.Helper()
@@ -288,14 +297,16 @@ func TestExtractPRURL(t *testing.T) {
 }
 
 func TestIsAllowedPRURL(t *testing.T) {
-	klausTarget := "patflynn/klaus"
-	customTarget := "acme/corp"
-	bareTarget := "klaus"
-	// launch records a local-path origin (as in the e2e sandbox) as a
-	// filesystem path, which is not an owner/repo reference.
-	pathTarget := "/tmp/sandbox/origin"
-	// A non-repo clone dir leaves the target repo unresolvable.
-	noRepoDir := t.TempDir()
+	httpsClone := repoWithOrigin(t, "https://github.com/acme/widget.git")
+	sshClone := repoWithOrigin(t, "git@github.com:acme/widget.git")
+	localClone := repoWithOrigin(t, "/srv/git/widget.git")
+	slugTarget := "acme/widget"
+	otherTarget := "acme/corp"
+	bareTarget := "widget"
+	// launch records a local-path origin as a path, not owner/repo.
+	pathTarget := "/srv/git/widget"
+	const widgetPR = "https://github.com/acme/widget/pull/123"
+	const foreignPR = "https://github.com/other/repo/pull/123"
 
 	tests := []struct {
 		name      string
@@ -304,98 +315,104 @@ func TestIsAllowedPRURL(t *testing.T) {
 		want      bool
 	}{
 		{
-			name:      "matches TargetRepo with slash",
-			state:     &run.State{TargetRepo: &klausTarget},
-			candidate: "https://github.com/patflynn/klaus/pull/123",
+			name:      "owner/repo TargetRepo matches",
+			state:     &run.State{TargetRepo: &slugTarget, CloneDir: &localClone},
+			candidate: widgetPR,
 			want:      true,
 		},
 		{
-			name:      "case-insensitive TargetRepo match",
-			state:     &run.State{TargetRepo: &klausTarget},
-			candidate: "https://github.com/PatFlynn/Klaus/pull/123",
+			name:      "owner/repo TargetRepo matches case-insensitively",
+			state:     &run.State{TargetRepo: &slugTarget, CloneDir: &localClone},
+			candidate: "https://github.com/ACME/Widget/pull/123",
 			want:      true,
 		},
 		{
-			name:      "mismatched TargetRepo with slash",
-			state:     &run.State{TargetRepo: &customTarget},
-			candidate: "https://github.com/patflynn/klaus/pull/123",
+			name:      "owner/repo TargetRepo wins over clone origin",
+			state:     &run.State{TargetRepo: &otherTarget, CloneDir: &httpsClone},
+			candidate: widgetPR,
 			want:      false,
 		},
 		{
-			name:      "bare TargetRepo matches clone remote",
-			state:     &run.State{TargetRepo: &bareTarget},
-			candidate: "https://github.com/patflynn/klaus/pull/123",
+			name:      "bare TargetRepo falls back to clone origin",
+			state:     &run.State{TargetRepo: &bareTarget, CloneDir: &httpsClone},
+			candidate: widgetPR,
 			want:      true,
 		},
 		{
-			name:      "nil TargetRepo matches clone remote",
-			state:     &run.State{},
-			candidate: "https://github.com/patflynn/klaus/pull/123",
-			want:      true,
-		},
-		{
-			name:      "nil TargetRepo rejects foreign repo",
-			state:     &run.State{},
-			candidate: "https://github.com/other/repo/pull/123",
+			name:      "bare TargetRepo rejects foreign repo",
+			state:     &run.State{TargetRepo: &bareTarget, CloneDir: &httpsClone},
+			candidate: foreignPR,
 			want:      false,
 		},
 		{
-			name:      "local-path TargetRepo falls back to clone remote",
-			state:     &run.State{TargetRepo: &pathTarget},
-			candidate: "https://github.com/patflynn/klaus/pull/123",
+			name:      "path TargetRepo falls back to clone origin",
+			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &httpsClone},
+			candidate: foreignPR,
+			want:      false,
+		},
+		{
+			name:      "ssh origin matches",
+			state:     &run.State{CloneDir: &sshClone},
+			candidate: widgetPR,
 			want:      true,
 		},
 		{
-			name:      "unresolvable target accepts real-looking URL",
-			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &noRepoDir},
-			candidate: "https://github.com/acme/widget/pull/123",
+			name:      "ssh origin rejects foreign repo",
+			state:     &run.State{CloneDir: &sshClone},
+			candidate: foreignPR,
+			want:      false,
+		},
+		{
+			name:      "local-path origin accepts any real slug",
+			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &localClone},
+			candidate: foreignPR,
 			want:      true,
 		},
 		{
-			name:      "unresolvable target still rejects placeholder",
-			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &noRepoDir},
+			name:      "local-path origin still rejects placeholder",
+			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &localClone},
 			candidate: "https://github.com/owner/repo/pull/123",
 			want:      false,
 		},
 		{
 			name:      "rejects placeholder owner/repo",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/owner/repo/pull/123",
 			want:      false,
 		},
 		{
 			name:      "rejects placeholder OWNER/REPO",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/OWNER/REPO/pull/123",
 			want:      false,
 		},
 		{
 			name:      "rejects placeholder <owner>/<repo>",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/<owner>/<repo>/pull/123",
 			want:      false,
 		},
 		{
 			name:      "rejects placeholder org/repo",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/org/repo/pull/123",
 			want:      false,
 		},
 		{
 			name:      "rejects placeholder user/repo",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/user/repo/pull/123",
 			want:      false,
 		},
 		{
 			name:      "empty candidate",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "",
 			want:      false,
 		},
 		{
 			name:      "malformed candidate without repo",
-			state:     &run.State{TargetRepo: &klausTarget},
+			state:     &run.State{TargetRepo: &slugTarget},
 			candidate: "https://github.com/pull/123",
 			want:      false,
 		},
@@ -815,9 +832,12 @@ func setupFinalizeTest(t *testing.T, logContent string) (*run.State, run.StateSt
 		t.Fatalf("creating state dir: %v", err)
 	}
 
+	// Fixture origin so PR URL checks don't depend on this checkout.
+	cloneDir := repoWithOrigin(t, "https://github.com/patflynn/klaus.git")
 	state := &run.State{
-		ID:      "test-run",
-		LogFile: &logFile,
+		ID:       "test-run",
+		LogFile:  &logFile,
+		CloneDir: &cloneDir,
 	}
 
 	store := &testStateStore{dir: stateDir, state: state}
