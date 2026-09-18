@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/patflynn/klaus/internal/backend"
+	"github.com/patflynn/klaus/internal/run"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,7 +11,9 @@ import (
 	"testing"
 )
 
-func TestRemoteBackendShellBoundary(t *testing.T) {
+// The prompt file must reach the backend's stdin — locally and across the ssh
+// hop (the stub forwards stdin as real ssh does) — byte for byte, never executed.
+func TestPaneCommandPromptTransport(t *testing.T) {
 	dir := t.TempDir()
 	worktree := filepath.Join(dir, "worktree with ' quotes")
 	if err := os.Mkdir(worktree, 0700); err != nil {
@@ -27,15 +30,26 @@ func TestRemoteBackendShellBoundary(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	t.Setenv(sessionIDEnv, "")
-	prompt := "a 'quoted' prompt\n$(exit 17) `exit 18`"
-	agent := backend.ShellCommand([]string{"printf", "%s\n", prompt})
-	command := buildSandboxPaneCommand("test-host", worktree, agent, filepath.Join(dir, "log.jsonl"), "klaus", "", "test-run")
-	out, err := exec.Command("sh", "-c", command).CombinedOutput()
-	if err != nil {
-		t.Fatalf("%v: %s", err, out)
+	prompt := "a 'quoted' prompt\n$(exit 17) `exit 18` #{pane_id}\n"
+	promptPath := filepath.Join(dir, "prompts", "it's.md")
+	if err := run.WritePromptFile(promptPath, prompt); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), prompt) || !strings.Contains(string(out), `"exit_code":0`) {
-		t.Fatalf("transport corrupted output: %s", out)
+	agent := backend.ShellCommand([]string{"cat"})
+	logFile := filepath.Join(dir, "log.jsonl")
+	for name, command := range map[string]string{
+		"local":   buildPaneCommand(worktree, agent, promptPath, logFile, "klaus", "", "test-run"),
+		"sandbox": buildSandboxPaneCommand("test-host", worktree, agent, promptPath, logFile, "klaus", "", "test-run"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := exec.Command("sh", "-c", command).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if !strings.HasPrefix(string(out), prompt) || !strings.Contains(string(out), `"exit_code":0`) {
+				t.Fatalf("transport corrupted output: %s", out)
+			}
+		})
 	}
 }
 

@@ -146,12 +146,14 @@ func (h *Harness) WriteDefaultClaudeOutput(jsonl string) {
 }
 
 func (h *Harness) claudeStubScript() string {
-	// Records argv + cwd, signals start, blocks until a release file appears
-	// (max ~60s), then emits the canned stream-json. Paths are baked in so the
-	// stub is independent of the pane's environment.
+	// Records argv, stdin (unless it is the pane's tty) + cwd, signals start,
+	// blocks until a release file appears (max ~60s), then emits the canned
+	// stream-json. Paths are baked in so the stub is independent of the pane's
+	// environment.
 	return fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
 { for a in "$@"; do printf '%%s\n' "$a"; done; } > "$dir/claude.argv"
+[ -t 0 ] || cat > "$dir/claude.stdin"
 printf '%%s' "$PWD" > "$dir/claude.cwd"
 : > "$dir/claude.started"
 for _ in {1..600}; do
@@ -201,6 +203,13 @@ func (h *Harness) WaitForClaudeStart(timeout time.Duration) {
 // line as recorded), or "" if it has not run yet.
 func (h *Harness) ClaudeArgv() string {
 	b, _ := os.ReadFile(filepath.Join(h.E2EDir, "claude.argv"))
+	return string(b)
+}
+
+// ClaudeStdin returns what the fake claude read on stdin — the prompt, for
+// backends that take it there — or "" if stdin was the pane's tty.
+func (h *Harness) ClaudeStdin() string {
+	b, _ := os.ReadFile(filepath.Join(h.E2EDir, "claude.stdin"))
 	return string(b)
 }
 

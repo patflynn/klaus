@@ -50,8 +50,12 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 				if kind == "agy" && !strings.Contains(argv, "--add-dir\n.\n") {
 					t.Fatal("agy worker missing explicit workspace")
 				}
-				if strings.Contains(argv, "--max-budget-usd") || !strings.Contains(argv, "test-model") || !strings.Contains(argv, "task 'quoted' $(false)") {
+				if strings.Contains(argv, "--max-budget-usd") || !strings.Contains(argv, "test-model") {
 					t.Fatalf("bad args: %s", argv)
+				}
+				// Codex reads the prompt on stdin; agy --print only takes an argument.
+				if got := map[string]string{"codex": h.ClaudeStdin(), "agy": argv}[kind]; !strings.Contains(got, "task 'quoted' $(false)") {
+					t.Fatalf("prompt not delivered: argv %q stdin %q", argv, h.ClaudeStdin())
 				}
 				releaseBackendWorkers(t, h)
 				st := h.WaitForState(ids[0], func(s *run.State) bool { return s.DurationMS != nil }, 15*time.Second)

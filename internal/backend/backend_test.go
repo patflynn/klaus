@@ -21,7 +21,7 @@ func TestWorkerShellBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			o := Options{SystemPrompt: "instructions\nwith 'quotes'", Prompt: "do not execute $(exit 8) `exit 9`\n--help", Model: "model'quoted", Effort: "high", Budget: "5", RunID: "run"}
-			args := k.Worker(o)
+			args, _ := k.Worker(o)
 			args[0] = stub
 			out, err := exec.Command("sh", "-c", ShellCommand(args)).Output()
 			if err != nil {
@@ -38,6 +38,44 @@ func TestWorkerShellBoundary(t *testing.T) {
 				t.Fatal("missing developer instructions")
 			}
 		})
+	}
+}
+
+// Claude and Codex take the prompt on stdin so a brief of any length stays out
+// of the tmux command; agy --print has no stdin mode, so it keeps the argument.
+func TestWorkerPromptTransport(t *testing.T) {
+	const prompt, system, sysFile = "the whole brief", "system text", "/prompts/run.system.md"
+	for _, k := range []Kind{Claude, Codex, Agy} {
+		for _, resume := range []string{"", "prior-session"} {
+			t.Run(string(k)+"/resume="+resume, func(t *testing.T) {
+				args, promptOnStdin := k.Worker(Options{Prompt: prompt, SystemPrompt: system, SystemPromptFile: sysFile, ResumeID: resume, RunID: "run", Budget: "5"})
+				joined := strings.Join(args, "\n")
+				if promptOnStdin != (k != Agy) {
+					t.Fatalf("promptOnStdin = %v", promptOnStdin)
+				}
+				if promptOnStdin == strings.Contains(joined, prompt) {
+					t.Fatalf("prompt in argv = %v with promptOnStdin = %v: %q", !promptOnStdin, promptOnStdin, args)
+				}
+				switch k {
+				case Claude:
+					if !strings.Contains(joined, "--append-system-prompt-file\n"+sysFile) || strings.Contains(joined, system) {
+						t.Fatalf("system prompt not read from its file: %q", args)
+					}
+				case Codex:
+					if args[len(args)-1] != "-" || !strings.Contains(joined, "developer_instructions=") {
+						t.Fatalf("codex must read stdin and keep inline instructions: %q", args)
+					}
+				case Agy:
+					if !strings.Contains(joined, "--print\n"+system+"\n\n"+prompt) {
+						t.Fatalf("agy prompt missing: %q", args)
+					}
+				}
+			})
+		}
+	}
+	args, _ := Claude.Worker(Options{SystemPrompt: system})
+	if !strings.Contains(strings.Join(args, "\n"), "--append-system-prompt\n"+system) {
+		t.Fatalf("inline system prompt dropped without a file: %q", args)
 	}
 }
 

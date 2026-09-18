@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // defaultTimeout is the timeout for tmux commands. These are local IPC calls
@@ -283,7 +284,25 @@ func runTmux(ctx context.Context, args ...string) (string, error) {
 		if ctx.Err() == context.DeadlineExceeded {
 			return "", fmt.Errorf("tmux %s timed out after %s", args[0], defaultTimeout)
 		}
-		return "", fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, stderr.String())
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return "", fmt.Errorf("tmux %s: %s (args: %s)", args[0], msg, truncateBytes("tmux "+strings.Join(args, " "), maxErrArgsBytes))
 	}
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// maxErrArgsBytes caps the argv echoed in a tmux error; a pane command can run
+// to kilobytes and would bury tmux's own message.
+const maxErrArgsBytes = 200
+
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return fmt.Sprintf("%s… [truncated %d bytes]", s[:n], len(s)-n)
 }

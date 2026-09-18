@@ -74,12 +74,18 @@ func TestLaunchLifecycle(t *testing.T) {
 		t.Errorf("pane title = %q, want %q", got, wantTitle)
 	}
 
-	// (c) claude was invoked with the expected args.
+	// (c) claude was invoked with the expected args, and the prompt on stdin.
 	argv := h.ClaudeArgv()
-	for _, want := range []string{prompt, "-p", "--output-format", "stream-json", "--max-budget-usd"} {
+	for _, want := range []string{"-p", "--output-format", "stream-json", "--max-budget-usd", "--append-system-prompt-file"} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("claude argv missing %q\n--- argv ---\n%s", want, argv)
 		}
+	}
+	if strings.Contains(argv, prompt) {
+		t.Errorf("prompt should not be in argv\n--- argv ---\n%s", argv)
+	}
+	if got := h.ClaudeStdin(); got != prompt {
+		t.Errorf("claude stdin = %q, want the prompt %q", got, prompt)
 	}
 	// With neither flag nor config set, the claude command must not carry
 	// --model/--effort at all — claude's own resolution applies unchanged.
@@ -175,8 +181,8 @@ func TestLaunchPromptFile(t *testing.T) {
 
 	// The agent is actually briefed with the full text, backticks intact.
 	h.WaitForClaudeStart(30 * time.Second)
-	if argv := h.ClaudeArgv(); !strings.Contains(argv, prompt) {
-		t.Errorf("claude argv missing the file prompt\n--- argv ---\n%s", argv)
+	if got := h.ClaudeStdin(); got != prompt {
+		t.Errorf("claude stdin does not match the file prompt:\n got: %q\nwant: %q", got, prompt)
 	}
 
 	h.ReleaseClaude()
@@ -291,4 +297,107 @@ func TestLaunchPromptSourceErrors(t *testing.T) {
 	if ids := h.RunIDs(); len(ids) != 0 {
 		t.Errorf("no run should have been recorded, got %v", ids)
 	}
+}
+
+// TestLaunchLongPromptOverStdin is the regression test for issue #308: a brief
+// well past tmux's ~16KB command limit launches through the real tmux path,
+// reaches the worker byte for byte on stdin, and stays on disk as the audit copy.
+func TestLaunchLongPromptOverStdin(t *testing.T) {
+	for _, kind := range []string{"claude", "codex"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			h.WriteStub(kind, h.claudeStubScript())
+
+			line := "Fix `ValidateToken()`; don't touch $(rm -rf ~) or ${HOME} or #{pane_id} — keep \"quotes\" and 'these'.\n"
+			prompt := strings.Repeat(line, 40*1024/len(line)+1)
+			promptPath := filepath.Join(h.E2EDir, "brief.md")
+			if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			res := h.RunKlaus("launch", "--backend", kind, "--prompt-file", promptPath)
+			if res.ExitCode != 0 {
+				t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%.2000s", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			ids := h.RunIDs()
+			if len(ids) != 1 {
+				t.Fatalf("expected 1 run, got %v", ids)
+			}
+			runID := ids[0]
+			st, err := h.ReadState(runID)
+			if err != nil || st.TmuxPane == nil {
+				t.Fatalf("state: %+v, %v", st, err)
+			}
+
+			h.WaitForClaudeStart(30 * time.Second)
+			if got := h.ClaudeStdin(); got != prompt {
+				t.Fatalf("worker stdin is %d bytes, want the %d-byte prompt verbatim", len(got), len(prompt))
+			}
+			if argv := h.ClaudeArgv(); strings.Contains(argv, "ValidateToken") {
+				t.Fatalf("prompt leaked into argv:\n%.500s", argv)
+			}
+
+			saved := filepath.Join(h.Home, ".klaus", "sessions", h.SessionID, "prompts", runID+".md")
+			info, err := os.Stat(saved)
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Fatalf("prompt file %s: %v, %v", saved, info, err)
+			}
+
+			releaseBackendWorkers(t, h)
+			if data, err := os.ReadFile(saved); err != nil || string(data) != prompt {
+				t.Fatalf("audit copy of the prompt not kept after the run: %v", err)
+			}
+		})
+	}
+}
+
+// TestLaunchSizeGuard: when an inline part (here the worker system prompt,
+// which Codex takes as an argument) would push the pane command past tmux's
+// limit, launch fails up front with the sizes, before creating a worktree.
+// Claude reads the same system prompt from a file and launches fine.
+func TestLaunchSizeGuard(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	sysPrompt := strings.Repeat("Follow the house rules.\n", 13000/24+1)
+	if err := os.WriteFile(filepath.Join(h.RepoDir, ".klaus", "prompt.md"), []byte(sysPrompt), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.RunKlaus("launch", "--backend", "codex", "small task")
+	if res.ExitCode == 0 {
+		t.Fatalf("launch should fail the size guard\nstdout:\n%s", res.Stdout)
+	}
+	for _, want := range []string{"over the 12000-byte limit", "the worker system prompt is 13008 bytes"} {
+		if !strings.Contains(res.Stderr, want) {
+			t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
+		}
+	}
+	if strings.Contains(res.Stderr, "cleaning up worktree") || strings.Contains(res.Stdout, "worktree:") {
+		t.Errorf("guard fired after the worktree was created:\n%s%s", res.Stdout, res.Stderr)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(filepath.Dir(h.RepoDir), "worktrees")); len(entries) != 0 {
+		t.Errorf("worktree base should be empty, has %d entries", len(entries))
+	}
+	if ids := h.RunIDs(); len(ids) != 0 {
+		t.Errorf("no run should have been recorded, got %v", ids)
+	}
+
+	res = h.RunKlaus("launch", "small task")
+	if res.ExitCode != 0 {
+		t.Fatalf("claude launch exited %d\nstdout:\n%s\nstderr:\n%.2000s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	h.WaitForClaudeStart(30 * time.Second)
+	argv := strings.Split(h.ClaudeArgv(), "\n")
+	var sysFile string
+	for i, a := range argv {
+		if a == "--append-system-prompt-file" && i+1 < len(argv) {
+			sysFile = argv[i+1]
+		}
+	}
+	if data, err := os.ReadFile(sysFile); err != nil || !strings.Contains(string(data), sysPrompt) {
+		t.Fatalf("system prompt file %q not written: %v", sysFile, err)
+	}
+	h.ReleaseClaude()
+	h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
 }

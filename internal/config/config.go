@@ -482,7 +482,7 @@ This is the complete flag set of ` + "`klaus launch`" + ` — there are no other
 
 ` + "```" + `
 klaus launch "<prompt>"                       # launch an agent
-klaus launch --prompt-file <path>             # read the prompt from a file instead of the argument
+klaus launch --prompt-file <path>             # read the prompt from a file: verbatim, any length
 klaus launch --issue <number> ...             # reference a GitHub issue
 klaus launch --pr <number> ...                # push fixes to an existing PR's branch
 klaus launch --budget <usd> ...               # spend cap in USD (default from config)
@@ -509,8 +509,10 @@ argument goes through the shell first: in zsh, backticks inside a double-quoted
 string are command substitution, so every code span in your prompt is deleted or
 replaced by command output before klaus sees it, and the agent is briefed from a
 prompt full of holes exactly where the detail was. Write the prompt to a file and
-pass ` + "`--prompt-file`" + ` — the file is read verbatim. The positional prompt and
---prompt-file are mutually exclusive; passing both, or neither, is an error.
+pass ` + "`--prompt-file`" + ` — the file is read verbatim, and it is the way to pass a
+brief of any length: klaus hands it to the worker on stdin, never on the tmux
+command line. The positional prompt and --prompt-file are mutually exclusive;
+passing both, or neither, is an error.
 
 ### Continuing an agent instead of restarting it
 

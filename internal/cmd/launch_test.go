@@ -184,11 +184,12 @@ func TestBuildPaneCommand(t *testing.T) {
 	worktree := "/tmp/worktrees/repo/abc123"
 	claudeCmd := "claude -p 'do stuff'"
 	logFile := "/tmp/logs/abc123.jsonl"
+	promptFile := "/tmp/prompts/20260306-1720-176a.md"
 	selfBin := "klaus"
 	id := "20260306-1720-176a"
 
 	t.Run("builds correct pipeline without auto-watch", func(t *testing.T) {
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildPaneCommand(worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "_finalize") {
 			t.Error("expected _finalize in pipeline, got:", cmd)
 		}
@@ -197,9 +198,19 @@ func TestBuildPaneCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("redirects the prompt file into the backend command only", func(t *testing.T) {
+		cmd := buildPaneCommand(worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
+		if !strings.Contains(cmd, "( "+claudeCmd+" < '"+promptFile+"'; klaus_backend_exit=$?") {
+			t.Error("expected stdin redirect on the backend command, got:", cmd)
+		}
+		if strings.Count(cmd, "<") != 1 {
+			t.Error("expected exactly one redirect, got:", cmd)
+		}
+	})
+
 	t.Run("cross-repo includes finalize prefix", func(t *testing.T) {
 		prefix := "cd '/host/repo' && "
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, prefix, id)
+		cmd := buildPaneCommand(worktree, claudeCmd, promptFile, logFile, selfBin, prefix, id)
 		if !strings.Contains(cmd, "cd '/host/repo' && klaus _finalize") {
 			t.Error("expected finalize prefix before _finalize, got:", cmd)
 		}
@@ -207,7 +218,7 @@ func TestBuildPaneCommand(t *testing.T) {
 
 	t.Run("exports KLAUS_SESSION_ID via tmuxSessionEnvPrefix", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "session-20260306-1720-abc1")
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildPaneCommand(worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "export KLAUS_SESSION_ID='session-20260306-1720-abc1'") {
 			t.Error("expected KLAUS_SESSION_ID export in pane command, got:", cmd)
 		}
@@ -215,7 +226,7 @@ func TestBuildPaneCommand(t *testing.T) {
 
 	t.Run("no KLAUS_SESSION_ID export when env unset", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildPaneCommand(worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildPaneCommand(worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if strings.Contains(cmd, "KLAUS_SESSION_ID") {
 			t.Error("expected no KLAUS_SESSION_ID export when session ID is empty, got:", cmd)
 		}
@@ -391,12 +402,13 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 	worktree := "/tmp/klaus-sessions/repo/abc123"
 	claudeCmd := "claude -p 'do stuff'"
 	logFile := "/tmp/logs/abc123.jsonl"
+	promptFile := "/tmp/prompts/20260328-1915-e4b3.md"
 	selfBin := "klaus"
 	id := "20260328-1915-e4b3"
 
 	t.Run("wraps claude in SSH", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "ssh 'klaus-worker-0'") {
 			t.Error("expected ssh to sandbox host, got:", cmd)
 		}
@@ -405,9 +417,18 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		}
 	})
 
+	t.Run("feeds the local prompt file to ssh's stdin", func(t *testing.T) {
+		t.Setenv(sessionIDEnv, "")
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
+		remote := shellQuote("cd " + shellQuote(worktree) + " && " + claudeCmd)
+		if !strings.Contains(cmd, "( ssh 'klaus-worker-0' "+remote+" < '"+promptFile+"'; klaus_backend_exit=$?") {
+			t.Error("expected stdin redirect on the ssh command, got:", cmd)
+		}
+	})
+
 	t.Run("tee and format run locally", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "| tee") {
 			t.Error("expected tee in local pipeline, got:", cmd)
 		}
@@ -421,7 +442,7 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 
 	t.Run("rsyncs results back after finalize", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
-		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, "", id)
+		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
 		if !strings.Contains(cmd, "rsync -az") {
 			t.Error("expected rsync back in command, got:", cmd)
 		}
@@ -431,6 +452,67 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		}
 	})
 
+}
+
+// However hostile or long the prompt, the command handed to tmux carries only
+// its path: nothing in it can be expanded by the shell or by tmux formats.
+func TestAgentPaneCommandKeepsPromptOut(t *testing.T) {
+	t.Setenv(sessionIDEnv, "")
+	prompt := "it's `whoami` $(touch /tmp/pwned) ${HOME} #{pane_id} \"quoted\"\n" + strings.Repeat("x", 40000)
+	const promptPath = "/home/u/.klaus/sessions/s/prompts/20260918-1440-abcd.md"
+	for _, kind := range []backend.Kind{backend.Claude, backend.Codex} {
+		for _, host := range []string{"", "sandbox-0"} {
+			t.Run(string(kind)+"/host="+host, func(t *testing.T) {
+				o := backend.Options{SystemPrompt: "sys", SystemPromptFile: "/p/20260918-1440-abcd.system.md", Prompt: prompt, RunID: "20260918-1440-abcd", Budget: "5"}
+				cmd, err := agentPaneCommand(kind, o, promptPath, host, "/wt", "/logs/x.jsonl", "", "20260918-1440-abcd")
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, frag := range []string{"whoami", "$(touch", "${HOME}", "#{pane_id}", "xxxx"} {
+					if strings.Contains(cmd, frag) {
+						t.Fatalf("prompt fragment %q in pane command: %s", frag, cmd)
+					}
+				}
+				if !strings.Contains(cmd, " < '"+promptPath+"'; klaus_backend_exit=$?") {
+					t.Fatalf("prompt file not redirected into the backend: %s", cmd)
+				}
+				if strings.Contains(cmd, "--append-system-prompt-file") == (host != "" || kind != backend.Claude) {
+					t.Fatalf("system prompt file only works for a local claude: %s", cmd)
+				}
+			})
+		}
+	}
+}
+
+func TestAgentPaneCommandSizeGuard(t *testing.T) {
+	t.Setenv(sessionIDEnv, "")
+	big := strings.Repeat("y", maxPaneCommandBytes)
+	for _, tc := range []struct {
+		name, host, want string
+		kind             backend.Kind
+		o                backend.Options
+	}{
+		{name: "claude reads a big system prompt from its file", kind: backend.Claude, o: backend.Options{SystemPrompt: big, SystemPromptFile: "/p/s.md", Prompt: big}},
+		{name: "sandbox claude inlines the system prompt", kind: backend.Claude, host: "sandbox-0", o: backend.Options{SystemPrompt: big, SystemPromptFile: "/p/s.md"}, want: "the worker system prompt is 12000 bytes and goes inline for sandbox runs; shorten .klaus/prompt.md (.klaus/pr-fix-prompt.md for --pr), or use --local"},
+		{name: "codex inlines the system prompt", kind: backend.Codex, o: backend.Options{SystemPrompt: big, Prompt: big}, want: "the worker system prompt is 12000 bytes and goes inline for codex runs"},
+		{name: "agy inlines the prompt", kind: backend.Agy, o: backend.Options{SystemPrompt: "sys", Prompt: big}, want: "the prompt is 12000 bytes and agy takes it as an argument"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, err := agentPaneCommand(tc.kind, tc.o, "/p/prompt.md", tc.host, "/wt", "/logs/x.jsonl", "", "id")
+			if tc.want == "" {
+				if err != nil || len(cmd) > maxPaneCommandBytes {
+					t.Fatalf("err = %v, len = %d", err, len(cmd))
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected the size guard to fire, got a %d-byte command", len(cmd))
+			}
+			if !regexp.MustCompile(`agent pane command is \d+ bytes, over the 12000-byte limit`).MatchString(err.Error()) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
 }
 
 func TestLaunchCmdHasSandboxFlags(t *testing.T) {
@@ -664,7 +746,8 @@ func TestResolveResumeID(t *testing.T) {
 					}
 				}
 			}
-			command := backend.ShellCommand(tc.kind.Worker(backend.Options{ResumeID: got}))
+			args, _ := tc.kind.Worker(backend.Options{ResumeID: got})
+			command := backend.ShellCommand(args)
 			if strings.Contains(command, sessionID) != (want != "") {
 				t.Errorf("unexpected resume command: %s", command)
 			}
@@ -866,5 +949,6 @@ func TestResolvePrompt(t *testing.T) {
 // These compatibility helpers delegate the Claude contract to the backend package.
 func validateEffort(effort string) error { return backend.Claude.ValidateEffort(effort) }
 func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeID, model, effort string) string {
-	return backend.ShellCommand(backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort}))
+	args, _ := backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort})
+	return backend.ShellCommand(args)
 }
