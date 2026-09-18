@@ -2,7 +2,11 @@ package tmux
 
 import (
 	"context"
+	"os/exec"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -156,4 +160,47 @@ func TestInSessionOutsideTmux(t *testing.T) {
 	// This test documents the behavior — it may pass or fail depending on env
 	// The important thing is it doesn't panic
 	_ = InSession()
+}
+
+// Issue #308: a pane command over tmux's imsg limit fails with "command too
+// long". The error must lead with that, not with kilobytes of echoed command.
+// Runs the real tmux against a throwaway server; $TMUX aims runTmux at it.
+func TestRunTmuxErrorLeadsWithStderr(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not on PATH")
+	}
+	sock := filepath.Join(t.TempDir(), "sock")
+	ctl := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("tmux", append([]string{"-S", sock, "-f", "/dev/null"}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("tmux %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	ctl("new-session", "-d", "-s", "main", "sleep 300")
+	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
+	t.Setenv("TMUX", sock+","+ctl("display-message", "-p", "#{pid}")+",0")
+
+	_, err := NewDetachedWindow(context.Background(), "klaus-agents-test", "run", t.TempDir(), "true "+strings.Repeat("x", 20000))
+	if err == nil {
+		t.Fatal("tmux accepted a 20KB command; the pane size guard may be stale")
+	}
+	msg := err.Error()
+	if !strings.HasPrefix(msg, "new-session: tmux new-session: command too long (args: tmux new-session -d -s klaus-agents-test") {
+		t.Fatalf("tmux's message is not first: %.300s", msg)
+	}
+	if !regexp.MustCompile(`… \[truncated \d+ bytes\]\)$`).MatchString(msg) || len(msg) > 400 {
+		t.Fatalf("args not truncated (%d bytes): %.500s", len(msg), msg)
+	}
+}
+
+func TestTruncateBytesKeepsRunesWhole(t *testing.T) {
+	if got := truncateBytes("ab", 5); got != "ab" {
+		t.Fatalf("short input changed: %q", got)
+	}
+	got := truncateBytes("aé"+strings.Repeat("z", 10), 2)
+	if got != "a… [truncated 12 bytes]" {
+		t.Fatalf("got %q", got)
+	}
 }

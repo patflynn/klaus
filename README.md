@@ -429,6 +429,8 @@ klaus launch --prompt-file /tmp/task.md --issue 42 --budget 10
 
 Prefer this for long or technical prompts. A prompt passed as a shell argument goes through the shell first — in zsh, backticks inside a double-quoted string are command substitution, so code spans are deleted or replaced by command output before klaus sees them, and the agent gets a briefing with holes exactly where the detail was.
 
+A prompt can be any length. However it is given, klaus writes it to `~/.klaus/sessions/<session>/prompts/<run-id>.md` (kept after the run as the record of the brief) and claude and codex workers read it from there on stdin, so it never goes on the tmux command line, which tmux caps at about 16KB. A local claude worker also reads its system prompt from `prompts/<run-id>.system.md`. What still goes inline (agy's prompt, which `agy --print` only takes as an argument, and the worker system prompt for codex, agy and sandbox runs) is checked up front: if the pane command would exceed 12000 bytes, launch fails before creating a worktree and names the part that is too large.
+
 The positional prompt and `--prompt-file` are mutually exclusive: passing both, or neither, is an error. Everything downstream — the stored prompt in run state, `--issue`/`--pr` composition, budget handling — behaves identically either way.
 
 ### `klaus launch --repo`
@@ -638,8 +640,8 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 ## Under the hood
 
-- **Agents run headless** — `claude -p`, `codex exec`, or `agy --print` with the prompt in argv, so there is no
-  way to type at a running agent. Correcting one mid-run means relaunching with
+- **Agents run headless** — `claude -p` and `codex exec` read the prompt on stdin from its file, `agy --print`
+  takes it in argv, so there is no way to type at a running agent. Correcting one mid-run means relaunching with
   `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
   for why in-place messaging isn't offered and what it would take
 - **Worktrees** isolate each agent — they can't step on each other or your working tree

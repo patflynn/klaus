@@ -14,18 +14,19 @@ inert: the text never reaches the session at all.
 
 ## Root cause
 
-Klaus agents are not interactive. `buildClaudeCommand` in
-[internal/cmd/launch.go](../internal/cmd/launch.go) always launches:
+Klaus agents are not interactive. `Kind.Worker` in
+[internal/backend/backend.go](../internal/backend/backend.go) always launches:
 
 ```
 claude -p -n <run-id> --dangerously-skip-permissions --verbose \
   --output-format stream-json --max-budget-usd <budget> \
-  --append-system-prompt <sys> <prompt>
+  --append-system-prompt-file <sys-file> < <prompt-file>
 ```
 
-`-p` is print mode with the default `--input-format text`, and the prompt comes
-from argv. In that configuration `claude` never reads stdin, so anything typed
-or pasted into the pane's tty is discarded. There is no TUI in the pane to
+`-p` is print mode with the default `--input-format text`. The prompt was an
+argv entry when these experiments ran; since #308 it arrives on stdin from a
+file. Either way `claude` never reads the pane's tty, so anything typed or
+pasted into it is discarded. There is no TUI in the pane to
 receive a paste — only a pipeline whose stdout is a pipe into
 `tee | klaus _format-stream`.
 
@@ -86,8 +87,8 @@ Ran `claude` interactively (no `-p`) in a tmux pane, then
 Feed the agent over stdin as stream-json (experiment 2). That means, in the
 launch path:
 
-- `buildClaudeCommand` gains `--input-format stream-json` and drops the
-  positional prompt;
+- the Claude worker command gains `--input-format stream-json`, and its stdin
+  (today the prompt file) becomes the run's FIFO;
 - each run gets a FIFO, with the initial prompt written as a JSON user message
   and a writer held open for the agent's lifetime;
 - `klaus message` writes a `{"type":"user",...}` line into that run's FIFO.

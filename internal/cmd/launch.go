@@ -40,6 +40,13 @@ technical prompts: in zsh a backtick inside a double-quoted argument is command
 substitution, so code spans in a shell-quoted prompt are silently mangled before
 klaus ever sees them. File contents are used verbatim.
 
+Either way klaus saves the prompt to prompts/<run-id>.md in the session
+directory, kept as the record of the brief, and claude and codex workers read it
+on stdin, so a prompt of any length fits. agy has no stdin mode and takes it as
+an argument. If what still goes on the tmux command line (agy's prompt, or the
+worker system prompt for codex, agy and sandbox runs) exceeds tmux's limit,
+launch fails before creating a worktree.
+
 Use --repo to launch an agent against a different repository. If the name
 matches a registered project (no owner/ prefix), the project's local path is
 used directly. Otherwise, the repo is cloned from GitHub.
@@ -276,56 +283,9 @@ are synced back after completion. Use --local to force local execution, or
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}
-
-			fmt.Printf("Launching agent %s (PR #%s fix)...\n", id, prNumber)
-			if targetRepo != nil {
-				fmt.Printf("  target:   %s\n", *targetRepo)
-			}
-
-			// Create worktree tracking the PR branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, prBranch); err != nil {
-				return fmt.Errorf("creating worktree: %w", err)
-			}
 		} else {
 			branch = "agent/" + id
-
-			fmt.Printf("Launching agent %s...\n", id)
-			if targetRepo != nil {
-				fmt.Printf("  target:   %s\n", *targetRepo)
-			}
-
-			// Create worktree
-			startPoint := "origin/" + defaultBranch
-			if err := gitClient.WorktreeAdd(ctx, repoRoot, worktree, branch, startPoint); err != nil {
-				return fmt.Errorf("creating worktree: %w", err)
-			}
 		}
-
-		// Clean up the worktree if the launch fails after this point.
-		// This prevents stale worktrees from blocking future dispatch retries.
-		var launchSucceeded bool
-		defer func() {
-			if !launchSucceeded {
-				fmt.Fprintf(os.Stderr, "cleaning up worktree after failed launch: %s\n", worktree)
-				if rmErr := gitClient.WorktreeRemove(context.Background(), repoRoot, worktree); rmErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to remove worktree %s: %v\n", worktree, rmErr)
-				}
-			}
-		}()
-
-		fmt.Printf("  worktree: %s\n", worktree)
-		fmt.Printf("  branch:   %s\n", branch)
-
-		if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
-		}
-
-		if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
-		}
-
-		// Set up Nix dev environment if flake.nix exists
-		nix.SetupDevEnvironment(worktree)
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
 		var sysPrompt string
@@ -352,6 +312,96 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
+		promptPath := filepath.Join(run.PromptDir(store), id+".md")
+		sysPromptPath := filepath.Join(run.PromptDir(store), id+".system.md")
+		workerOpts := backend.Options{
+			SystemPrompt: sysPrompt, SystemPromptFile: sysPromptPath, Budget: budget, Prompt: prompt,
+			RunID: id, Model: model, Effort: effort,
+		}
+
+		// For cross-repo launches with a host repo, finalize must run from the
+		// host repo context so that data-ref sync works correctly.
+		var finalizePrefix string
+		if targetRepo != nil && hostRoot != "" {
+			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
+		}
+		// Determine sandbox host: --host flag > config sandbox_host, unless --local.
+		// Reachability is settled before the size check so the check is exact.
+		sandboxHost := hostCfg.SandboxHost
+		if hostOverride != "" {
+			sandboxHost = hostOverride
+		}
+		if forceLocal {
+			sandboxHost = ""
+		}
+		if sandboxHost != "" && !CheckSandboxReachable(sandboxHost) {
+			fmt.Fprintf(os.Stderr, "warning: sandbox %s unreachable, falling back to local execution\n", sandboxHost)
+			sandboxHost = ""
+		}
+		// Fail before a worktree exists. A resume ID (Claude session or Codex
+		// thread, both UUIDs) is only known later, so size one in; the other
+		// later change, a local fallback, never makes the command longer.
+		sizeCheck := workerOpts
+		if resumeFrom != "" || isPRFix {
+			sizeCheck.ResumeID = "00000000-0000-0000-0000-000000000000"
+		}
+		if _, err := agentPaneCommand(kind, sizeCheck, promptPath, sandboxHost, worktree, logFile, finalizePrefix, id); err != nil {
+			return err
+		}
+
+		if isPRFix {
+			fmt.Printf("Launching agent %s (PR #%s fix)...\n", id, prNumber)
+		} else {
+			fmt.Printf("Launching agent %s...\n", id)
+		}
+		if targetRepo != nil {
+			fmt.Printf("  target:   %s\n", *targetRepo)
+		}
+		if isPRFix {
+			// Create worktree tracking the PR branch
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
+		} else {
+			if err := gitClient.WorktreeAdd(ctx, repoRoot, worktree, branch, "origin/"+defaultBranch); err != nil {
+				return fmt.Errorf("creating worktree: %w", err)
+			}
+		}
+
+		// Clean up the worktree if the launch fails after this point.
+		// This prevents stale worktrees from blocking future dispatch retries.
+		var launchSucceeded bool
+		defer func() {
+			if !launchSucceeded {
+				fmt.Fprintf(os.Stderr, "cleaning up worktree after failed launch: %s\n", worktree)
+				if rmErr := gitClient.WorktreeRemove(context.Background(), repoRoot, worktree); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to remove worktree %s: %v\n", worktree, rmErr)
+				}
+				os.Remove(promptPath)
+				os.Remove(sysPromptPath)
+			}
+		}()
+
+		fmt.Printf("  worktree: %s\n", worktree)
+		fmt.Printf("  branch:   %s\n", branch)
+
+		if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
+		}
+
+		if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
+		}
+
+		// Set up Nix dev environment if flake.nix exists
+		nix.SetupDevEnvironment(worktree)
+
+		if err := run.WritePromptFile(promptPath, prompt); err != nil {
+			return err
+		}
+		if err := run.WritePromptFile(sysPromptPath, sysPrompt); err != nil {
+			return err
+		}
 
 		// Stage the prior Claude transcript for the new worktree.
 		var resolvedResume string
@@ -371,7 +421,7 @@ are synced back after completion. Use --local to force local execution, or
 		// applies to local execution. When the run is destined for a sandbox
 		// host, claude runs remotely and would not find the restored file —
 		// skip replay and let it start fresh there.
-		intendsSandbox := !forceLocal && (hostOverride != "" || hostCfg.SandboxHost != "")
+		intendsSandbox := sandboxHost != ""
 		var replayedFromRunID string
 		if kind == backend.Claude && resolvedResume == "" && isPRFix && prNumber != "" && !noReplay && !intendsSandbox {
 			threshold := replayThresholdKB
@@ -408,49 +458,23 @@ are synced back after completion. Use --local to force local execution, or
 		if kind != backend.Claude && resumeFrom != "" && resolvedResume == "" {
 			fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr\n", kind)
 		}
-		agentCmd := backend.ShellCommand(kind.Worker(backend.Options{
-			SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id,
-			ResumeID: resolvedResume, Model: model, Effort: effort,
-		}))
-		// Propagate worker identity to nested klaus commands such as _pre-review.
-		agentCmd = "KLAUS_BACKEND=" + string(kind) + " " + agentCmd
+		workerOpts.ResumeID = resolvedResume
 
-		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
-		// For cross-repo launches with a host repo, finalize must run from the
-		// host repo context so that data-ref sync works correctly.
-		selfBin := "klaus" // assumes klaus is in PATH
-		var finalizePrefix string
-		if targetRepo != nil && hostRoot != "" {
-			finalizePrefix = fmt.Sprintf("cd %s && ", shellQuote(hostRoot))
-		}
-		// Determine sandbox host: --host flag > config sandbox_host
-		sandboxHost := hostCfg.SandboxHost
-		if hostOverride != "" {
-			sandboxHost = hostOverride
-		}
-
-		// Attempt sandbox execution unless --local is set
+		// Sync worktree to the sandbox before launching
 		var useSandbox bool
 		var sandboxHostName string
-		if sandboxHost != "" && !forceLocal {
-			if CheckSandboxReachable(sandboxHost) {
+		if sandboxHost != "" {
+			if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
+			} else {
 				useSandbox = true
 				sandboxHostName = sandboxHost
-				// Sync worktree to sandbox before launching
-				if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
-					useSandbox = false
-				}
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: sandbox %s unreachable, falling back to local execution\n", sandboxHost)
 			}
 		}
 
-		var paneCmd string
-		if useSandbox {
-			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, agentCmd, logFile, selfBin, finalizePrefix, id)
-		} else {
-			paneCmd = buildPaneCommand(worktree, agentCmd, logFile, selfBin, finalizePrefix, id)
+		paneCmd, err := agentPaneCommand(kind, workerOpts, promptPath, sandboxHostName, worktree, logFile, finalizePrefix, id)
+		if err != nil {
+			return err
 		}
 
 		// Launch the agent's tmux pane. Detached by default (its own window in
@@ -628,16 +652,67 @@ func resolvePrompt(args []string, promptFile string) (string, error) {
 	}
 }
 
+// maxPaneCommandBytes caps the command handed to tmux new-window/split-window.
+// tmux rejects a request over its 16KB imsg limit (MAX_IMSGSIZE) with "command
+// too long", and the pane's other arguments share that budget.
+const maxPaneCommandBytes = 12000
+
+// agentPaneCommand builds a worker's pane command; sandboxHost "" runs locally.
+// The prompt reaches the backend on stdin from promptFile unless the backend
+// only takes it in argv (agy), so its length never counts against tmux's limit.
+func agentPaneCommand(kind backend.Kind, o backend.Options, promptFile, sandboxHost, worktree, logFile, finalizePrefix, id string) (string, error) {
+	if sandboxHost != "" {
+		// The remote side cannot read local files; only stdin crosses ssh.
+		o.SystemPromptFile = ""
+	}
+	args, promptOnStdin := kind.Worker(o)
+	if !promptOnStdin {
+		promptFile = ""
+	}
+	// Propagate worker identity to nested klaus commands such as _pre-review.
+	agentCmd := "KLAUS_BACKEND=" + string(kind) + " " + backend.ShellCommand(args)
+	const selfBin = "klaus" // assumes klaus is in PATH
+	var paneCmd string
+	if sandboxHost != "" {
+		paneCmd = buildSandboxPaneCommand(sandboxHost, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
+	} else {
+		paneCmd = buildPaneCommand(worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
+	}
+	if len(paneCmd) <= maxPaneCommandBytes {
+		return paneCmd, nil
+	}
+	msg := fmt.Sprintf("agent pane command is %d bytes, over the %d-byte limit for a tmux command", len(paneCmd), maxPaneCommandBytes)
+	if !promptOnStdin && len(o.Prompt) > len(o.SystemPrompt) {
+		return "", fmt.Errorf("%s: the prompt is %d bytes and %s takes it as an argument; shorten it or use another backend", msg, len(o.Prompt), kind)
+	}
+	if kind != backend.Claude || o.SystemPromptFile == "" {
+		where, fix := string(kind), "shorten .klaus/prompt.md (.klaus/pr-fix-prompt.md for --pr)"
+		if kind == backend.Claude {
+			where, fix = "sandbox", fix+", or use --local, where claude reads it from a file"
+		}
+		return "", fmt.Errorf("%s: the worker system prompt is %d bytes and goes inline for %s runs; %s", msg, len(o.SystemPrompt), where, fix)
+	}
+	return "", fmt.Errorf("%s", msg)
+}
+
 func withExitEvent(command string) string {
 	return "( " + command + "; klaus_backend_exit=$?; printf '\\n{\"type\":\"klaus_exit\",\"exit_code\":%s}\\n' \"$klaus_backend_exit\" )"
 }
 
-func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
+// stdinFrom redirects promptFile into the command it follows; "" leaves stdin alone.
+func stdinFrom(promptFile string) string {
+	if promptFile == "" {
+		return ""
+	}
+	return " < " + shellQuote(promptFile)
+}
+
+func buildPaneCommand(worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
 		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
 		tmuxSessionEnvPrefix(),
 		shellQuote(worktree),
-		withExitEvent(claudeCmd),
+		withExitEvent(agentCmd+stdinFrom(promptFile)),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,
@@ -785,15 +860,16 @@ func syncWorktreeToSandbox(host, worktree string) error {
 	return nil
 }
 
-func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
-	// Run claude on sandbox via SSH, pipe output locally through tee + formatter,
-	// then finalize locally and rsync results back.
+func buildSandboxPaneCommand(host, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
+	// Run the agent on sandbox via SSH, pipe output locally through tee + formatter,
+	// then finalize locally and rsync results back. ssh forwards the local
+	// prompt file as the remote command's stdin.
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
 	return fmt.Sprintf(
 		"%s%s | tee %s | %s _format-stream; %s%s _finalize %s; %s",
 		tmuxSessionEnvPrefix(),
-		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote("cd "+shellQuote(worktree)+" && "+claudeCmd)),
+		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote("cd "+shellQuote(worktree)+" && "+agentCmd)+stdinFrom(promptFile)),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,
@@ -861,7 +937,7 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 
 func init() {
 	launchCmd.Flags().String("backend", "", "Worker backend: claude, codex, or agy (default from session/config)")
-	launchCmd.Flags().String("prompt-file", "", "Read the prompt from a file instead of the positional argument (avoids shell mangling of backticks); mutually exclusive with it")
+	launchCmd.Flags().String("prompt-file", "", "Read the prompt from a file instead of the positional argument: verbatim (no shell mangling of backticks) and any length; mutually exclusive with it")
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR (also the way to resume a budget-paused PR — the agent picks up from the WIP commit)")
 	launchCmd.Flags().String("budget", "", "Claude only: max spend in USD (default from config)")

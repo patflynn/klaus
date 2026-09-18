@@ -81,6 +81,23 @@ type StateStore interface {
 	EnsureDirs() error
 }
 
+// PromptDir holds the prompt files workers read on stdin, beside the store's
+// logs/. They are kept after the run as the audit copy of each brief.
+func PromptDir(s StateStore) string {
+	return filepath.Join(filepath.Dir(s.LogDir()), "prompts")
+}
+
+// WritePromptFile writes text owner-only; briefs can quote private context.
+func WritePromptFile(path, text string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("creating prompt dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		return fmt.Errorf("writing prompt file: %w", err)
+	}
+	return nil
+}
+
 // GitDirStore implements StateStore using the .git/klaus/ directory structure.
 type GitDirStore struct {
 	gitCommonDir string

@@ -47,11 +47,15 @@ func (k Kind) ValidateEffort(s string) error {
 
 type Options struct {
 	SystemPrompt, Prompt, RunID, ResumeID, Model, Effort, Budget string
-	Continue                                                     bool
+	// SystemPromptFile replaces SystemPrompt for Claude workers; other backends have no file flag.
+	SystemPromptFile string
+	Continue         bool
 }
 
-// Worker returns argv, without shell interpolation. Dollar budgets are a Claude capability.
-func (k Kind) Worker(o Options) []string {
+// Worker returns argv, without shell interpolation. When promptOnStdin is set
+// the prompt is not in argv and the caller must feed it on stdin, which keeps
+// long briefs out of the tmux command. Dollar budgets are a Claude capability.
+func (k Kind) Worker(o Options) (args []string, promptOnStdin bool) {
 	var a []string
 	switch k {
 	case Claude:
@@ -59,7 +63,12 @@ func (k Kind) Worker(o Options) []string {
 		if o.ResumeID != "" {
 			a = append(a, "--resume", o.ResumeID, "--fork-session")
 		}
-		a = append(a, "--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "--max-budget-usd", o.Budget, "--append-system-prompt", o.SystemPrompt)
+		a = append(a, "--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "--max-budget-usd", o.Budget)
+		if o.SystemPromptFile != "" {
+			a = append(a, "--append-system-prompt-file", o.SystemPromptFile)
+		} else {
+			a = append(a, "--append-system-prompt", o.SystemPrompt)
+		}
 	case Codex:
 		a = []string{"codex", "exec"}
 		if o.ResumeID != "" {
@@ -70,10 +79,16 @@ func (k Kind) Worker(o Options) []string {
 		a = []string{"agy", "--add-dir", ".", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "24h"}
 	}
 	a = k.modelArgs(a, o)
-	if k == Agy {
-		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt)
+	switch k {
+	case Agy:
+		// agy --print has no stdin mode: "-" is taken as the literal prompt.
+		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt), false
+	case Codex:
+		// "-" reads stdin; exec fork needs it spelled out.
+		return append(a, "-"), true
 	}
-	return append(a, o.Prompt)
+	// claude -p reads stdin when no prompt argument is given.
+	return a, true
 }
 
 func (k Kind) Coordinator(o Options) []string {
