@@ -288,6 +288,29 @@ func CommitsBehindUpstream(ctx context.Context, repoDir string) (int, error) {
 	return n, nil
 }
 
+// CommitsAhead returns the number of commits on ref not reachable from base.
+func CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error) {
+	return revListCount(ctx, repoDir, base+".."+ref)
+}
+
+// UnpushedCommits returns the number of commits on branch not reachable from
+// any origin/* remote-tracking ref, i.e. work that exists only locally.
+func UnpushedCommits(ctx context.Context, repoDir, branch string) (int, error) {
+	return revListCount(ctx, repoDir, "refs/heads/"+branch, "--not", "--remotes=origin")
+}
+
+func revListCount(ctx context.Context, repoDir string, args ...string) (int, error) {
+	out, err := runGit(ctx, repoDir, append([]string{"rev-list", "--count"}, args...)...)
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("parsing rev-list --count output %q: %w", out, err)
+	}
+	return n, nil
+}
+
 // EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 // initial commit if it doesn't. Uses git plumbing so nothing in the working
 // tree is touched.

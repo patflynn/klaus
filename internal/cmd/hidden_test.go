@@ -42,7 +42,7 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		store := &testStateStore{dir: stateDir, state: state}
 
 		// Simulate the cleanup logic from _finalize.
-		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state, false)
 
 		if state.Worktree != "" {
 			t.Errorf("expected Worktree to be cleared, got %q", state.Worktree)
@@ -71,10 +71,24 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		store := &testStateStore{dir: stateDir, state: state}
 
 		// Should not panic or fail — just clears state.
-		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state, false)
 
 		if state.Worktree != "" {
 			t.Errorf("expected Worktree to be cleared, got %q", state.Worktree)
+		}
+	})
+
+	t.Run("keeps a branch with unpushed commits", func(t *testing.T) {
+		_, repo, worktree, branch := setupBareRemote(t)
+		runGitCmd(t, worktree, "add", "-A")
+		runGitCmd(t, worktree, "commit", "-m", "local only")
+		state := &run.State{ID: "test-run", Branch: branch, Worktree: worktree, CloneDir: &repo}
+		store := &testStateStore{dir: t.TempDir(), state: state}
+
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state, false)
+
+		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
+			t.Errorf("unpushed branch was deleted: %v", err)
 		}
 	})
 
@@ -82,7 +96,7 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		state := &run.State{ID: "test-run", Worktree: ""}
 		store := &testStateStore{state: state}
 
-		cleanupWorktree(context.Background(), store, git.NewExecClient(), state)
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state, false)
 
 		if state.Worktree != "" {
 			t.Errorf("expected empty worktree, got %q", state.Worktree)
@@ -545,7 +559,7 @@ func TestEmitFinalizeEvents(t *testing.T) {
 			FailureReason: &reason,
 		}
 
-		emitFinalizeEvents(baseDir, state)
+		emitFinalizeEvents(baseDir, state, nil)
 
 		types := eventTypesFor(t, baseDir, state.ID)
 		if len(types) != 1 || types[0] != event.AgentNeedsAttention {
@@ -562,7 +576,7 @@ func TestEmitFinalizeEvents(t *testing.T) {
 			PRURL:      &prURL,
 		}
 
-		emitFinalizeEvents(baseDir, state)
+		emitFinalizeEvents(baseDir, state, nil)
 
 		types := eventTypesFor(t, baseDir, state.ID)
 		if !containsEvent(types, event.AgentCompleted) {
@@ -584,7 +598,7 @@ func TestEmitFinalizeEvents(t *testing.T) {
 			DurationMS: &dur,
 		}
 
-		emitFinalizeEvents(baseDir, state)
+		emitFinalizeEvents(baseDir, state, nil)
 
 		types := eventTypesFor(t, baseDir, state.ID)
 		if len(types) != 1 || types[0] != event.AgentCompleted {
@@ -689,7 +703,7 @@ func (s *testStateStore) EnsureDirs() error {
 // path must no-op rather than dereference a nil run state.
 func TestEmitFinalizeEventsNilState(t *testing.T) {
 	// Should return early without panicking.
-	emitFinalizeEvents(t.TempDir(), nil)
+	emitFinalizeEvents(t.TempDir(), nil, nil)
 }
 
 func assertPRURL(t *testing.T, state *run.State, want string) {
@@ -719,5 +733,186 @@ func assertDuration(t *testing.T, state *run.State, want int64) {
 	}
 	if *state.DurationMS != want {
 		t.Errorf("DurationMS = %v, want %v", *state.DurationMS, want)
+	}
+}
+
+// finalizeRealRepo runs _finalize for a run on worktree/branch with the given
+// log. gh is stubbed (empty output); git is real.
+func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent string, prURL *string) (*run.HomeDirStore, *run.State, *fakeRunner) {
+	t.Helper()
+	sessionID := "20260918-1205-salvage-session"
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(sessionIDEnv, sessionID)
+	store, err := run.NewHomeDirStore(sessionID)
+	if err != nil {
+		t.Fatalf("NewHomeDirStore: %v", err)
+	}
+	if err := store.EnsureDirs(); err != nil {
+		t.Fatalf("EnsureDirs: %v", err)
+	}
+	runID := "20260918-1205-salvage"
+	logFile := filepath.Join(store.LogDir(), runID+".jsonl")
+	if err := os.WriteFile(logFile, []byte(logContent), 0644); err != nil {
+		t.Fatalf("writing log: %v", err)
+	}
+	state := &run.State{
+		ID:        runID,
+		Prompt:    "rename the thing",
+		Branch:    branch,
+		Worktree:  worktree,
+		CreatedAt: "2026-09-18T12:05:00Z",
+		LogFile:   &logFile,
+		CloneDir:  &repo,
+		PRURL:     prURL,
+	}
+	if err := store.Save(state); err != nil {
+		t.Fatalf("saving state: %v", err)
+	}
+
+	r := &fakeRunner{}
+	prev := budgetPauseRunner
+	budgetPauseRunner = r
+	t.Cleanup(func() { budgetPauseRunner = prev })
+
+	finalizeCmd.SetContext(context.Background())
+	if err := finalizeCmd.RunE(finalizeCmd, []string{runID}); err != nil {
+		t.Fatalf("_finalize: %v", err)
+	}
+	final, err := store.Load(runID)
+	if err != nil {
+		t.Fatalf("loading state: %v", err)
+	}
+	return store, final, r
+}
+
+func runEvents(t *testing.T, baseDir, runID string) map[string]map[string]interface{} {
+	t.Helper()
+	evts, err := event.NewLog(baseDir).Read()
+	if err != nil {
+		t.Fatalf("reading events: %v", err)
+	}
+	byType := map[string]map[string]interface{}{}
+	for _, e := range evts {
+		if e.RunID == runID {
+			byType[e.Type] = e.Data
+		}
+	}
+	return byType
+}
+
+func gitOut(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
+	out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// Regression for #299: a session-limit stop (subtype success, no PR) must not
+// destroy the agent's uncommitted work or its branch.
+func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
+	sessionLimitLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"VM test passes."}]}}
+{"type":"result","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 4:20pm","total_cost_usd":3.1,"duration_ms":2100000}
+{"type":"klaus_exit","exit_code":1}
+`
+	t.Run("commits, pushes, and keeps the branch", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+
+		store, state, r := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, nil)
+
+		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
+			t.Errorf("local branch deleted: %v", err)
+		}
+		files, err := gitOut(t, origin, "show", "--name-only", "--format=%s", branch)
+		if err != nil {
+			t.Fatalf("branch missing on origin: %v (%s)", err, files)
+		}
+		if !strings.Contains(files, "wip: klaus finalize salvage "+state.ID) || !strings.Contains(files, "wip.txt") {
+			t.Errorf("origin tip should be the WIP commit with wip.txt, got:\n%s", files)
+		}
+		if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+			t.Errorf("worktree should be removed once the branch is safe, stat err = %v", err)
+		}
+		if state.NeedsAttention == nil || !strings.Contains(*state.NeedsAttention, branch) {
+			t.Errorf("NeedsAttention should name the branch, got %v", state.NeedsAttention)
+		}
+		if len(r.ghCalls) != 0 {
+			t.Errorf("salvage must not touch GitHub, got gh calls %v", r.ghCalls)
+		}
+
+		evts := runEvents(t, store.BaseDir(), state.ID)
+		if _, ok := evts[event.AgentCompleted]; ok {
+			t.Error("agent:completed must not be emitted for a salvaged run")
+		}
+		na, ok := evts[event.AgentNeedsAttention]
+		if !ok {
+			t.Fatalf("expected agent:needs-attention, got %v", evts)
+		}
+		if na["branch"] != branch || na["pushed"] != true || na["reason"] != "session_limit" {
+			t.Errorf("needs-attention data = %v", na)
+		}
+	})
+
+	t.Run("push failure keeps the local branch", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		runGitCmd(t, repo, "remote", "set-url", "origin", origin+"-gone")
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, nil)
+
+		files, err := gitOut(t, repo, "show", "--name-only", "--format=%s", "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("local branch deleted after failed push: %v", err)
+		}
+		if !strings.Contains(files, "wip.txt") {
+			t.Errorf("local branch should carry the WIP commit, got:\n%s", files)
+		}
+		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
+		if na == nil || na["pushed"] != false || na["branch"] != branch {
+			t.Errorf("needs-attention data = %v", na)
+		}
+	})
+
+	t.Run("already-pushed branch (direct-push) is reported, not re-pushed", func(t *testing.T) {
+		_, repo, worktree, branch := setupBareRemote(t)
+		runGitCmd(t, worktree, "add", "-A")
+		runGitCmd(t, worktree, "commit", "-m", "feat: done")
+		runGitCmd(t, worktree, "push", "-u", "origin", branch)
+		cleanLog := `{"type":"result","subtype":"success","result":"Pushed the branch.","total_cost_usd":1,"duration_ms":1000}
+`
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
+		if na == nil || na["pushed"] != true || na["reason"] != "no_pr" || na["branch"] != branch {
+			t.Errorf("needs-attention data = %v", na)
+		}
+		if subj, _ := gitOut(t, repo, "log", "-1", "--format=%s", "origin/"+branch); subj != "feat: done" {
+			t.Errorf("clean tree must not get a WIP commit; origin tip = %q", subj)
+		}
+	})
+}
+
+func TestFinalizeWithPRDeletesBranch(t *testing.T) {
+	_, repo, worktree, branch := setupBareRemote(t)
+	runGitCmd(t, worktree, "add", "-A")
+	runGitCmd(t, worktree, "commit", "-m", "feat: done")
+	runGitCmd(t, worktree, "push", "-u", "origin", branch)
+	prLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/owner/repo/pull/9"}]}}
+{"type":"result","subtype":"success","total_cost_usd":1,"duration_ms":1000}
+`
+	store, state, _ := finalizeRealRepo(t, repo, worktree, branch, prLog, nil)
+
+	if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+		t.Error("local branch should be deleted after a PR run")
+	}
+	if state.NeedsAttention != nil {
+		t.Errorf("NeedsAttention = %q, want nil", *state.NeedsAttention)
+	}
+	evts := runEvents(t, store.BaseDir(), state.ID)
+	if _, ok := evts[event.AgentNeedsAttention]; ok {
+		t.Error("PR run must not emit agent:needs-attention")
+	}
+	if _, ok := evts[event.AgentCompleted]; !ok {
+		t.Error("expected agent:completed")
+	}
+	if _, ok := evts[event.AgentPRCreated]; !ok {
+		t.Error("expected agent:pr-created")
 	}
 }

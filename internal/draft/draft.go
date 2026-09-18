@@ -92,7 +92,8 @@ func HandleBudgetPause(ctx context.Context, r Runner, in PauseInput) (PauseOutpu
 	out := PauseOutput{}
 
 	// Step 1: commit any uncommitted changes.
-	committed, err := commitWIP(ctx, r, in)
+	msg := fmt.Sprintf("WIP from klaus run %s (budget paused)\n\n%s", in.RunID, summarizePrompt(in.Prompt))
+	committed, err := CommitWIP(ctx, r, in.Worktree, msg)
 	if err != nil {
 		return out, fmt.Errorf("committing WIP: %w", err)
 	}
@@ -172,20 +173,22 @@ func HasBudgetPausedLabel(ctx context.Context, r Runner, workdir, repo, prNumber
 
 // ── internal helpers ────────────────────────────────────────────────────
 
-func commitWIP(ctx context.Context, r Runner, in PauseInput) (bool, error) {
+// CommitWIP stages and commits every change in worktree with msg. Returns
+// false without committing when the tree is clean. Hooks are skipped so a
+// failing linter can't block salvaging work.
+func CommitWIP(ctx context.Context, r Runner, worktree, msg string) (bool, error) {
 	// git status --porcelain returns empty if clean.
-	status, err := r.Git(ctx, in.Worktree, "status", "--porcelain")
+	status, err := r.Git(ctx, worktree, "status", "--porcelain")
 	if err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(status) == "" {
 		return false, nil
 	}
-	if _, err := r.Git(ctx, in.Worktree, "add", "-A"); err != nil {
+	if _, err := r.Git(ctx, worktree, "add", "-A"); err != nil {
 		return false, err
 	}
-	msg := fmt.Sprintf("WIP from klaus run %s (budget paused)\n\n%s", in.RunID, summarizePrompt(in.Prompt))
-	if _, err := r.Git(ctx, in.Worktree, "commit", "-m", msg); err != nil {
+	if _, err := r.Git(ctx, worktree, "commit", "--no-verify", "-m", msg); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -62,6 +62,14 @@ func (c *ExecClient) CommitsBehindUpstream(ctx context.Context, repoDir string) 
 	return CommitsBehindUpstream(ctx, repoDir)
 }
 
+func (c *ExecClient) CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error) {
+	return CommitsAhead(ctx, repoDir, base, ref)
+}
+
+func (c *ExecClient) UnpushedCommits(ctx context.Context, repoDir, branch string) (int, error) {
+	return UnpushedCommits(ctx, repoDir, branch)
+}
+
 func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
 	return EnsureDataRef(ctx, repoDir, dataRef)
 }

@@ -111,6 +111,9 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	if s.MergedAt != nil {
 		return "merged"
 	}
+	if s.NeedsAttention != nil {
+		return "needs-attention"
+	}
 	if s.PRURL != nil {
 		return "pr-created"
 	}

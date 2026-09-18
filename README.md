@@ -209,6 +209,17 @@ klaus launch --pr 42 --replay-threshold-kb 500 "..."  # raise the per-launch thr
 
 To abandon the work, close the draft PR. To redirect, push manual commits to its branch.
 
+### Runs that end without a PR
+
+When a run finishes without a PR (for example a Claude session-limit stop) or crashes, `_finalize` salvages the worktree instead of discarding it:
+
+1. Commits any uncommitted changes (`wip: klaus finalize salvage <id>`).
+2. Pushes the branch to `origin` (plain `git push -u`, never forced). Push failures are logged; nothing is deleted. Branches of runs that already have a PR are not pushed.
+3. Keeps the local branch and removes the worktree (the worktree is kept if the WIP commit failed). Finalize never deletes any branch with commits not on `origin`.
+4. Emits `agent:needs-attention` with `branch`, `pushed`, and `reason` (`no_pr`, `session_limit`, or the crash reason) instead of `agent:completed`. `klaus status` shows `needs-attention`; the dashboard shows `ATTN`.
+
+Runs that ended without a PR and left no commits beyond the default branch still finish as `agent:completed`.
+
 There is no subcommand named `klaus resume` or `klaus finalize` — resuming happens through flags on `klaus launch`, and `_finalize` handles the WIP commit automatically:
 
 - `klaus launch --pr <num> "..."` resumes a budget-paused PR (WIP commit + trajectory replay, as above).

@@ -42,6 +42,7 @@ type State struct {
 	ClaudeSessionID  *string  `json:"claude_session_id,omitempty"` // Claude conversation UUID for --resume
 	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
 	FailureReason    *string  `json:"failure_reason,omitempty"`    // set when the agent crashed (e.g. error_during_execution); suppresses success events and blocks resume chaining
+	NeedsAttention   *string  `json:"needs_attention,omitempty"`   // set when finalize salvaged unfinished work (no PR, or crash); names the preserved branch
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 }

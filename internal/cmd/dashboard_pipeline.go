@@ -28,7 +28,7 @@ func markRunFailed(store run.StateStore, s *run.State) {
 	s.CostUSD = &cost
 	s.DurationMS = &dur
 	s.TmuxPane = nil
-	cleanupWorktree(context.Background(), store, git.NewExecClient(), s)
+	cleanupWorktree(context.Background(), store, git.NewExecClient(), s, false)
 	if err := store.Save(s); err != nil {
 		slog.Warn("failed to save stale run state", "id", s.ID, "err", err)
 	}
@@ -41,6 +41,9 @@ func (m *dashboardModel) isAgentRunning(s *run.State) bool {
 
 // agentStatusLabel returns a display label for a non-running agent.
 func agentStatusLabel(s *run.State) string {
+	if s.NeedsAttention != nil {
+		return "ATTN"
+	}
 	if s.PRURL != nil {
 		return "PR"
 	}
