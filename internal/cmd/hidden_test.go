@@ -287,18 +287,119 @@ func TestExtractPRURL(t *testing.T) {
 	}
 }
 
+func TestIsAllowedPRURL(t *testing.T) {
+	klausTarget := "patflynn/klaus"
+	customTarget := "acme/corp"
+	bareTarget := "klaus"
+
+	tests := []struct {
+		name      string
+		state     *run.State
+		candidate string
+		want      bool
+	}{
+		{
+			name:      "matches TargetRepo with slash",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/patflynn/klaus/pull/123",
+			want:      true,
+		},
+		{
+			name:      "case-insensitive TargetRepo match",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/PatFlynn/Klaus/pull/123",
+			want:      true,
+		},
+		{
+			name:      "mismatched TargetRepo with slash",
+			state:     &run.State{TargetRepo: &customTarget},
+			candidate: "https://github.com/patflynn/klaus/pull/123",
+			want:      false,
+		},
+		{
+			name:      "bare TargetRepo matches clone remote",
+			state:     &run.State{TargetRepo: &bareTarget},
+			candidate: "https://github.com/patflynn/klaus/pull/123",
+			want:      true,
+		},
+		{
+			name:      "nil TargetRepo matches clone remote",
+			state:     &run.State{},
+			candidate: "https://github.com/patflynn/klaus/pull/123",
+			want:      true,
+		},
+		{
+			name:      "nil TargetRepo rejects foreign repo",
+			state:     &run.State{},
+			candidate: "https://github.com/other/repo/pull/123",
+			want:      false,
+		},
+		{
+			name:      "rejects placeholder owner/repo",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/owner/repo/pull/123",
+			want:      false,
+		},
+		{
+			name:      "rejects placeholder OWNER/REPO",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/OWNER/REPO/pull/123",
+			want:      false,
+		},
+		{
+			name:      "rejects placeholder <owner>/<repo>",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/<owner>/<repo>/pull/123",
+			want:      false,
+		},
+		{
+			name:      "rejects placeholder org/repo",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/org/repo/pull/123",
+			want:      false,
+		},
+		{
+			name:      "rejects placeholder user/repo",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/user/repo/pull/123",
+			want:      false,
+		},
+		{
+			name:      "empty candidate",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "",
+			want:      false,
+		},
+		{
+			name:      "malformed candidate without repo",
+			state:     &run.State{TargetRepo: &klausTarget},
+			candidate: "https://github.com/pull/123",
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAllowedPRURL(tt.state, tt.candidate)
+			if got != tt.want {
+				t.Errorf("isAllowedPRURL(%q) = %v, want %v", tt.candidate, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFinalizeFromLog(t *testing.T) {
 	t.Run("extracts PR URL from assistant text", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"I'll create the PR now."}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Created PR at https://github.com/owner/repo/pull/42"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Created PR at https://github.com/patflynn/klaus/pull/42"}]}}
 {"type":"result","total_cost_usd":1.5,"duration_ms":30000}
 `
 		state, store := setupFinalizeTest(t, logContent)
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/42")
 		assertCost(t, state, 1.5)
 		assertDuration(t, state, 30000)
 	})
@@ -306,7 +407,7 @@ func TestFinalizeFromLog(t *testing.T) {
 	t.Run("extracts PR URL from tool_result event", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"gh pr create --title test"}}]}}
-{"type":"tool_result","content":"https://github.com/owner/repo/pull/99\n"}
+{"type":"tool_result","content":"https://github.com/patflynn/klaus/pull/99\n"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Done! I created the PR."}]}}
 {"type":"result","total_cost_usd":2.0,"duration_ms":45000}
 `
@@ -314,44 +415,44 @@ func TestFinalizeFromLog(t *testing.T) {
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/99")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/99")
 	})
 
 	t.Run("extracts PR URL from user message with tool_result content", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"https://github.com/owner/repo/pull/7\n"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"https://github.com/patflynn/klaus/pull/7\n"}]}}
 {"type":"result","total_cost_usd":1.0,"duration_ms":10000}
 `
 		state, store := setupFinalizeTest(t, logContent)
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/7")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/7")
 	})
 
 	t.Run("handles markdown link in assistant text", func(t *testing.T) {
-		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Created [PR #42](https://github.com/owner/repo/pull/42) for review."}]}}
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Created [PR #42](https://github.com/patflynn/klaus/pull/42) for review."}]}}
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/42")
 	})
 
 	t.Run("survives malformed JSONL lines", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init"}
 not valid json at all
 {"truncated":
-{"type":"assistant","message":{"content":[{"type":"text","text":"PR: https://github.com/owner/repo/pull/5"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"PR: https://github.com/patflynn/klaus/pull/5"}]}}
 {"type":"result","total_cost_usd":0.5,"duration_ms":2000}
 `
 		state, store := setupFinalizeTest(t, logContent)
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/5")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/5")
 		assertCost(t, state, 0.5)
 	})
 
@@ -369,15 +470,15 @@ not valid json at all
 	})
 
 	t.Run("last PR URL wins", func(t *testing.T) {
-		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"First PR: https://github.com/owner/repo/pull/1"}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Recreated PR: https://github.com/owner/repo/pull/2"}]}}
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"First PR: https://github.com/patflynn/klaus/pull/1"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Recreated PR: https://github.com/patflynn/klaus/pull/2"}]}}
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/2")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/2")
 	})
 
 	t.Run("preserves PRURL set before finalization", func(t *testing.T) {
@@ -390,13 +491,13 @@ not valid json at all
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
-		existing := "https://github.com/owner/repo/pull/42"
+		existing := "https://github.com/patflynn/klaus/pull/42"
 		state.PRURL = &existing
 
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/42")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/42")
 	})
 
 	t.Run("marks FailureReason on error_during_execution result", func(t *testing.T) {
@@ -441,7 +542,7 @@ not valid json at all
 	})
 
 	t.Run("successful result leaves FailureReason nil and records cost", func(t *testing.T) {
-		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Done: https://github.com/owner/repo/pull/12"}]}}
+		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Done: https://github.com/patflynn/klaus/pull/12"}]}}
 {"type":"result","subtype":"success","is_error":false,"num_turns":7,"total_cost_usd":1.25,"duration_ms":20000}
 `
 		state, store := setupFinalizeTest(t, logContent)
@@ -453,14 +554,14 @@ not valid json at all
 		}
 		assertCost(t, state, 1.25)
 		assertDuration(t, state, 20000)
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/12")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/12")
 	})
 
 	t.Run("extracts PRURL from log when not set before finalization", func(t *testing.T) {
 		// Simulates new-PR mode: state.PRURL is nil until the agent runs
 		// `gh pr create`. Regex extraction fills it in from the log.
 		logContent := `{"type":"assistant","message":{"content":[{"type":"text","text":"Creating PR now."}]}}
-{"type":"tool_result","content":"https://github.com/owner/repo/pull/77\n"}
+{"type":"tool_result","content":"https://github.com/patflynn/klaus/pull/77\n"}
 {"type":"result","total_cost_usd":1.0,"duration_ms":5000}
 `
 		state, store := setupFinalizeTest(t, logContent)
@@ -471,7 +572,57 @@ not valid json at all
 		if _, err := finalizeFromLog(store, state); err != nil {
 			t.Fatalf("finalizeFromLog() error: %v", err)
 		}
-		assertPRURL(t, state, "https://github.com/owner/repo/pull/77")
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/77")
+	})
+
+	t.Run("rejects placeholder PR URL in assistant text", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"You can create a PR like https://github.com/owner/repo/pull/123 for review."}]}}
+{"type":"result","total_cost_usd":0.5,"duration_ms":10000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		if _, err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		if state.PRURL != nil {
+			t.Errorf("expected nil PRURL for placeholder URL, got %q", *state.PRURL)
+		}
+	})
+
+	t.Run("prefers tool_result matching TargetRepo over assistant text from foreign repo", func(t *testing.T) {
+		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Check https://github.com/someone-else/other/pull/9 for example"}]}}
+{"type":"tool_result","content":"https://github.com/patflynn/klaus/pull/310\n"}
+{"type":"result","total_cost_usd":1.0,"duration_ms":15000}
+`
+		state, store := setupFinalizeTest(t, logContent)
+		target := "patflynn/klaus"
+		state.TargetRepo = &target
+		if _, err := finalizeFromLog(store, state); err != nil {
+			t.Fatalf("finalizeFromLog() error: %v", err)
+		}
+		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/310")
+	})
+
+	t.Run("rejects placeholders in tool_result", func(t *testing.T) {
+		for _, placeholder := range []string{
+			"https://github.com/owner/repo/pull/123",
+			"https://github.com/OWNER/REPO/pull/123",
+			"https://github.com/<owner>/<repo>/pull/123",
+			"https://github.com/org/repo/pull/123",
+			"https://github.com/user/repo/pull/123",
+		} {
+			logContent := `{"type":"tool_result","content":"` + placeholder + `\n"}
+{"type":"result","total_cost_usd":0.5,"duration_ms":5000}
+`
+			state, store := setupFinalizeTest(t, logContent)
+			if _, err := finalizeFromLog(store, state); err != nil {
+				t.Fatalf("finalizeFromLog() error: %v", err)
+			}
+			if state.PRURL != nil {
+				t.Errorf("expected nil PRURL for placeholder %q, got %q", placeholder, *state.PRURL)
+			}
+		}
 	})
 }
 

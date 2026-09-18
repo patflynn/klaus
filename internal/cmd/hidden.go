@@ -17,6 +17,7 @@ import (
 	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/scan"
 	"github.com/patflynn/klaus/internal/stream"
@@ -393,6 +394,8 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 
 	var resultSubtype string
 	sawResult := false
+	var exactPRURL string
+	var assistantPRURL string
 	for scanner.Scan() {
 		line := stream.NormalizeLine(scanner.Bytes())
 		if len(line) == 0 {
@@ -440,9 +443,11 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			}
 		case "result":
 			sawResult = true
-			if ev.Content != "" && existingPRURL == "" {
-				if url := extractPRURL(ev.Content); url != "" {
-					state.PRURL = &url
+			if ev.Content != "" {
+				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
+					if isAllowedPRURL(state, url) {
+						exactPRURL = url
+					}
 				}
 			}
 			if ev.TotalCostUSD > 0 {
@@ -486,29 +491,39 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			if ev.Message != nil {
 				for _, block := range ev.Message.Content {
 					if block.Type == "text" {
-						if url := extractPRURL(block.Text); url != "" {
-							state.PRURL = &url
+						text := block.Text
+						if text == "" {
+							text = block.Content
+						}
+						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
+							if isAllowedPRURL(state, url) {
+								assistantPRURL = url
+							}
 						}
 					}
 				}
 			}
-		default:
-			// Handle tool_result and other event types that may
-			// contain the PR URL (e.g. gh pr create output).
+		case "tool_result":
 			if ev.Content != "" {
-				if url := extractPRURL(ev.Content); url != "" {
-					state.PRURL = &url
+				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
+					if isAllowedPRURL(state, url) {
+						exactPRURL = url
+					}
 				}
 			}
+			fallthrough
+		default:
 			if ev.Message != nil {
 				for _, block := range ev.Message.Content {
-					text := block.Text
-					if text == "" {
-						text = block.Content
-					}
-					if text != "" {
-						if url := extractPRURL(text); url != "" {
-							state.PRURL = &url
+					if block.Type == "tool_result" || ev.Type == "tool_result" {
+						text := block.Content
+						if text == "" {
+							text = block.Text
+						}
+						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
+							if isAllowedPRURL(state, url) {
+								exactPRURL = url
+							}
 						}
 					}
 				}
@@ -518,6 +533,10 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 
 	if existingPRURL != "" {
 		state.PRURL = &existingPRURL
+	} else if exactPRURL != "" {
+		state.PRURL = &exactPRURL
+	} else if assistantPRURL != "" {
+		state.PRURL = &assistantPRURL
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -548,6 +567,31 @@ var prURLExtractRegex = regexp.MustCompile(`https?://github\.com/[^\s"<>\]]+/pul
 
 func extractPRURL(text string) string {
 	return prURLExtractRegex.FindString(text)
+}
+
+// isAllowedPRURL checks candidate against state TargetRepo or clone origin remote.
+func isAllowedPRURL(state *run.State, candidateURL string) bool {
+	slug := github.OwnerRepoFromPRURL(candidateURL)
+	if slug == "" {
+		return false
+	}
+	switch strings.ToLower(slug) {
+	case "owner/repo", "<owner>/<repo>", "org/repo", "user/repo":
+		return false
+	}
+	var target string
+	if state != nil && state.TargetRepo != nil && strings.Contains(*state.TargetRepo, "/") {
+		target = git.CleanGitHubRef(*state.TargetRepo)
+	} else {
+		gitRoot := ""
+		if state != nil && state.CloneDir != nil {
+			gitRoot = *state.CloneDir
+		} else {
+			gitRoot, _ = git.RepoRoot()
+		}
+		target = repoSlugForDir(gitRoot)
+	}
+	return target != "" && strings.EqualFold(slug, target)
 }
 
 var prURLRegex = regexp.MustCompile(`/pull/(\d+)`)
