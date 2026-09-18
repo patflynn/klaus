@@ -1,6 +1,7 @@
 package consult
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -82,39 +83,129 @@ func (s Store) Save(name string, t *Thread) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.Dir, 0700); err != nil {
+	return writeAtomic(path, append(data, '\n'))
+}
+
+type Turn struct {
+	Number           int          `json:"turn"`
+	Status           string       `json:"status"`
+	StartedAt        time.Time    `json:"started_at"`
+	FinishedAt       *time.Time   `json:"finished_at,omitempty"`
+	Backend          backend.Kind `json:"backend"`
+	Model            string       `json:"model"`
+	ResumeID         string       `json:"resume_id"`
+	RepoRevision     string       `json:"repo_revision"`
+	SessionIDSource  string       `json:"session_id_source"`
+	BackendSessionID string       `json:"backend_session_id,omitempty"`
+	Prompt           string       `json:"prompt"`
+	Answer           string       `json:"answer,omitempty"`
+	RawOutput        string       `json:"raw_output,omitempty"`
+	prior, pending   []byte
+}
+
+// BeginTurn persists intent before execution; callers hold the thread lock.
+func (s Store) BeginTurn(name string, t *Thread, prompt, revision string) (*Turn, error) {
+	path, err := s.path(name, ".log")
+	if err != nil {
+		return nil, err
+	}
+	prior, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if len(prior) > 0 && prior[len(prior)-1] != '\n' {
+		prior = append(prior, '\n')
+	}
+	number := t.Turns + 1
+	for _, line := range bytes.Split(prior, []byte("\n")) {
+		var previous Turn
+		if json.Unmarshal(line, &previous) == nil && previous.Number >= number {
+			number = previous.Number + 1
+		}
+	}
+	turn := &Turn{Number: number, Status: "pending", StartedAt: time.Now().UTC(), Backend: t.Backend, Model: t.Model, ResumeID: t.BackendSessionID, RepoRevision: revision, Prompt: prompt, prior: prior}
+	data, err := json.Marshal(turn)
+	if err != nil {
+		return nil, err
+	}
+	turn.pending = append(data, '\n')
+	if err := writeAtomic(path, append(bytes.Clone(prior), turn.pending...)); err != nil {
+		return nil, err
+	}
+	return turn, nil
+}
+
+func (s Store) FinishTurn(name string, turn *Turn, result Result, turnErr error) error {
+	path, err := s.path(name, ".log")
+	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(s.Dir, ".thread-*")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, append(bytes.Clone(turn.prior), turn.pending...)) {
+		return fmt.Errorf("transcript changed while turn %d was running", turn.Number)
+	}
+	turn.Status = "ok"
+	if turnErr != nil {
+		turn.Status = "error: " + turnErr.Error()
+	}
+	now := time.Now().UTC()
+	turn.FinishedAt = &now
+	turn.Answer = result.Answer
+	turn.SessionIDSource = result.SessionIDSource
+	turn.BackendSessionID = result.SessionID
+	data, err := json.Marshal(turn)
+	if err != nil {
+		return err
+	}
+	return writeAtomic(path, append(bytes.Clone(turn.prior), append(data, '\n')...))
+}
+
+func (s Store) SaveRaw(name string, number int, result Result) (string, error) {
+	path, err := s.path(name, fmt.Sprintf(".%d.raw", number))
+	if err != nil {
+		return "", err
+	}
+	raw := "### stdout\n" + result.Answer + "\n### stderr\n" + result.Stderr
+	if result.DiagnosticLog != "" {
+		raw += "\n### diagnostic-log\n" + result.DiagnosticLog
+	}
+	err = writeAtomic(path, []byte(raw))
+	return path, err
+}
+
+func writeAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".consult-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
-	if _, err := f.Write(append(data, '\n')); err != nil {
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
-}
-
-func (s Store) Append(name, prompt, answer string) error {
-	path, err := s.path(name, ".log")
+	if err := os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(f, "## %s\n\n### Prompt\n%s\n\n### Answer\n%s\n\n", time.Now().UTC().Format(time.RFC3339), prompt, answer)
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	return closeErr
+	defer d.Close()
+	return d.Sync()
 }
 
 func (s Store) List() (map[string]*Thread, error) {

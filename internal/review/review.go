@@ -116,10 +116,13 @@ func runReviewer(ctx context.Context, kind backend.Kind, model, systemPrompt, us
 		}
 		defer cleanup()
 	}
-	argv := backend.OneShot(kind, backend.OneShotOptions{
+	argv, err := backend.OneShot(kind, backend.OneShotOptions{
 		Prompt: userPrompt, SystemPrompt: systemPrompt, Model: model,
 		LastMessage: lastMessage, AgyAgent: agyAgent,
 	})
+	if err != nil {
+		return "", err
+	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	stdin := userPrompt
 	if kind == backend.Codex {

@@ -1,12 +1,14 @@
 package backend
 
+import "fmt"
+
 type OneShotOptions struct {
 	Prompt, SystemPrompt, Model, Effort, ResumeID, SessionID, LastMessage, AgyAgent, DiagnosticLog string
 	Threaded                                                                                       bool
 }
 
 // OneShot emits text; Claude/Codex read stdin, agy takes a prompt argument.
-func OneShot(k Kind, o OneShotOptions) []string {
+func OneShot(k Kind, o OneShotOptions) ([]string, error) {
 	var a []string
 	switch k {
 	case Claude:
@@ -35,7 +37,7 @@ func OneShot(k Kind, o OneShotOptions) []string {
 		}
 	case Agy:
 		if o.AgyAgent == "" {
-			panic("agy OneShot requires PrepareAgyReadOnly")
+			return nil, fmt.Errorf("agy OneShot requires a prepared read-only agent")
 		}
 		a = []string{"agy", "--add-dir", ".", "--output-format", "text", "--mode", "plan", "--sandbox", "--agent", o.AgyAgent}
 		if o.ResumeID != "" {
@@ -44,13 +46,15 @@ func OneShot(k Kind, o OneShotOptions) []string {
 		if o.DiagnosticLog != "" {
 			a = append(a, "--log-file", o.DiagnosticLog)
 		}
+	default:
+		return nil, fmt.Errorf("unsupported one-shot backend %q", k)
 	}
 	a = k.modelArgs(a, Options{Model: o.Model, Effort: o.Effort})
 	if k == Agy {
-		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt)
+		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt), nil
 	}
 	if k == Codex {
-		return append(a, "-")
+		return append(a, "-"), nil
 	}
-	return a
+	return a, nil
 }

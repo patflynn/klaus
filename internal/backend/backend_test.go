@@ -101,7 +101,10 @@ func TestOneShot(t *testing.T) {
 				if mode == "resume" {
 					opts.ResumeID = "prior-id"
 				}
-				argv := OneShot(kind, opts)
+				argv, err := OneShot(kind, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
 				joined := strings.Join(argv, "\n")
 				require := func(parts ...string) {
 					t.Helper()
@@ -149,6 +152,14 @@ func TestOneShot(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestOneShotMisconfiguration(t *testing.T) {
+	for _, kind := range []Kind{Agy, Kind("unknown")} {
+		if argv, err := OneShot(kind, OneShotOptions{}); err == nil || argv != nil {
+			t.Fatalf("%s: argv=%v, err=%v", kind, argv, err)
 		}
 	}
 }

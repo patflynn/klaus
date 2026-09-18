@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +41,9 @@ these threads. One-shot questions also work without a Klaus session.
 relative to the invoking directory. --dir selects the partner's workspace;
 --repo selects a registered local project. --panel queries all installed model
 families other than the caller concurrently and groups their answers by backend.
-Panel answers are buffered to keep each response together.`,
+Panel answers are buffered to keep each response together. Each backend has a
+10-minute deadline; use --timeout to change it. Timed-out members report
+"timed out" while other members finish.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runConsult,
 	}
@@ -54,6 +57,7 @@ Panel answers are buffered to keep each response together.`,
 	f.String("repo", "", "Registered local project name to consult")
 	f.StringArray("file", nil, "Inline a file in the prompt; repeatable, 200KB total")
 	f.String("prompt-file", "", "Read the question from a file instead of a positional argument")
+	f.Duration("timeout", 10*time.Minute, "Deadline per backend call (positive duration, e.g. 30s or 10m)")
 	f.Bool("panel", false, "Ask all installed families other than the caller concurrently")
 	f.Bool("list", false, "List stored threads with backend, turn count, and last-used time")
 	c.MarkFlagsMutuallyExclusive("dir", "repo")
@@ -102,6 +106,10 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%d\t%s\n", n, t.Backend, t.Turns, t.LastUsed.Format(time.RFC3339))
 		}
 		return nil
+	}
+	timeout, _ := cmd.Flags().GetDuration("timeout")
+	if timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
 	}
 	prompt, err := resolvePrompt(args, str("prompt-file"))
 	if err != nil {
@@ -236,30 +244,49 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		threads = append(threads, t)
 	}
 	ask := func(t *consult.Thread, out, errOut io.Writer) error {
+		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
+		defer cancel()
 		start := time.Now()
 		id := ""
 		if name != "" && t.Backend == backend.Claude && t.BackendSessionID == "" {
 			id = genUUIDv4()
 		}
-		answer, id, askErr := consult.Ask(cmd.Context(), t, prompt, name != "", id, out, errOut)
+		var turn *consult.Turn
+		if name != "" {
+			revision, _ := exec.CommandContext(callCtx, "git", "-C", t.Dir, "rev-parse", "--short", "HEAD").Output()
+			var err error
+			turn, err = store.BeginTurn(name, t, prompt, strings.TrimSpace(string(revision)))
+			if err != nil {
+				return err
+			}
+		}
+		result, askErr := consult.Ask(callCtx, t, prompt, name != "", id, out, errOut)
+		if name != "" {
+			if askErr != nil {
+				path, err := store.SaveRaw(name, turn.Number, result)
+				if err != nil {
+					askErr = errors.Join(askErr, fmt.Errorf("saving raw output %s: %w", path, err))
+				} else {
+					turn.RawOutput = path
+					askErr = fmt.Errorf("%w; raw output: %s", askErr, path)
+				}
+			}
+			if result.SessionID != "" && (askErr == nil || result.SessionIDSource != "assigned") {
+				t.BackendSessionID = result.SessionID
+				if askErr == nil {
+					t.Turns++
+				}
+				t.LastUsed = time.Now().UTC()
+				askErr = errors.Join(askErr, store.Save(name, t))
+			}
+			askErr = errors.Join(askErr, store.FinishTurn(name, turn, result, askErr))
+		}
 		if baseDir != "" {
 			emitEvent(baseDir, "", event.ConsultCompleted, map[string]interface{}{"backend": t.Backend, "role": t.Role, "thread": name, "duration_ms": time.Since(start).Milliseconds(), "success": askErr == nil})
 		}
-		if name != "" {
-			if err := store.Append(name, prompt, answer); err != nil {
-				return errors.Join(askErr, err)
-			}
-			if askErr == nil {
-				t.BackendSessionID = id
-				t.Turns++
-				t.LastUsed = time.Now().UTC()
-				if err := store.Save(name, t); err != nil {
-					return err
-				}
-			}
-		}
 		return askErr
 	}
+
 	if !panel {
 		return ask(threads[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}
@@ -282,6 +309,9 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		model := r.thread.Model
 		if model == "" {
 			model = "default"
+		}
+		if errors.Is(r.err, context.DeadlineExceeded) {
+			r.answer = "timed out"
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "## %s (%s)\n\n%s\n", r.thread.Backend, model, r.answer)
 		if r.stderr != "" {

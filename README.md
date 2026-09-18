@@ -188,13 +188,25 @@ question via `--prompt-file`. File paths resolve from the invoking directory.
 Keep a `--thread NAME` per topic. Threads retain their backend, model, effort,
 role, and workspace; incompatible overrides are rejected. Metadata and readable
 transcripts live in `~/.klaus/sessions/<session-id>/consults/NAME.{json,log}`.
+New transcript turns are JSON lines, persisted as `pending` before the backend
+starts and atomically updated to `ok` or `error: <message>`. Each records backend,
+model, resume ID, repository revision, and session-ID source (`stderr`,
+`stdout-json`, `diagnostic-log`, or `text`; `assigned`/`resume` identify known IDs).
+An interrupted turn stays `pending`; legacy transcript text is retained. Failed
+turns preserve stdout/stderr in `NAME.<turn>.raw`, and extraction errors report
+the paths tried and raw-output filename. Turn numbers include failed attempts;
+`--list` counts successful turns.
+
 `klaus consult --list` shows backend, turns, and last-used time. Outside a pane,
 threads use the most recent Klaus session; one-shot questions need no session.
 
 `--panel` queries every installed family other than the caller concurrently and
 prints responses as they finish under backend/model headings. Responses are
 buffered to avoid interleaving; a failed member makes the command fail after
-printing the other answers. Panel mode cannot be combined with `--thread` or
+printing the other answers. `--timeout` sets a positive per-backend deadline
+(default `10m`, e.g. `--timeout 30s`); timed-out panel members print `timed out`
+while the others finish. The deadline also applies to single-backend consults.
+Panel mode cannot be combined with `--thread` or
 `--backend`. Consults emit `consult:completed` events for `klaus watch` and never
 create agent run state.
 
