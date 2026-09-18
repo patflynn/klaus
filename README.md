@@ -135,7 +135,8 @@ operator, never approvals**; klaus never posts `APPROVE` or `REQUEST_CHANGES`,
 and approval stays with `klaus approve`. Posted inline findings feed the normal
 trusted-review fix loop (see [docs/PIPELINE.md](docs/PIPELINE.md#4-review--approval)).
 Posting is refused when the same reviewer already reviewed the PR's head
-commit, or when the PR already has `max_rounds` cross-reviews.
+commit, or when the PR already has `max_rounds` cross-reviews posted from your
+gh account.
 
 The coordinator prompt describes `klaus watch`. Claude can attach its Monitor
 tool; other backends use their own background tools or `klaus status` and

@@ -117,6 +117,7 @@ func TestRunPRReview(t *testing.T) {
 		wantErr error
 	}{
 		{name: "posts one COMMENT review", reviews: []string{"LGTM", other}},
+		{name: "ignores markers copied by other users", reviews: []string{other, "drive-by:" + other, "drive-by:" + Marker{Backend: "codex", SHA: sha}.String()}},
 		{name: "same backend already reviewed head", reviews: []string{Marker{Backend: "codex", SHA: sha}.String()}, wantErr: ErrAlreadyReviewed},
 		{name: "round limit", reviews: []string{other, Marker{Backend: "agy", SHA: "1111111"}.String()}, wantErr: ErrMaxRounds},
 	}
@@ -128,9 +129,13 @@ func TestRunPRReview(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			var reviews []map[string]string
+			var reviews []map[string]any
 			for _, b := range tt.reviews {
-				reviews = append(reviews, map[string]string{"body": b})
+				login := "operator"
+				if rest, ok := strings.CutPrefix(b, "drive-by:"); ok {
+					login, b = "drive-by", rest
+				}
+				reviews = append(reviews, map[string]any{"body": b, "user": map[string]string{"login": login}})
 			}
 			rj, _ := json.Marshal(reviews)
 			write("reviews.json", string(rj), 0o644)
@@ -140,6 +145,7 @@ func TestRunPRReview(t *testing.T) {
 case "$1 $2" in
 "pr diff") cat "$FAKE_DIR/diff" ;;
 "api repos/o/r/pulls/7") cat "$FAKE_DIR/pr.json" ;;
+"api user") echo operator ;;
 "api repos/o/r/pulls/7/reviews?per_page=100") cat "$FAKE_DIR/reviews.json" ;;
 "api repos/o/r/pulls/7/reviews") cat > "$FAKE_DIR/posted.json"; echo '{"html_url":"https://github.com/o/r/pull/7#pullrequestreview-1"}' ;;
 *) echo "unexpected gh $*" >&2; exit 1 ;;

@@ -76,13 +76,9 @@ type prInfo struct {
 // A failed post still returns the result alongside the error.
 func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*ReviewResult, error) {
 	gh := github.NewGHCLIClient(repo)
-	out, err := gh.APIGet(ctx, "repos/"+repo+"/pulls/"+prNumber)
+	pr, err := fetchPR(ctx, gh, repo, prNumber)
 	if err != nil {
-		return nil, fmt.Errorf("fetching PR #%s: %w", prNumber, err)
-	}
-	var pr prInfo
-	if err := json.Unmarshal(out, &pr); err != nil {
-		return nil, fmt.Errorf("parsing PR #%s: %w", prNumber, err)
+		return nil, err
 	}
 	if opts.Post {
 		if err := checkRounds(ctx, gh, repo, prNumber, pr.Head.SHA, opts); err != nil {
@@ -92,6 +88,13 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 	diff, err := gh.PRDiff(ctx, prNumber)
 	if err != nil {
 		return nil, err
+	}
+	if opts.Post { // inline lines must belong to commit_id
+		if again, err := fetchPR(ctx, gh, repo, prNumber); err != nil {
+			return nil, err
+		} else if again.Head.SHA != pr.Head.SHA {
+			return nil, fmt.Errorf("PR #%s head moved from %.7s to %.7s while fetching its diff; retry", prNumber, pr.Head.SHA, again.Head.SHA)
+		}
 	}
 	if strings.TrimSpace(diff) == "" {
 		return &ReviewResult{Summary: "No changes to review.", HeadSHA: pr.Head.SHA}, nil
@@ -128,6 +131,18 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 	return result, nil
 }
 
+func fetchPR(ctx context.Context, gh *github.GHCLIClient, repo, prNumber string) (*prInfo, error) {
+	out, err := gh.APIGet(ctx, "repos/"+repo+"/pulls/"+prNumber)
+	if err != nil {
+		return nil, fmt.Errorf("fetching PR #%s: %w", prNumber, err)
+	}
+	var pr prInfo
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return nil, fmt.Errorf("parsing PR #%s: %w", prNumber, err)
+	}
+	return &pr, nil
+}
+
 // checkRounds refuses a post that would repeat this backend on the same head or exceed opts.MaxRounds, so review → fix → review cannot spin.
 func checkRounds(ctx context.Context, gh *github.GHCLIClient, repo, prNumber, sha string, opts PROptions) error {
 	max := opts.MaxRounds
@@ -140,14 +155,21 @@ func checkRounds(ctx context.Context, gh *github.GHCLIClient, repo, prNumber, sh
 	}
 	var reviews []struct {
 		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
 	}
 	if err := json.Unmarshal(out, &reviews); err != nil {
 		return fmt.Errorf("parsing reviews on PR #%s: %w", prNumber, err)
 	}
+	operator, err := gh.GetAuthenticatedUser(ctx)
+	if err != nil {
+		return err
+	}
 	rounds := 0
 	for _, r := range reviews {
 		m, ok := ParseMarker(r.Body)
-		if !ok {
+		if !ok || r.User.Login != operator { // others' copied markers neither block nor count
 			continue
 		}
 		if m.SHA == sha && m.Backend == string(opts.Backend) {
