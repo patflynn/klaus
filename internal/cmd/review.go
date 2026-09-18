@@ -25,12 +25,12 @@ The PR author's backend comes from the klaus run that opened the PR (claude when
 no run is found). The reviewer is --backend, else backends.<author>.review_backend,
 else the first cross_review.order entry that is not the author and whose CLI is
 on PATH. klaus refuses to review a PR with its own family unless you pass both
---backend and --allow-same-family. agy cannot review yet: it has no read-only
-mode (pending #307), so it is skipped in cross_review.order and refused otherwise.
+--backend and --allow-same-family.
 
 The reviewer sees only the diff (gh pr diff) plus the PR title and description,
 and runs read-only in an empty temp directory (claude: Read/Grep/Glob tools
-only; codex: read-only sandbox, no user config); no checkout is needed.
+only; codex: read-only sandbox, no user config; agy: temporary read-only agent);
+no checkout is needed.
 
 With --post (default: cross_review.post), findings are submitted as ONE GitHub
 review with event COMMENT: findings on diff lines become inline comments, the
@@ -88,9 +88,6 @@ Examples:
 		var model string
 		if backendFlag != "" {
 			if reviewer, err = backend.Parse(backendFlag); err != nil {
-				return err
-			}
-			if err := review.CheckReviewer(reviewer); err != nil {
 				return err
 			}
 			model = review.ReviewModel(reviewer, cfg)
@@ -194,7 +191,7 @@ func printPRReview(w io.Writer, r *review.ReviewResult) {
 
 func init() {
 	reviewCmd.Flags().String("repo", "", "Target repo (owner/repo or registered project) for a bare PR number")
-	reviewCmd.Flags().String("backend", "", "Reviewer backend: claude or codex; agy pending #307 (default: cross-review choice)")
+	reviewCmd.Flags().String("backend", "", "Reviewer backend: claude, codex, or agy (default: cross-review choice)")
 	reviewCmd.Flags().String("model", "", "Reviewer model (default: backends.<reviewer>.review_model)")
 	reviewCmd.Flags().Bool("post", false, "Submit findings as one COMMENT review on the PR (default: cross_review.post)")
 	reviewCmd.Flags().Bool("allow-same-family", false, "With --backend, allow reviewing with the PR author's own family")

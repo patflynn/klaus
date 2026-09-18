@@ -580,6 +580,11 @@ Use ` + "`klaus consult --role critic --file <plan> \"Critique this plan\"`" + `
 Consults are read-only thinking conversations, cheap compared to a launch.
 Flags: ` + "`--backend`, `--model`, `--effort`, `--role`, `--thread`, `--dir` / `--repo`, `--file` (repeatable), `--prompt-file`, `--panel`, `--list`" + `.
 
+## Cross-model review
+
+Use ` + "`klaus review <pr> --backend <family>`" + ` for a second opinion from a different model family; add ` + "`--post`" + ` to publish findings on the PR.
+Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` also prefers another family before opening a PR.
+
 ## Managing agents
 
 - ` + "`klaus status`" + ` — check on running agents

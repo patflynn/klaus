@@ -1,7 +1,6 @@
 package review
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,11 +39,11 @@ func TestChooseReviewer(t *testing.T) {
 			wantKind: backend.Claude, wantModel: "haiku",
 		},
 		{
-			name:     "order skips agy until it can review read-only",
+			name:     "order selects agy with its configured model",
 			onPath:   []string{"claude", "codex", "agy"},
 			author:   backend.Claude,
-			cfg:      config.Config{CrossReview: &config.CrossReviewConfig{Order: []string{"agy", "codex"}}, BackendDefaults: map[string]config.BackendDefaults{"codex": {ReviewModel: "m"}}},
-			wantKind: backend.Codex, wantModel: "m",
+			cfg:      config.Config{CrossReview: &config.CrossReviewConfig{Order: []string{"agy", "codex"}}, BackendDefaults: map[string]config.BackendDefaults{"agy": {ReviewModel: "m"}}},
+			wantKind: backend.Agy, wantModel: "m",
 		},
 		{
 			name:     "falls back to the author's family when nothing else is installed",
@@ -80,7 +79,7 @@ func TestChooseReviewer(t *testing.T) {
 	}
 }
 
-func TestChooseReviewerRefusesAgy(t *testing.T) {
+func TestChooseReviewerAllowsAgy(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	for name, tt := range map[string]struct {
 		author backend.Kind
@@ -89,8 +88,8 @@ func TestChooseReviewerRefusesAgy(t *testing.T) {
 		"explicit review_backend":  {backend.Claude, config.Config{BackendDefaults: map[string]config.BackendDefaults{"claude": {ReviewBackend: "agy"}}}},
 		"agy author, no other CLI": {backend.Agy, config.Config{}},
 	} {
-		if _, _, err := ChooseReviewer(tt.author, tt.cfg); !errors.Is(err, ErrAgyReviewer) {
-			t.Errorf("%s: err = %v, want ErrAgyReviewer", name, err)
+		if kind, _, err := ChooseReviewer(tt.author, tt.cfg); err != nil || kind != backend.Agy {
+			t.Errorf("%s: kind = %s, err = %v, want agy", name, kind, err)
 		}
 	}
 }
