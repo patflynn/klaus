@@ -396,6 +396,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 	sawResult := false
 	var exactPRURL string
 	var assistantPRURL string
+	prTarget := prURLTargetSlug(state)
 	for scanner.Scan() {
 		line := stream.NormalizeLine(scanner.Bytes())
 		if len(line) == 0 {
@@ -445,7 +446,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			sawResult = true
 			if ev.Content != "" {
 				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
-					if isAllowedPRURL(state, url) {
+					if isAllowedPRURL(prTarget, url) {
 						exactPRURL = url
 					}
 				}
@@ -496,7 +497,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 							text = block.Content
 						}
 						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
-							if isAllowedPRURL(state, url) {
+							if isAllowedPRURL(prTarget, url) {
 								assistantPRURL = url
 							}
 						}
@@ -506,7 +507,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		case "tool_result":
 			if ev.Content != "" {
 				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
-					if isAllowedPRURL(state, url) {
+					if isAllowedPRURL(prTarget, url) {
 						exactPRURL = url
 					}
 				}
@@ -521,7 +522,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 							text = block.Text
 						}
 						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
-							if isAllowedPRURL(state, url) {
+							if isAllowedPRURL(prTarget, url) {
 								exactPRURL = url
 							}
 						}
@@ -569,8 +570,32 @@ func extractPRURL(text string) string {
 	return prURLExtractRegex.FindString(text)
 }
 
-// isAllowedPRURL checks candidate against state TargetRepo or clone origin remote.
-func isAllowedPRURL(state *run.State, candidateURL string) bool {
+// prURLTargetSlug returns the "owner/repo" a run's PR URL must belong to: the
+// run's TargetRepo when it is an owner/repo reference, otherwise the origin
+// remote of the run's clone (or the current checkout). It returns "" when
+// neither is a GitHub repo — e.g. TargetRepo is a project name or local path
+// and origin is not a GitHub URL.
+func prURLTargetSlug(state *run.State) string {
+	if state != nil && state.TargetRepo != nil {
+		if slug := repoSlug(*state.TargetRepo); slug != "" {
+			return slug
+		}
+	}
+	dir := ""
+	if state != nil && state.CloneDir != nil {
+		dir = *state.CloneDir
+	} else {
+		dir, _ = git.RepoRoot()
+	}
+	return repoSlugForDir(dir)
+}
+
+// isAllowedPRURL reports whether candidateURL may be recorded as a run's PR.
+// Literal placeholder slugs (owner/repo and friends) are always rejected. When
+// target (see prURLTargetSlug) is known the URL must belong to that repo; when
+// it is unknown any other URL is accepted, so runs whose origin is not a
+// GitHub URL still record their PR.
+func isAllowedPRURL(target, candidateURL string) bool {
 	slug := github.OwnerRepoFromPRURL(candidateURL)
 	if slug == "" {
 		return false
@@ -579,19 +604,7 @@ func isAllowedPRURL(state *run.State, candidateURL string) bool {
 	case "owner/repo", "<owner>/<repo>", "org/repo", "user/repo":
 		return false
 	}
-	var target string
-	if state != nil && state.TargetRepo != nil && strings.Contains(*state.TargetRepo, "/") {
-		target = git.CleanGitHubRef(*state.TargetRepo)
-	} else {
-		gitRoot := ""
-		if state != nil && state.CloneDir != nil {
-			gitRoot = *state.CloneDir
-		} else {
-			gitRoot, _ = git.RepoRoot()
-		}
-		target = repoSlugForDir(gitRoot)
-	}
-	return target != "" && strings.EqualFold(slug, target)
+	return target == "" || strings.EqualFold(slug, target)
 }
 
 var prURLRegex = regexp.MustCompile(`/pull/(\d+)`)

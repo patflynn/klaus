@@ -291,6 +291,11 @@ func TestIsAllowedPRURL(t *testing.T) {
 	klausTarget := "patflynn/klaus"
 	customTarget := "acme/corp"
 	bareTarget := "klaus"
+	// launch records a local-path origin (as in the e2e sandbox) as a
+	// filesystem path, which is not an owner/repo reference.
+	pathTarget := "/tmp/sandbox/origin"
+	// A non-repo clone dir leaves the target repo unresolvable.
+	noRepoDir := t.TempDir()
 
 	tests := []struct {
 		name      string
@@ -332,6 +337,24 @@ func TestIsAllowedPRURL(t *testing.T) {
 			name:      "nil TargetRepo rejects foreign repo",
 			state:     &run.State{},
 			candidate: "https://github.com/other/repo/pull/123",
+			want:      false,
+		},
+		{
+			name:      "local-path TargetRepo falls back to clone remote",
+			state:     &run.State{TargetRepo: &pathTarget},
+			candidate: "https://github.com/patflynn/klaus/pull/123",
+			want:      true,
+		},
+		{
+			name:      "unresolvable target accepts real-looking URL",
+			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &noRepoDir},
+			candidate: "https://github.com/acme/widget/pull/123",
+			want:      true,
+		},
+		{
+			name:      "unresolvable target still rejects placeholder",
+			state:     &run.State{TargetRepo: &pathTarget, CloneDir: &noRepoDir},
+			candidate: "https://github.com/owner/repo/pull/123",
 			want:      false,
 		},
 		{
@@ -380,7 +403,7 @@ func TestIsAllowedPRURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isAllowedPRURL(tt.state, tt.candidate)
+			got := isAllowedPRURL(prURLTargetSlug(tt.state), tt.candidate)
 			if got != tt.want {
 				t.Errorf("isAllowedPRURL(%q) = %v, want %v", tt.candidate, got, tt.want)
 			}

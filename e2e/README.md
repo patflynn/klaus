@@ -65,7 +65,9 @@ After `claude` exits, `klaus _finalize <run-id>` parses the run's captured
 JSONL log. The stub emits stream-json containing:
 
 - an `assistant` event whose text holds a PR URL matching
-  `https?://github\.com/[^\s"<>\]]+/pull/\d+`, and
+  `https?://github\.com/[^\s"<>\]]+/pull/\d+` (placeholder slugs such as
+  `owner/repo` are rejected; the sandbox's local-path origin is not a GitHub
+  URL, so any other slug is accepted), and
 - a `result` event with `total_cost_usd`, `duration_ms`, and `session_id`.
 
 `_finalize` turns those into the run's `CostUSD`, `DurationMS`, and `PRURL`.

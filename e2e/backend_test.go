@@ -19,14 +19,14 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 				t.Parallel()
 				h := NewHarness(t)
 				output := `{"type":"thread.started","thread_id":"codex-thread"}
-{"type":"item.completed","item":{"type":"agent_message","text":"https://github.com/owner/repo/pull/42"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"https://github.com/acme/widget/pull/42"}}
 {"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`
 				sessionID := "codex-thread"
 				if kind == "agy" {
 					sessionID = "agy-conversation"
 					output = `{"event":"init","conversation_id":"agy-conversation","init":{"model":"test"}}
 {"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Done","state":"DONE"}}
-{"event":"result","result":{"conversation_id":"agy-conversation","status":"SUCCESS","response":"https://github.com/owner/repo/pull/42","duration_seconds":1}}`
+{"event":"result","result":{"conversation_id":"agy-conversation","status":"SUCCESS","response":"https://github.com/acme/widget/pull/42","duration_seconds":1}}`
 				}
 				status := 0
 				if failed {
@@ -63,7 +63,7 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 						t.Fatalf("missing failure: %+v", st)
 					}
 				} else {
-					if st.FailureReason != nil || st.PRURL == nil || *st.PRURL != "https://github.com/owner/repo/pull/42" {
+					if st.FailureReason != nil || st.PRURL == nil || *st.PRURL != "https://github.com/acme/widget/pull/42" {
 						t.Fatalf("incorrect completion: %+v", st)
 					}
 					if st.BackendSessionID == nil || *st.BackendSessionID != sessionID {
