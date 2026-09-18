@@ -17,6 +17,7 @@ import (
 	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/scan"
 	"github.com/patflynn/klaus/internal/stream"
@@ -523,6 +524,9 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 
 	var resultSubtype string
 	sawResult := false
+	var exactPRURL string
+	var assistantPRURL string
+	prTarget := prURLTargetSlug(state)
 	for scanner.Scan() {
 		line := stream.NormalizeLine(scanner.Bytes())
 		if len(line) == 0 {
@@ -570,9 +574,11 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			}
 		case "result":
 			sawResult = true
-			if ev.Content != "" && existingPRURL == "" {
-				if url := extractPRURL(ev.Content); url != "" {
-					state.PRURL = &url
+			if ev.Content != "" {
+				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
+					if isAllowedPRURL(prTarget, url) {
+						exactPRURL = url
+					}
 				}
 			}
 			if ev.TotalCostUSD > 0 {
@@ -609,29 +615,39 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			if ev.Message != nil {
 				for _, block := range ev.Message.Content {
 					if block.Type == "text" {
-						if url := extractPRURL(block.Text); url != "" {
-							state.PRURL = &url
+						text := block.Text
+						if text == "" {
+							text = block.Content
+						}
+						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
+							if isAllowedPRURL(prTarget, url) {
+								assistantPRURL = url
+							}
 						}
 					}
 				}
 			}
-		default:
-			// Handle tool_result and other event types that may
-			// contain the PR URL (e.g. gh pr create output).
+		case "tool_result":
 			if ev.Content != "" {
-				if url := extractPRURL(ev.Content); url != "" {
-					state.PRURL = &url
+				for _, url := range prURLExtractRegex.FindAllString(ev.Content, -1) {
+					if isAllowedPRURL(prTarget, url) {
+						exactPRURL = url
+					}
 				}
 			}
+			fallthrough
+		default:
 			if ev.Message != nil {
 				for _, block := range ev.Message.Content {
-					text := block.Text
-					if text == "" {
-						text = block.Content
-					}
-					if text != "" {
-						if url := extractPRURL(text); url != "" {
-							state.PRURL = &url
+					if block.Type == "tool_result" || ev.Type == "tool_result" {
+						text := block.Content
+						if text == "" {
+							text = block.Text
+						}
+						for _, url := range prURLExtractRegex.FindAllString(text, -1) {
+							if isAllowedPRURL(prTarget, url) {
+								exactPRURL = url
+							}
 						}
 					}
 				}
@@ -641,6 +657,10 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 
 	if existingPRURL != "" {
 		state.PRURL = &existingPRURL
+	} else if exactPRURL != "" {
+		state.PRURL = &exactPRURL
+	} else if assistantPRURL != "" {
+		state.PRURL = &assistantPRURL
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -671,6 +691,43 @@ var prURLExtractRegex = regexp.MustCompile(`https?://github\.com/[^\s"<>\]]+/pul
 
 func extractPRURL(text string) string {
 	return prURLExtractRegex.FindString(text)
+}
+
+// prURLTargetSlug returns the "owner/repo" a run's PR URL must belong to: the
+// run's TargetRepo when it is an owner/repo reference, otherwise the origin
+// remote of the run's clone (or the current checkout). It returns "" when
+// neither is a GitHub repo — e.g. TargetRepo is a project name or local path
+// and origin is not a GitHub URL.
+func prURLTargetSlug(state *run.State) string {
+	if state != nil && state.TargetRepo != nil {
+		if slug := repoSlug(*state.TargetRepo); slug != "" {
+			return slug
+		}
+	}
+	dir := ""
+	if state != nil && state.CloneDir != nil {
+		dir = *state.CloneDir
+	} else {
+		dir, _ = git.RepoRoot()
+	}
+	return repoSlugForDir(dir)
+}
+
+// isAllowedPRURL reports whether candidateURL may be recorded as a run's PR.
+// Literal placeholder slugs (owner/repo and friends) are always rejected. When
+// target (see prURLTargetSlug) is known the URL must belong to that repo; when
+// it is unknown any other URL is accepted, so runs whose origin is not a
+// GitHub URL still record their PR.
+func isAllowedPRURL(target, candidateURL string) bool {
+	slug := github.OwnerRepoFromPRURL(candidateURL)
+	if slug == "" {
+		return false
+	}
+	switch strings.ToLower(slug) {
+	case "owner/repo", "<owner>/<repo>", "org/repo", "user/repo":
+		return false
+	}
+	return target == "" || strings.EqualFold(slug, target)
 }
 
 var prURLRegex = regexp.MustCompile(`/pull/(\d+)`)
