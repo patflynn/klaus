@@ -47,6 +47,9 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 				}
 				h.WaitForClaudeStart(15 * time.Second)
 				argv := h.ClaudeArgv()
+				if kind == "agy" && !strings.Contains(argv, "--add-dir\n.\n") {
+					t.Fatal("agy worker missing explicit workspace")
+				}
 				if strings.Contains(argv, "--max-budget-usd") || !strings.Contains(argv, "test-model") || !strings.Contains(argv, "task 'quoted' $(false)") {
 					t.Fatalf("bad args: %s", argv)
 				}
@@ -105,6 +108,9 @@ func TestCoordinatorBackendSelection(t *testing.T) {
 			argv, err := os.ReadFile(argsFile)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if kind == "agy" && !strings.Contains(string(argv), "--add-dir\n.\n") {
+				t.Fatal("agy coordinator missing explicit workspace")
 			}
 			if !strings.Contains(string(argv), "klaus launch") {
 				t.Fatalf("coordinator instructions missing: %s", argv)

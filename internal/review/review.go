@@ -102,7 +102,7 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 		"--no-session-persistence",
 	)
 	if kind != backend.Claude {
-		argv := []string{"agy", "--print", reviewSystemPrompt + "\n\n" + prompt, "--output-format", "text"}
+		argv := []string{"agy", "--add-dir", ".", "--print", reviewSystemPrompt + "\n\n" + prompt, "--output-format", "text"}
 		if kind == backend.Codex {
 			argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "--output-last-message", lastMessage, "-"}
 		}

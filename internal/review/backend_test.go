@@ -12,11 +12,14 @@ func TestReviewSelectedBackend(t *testing.T) {
 			dir := t.TempDir()
 			stub := `#!/bin/sh
 output=
+workspace=
 while [ "$#" -gt 0 ]; do
+ if [ "$1" = --add-dir ]; then shift; workspace=$1; fi
  if [ "$1" = haiku ]; then exit 19; fi
  if [ "$1" = --output-last-message ]; then shift; output=$1; fi
  shift
 done
+if [ "${0##*/}" = agy ] && [ "$workspace" != . ]; then exit 21; fi
 if [ -n "$output" ]; then
  printf '%s\n' '{"findings":[],"summary":"reviewed"}' > "$output"
  printf '%s\n' 'progress chatter, not JSON'

@@ -67,7 +67,7 @@ func (k Kind) Worker(o Options) []string {
 		}
 		a = append(a, "--json", "--dangerously-bypass-approvals-and-sandbox", "-c", "developer_instructions="+tomlString(o.SystemPrompt))
 	case Agy:
-		a = []string{"agy", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "24h"}
+		a = []string{"agy", "--add-dir", ".", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "24h"}
 	}
 	a = k.modelArgs(a, o)
 	if k == Agy {
@@ -102,7 +102,7 @@ func (k Kind) Coordinator(o Options) []string {
 		if o.Continue && o.ResumeID != "" {
 			prompt = "Klaus coordinator session resumed. Continue using the existing coordinator instructions; use klaus status to refresh worker state."
 		}
-		a = []string{"agy", "--dangerously-skip-permissions", "--prompt-interactive", prompt}
+		a = []string{"agy", "--add-dir", ".", "--dangerously-skip-permissions", "--prompt-interactive", prompt}
 		if o.Continue && o.ResumeID != "" {
 			a = append(a, "--conversation", o.ResumeID)
 		}
