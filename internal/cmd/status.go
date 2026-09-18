@@ -35,10 +35,10 @@ var statusCmd = &cobra.Command{
 
 		ghClient := gh.NewGHCLIClient("")
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"RUN ID", "STATUS", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"------", "------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"------", "------", "-------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
 
 		for _, s := range states {
 			if err := ctx.Err(); err != nil {
@@ -81,8 +81,8 @@ var statusCmd = &cobra.Command{
 				}
 			}
 
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				s.ID, status, cost, issue, repo, host, pr, ci, conflicts, behind, merge, prompt)
+			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
+				s.ID, status, runBackendName(s), cost, issue, repo, host, pr, ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil
@@ -199,4 +199,14 @@ func truncate(s string, max int) string {
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
+}
+
+func runBackendName(s *run.State) string {
+	if s.Type == "track" {
+		return "-"
+	}
+	if s.Backend == "" {
+		return "claude"
+	}
+	return s.Backend
 }

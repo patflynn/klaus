@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"github.com/patflynn/klaus/internal/backend"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -400,7 +401,7 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		if !strings.Contains(cmd, "ssh 'klaus-worker-0'") {
 			t.Error("expected ssh to sandbox host, got:", cmd)
 		}
-		if !strings.Contains(cmd, "cd '/tmp/klaus-sessions/repo/abc123'") {
+		if !strings.Contains(cmd, shellQuote("cd "+shellQuote(worktree)+" && "+claudeCmd)) {
 			t.Error("expected cd to worktree on remote, got:", cmd)
 		}
 	})
@@ -453,7 +454,7 @@ func TestLaunchCmdHasSandboxFlags(t *testing.T) {
 
 func TestBuildClaudeCommand_SessionNaming(t *testing.T) {
 	cmd := buildClaudeCommand("sys prompt", "5", "do stuff", "20260405-1200-abcd", "", "", "")
-	if !strings.Contains(cmd, "-n '20260405-1200-abcd'") {
+	if !strings.Contains(cmd, "'-n' '20260405-1200-abcd'") {
 		t.Errorf("expected -n flag with run ID, got: %s", cmd)
 	}
 	if strings.Contains(cmd, "--resume") {
@@ -466,10 +467,10 @@ func TestBuildClaudeCommand_SessionNaming(t *testing.T) {
 
 func TestBuildClaudeCommand_WithResume(t *testing.T) {
 	cmd := buildClaudeCommand("sys prompt", "5", "fix CI", "20260405-1200-efgh", "20260405-1100-abcd", "", "")
-	if !strings.Contains(cmd, "-n '20260405-1200-efgh'") {
+	if !strings.Contains(cmd, "'-n' '20260405-1200-efgh'") {
 		t.Errorf("expected -n flag with new run ID, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "--resume '20260405-1100-abcd'") {
+	if !strings.Contains(cmd, "'--resume' '20260405-1100-abcd'") {
 		t.Errorf("expected --resume flag with original session name, got: %s", cmd)
 	}
 	if !strings.Contains(cmd, "--fork-session") {
@@ -480,10 +481,10 @@ func TestBuildClaudeCommand_WithResume(t *testing.T) {
 func TestBuildClaudeCommand_ModelAndEffort(t *testing.T) {
 	t.Run("both passed through when set", func(t *testing.T) {
 		cmd := buildClaudeCommand("sys", "5", "do stuff", "20260805-0900-abcd", "", "claude-sonnet-5", "low")
-		if !strings.Contains(cmd, "--model 'claude-sonnet-5'") {
+		if !strings.Contains(cmd, "'--model' 'claude-sonnet-5'") {
 			t.Errorf("expected --model flag, got: %s", cmd)
 		}
-		if !strings.Contains(cmd, "--effort 'low'") {
+		if !strings.Contains(cmd, "'--effort' 'low'") {
 			t.Errorf("expected --effort flag, got: %s", cmd)
 		}
 	})
@@ -640,7 +641,7 @@ func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
 		t.Fatal("claudeSessionExists should now return true after creating the file")
 	}
 	cmdResumed := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", orphanUUID, "", "")
-	if !strings.Contains(cmdResumed, "--resume '"+orphanUUID+"'") {
+	if !strings.Contains(cmdResumed, "'--resume' '"+orphanUUID+"'") {
 		t.Errorf("expected --resume flag when session exists, got: %s", cmdResumed)
 	}
 }
@@ -717,7 +718,7 @@ func TestStageResumeTranscript(t *testing.T) {
 
 		// With staging done, the launched command resumes the session.
 		cmd := buildClaudeCommand("sys", "5", "fix conflicts", "20260628-1001-new", uuid, "", "")
-		if !strings.Contains(cmd, "--resume '"+uuid+"'") {
+		if !strings.Contains(cmd, "'--resume' '"+uuid+"'") {
 			t.Errorf("expected --resume after successful staging, got: %s", cmd)
 		}
 	})
@@ -855,4 +856,10 @@ func TestResolvePrompt(t *testing.T) {
 			t.Error("expected an error for an empty prompt file")
 		}
 	})
+}
+
+// These compatibility helpers delegate the Claude contract to the backend package.
+func validateEffort(effort string) error { return backend.Claude.ValidateEffort(effort) }
+func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeID, model, effort string) string {
+	return backend.ShellCommand(backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort}))
 }

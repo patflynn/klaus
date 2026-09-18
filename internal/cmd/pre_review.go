@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/review"
 	"github.com/spf13/cobra"
@@ -76,9 +77,26 @@ var preReviewCmd = &cobra.Command{
 		}
 
 		// Run peer review
-		fmt.Printf("Peer Review (%s):\n", cfg.PreReviewModel())
+		backendName := os.Getenv("KLAUS_BACKEND")
+		if backendName == "" {
+			selected, err := resolveAgentBackend(cmd, cfg)
+			if err != nil {
+				return err
+			}
+			backendName = string(selected)
+		}
+		kind, err := backend.Parse(backendName)
+		if err != nil {
+			return err
+		}
+		model := cfg.PreReviewModel()
+		if d := cfg.BackendDefaults[string(kind)]; kind != backend.Claude || d.ReviewModel != "" {
+			model = d.ReviewModel
+		}
+		fmt.Printf("Peer Review (%s %s):\n", kind, model)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
-			Model:        cfg.PreReviewModel(),
+			Backend:      string(kind),
+			Model:        model,
 			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
 		}, cfg.DefaultBranch)
 		if err != nil {

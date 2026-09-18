@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/draft"
@@ -29,7 +30,7 @@ var budgetPauseRunner draft.Runner = draft.ExecRunner{}
 
 var formatStreamCmd = &cobra.Command{
 	Use:    "_format-stream",
-	Short:  "Format Claude JSONL stream from stdin",
+	Short:  "Format backend JSONL stream from stdin",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return stream.FormatStream(os.Stdin, os.Stdout)
@@ -391,14 +392,16 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 
 	var resultSubtype string
+	sawResult := false
 	for scanner.Scan() {
-		line := scanner.Bytes()
+		line := stream.NormalizeLine(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
 
 		var ev struct {
 			Type         string   `json:"type"`
+			ExitCode     int      `json:"exit_code"`
 			Subtype      string   `json:"subtype"`
 			SessionID    string   `json:"session_id"`
 			TotalCostUSD float64  `json:"total_cost_usd"`
@@ -420,8 +423,23 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			continue
 		}
 
+		if ev.SessionID != "" && !isClaudeRun(state) {
+			state.BackendSessionID = stringPtr(ev.SessionID)
+		}
 		switch ev.Type {
+		case "klaus_exit":
+			if ev.ExitCode != 0 {
+				reason := fmt.Sprintf("%s exited with status %d", state.Backend, ev.ExitCode)
+				state.FailureReason = &reason
+				resultSubtype = "error_during_execution"
+			}
 		case "result":
+			sawResult = true
+			if ev.Content != "" && existingPRURL == "" {
+				if url := extractPRURL(ev.Content); url != "" {
+					state.PRURL = &url
+				}
+			}
 			if ev.TotalCostUSD > 0 {
 				state.CostUSD = &ev.TotalCostUSD
 			}
@@ -454,7 +472,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			}
 			// Record the Claude conversation UUID so a later budget-paused
 			// resume can restore the trajectory and run claude --resume.
-			if ev.SessionID != "" {
+			if ev.SessionID != "" && isClaudeRun(state) {
 				sid := ev.SessionID
 				state.ClaudeSessionID = &sid
 			}
@@ -496,6 +514,25 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		state.PRURL = &existingPRURL
 	}
 
+	if err := scanner.Err(); err != nil {
+		reason := fmt.Sprintf("reading backend log: %v", err)
+		state.FailureReason = &reason
+		resultSubtype = "error_during_execution"
+	}
+	if !isClaudeRun(state) {
+		if !sawResult && state.FailureReason == nil {
+			reason := "backend exited without a terminal result event"
+			state.FailureReason = &reason
+			resultSubtype = "error_during_execution"
+		}
+		elapsed := int64(1)
+		if started, err := time.Parse(time.RFC3339, state.CreatedAt); err == nil {
+			elapsed = max(int64(1), time.Since(started).Milliseconds())
+		}
+		if state.DurationMS == nil {
+			state.DurationMS = &elapsed
+		}
+	}
 	return resultSubtype, store.Save(state)
 }
 

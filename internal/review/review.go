@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/patflynn/klaus/internal/backend"
 	"os/exec"
 	"strings"
 )
 
 // ReviewConfig configures the peer review agent.
 type ReviewConfig struct {
+	Backend      string
 	Model        string // e.g. "haiku" — passed to claude CLI --model flag
 	MaxFixRounds int    // default 2
 }
@@ -50,7 +52,7 @@ func ReviewDiff(dir string, cfg ReviewConfig, baseBranch string) (*ReviewResult,
 		diff = diff[:maxDiffBytes] + "\n\n[... diff truncated due to size ...]"
 	}
 
-	return callReviewAPI(diff, cfg)
+	return callReviewInDir(dir, diff, cfg)
 }
 
 func getDiff(dir, baseBranch string) (string, error) {
@@ -66,8 +68,15 @@ func getDiff(dir, baseBranch string) (string, error) {
 }
 
 func callReviewAPI(diff string, cfg ReviewConfig) (*ReviewResult, error) {
+	return callReviewInDir("", diff, cfg)
+}
+func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) {
+	kind, err := backend.Parse(cfg.Backend)
+	if err != nil {
+		return nil, err
+	}
 	model := cfg.Model
-	if model == "" {
+	if model == "" && kind == backend.Claude {
 		model = "haiku"
 	}
 
@@ -80,14 +89,29 @@ func callReviewAPI(diff string, cfg ReviewConfig) (*ReviewResult, error) {
 		"--system-prompt", reviewSystemPrompt,
 		"--no-session-persistence",
 	)
-	cmd.Stdin = strings.NewReader(prompt)
+	if kind != backend.Claude {
+		argv := []string{"agy", "--print", reviewSystemPrompt + "\n\n" + prompt, "--output-format", "text"}
+		if kind == backend.Codex {
+			argv = []string{"codex", "exec", "--ephemeral", "--sandbox", "read-only", "-"}
+		}
+		if model != "" {
+			argv = append(argv, "--model", model)
+		}
+		cmd = exec.Command(argv[0], argv[1:]...)
+		if kind == backend.Codex {
+			cmd.Stdin = strings.NewReader(reviewSystemPrompt + "\n\n" + prompt)
+		}
+	} else {
+		cmd.Stdin = strings.NewReader(prompt)
+	}
+	cmd.Dir = dir
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("calling claude CLI: %w; stderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("calling %s CLI: %w; stderr: %s", kind, err, stderr.String())
 	}
 
 	return parseReviewResponse(stdout.String())

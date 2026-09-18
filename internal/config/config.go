@@ -14,13 +14,16 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
-	WorktreeBase        string   `json:"worktree_base"`
-	DefaultBudget       string   `json:"default_budget"`
-	DataRef             string   `json:"data_ref"`
-	DefaultBranch       string   `json:"default_branch"`
-	TrustedReviewers    []string `json:"trusted_reviewers"`
-	RequireApproval     *bool    `json:"require_approval,omitempty"`
-	AutoMergeOnApproval *bool    `json:"auto_merge_on_approval,omitempty"`
+	DefaultCoordinatorBackend string                     `json:"default_coordinator_backend,omitempty"`
+	DefaultAgentBackend       string                     `json:"default_agent_backend,omitempty"`
+	BackendDefaults           map[string]BackendDefaults `json:"backends,omitempty"`
+	WorktreeBase              string                     `json:"worktree_base"`
+	DefaultBudget             string                     `json:"default_budget"`
+	DataRef                   string                     `json:"data_ref"`
+	DefaultBranch             string                     `json:"default_branch"`
+	TrustedReviewers          []string                   `json:"trusted_reviewers"`
+	RequireApproval           *bool                      `json:"require_approval,omitempty"`
+	AutoMergeOnApproval       *bool                      `json:"auto_merge_on_approval,omitempty"`
 	// MergeVerifyCommand runs in the rebased worktree during merge to sanity-check
 	// the branch before force-push. Unset → `go build ./...` iff a go.mod exists,
 	// else skip (rely on CI). Empty string is treated as unset.
@@ -45,6 +48,25 @@ type Config struct {
 	// coordinator's window is never split; "pane" splits the coordinator's
 	// window as klaus used to. Empty means "detached".
 	AgentDisplay string `json:"agent_display,omitempty"`
+}
+
+// BackendDefaults keeps model identifiers and reasoning levels within their CLI.
+type BackendDefaults struct {
+	ReviewModel string `json:"review_model,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
+}
+
+// AgentDefaults preserves legacy Claude settings without passing Claude model
+// names to other executables. Explicit per-backend defaults take precedence.
+func (c Config) AgentDefaults(kind string) BackendDefaults {
+	if d, ok := c.BackendDefaults[kind]; ok {
+		return d
+	}
+	if kind == "claude" {
+		return BackendDefaults{Model: c.DefaultAgentModel, Effort: c.DefaultAgentEffort}
+	}
+	return BackendDefaults{}
 }
 
 // Agent display modes for Config.AgentDisplay.
@@ -423,7 +445,8 @@ klaus launch --resume-from <run-id> ...       # continue a previous agent's Clau
 klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold
 klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
-klaus launch --model <name> ...               # model for the agent's claude run (default from config; unset = claude's own default)
+klaus launch --backend <name>               # worker CLI: claude, codex, or agy; independent of coordinator
+klaus launch --model <name> ...               # model for the selected worker backend (default from config; unset = claude's own default)
 klaus launch --effort <level> ...             # reasoning effort: low|medium|high|xhigh|max (default from config; unset = claude's own default)
 klaus launch --local ...                      # force local execution even if a sandbox is configured
 klaus launch --host <name> ...                # override the configured sandbox host
@@ -565,7 +588,7 @@ Events arrive only while the REPL is idle between turns. If a flurry lands durin
 
 What happens after ` + "`klaus launch`" + `:
 1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
-2. Agent runs Claude Code in the pane, working on the branch
+2. Agent runs its selected backend in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
 4. Events are emitted (agent:completed, agent:pr-created)
 5. Dashboard detects state change and updates display

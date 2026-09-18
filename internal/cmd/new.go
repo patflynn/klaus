@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -23,7 +24,7 @@ var validProjectName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 var scaffoldCmd = &cobra.Command{
 	Use:   "scaffold <project-name>",
 	Short: "Scaffold a new project using principles-based generation",
-	Long: `Creates a new GitHub repository and launches a Claude agent to scaffold it.
+	Long: `Creates a new GitHub repository and launches an agent to scaffold it.
 
 The agent reads project principles (from .klaus/principles.md in the current
 directory, or built-in defaults) and makes all scaffolding decisions based on
@@ -104,7 +105,15 @@ func runNew(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := validateEffort(cfg.DefaultAgentEffort); err != nil {
+	kind, err := resolveAgentBackend(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	if kind != backend.Claude && cmd.Flags().Changed("budget") {
+		return fmt.Errorf("--budget is only supported by the claude backend")
+	}
+	defaults := cfg.AgentDefaults(string(kind))
+	if err := kind.ValidateEffort(defaults.Effort); err != nil {
 		return err
 	}
 	if err := config.ValidateAgentDisplay(cfg.AgentDisplay); err != nil {
@@ -173,7 +182,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	// Build claude command
 	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
-	claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, "", cfg.DefaultAgentModel, cfg.DefaultAgentEffort)
+	claudeCmd := backend.ShellCommand(kind.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id, Model: defaults.Model, Effort: defaults.Effort}))
 
 	// Build pane command — no finalize prefix (new repo, no state ref setup)
 	selfBin := "klaus"
@@ -194,14 +203,19 @@ func runNew(cmd *cobra.Command, args []string) error {
 	}
 
 	// Save state
+	var budgetPtr *string
+	if kind == backend.Claude {
+		budgetPtr = &budget
+	}
 	createdAt := time.Now().Format(time.RFC3339)
 	state := &run.State{
+		Backend:   string(kind),
 		ID:        id,
 		Prompt:    prompt,
 		Branch:    "main",
 		Worktree:  repoDir,
 		TmuxPane:  &paneID,
-		Budget:    &budget,
+		Budget:    budgetPtr,
 		LogFile:   &logFile,
 		CreatedAt: createdAt,
 		Type:      "new",
@@ -212,7 +226,11 @@ func runNew(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("  run:      %s\n", id)
 	fmt.Printf("  pane:     %s\n", paneID)
-	fmt.Printf("  budget:   $%s\n", budget)
+	if kind == backend.Claude {
+		fmt.Printf("  budget:   $%s\n", budget)
+	} else {
+		fmt.Println("  budget:   unavailable for this backend")
+	}
 	fmt.Printf("  dir:      %s\n", repoDir)
 	fmt.Println()
 	fmt.Printf("Scaffolding %s. Use 'klaus status' to check progress.\n", name)
@@ -261,7 +279,7 @@ Your task:
 
 // ScaffoldDeps holds dependencies for the scaffold (new) command.
 type ScaffoldDeps struct {
-	RunGHRepoCreate func(name string) (string, error)
+	RunGHRepoCreate   func(name string) (string, error)
 	ResolveNewRepoDir func(cwd, name string) (string, error)
 }
 
@@ -299,6 +317,7 @@ func resolveGitCommonDir(repoDir string) string {
 }
 
 func init() {
+	scaffoldCmd.Flags().String("backend", "", "Worker backend: claude, codex, or agy (default from session/config)")
 	scaffoldCmd.Flags().String("description", "", "What the project does")
 	scaffoldCmd.Flags().String("type", "", "Project type: 'web' or 'cli'")
 	scaffoldCmd.Flags().String("budget", "", "Max spend in USD (default from config)")

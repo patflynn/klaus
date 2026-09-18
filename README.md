@@ -2,7 +2,7 @@
 
 [![Build Status](https://github.com/patflynn/klaus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/patflynn/klaus/actions/workflows/ci.yml)
 
-Multi-agent orchestrator for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Start a normal Claude Code session that can fan out work to parallel autonomous agents, each in its own git worktree and its own tmux pane in a detached session — off your screen, but still yours to inspect.
+Multi-agent orchestrator for Claude Code, Codex, and Antigravity CLI (`agy`). Start an interactive coordinator session that can fan out work to parallel autonomous agents, each in its own git worktree and its own tmux pane in a detached session — off your screen, but still yours to inspect.
 
 ## Quick start
 
@@ -21,10 +21,86 @@ Claude: [runs klaus launch for each task]
 
 Three agents start in the background. Each works independently in its own worktree, pushes a branch, and opens a PR. Your window is untouched — the agents' tmux panes live in a separate detached session, and you watch them through the dashboard, `klaus status`, and `klaus logs`.
 
+## Choosing backends
+
+Choose the coordinator and workers independently. Existing configuration and
+sessions continue to use Claude unless you select another backend:
+
+```bash
+klaus new --backend codex --agent-backend agy
+klaus new --backend agy --agent-backend codex
+klaus launch --backend codex "Fix the failing tests"
+klaus launch --backend agy --effort high "Implement the settings page"
+```
+
+`klaus`, `klaus session`, and `klaus new` accept `--backend` for the coordinator
+and `--agent-backend` for the session's worker default. `klaus launch` and
+`klaus scaffold` accept `--backend` for that worker. Automatic CI/review fix
+agents use the saved session worker default too. `klaus status` includes a
+BACKEND column.
+
+Set persistent defaults in `~/.klaus/config.json` or `.klaus/config.json`:
+
+```json
+{
+  "default_coordinator_backend": "codex",
+  "default_agent_backend": "agy",
+  "backends": {
+    "codex": { "effort": "high" },
+    "agy": { "effort": "medium" }
+  }
+}
+```
+
+Each entry in `backends` can set `model`, `effort`, and `review_model`. Model
+identifiers are passed to that CLI unchanged. Legacy `default_agent_model`,
+`default_agent_effort`, and `pre_review.review_model` remain Claude defaults;
+they never send a Claude model name to Codex or agy. Explicit worker `--model`
+and `--effort` flags override defaults. A per-backend entry replaces the legacy
+model/effort defaults for that backend, including when its fields are empty.
+
+Worker backend precedence is `--backend`, saved session selection,
+`KLAUS_AGENT_BACKEND`, configuration, then Claude. Backend selection is stored
+on each run. Resuming a coordinator keeps its saved backend; use `klaus new`
+to switch to a different coordinator backend.
+
+| Capability | Claude | Codex | agy |
+|---|---|---|---|
+| Interactive coordinator, headless workers, local/SSH execution | Yes | Yes | Yes |
+| Formatted logs, PR detection, failure reporting | Yes | Yes | Yes |
+| Coordinator resume | Saved conversation ID | Most recent conversation in the session workspace | Workspace-specific conversation ID |
+| Worker `--resume-from` | Fork with staged transcript | Fork a recorded local Codex thread on the same machine | Fresh conversation, with a warning |
+| Dollar budget / budget pause | Yes | Unavailable | Unavailable |
+| Stored trajectory replay (`--replay`) | Yes | Unavailable | Unavailable |
+| Shared coordinator memory | Claude memory directory | CLI's own memory behavior | CLI's own memory behavior |
+
+For Codex and agy, explicit `--budget` and `--replay` are rejected; the legacy
+`default_budget` does not apply, and unknown cost is displayed as unavailable.
+agy workers use a 24-hour print timeout instead of its short CLI default.
+`--resume-from` never transfers conversations between backends or machines;
+when a compatible conversation is unavailable, the worker starts fresh. Use
+`--pr` to continue the actual branch changes. agy coordinator IDs are recovered
+from its workspace cache; missing cache metadata starts a fresh conversation
+with a warning rather than attaching to an unrelated conversation.
+
+Pre-PR peer review uses the worker's backend, so Codex and agy workers do not
+require Claude to be installed. Authenticate each selected CLI beforehand and
+make it available on PATH on the machine that executes it (including any
+`sandbox_host`). Workers retain Klaus's existing unattended permission policy;
+Codex uses its explicit approval/sandbox bypass, and agy uses its permission
+bypass. Run untrusted tasks on an appropriately isolated worker host.
+
+The coordinator prompt describes `klaus watch`. Claude can attach its Monitor
+tool; other backends use their own background tools or `klaus status` and
+`klaus logs`. Klaus does not emulate Claude's Monitor tool.
+
+CLI event contracts: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)
+and [Antigravity headless mode](https://antigravity.google/docs/cli/headless).
+
 ## What happens when you run `klaus`
 
 1. **In a repo:** a fresh git worktree is created from `origin/main`. **Anywhere else:** a scratch workspace under `~/.klaus/sessions/`
-2. Claude Code starts interactively in that workspace
+2. The selected backend starts interactively in that workspace
 3. You talk to Claude as usual — it has `klaus` on PATH
 4. When Claude runs `klaus launch`, an autonomous agent starts in a detached tmux session — off your screen, but still a real process you can inspect and kill
 5. Agents push branches and open PRs — `klaus dashboard` picks them up automatically
@@ -433,7 +509,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 ## Under the hood
 
-- **Agents run headless** — `claude -p` with the prompt in argv, so there is no
+- **Agents run headless** — `claude -p`, `codex exec`, or `agy --print` with the prompt in argv, so there is no
   way to type at a running agent. Correcting one mid-run means relaunching with
   `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
   for why in-place messaging isn't offered and what it would take
@@ -447,6 +523,6 @@ Conversation comments by the PR author are the exception: the operator and fix a
 ## Requirements
 
 - `tmux` (sessions run inside tmux)
-- `claude` (Claude Code CLI)
+- At least one configured backend CLI: `claude`, `codex`, or `agy` (authenticated)
 - `git` (needed for agent worktrees; sessions can run without it)
 - `gh` (GitHub CLI, for PR operations)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/event"
@@ -63,13 +64,14 @@ oversized, sensitive-skipped, or its session UUID is unknown. Use --no-replay
 to force a fresh agent, --replay to force replay (bypassing the size
 threshold), and --replay-threshold-kb to tune the per-launch size cap.
 
-Use --model and --effort to pick the model and reasoning effort for the
-agent's claude run — e.g. a cheap mechanical task on a smaller model at low
-effort. Effort must be one of: low, medium, high, xhigh, max. The model is
-passed through verbatim; claude itself rejects unknown models. When a flag is
-unset, the config default (default_agent_model / default_agent_effort in
-.klaus/config.json) applies; when neither is set, the flag is omitted and
-claude's own resolution applies.
+Use --backend to select claude, codex, or agy independently of the coordinator.
+The saved session worker selection overrides default_agent_backend in config.
+Use --model and --effort to override backends.<backend>.model / effort. Legacy
+default_agent_model / default_agent_effort apply only to Claude. Models are
+passed through verbatim; each CLI validates its own identifiers. agy accepts
+low/medium/high effort; Codex also accepts minimal/xhigh, Claude xhigh/max.
+Dollar budgets and stored trajectory replay are Claude-only. Codex can fork a
+recorded local thread with --resume-from; agy worker follow-ups start fresh.
 
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
@@ -132,16 +134,30 @@ are synced back after completion. Use --local to force local execution, or
 			return err
 		}
 
+		kind, err := resolveAgentBackend(cmd, hostCfg)
+		if err != nil {
+			return err
+		}
+		if kind != backend.Claude {
+			if cmd.Flags().Changed("budget") {
+				return fmt.Errorf("--budget is only supported by the claude backend")
+			}
+			if replayFlag {
+				return fmt.Errorf("--replay is only supported by the claude backend")
+			}
+			fmt.Fprintf(os.Stderr, "%s does not enforce dollar budgets; default_budget does not apply\n", kind)
+		}
 		if budget == "" {
 			budget = hostCfg.DefaultBudget
 		}
+		defaults := hostCfg.AgentDefaults(string(kind))
 		if model == "" {
-			model = hostCfg.DefaultAgentModel
+			model = defaults.Model
 		}
 		if effort == "" {
-			effort = hostCfg.DefaultAgentEffort
+			effort = defaults.Effort
 		}
-		if err := validateEffort(effort); err != nil {
+		if err := kind.ValidateEffort(effort); err != nil {
 			return err
 		}
 		if err := config.ValidateAgentDisplay(hostCfg.AgentDisplay); err != nil {
@@ -297,7 +313,7 @@ are synced back after completion. Use --local to force local execution, or
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
 
-		if err := config.WriteClaudeSettings(worktree, repoName); err != nil {
+		if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
@@ -348,8 +364,8 @@ are synced back after completion. Use --local to force local execution, or
 		// crashed, or its transcript can't be located/copied, we silently
 		// start a fresh claude session instead of risking a no-op launch.
 		var resolvedResume string
-		if resumeFrom != "" {
-			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil {
+		if resumeFrom != "" && kind == backend.Claude {
+			if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil && (s.Backend == "" || s.Backend == string(backend.Claude)) {
 				if s.FailureReason != nil {
 					// Don't chain onto a crashed conversation.
 					fmt.Fprintf(os.Stderr, "warning: prior run %s failed (%s); starting fresh instead of resuming\n", resumeFrom, *s.FailureReason)
@@ -378,7 +394,7 @@ are synced back after completion. Use --local to force local execution, or
 		// skip replay and let it start fresh there.
 		intendsSandbox := !forceLocal && (hostOverride != "" || hostCfg.SandboxHost != "")
 		var replayedFromRunID string
-		if resolvedResume == "" && isPRFix && prNumber != "" && !noReplay && !intendsSandbox {
+		if kind == backend.Claude && resolvedResume == "" && isPRFix && prNumber != "" && !noReplay && !intendsSandbox {
 			threshold := replayThresholdKB
 			if threshold == 0 {
 				threshold = hostCfg.ReplayThresholdKB
@@ -404,8 +420,21 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
-		// Build the claude command
-		claudeCmd := buildClaudeCommand(sysPrompt, budget, prompt, id, resolvedResume, model, effort)
+		if kind == backend.Codex && resumeFrom != "" && !intendsSandbox {
+			if prior, err := store.Load(resumeFrom); err == nil && prior.Backend == string(kind) && prior.Host == nil && prior.FailureReason == nil && prior.BackendSessionID != nil {
+				resolvedResume = *prior.BackendSessionID
+			}
+		}
+		// Build the selected backend command.
+		if kind != backend.Claude && resumeFrom != "" && resolvedResume == "" {
+			fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr\n", kind)
+		}
+		agentCmd := backend.ShellCommand(kind.Worker(backend.Options{
+			SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id,
+			ResumeID: resolvedResume, Model: model, Effort: effort,
+		}))
+		// Propagate worker identity to nested klaus commands such as _pre-review.
+		agentCmd = "KLAUS_BACKEND=" + string(kind) + " " + agentCmd
 
 		// Build the pane command: run claude, pipe through tee and formatter, then finalize.
 		// For cross-repo launches with a host repo, finalize must run from the
@@ -440,9 +469,9 @@ are synced back after completion. Use --local to force local execution, or
 
 		var paneCmd string
 		if useSandbox {
-			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, claudeCmd, logFile, selfBin, finalizePrefix, id)
+			paneCmd = buildSandboxPaneCommand(sandboxHostName, worktree, agentCmd, logFile, selfBin, finalizePrefix, id)
 		} else {
-			paneCmd = buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id)
+			paneCmd = buildPaneCommand(worktree, agentCmd, logFile, selfBin, finalizePrefix, id)
 		}
 
 		// Launch the agent's tmux pane. Detached by default (its own window in
@@ -465,7 +494,10 @@ are synced back after completion. Use --local to force local execution, or
 		// Write state
 		createdAt := time.Now().Format(time.RFC3339)
 		issuePtr := stringPtr(issue)
-		budgetPtr := &budget
+		var budgetPtr *string
+		if kind == backend.Claude {
+			budgetPtr = &budget
+		}
 		logFilePtr := &logFile
 
 		// Normalize target repo name against the project registry so that
@@ -479,6 +511,7 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		state := &run.State{
+			Backend:     string(kind),
 			ID:          id,
 			Prompt:      prompt,
 			Issue:       issuePtr,
@@ -547,13 +580,18 @@ are synced back after completion. Use --local to force local execution, or
 		} else {
 			fmt.Printf("  host:     local\n")
 		}
-		fmt.Printf("  budget:   $%s\n", budget)
+		if kind == backend.Claude {
+			fmt.Printf("  budget:   $%s\n", budget)
+		} else {
+			fmt.Println("  budget:   unavailable for this backend")
+		}
 		if model != "" {
 			fmt.Printf("  model:    %s\n", model)
 		}
 		if effort != "" {
 			fmt.Printf("  effort:   %s\n", effort)
 		}
+		fmt.Printf("  backend:  %s\n", kind)
 		fmt.Printf("  log:      %s\n", logFile)
 		fmt.Println()
 		fmt.Printf("Agent %s is running. Use 'klaus status' to check progress.\n", id)
@@ -586,62 +624,22 @@ func resolvePrompt(args []string, promptFile string) (string, error) {
 	}
 }
 
+func withExitEvent(command string) string {
+	return "( " + command + "; klaus_backend_exit=$?; printf '\\n{\"type\":\"klaus_exit\",\"exit_code\":%s}\\n' \"$klaus_backend_exit\" )"
+}
+
 func buildPaneCommand(worktree, claudeCmd, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
 		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
 		tmuxSessionEnvPrefix(),
 		shellQuote(worktree),
-		claudeCmd,
+		withExitEvent(claudeCmd),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,
 		selfBin,
 		shellQuote(id),
 	)
-}
-
-// validEfforts is the claude CLI's accepted --effort set.
-var validEfforts = []string{"low", "medium", "high", "xhigh", "max"}
-
-// validateEffort accepts empty (flag omitted) or one of validEfforts.
-func validateEffort(effort string) error {
-	if effort == "" {
-		return nil
-	}
-	for _, v := range validEfforts {
-		if effort == v {
-			return nil
-		}
-	}
-	return fmt.Errorf("invalid effort %q: valid values are %s", effort, strings.Join(validEfforts, ", "))
-}
-
-// buildClaudeCommand assembles the agent's claude invocation. model and effort
-// are passed through only when non-empty, so an unset value leaves claude's
-// own model/effort resolution unchanged.
-func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeSessionName, model, effort string) string {
-	parts := []string{
-		"claude", "-p",
-		"-n", shellQuote(runID),
-	}
-	if resumeSessionName != "" {
-		parts = append(parts, "--resume", shellQuote(resumeSessionName), "--fork-session")
-	}
-	if model != "" {
-		parts = append(parts, "--model", shellQuote(model))
-	}
-	if effort != "" {
-		parts = append(parts, "--effort", shellQuote(effort))
-	}
-	parts = append(parts,
-		"--dangerously-skip-permissions",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--max-budget-usd", shellQuote(budget),
-		"--append-system-prompt", shellQuote(sysPrompt),
-		shellQuote(prompt),
-	)
-	return strings.Join(parts, " ")
 }
 
 func shellQuote(s string) string {
@@ -789,11 +787,9 @@ func buildSandboxPaneCommand(host, worktree, claudeCmd, logFile, selfBin, finali
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
 	return fmt.Sprintf(
-		"%sssh %s 'cd %s && %s' | tee %s | %s _format-stream; %s%s _finalize %s; %s",
+		"%s%s | tee %s | %s _format-stream; %s%s _finalize %s; %s",
 		tmuxSessionEnvPrefix(),
-		shellQuote(host),
-		shellQuote(worktree),
-		claudeCmd,
+		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote("cd "+shellQuote(worktree)+" && "+claudeCmd)),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,
@@ -860,10 +856,11 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 }
 
 func init() {
+	launchCmd.Flags().String("backend", "", "Worker backend: claude, codex, or agy (default from session/config)")
 	launchCmd.Flags().String("prompt-file", "", "Read the prompt from a file instead of the positional argument (avoids shell mangling of backticks); mutually exclusive with it")
 	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR (also the way to resume a budget-paused PR — the agent picks up from the WIP commit)")
-	launchCmd.Flags().String("budget", "", "Max spend in USD (default from config)")
+	launchCmd.Flags().String("budget", "", "Claude only: max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
@@ -871,7 +868,7 @@ func init() {
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for a budget-paused --pr (continue the prior conversation, bypassing the size threshold)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for a budget-paused --pr; dispatch a fresh agent instead")
 	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")
-	launchCmd.Flags().String("model", "", "Model for the agent's claude run, passed through verbatim (default from config default_agent_model; unset = claude's own default)")
-	launchCmd.Flags().String("effort", "", "Reasoning effort for the agent: low, medium, high, xhigh, or max (default from config default_agent_effort; unset = claude's own default)")
+	launchCmd.Flags().String("model", "", "Model for the selected backend (default from backends.<backend>.model; legacy default_agent_model for Claude)")
+	launchCmd.Flags().String("effort", "", "Reasoning effort for the selected backend (default from backends.<backend>.effort; valid levels depend on backend)")
 	rootCmd.AddCommand(launchCmd)
 }

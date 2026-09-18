@@ -12,8 +12,8 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "klaus",
-	Short: "Multi-agent orchestrator for Claude Code",
-	Long: `klaus orchestrates parallel Claude Code agents using git worktrees and tmux panes.
+	Short: "Multi-agent orchestrator for Claude Code, Codex, and agy",
+	Long: `klaus orchestrates parallel coding agents using git worktrees and tmux panes.
 
 It launches autonomous agents in isolated worktrees, manages their lifecycle,
 streams and formats their output, and tracks run state.
