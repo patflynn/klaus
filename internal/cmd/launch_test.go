@@ -1,14 +1,13 @@
 package cmd
 
 import (
-	"encoding/json"
-	"github.com/patflynn/klaus/internal/backend"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -561,117 +560,123 @@ func TestClaudeSessionExists(t *testing.T) {
 	}
 }
 
-// TestResumeFallsBackWhenSessionMissing covers the bug from PR #529: a prior
-// run's log file extracts a Claude session UUID, but the session file itself
-// has been cleaned up. Without validation, we'd pass --resume <uuid> and
-// claude would exit at startup with 0 turns. With validation, we skip the
-// flag and start a fresh session.
-func TestResumeFallsBackWhenSessionMissing(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	// Set up a klaus state store with a prior run whose log file references
-	// a Claude session UUID that does NOT exist on disk.
-	baseDir := filepath.Join(home, ".klaus", "sessions", "session-test")
-	store := run.NewHomeDirStoreFromPath(baseDir)
-	if err := store.EnsureDirs(); err != nil {
-		t.Fatalf("EnsureDirs: %v", err)
-	}
-
-	const priorRunID = "20260509-1355-6139"
-	const orphanUUID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
-
-	logFile := filepath.Join(store.LogDir(), priorRunID+".jsonl")
-	resultEvent := map[string]interface{}{
-		"type":       "result",
-		"session_id": orphanUUID,
-	}
-	data, _ := json.Marshal(resultEvent)
-	if err := os.WriteFile(logFile, append(data, '\n'), 0o644); err != nil {
-		t.Fatalf("WriteFile log: %v", err)
-	}
-
-	priorState := &run.State{
-		ID:        priorRunID,
-		Prompt:    "fix CI",
-		LogFile:   &logFile,
-		CreatedAt: "2026-05-09T13:55:00Z",
-	}
-	if err := store.Save(priorState); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	// The Claude session under ~/.claude/projects/ does NOT exist for orphanUUID.
-	// Mirror the resolve block in launch.go RunE.
-	s, err := store.Load(priorRunID)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if s.LogFile == nil {
-		t.Fatal("LogFile is nil after Save/Load round-trip")
-	}
-	candidate := ExtractClaudeSessionID(*s.LogFile)
-	if candidate != orphanUUID {
-		t.Fatalf("ExtractClaudeSessionID = %q, want %q", candidate, orphanUUID)
-	}
-
-	var resolvedResume string
-	if claudeSessionExists(candidate) {
-		resolvedResume = candidate
-	}
-	if resolvedResume != "" {
-		t.Errorf("resolvedResume = %q, want empty (session is missing on disk)", resolvedResume)
-	}
-
-	// The downstream claude command should NOT include --resume.
-	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume, "", "")
-	if strings.Contains(cmd, "--resume") {
-		t.Errorf("expected no --resume flag when session is missing, got: %s", cmd)
-	}
-
-	// Sanity check: when the session DOES exist, we keep --resume.
-	projDir := filepath.Join(home, ".claude", "projects", "-encoded")
-	if err := os.MkdirAll(projDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projDir, orphanUUID+".jsonl"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile session: %v", err)
-	}
-	if !claudeSessionExists(orphanUUID) {
-		t.Fatal("claudeSessionExists should now return true after creating the file")
-	}
-	cmdResumed := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", orphanUUID, "", "")
-	if !strings.Contains(cmdResumed, "'--resume' '"+orphanUUID+"'") {
-		t.Errorf("expected --resume flag when session exists, got: %s", cmdResumed)
+func TestResolveResumeID(t *testing.T) {
+	const sessionID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
+	for _, tc := range []struct {
+		name       string
+		kind       backend.Kind
+		reason     string
+		missing    bool
+		missingID  bool
+		blockStage bool
+	}{
+		{name: "Claude resumes after success failure reason", kind: backend.Claude, reason: "success"},
+		{name: "Claude resumes after crash", kind: backend.Claude, reason: "error_during_execution"},
+		{name: "Claude missing transcript starts fresh", kind: backend.Claude, reason: "success", missing: true},
+		{name: "Claude missing session ID starts fresh", kind: backend.Claude, reason: "success", missingID: true},
+		{name: "Claude staging failure starts fresh", kind: backend.Claude, reason: "success", blockStage: true},
+		{name: "Codex resumes after success failure reason", kind: backend.Codex, reason: "success"},
+		{name: "Codex resumes after crash", kind: backend.Codex, reason: "codex exited with status 1"},
+		{name: "Codex missing session ID starts fresh", kind: backend.Codex, reason: "success", missingID: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			store := run.NewHomeDirStoreFromPath(filepath.Join(home, ".klaus", "session-test"))
+			if err := store.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			prior := &run.State{
+				ID: "prior-run", Backend: string(tc.kind),
+				Worktree: filepath.Join(home, "old-worktree"), FailureReason: &tc.reason,
+			}
+			worktree := filepath.Join(home, "new-worktree")
+			if tc.kind == backend.Claude {
+				logFile := filepath.Join(store.LogDir(), prior.ID+".jsonl")
+				prior.LogFile = &logFile
+				log := `{"type":"result","session_id":"` + sessionID + `"}`
+				if tc.missingID {
+					log = `{"type":"result"}`
+				}
+				if err := os.WriteFile(logFile, []byte(log+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if !tc.missing {
+					src := claudeConversationPath(prior.Worktree, sessionID)
+					if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(src, []byte(`{"sessionId":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.blockStage {
+					if err := os.WriteFile(filepath.Dir(claudeConversationPath(worktree, sessionID)), nil, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else if !tc.missingID {
+				prior.BackendSessionID = strPtr(sessionID)
+			}
+			if err := store.Save(prior); err != nil {
+				t.Fatal(err)
+			}
+			prior, err := store.Load(prior.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stderr, err := os.CreateTemp(home, "stderr")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stderr.Close()
+			originalStderr := os.Stderr
+			os.Stderr = stderr
+			t.Cleanup(func() { os.Stderr = originalStderr })
+			got := resolveResumeID(prior, tc.kind, worktree)
+			want := sessionID
+			if tc.missing || tc.missingID || tc.blockStage {
+				want = ""
+			}
+			if got != want {
+				t.Fatalf("resolveResumeID = %q, want %q", got, want)
+			}
+			warning, err := os.ReadFile(stderr.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(warning), "failed (success)") {
+				t.Fatalf("misleading warning: %s", warning)
+			}
+			if want != "" {
+				if !strings.Contains(string(warning), "ended with "+tc.reason+"; resuming") {
+					t.Errorf("missing resume warning: %s", warning)
+				}
+				if tc.kind == backend.Claude {
+					src, err := os.ReadFile(claudeConversationPath(prior.Worktree, sessionID))
+					if err != nil {
+						t.Fatal(err)
+					}
+					dest, err := os.ReadFile(claudeConversationPath(worktree, sessionID))
+					if err != nil || string(src) != string(dest) {
+						t.Fatalf("transcript was not staged intact: %v", err)
+					}
+				}
+			}
+			command := backend.ShellCommand(tc.kind.Worker(backend.Options{ResumeID: got}))
+			if strings.Contains(command, sessionID) != (want != "") {
+				t.Errorf("unexpected resume command: %s", command)
+			}
+		})
 	}
 }
 
-// TestResumeHandlesNilRunState covers the gemini #277 follow-up: store.Load
-// can return (nil, nil) when the run state is not found (no error, nil state).
-// The resolve block must guard with 's != nil' so it doesn't dereference a nil
-// state via s.LogFile — it should skip resume and launch a fresh session.
 func TestResumeHandlesNilRunState(t *testing.T) {
-	store := &testStateStore{state: nil} // Load returns (nil, nil)
-	resumeFrom := "20260509-1355-6139"
-
-	// Mirror the resolve block in launch.go RunE, including the nil guard.
-	var resolvedResume string
-	if resumeFrom != "" {
-		if s, loadErr := store.Load(resumeFrom); loadErr == nil && s != nil && s.LogFile != nil {
-			if s.FailureReason == nil {
-				if candidate := ExtractClaudeSessionID(*s.LogFile); candidate != "" {
-					resolvedResume = candidate
-				}
-			}
+	for _, kind := range []backend.Kind{backend.Claude, backend.Codex} {
+		if got := resolveResumeID(nil, kind, t.TempDir()); got != "" {
+			t.Errorf("resolveResumeID(nil, %s) = %q, want empty", kind, got)
 		}
-	}
-
-	if resolvedResume != "" {
-		t.Errorf("resolvedResume = %q, want empty for nil run state", resolvedResume)
-	}
-	cmd := buildClaudeCommand("sys", "5", "do stuff", "20260509-1400-aaaa", resolvedResume, "", "")
-	if strings.Contains(cmd, "--resume") {
-		t.Errorf("expected no --resume flag for nil run state, got: %s", cmd)
 	}
 }
 

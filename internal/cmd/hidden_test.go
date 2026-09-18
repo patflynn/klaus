@@ -288,6 +288,34 @@ func TestExtractPRURL(t *testing.T) {
 }
 
 func TestFinalizeFromLog(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		suffix string
+	}{
+		{name: "session limit success with is_error"},
+		{name: "session limit clears earlier failure", prefix: `{"type":"result","subtype":"error_during_execution","is_error":true}` + "\n"},
+		{name: "session limit survives nonzero exit", suffix: "\n" + `{"type":"klaus_exit","exit_code":1}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const sessionID = "79dcfb08-4de4-45f4-b7db-056bccbc3a00"
+			logContent := tc.prefix + `{"type":"result","subtype":"success","is_error":true,"session_id":"` + sessionID + `","total_cost_usd":1.2,"duration_ms":100}` + tc.suffix
+			state, store := setupFinalizeTest(t, logContent)
+			subtype, err := finalizeFromLog(store, state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if subtype != "success" || state.FailureReason != nil {
+				t.Fatalf("subtype = %q, FailureReason = %v; want success without failure", subtype, state.FailureReason)
+			}
+			assertCost(t, state, 1.2)
+			assertDuration(t, state, 100)
+			if state.ClaudeSessionID == nil || *state.ClaudeSessionID != sessionID {
+				t.Fatalf("ClaudeSessionID = %v, want %q", state.ClaudeSessionID, sessionID)
+			}
+		})
+	}
+
 	t.Run("extracts PR URL from assistant text", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"I'll create the PR now."}]}}
