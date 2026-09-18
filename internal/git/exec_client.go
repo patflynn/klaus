@@ -66,8 +66,8 @@ func (c *ExecClient) CommitsAhead(ctx context.Context, repoDir, base, ref string
 	return CommitsAhead(ctx, repoDir, base, ref)
 }
 
-func (c *ExecClient) UnpushedCommits(ctx context.Context, repoDir, branch string) (int, error) {
-	return UnpushedCommits(ctx, repoDir, branch)
+func (c *ExecClient) BranchPushed(ctx context.Context, repoDir, branch string) (bool, error) {
+	return BranchPushed(ctx, repoDir, branch)
 }
 
 func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {

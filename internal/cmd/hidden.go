@@ -382,8 +382,8 @@ func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, s
 	}
 
 	hasPR := state.PRURL != nil && *state.PRURL != ""
-	if n, err := gc.UnpushedCommits(ctx, wt, branch); err == nil && n == 0 {
-		res.pushed = true // already on origin, e.g. direct-push repos
+	if ok, err := gc.BranchPushed(ctx, wt, branch); err == nil && ok {
+		res.pushed = true // origin tip == local tip, e.g. direct-push repos
 	} else if !hasPR {
 		if _, err := r.Git(ctx, wt, "push", "-u", "origin", branch); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: salvage push of %s: %v\n", branch, err)
@@ -435,9 +435,8 @@ func hitSessionLimit(logPath string) bool {
 
 // cleanupWorktree removes the agent's worktree and local branch after
 // completion. The state file and logs are preserved. The branch is kept when
-// keepBranch is set or it has commits not on origin (or that can't be
-// verified). It is idempotent — if the worktree is already gone, the state is
-// still cleared.
+// keepBranch is set or branchDeletable can't prove its work is safe. It is
+// idempotent — if the worktree is already gone, the state is still cleared.
 func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State, keepBranch bool) {
 	if state.Worktree == "" {
 		return
@@ -455,10 +454,8 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
 	if state.Branch != "" && !keepBranch {
-		if n, err := gitClient.UnpushedCommits(ctx, gitRoot, state.Branch); err != nil {
-			slog.Warn("keeping branch: cannot verify it is pushed", "id", state.ID, "branch", state.Branch, "err", err)
-		} else if n > 0 {
-			slog.Warn("keeping branch with unpushed commits", "id", state.ID, "branch", state.Branch, "commits", n)
+		if ok, err := branchDeletable(ctx, gitClient, gitRoot, state.Branch); !ok {
+			slog.Warn("keeping branch: work not verified on origin", "id", state.ID, "branch", state.Branch, "err", err)
 		} else if err := gitClient.BranchDelete(ctx, gitRoot, state.Branch); err != nil {
 			slog.Warn("failed to delete branch during cleanup", "id", state.ID, "branch", state.Branch, "err", err)
 		}
@@ -467,6 +464,16 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	if err := store.Save(state); err != nil {
 		slog.Warn("failed to save state after worktree cleanup", "id", state.ID, "err", err)
 	}
+}
+
+// branchDeletable: no commits beyond origin/<default>, or origin's live tip
+// equals the local tip. Unverifiable (error) means keep.
+func branchDeletable(ctx context.Context, gc git.Client, root, branch string) (bool, error) {
+	cfg, _ := config.Load(root)
+	if n, err := gc.CommitsAhead(ctx, root, "origin/"+cfg.DefaultBranch, branch); err == nil && n == 0 {
+		return true, nil
+	}
+	return gc.BranchPushed(ctx, root, branch)
 }
 
 // killAgentPane kills the tmux pane associated with the agent. State is

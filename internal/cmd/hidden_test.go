@@ -92,6 +92,20 @@ func TestFinalizeWorktreeCleanup(t *testing.T) {
 		}
 	})
 
+	t.Run("keeps a branch whose origin copy was deleted", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		commitAndPush(t, worktree, branch)
+		runGitCmd(t, origin, "branch", "-D", branch) // no fetch: origin/<branch> is stale
+		state := &run.State{ID: "test-run", Branch: branch, Worktree: worktree, CloneDir: &repo}
+		store := &testStateStore{dir: t.TempDir(), state: state}
+
+		cleanupWorktree(context.Background(), store, git.NewExecClient(), state, false)
+
+		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
+			t.Errorf("branch deleted on a stale origin ref: %v", err)
+		}
+	})
+
 	t.Run("no-op when worktree field is empty", func(t *testing.T) {
 		state := &run.State{ID: "test-run", Worktree: ""}
 		store := &testStateStore{state: state}
@@ -870,13 +884,12 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		}
 	})
 
+	cleanLog := `{"type":"result","subtype":"success","result":"Pushed the branch.","total_cost_usd":1,"duration_ms":1000}
+`
 	t.Run("already-pushed branch (direct-push) is reported, not re-pushed", func(t *testing.T) {
 		_, repo, worktree, branch := setupBareRemote(t)
-		runGitCmd(t, worktree, "add", "-A")
-		runGitCmd(t, worktree, "commit", "-m", "feat: done")
-		runGitCmd(t, worktree, "push", "-u", "origin", branch)
-		cleanLog := `{"type":"result","subtype":"success","result":"Pushed the branch.","total_cost_usd":1,"duration_ms":1000}
-`
+		commitAndPush(t, worktree, branch)
+
 		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
 
 		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
@@ -887,13 +900,54 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 			t.Errorf("clean tree must not get a WIP commit; origin tip = %q", subj)
 		}
 	})
+
+	// A stale origin/<branch> must not count as pushed.
+	t.Run("remote branch deleted since last fetch is pushed again", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		commitAndPush(t, worktree, branch)
+		runGitCmd(t, origin, "branch", "-D", branch) // no fetch: origin/<branch> is stale
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		local, _ := gitOut(t, repo, "rev-parse", "refs/heads/"+branch)
+		if remote, err := gitOut(t, origin, "rev-parse", "--verify", "refs/heads/"+branch); err != nil || remote != local {
+			t.Fatalf("branch not re-pushed: origin=%q (%v), local=%q", remote, err, local)
+		}
+		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
+		if na == nil || na["pushed"] != true {
+			t.Errorf("needs-attention data = %v", na)
+		}
+	})
+
+	t.Run("unreachable origin with stale ref reports pushed false", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		commitAndPush(t, worktree, branch)
+		runGitCmd(t, repo, "remote", "set-url", "origin", origin+"-gone")
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
+			t.Errorf("local branch deleted: %v", err)
+		}
+		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
+		if na == nil || na["pushed"] != false {
+			t.Errorf("unverified remote must report pushed=false, got %v", na)
+		}
+	})
+}
+
+// commitAndPush commits the worktree's changes and pushes the branch, leaving
+// origin/<branch> equal to the local tip.
+func commitAndPush(t *testing.T, worktree, branch string) {
+	t.Helper()
+	runGitCmd(t, worktree, "add", "-A")
+	runGitCmd(t, worktree, "commit", "-m", "feat: done")
+	runGitCmd(t, worktree, "push", "-u", "origin", branch)
 }
 
 func TestFinalizeWithPRDeletesBranch(t *testing.T) {
 	_, repo, worktree, branch := setupBareRemote(t)
-	runGitCmd(t, worktree, "add", "-A")
-	runGitCmd(t, worktree, "commit", "-m", "feat: done")
-	runGitCmd(t, worktree, "push", "-u", "origin", branch)
+	commitAndPush(t, worktree, branch)
 	prLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/owner/repo/pull/9"}]}}
 {"type":"result","subtype":"success","total_cost_usd":1,"duration_ms":1000}
 `

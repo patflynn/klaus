@@ -52,9 +52,9 @@ type Client interface {
 	// CommitsAhead returns the number of commits on ref not reachable from base.
 	CommitsAhead(ctx context.Context, repoDir, base, ref string) (int, error)
 
-	// UnpushedCommits returns the number of commits on branch not reachable
-	// from any origin/* remote-tracking ref.
-	UnpushedCommits(ctx context.Context, repoDir, branch string) (int, error)
+	// BranchPushed reports whether origin's branch tip equals the local tip,
+	// checked against the remote itself; an error means unverified.
+	BranchPushed(ctx context.Context, repoDir, branch string) (bool, error)
 
 	// EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 	// initial commit if it doesn't.
