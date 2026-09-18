@@ -19,6 +19,7 @@ func TestReviewSelectedBackend(t *testing.T) {
 	} {
 		t.Run(tt.kind, func(t *testing.T) {
 			dir := t.TempDir()
+			t.Setenv("HOME", t.TempDir())
 			stub := `#!/bin/sh
 echo "$*" > "$ARGS_FILE"
 while [ "$#" -gt 0 ]; do

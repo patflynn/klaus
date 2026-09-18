@@ -26,6 +26,7 @@ import (
 // types that aren't emitted yet (reserved entries) so the filter remains
 // forward-compatible as the pipeline grows.
 var defaultWatchFilter = []string{
+	event.ConsultCompleted,
 	event.AgentPRCreated,  // live
 	"agent:error",         // reserved
 	event.PRApproved,      // live
@@ -40,6 +41,7 @@ var defaultWatchFilter = []string{
 // type is currently emitted somewhere in klaus ("live") or reserved for future
 // use. --list-types renders this table.
 var knownEventTypes = []eventTypeInfo{
+	{event.ConsultCompleted, "live", "A read-only model consultation finished"},
 	{event.AgentStarted, "live", "An agent run started"},
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
@@ -75,7 +77,7 @@ followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
   agent:pr-created, agent:error, pr:approved, pr:merged,
-  pipeline:stalled, ci:failed, ci:passed, pr:comment
+  pipeline:stalled, consult:completed, ci:failed, ci:passed, pr:comment
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -397,6 +399,8 @@ func eventSummary(evt event.Event) string {
 	prURL := get("pr_url")
 
 	switch evt.Type {
+	case event.ConsultCompleted:
+		return truncateLine(fmt.Sprintf("%s role=%s thread=%s (%sms)", get("backend"), get("role"), get("thread"), get("duration_ms")), 160)
 	case event.AgentStarted:
 		prompt := get("prompt")
 		if prompt != "" {

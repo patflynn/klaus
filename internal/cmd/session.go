@@ -427,7 +427,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	coordinator.Stdin = os.Stdin
 	coordinator.Stdout = os.Stdout
 	coordinator.Stderr = os.Stderr
-	coordinator.Env = append(os.Environ(), sessionIDEnv+"="+id, "KLAUS_AGENT_BACKEND="+string(workerKind))
+	coordinator.Env = append(os.Environ(), sessionIDEnv+"="+id, "KLAUS_BACKEND="+string(kind), "KLAUS_AGENT_BACKEND="+string(workerKind))
 	coordinatorErr := coordinator.Run()
 	if kind == backend.Agy {
 		if sid := backend.AgyConversationID(worktree); sid != "" {

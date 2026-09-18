@@ -152,6 +152,52 @@ tool; other backends use their own background tools or `klaus status` and
 CLI event contracts: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)
 and [Antigravity headless mode](https://antigravity.google/docs/cli/headless).
 
+### Consulting other models
+
+Use `klaus consult` for a read-only thinking partner without a worker, worktree,
+or branch. It chooses an installed family other than `KLAUS_BACKEND`, in the
+configured order; `--backend` overrides that choice. Model and effort use the
+same per-backend defaults as launch.
+
+```bash
+klaus consult --role critic --file plan.md --thread auth "Critique this plan"
+klaus consult --panel "Should we use polling or webhooks for build status?"
+```
+
+Configure selection and the default role in `~/.klaus/config.json` or
+`.klaus/config.json`:
+
+```json
+{
+  "consult": { "order": ["codex","claude","agy"], "default_role": "partner" }
+}
+```
+
+Codex uses its read-only sandbox with MCP, apps, plugins, hooks, and subagents
+disabled; Claude uses safe mode (no custom hooks/plugins) and exposes only
+Read/Grep/Glob; agy
+uses plan mode and a temporary primary-agent definition exposing only file reads
+and search. The agy definition is removed after the call; large prompts travel
+in that definition to avoid the OS argument-size limit.
+
+Roles are `partner`, `critic`, `reviewer`, or your own system-prompt text.
+`--dir` selects a workspace (default: cwd); `--repo` resolves a registered local
+project. Repeat `--file` to inline attachments, up to 200KB total, or supply the
+question via `--prompt-file`. File paths resolve from the invoking directory.
+
+Keep a `--thread NAME` per topic. Threads retain their backend, model, effort,
+role, and workspace; incompatible overrides are rejected. Metadata and readable
+transcripts live in `~/.klaus/sessions/<session-id>/consults/NAME.{json,log}`.
+`klaus consult --list` shows backend, turns, and last-used time. Outside a pane,
+threads use the most recent Klaus session; one-shot questions need no session.
+
+`--panel` queries every installed family other than the caller concurrently and
+prints responses as they finish under backend/model headings. Responses are
+buffered to avoid interleaving; a failed member makes the command fail after
+printing the other answers. Panel mode cannot be combined with `--thread` or
+`--backend`. Consults emit `consult:completed` events for `klaus watch` and never
+create agent run state.
+
 ## What happens when you run `klaus`
 
 1. **In a repo:** a fresh git worktree is created from `origin/main`. **Anywhere else:** a scratch workspace under `~/.klaus/sessions/`
