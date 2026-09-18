@@ -52,7 +52,8 @@ Set persistent defaults in `~/.klaus/config.json` or `.klaus/config.json`:
 }
 ```
 
-Each entry in `backends` can set `model`, `effort`, and `review_model`. Model
+Each entry in `backends` can set `model`, `effort`, `review_model`, and
+`review_backend` (see [Cross-model review](#cross-model-review)). Model
 identifiers are passed to that CLI unchanged. Legacy `default_agent_model`,
 `default_agent_effort`, and `pre_review.review_model` remain Claude defaults;
 they never send a Claude model name to Codex or agy. Explicit worker `--model`
@@ -85,12 +86,64 @@ with a warning rather than attaching to an unrelated conversation. A resumed
 agy coordinator receives a short continuation prompt instead of repeating the
 original instructions.
 
-Pre-PR peer review uses the worker's backend, so Codex and agy workers do not
-require Claude to be installed. Authenticate each selected CLI beforehand and
+Pre-PR peer review prefers a different family from the worker's (see below)
+and falls back to the worker's own backend, so Codex workers do not require
+Claude to be installed. agy cannot review yet (it has no read-only mode), so an
+agy worker with no other reviewer CLI installed skips peer review. Authenticate each selected CLI beforehand and
 make it available on PATH on the machine that executes it (including any
 `sandbox_host`). Workers retain Klaus's existing unattended permission policy;
 Codex uses its explicit approval/sandbox bypass, and agy uses its permission
 bypass. Run untrusted tasks on an appropriately isolated worker host.
+
+### Cross-model review
+
+Same-family review shares blind spots, so klaus reviews code with a different
+model family from the one that wrote it:
+
+```json
+{
+  "cross_review": { "enabled": true, "order": ["codex", "claude", "agy"], "post": true, "max_rounds": 2 },
+  "backends": { "claude": { "review_backend": "codex" } }
+}
+```
+
+The reviewer family is `backends.<author>.review_backend` if set, else the first
+`cross_review.order` entry that is not the author and whose CLI is on PATH, else
+the author's own family. `enabled: false` skips the order and keeps the author's
+family. agy is skipped in `order` and refused as an explicit reviewer until it
+can run read-only (pending #307). The model is `backends.<reviewer>.review_model`, else
+`pre_review.review_model` for Claude (default `haiku`), else the CLI default.
+The same choice drives the `_pre-review` agents run before opening a PR; it
+prints the reviewer it used.
+
+`klaus review <pr>` gets a second opinion on an open PR:
+
+```bash
+klaus review 303                                  # reviewer chosen as above
+klaus review 303 --repo owner/repo --backend codex  # explicit reviewer
+klaus review 303 --post                           # submit it to the PR
+```
+
+The PR's author family comes from the klaus run that opened it (Claude if none).
+klaus refuses a same-family review unless you pass `--backend` together with
+`--allow-same-family`. The reviewer sees only `gh pr diff` plus the PR title and
+description and runs read-only in an empty temp directory: Claude gets only the
+Read/Grep/Glob tools in safe mode with no MCP servers, and Codex runs in its
+read-only sandbox without user config. It returns findings and a short verdict
+on whether the change matches its stated intent.
+
+`--post` (default: `cross_review.post`) submits one GitHub review with event
+`COMMENT`: findings on lines in the diff become inline comments, the rest go in
+the body next to the verdict. **Cross-model reviews are second opinions for the
+operator, never approvals**; klaus never posts `APPROVE` or `REQUEST_CHANGES`,
+and approval stays with `klaus approve`. Posted inline findings feed the normal
+trusted-review fix loop (see [docs/PIPELINE.md](docs/PIPELINE.md#4-review--approval)).
+Posting is refused when the same reviewer already reviewed the PR's head
+commit, or when the PR already has `max_rounds` cross-reviews posted from your
+gh account. That check runs again right before posting, along with a check that
+the PR head hasn't moved, so stale findings are never posted after a push. A per-PR lock under the
+session directory makes a second concurrent `--post` in the same session fail
+immediately.
 
 The coordinator prompt describes `klaus watch`. Claude can attach its Monitor
 tool; other backends use their own background tools or `klaus status` and
@@ -290,6 +343,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus webhook setup [project]` | Create missing webhooks for registered projects |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
 | `klaus watch` | Stream pipeline events line-by-line (designed for Claude Code's Monitor tool) |
+| `klaus review <pr> [--post]` | Second-opinion review of a PR by a different model family |
 | `klaus approve <pr>...` | Approve PRs for merging (operator task) |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |

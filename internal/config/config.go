@@ -27,11 +27,12 @@ type Config struct {
 	// MergeVerifyCommand runs in the rebased worktree during merge to sanity-check
 	// the branch before force-push. Unset → `go build ./...` iff a go.mod exists,
 	// else skip (rely on CI). Empty string is treated as unset.
-	MergeVerifyCommand *string          `json:"merge_verify_command,omitempty"`
-	PreReview          *PreReviewConfig `json:"pre_review,omitempty"`
-	SandboxHost        string           `json:"sandbox_host,omitempty"`
-	PRReviewer         string           `json:"pr_reviewer,omitempty"`
-	Webhook            *WebhookConfig   `json:"webhook,omitempty"`
+	MergeVerifyCommand *string            `json:"merge_verify_command,omitempty"`
+	PreReview          *PreReviewConfig   `json:"pre_review,omitempty"`
+	CrossReview        *CrossReviewConfig `json:"cross_review,omitempty"`
+	SandboxHost        string             `json:"sandbox_host,omitempty"`
+	PRReviewer         string             `json:"pr_reviewer,omitempty"`
+	Webhook            *WebhookConfig     `json:"webhook,omitempty"`
 	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
 	// 'klaus launch --pr' will restore for claude --resume when continuing a
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
@@ -52,9 +53,10 @@ type Config struct {
 
 // BackendDefaults keeps model identifiers and reasoning levels within their CLI.
 type BackendDefaults struct {
-	ReviewModel string `json:"review_model,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Effort      string `json:"effort,omitempty"`
+	ReviewModel   string `json:"review_model,omitempty"`
+	ReviewBackend string `json:"review_backend,omitempty"` // reviewer family for this author; overrides cross_review.order
+	Model         string `json:"model,omitempty"`
+	Effort        string `json:"effort,omitempty"`
 }
 
 // AgentDefaults preserves legacy Claude settings without passing Claude model
@@ -120,6 +122,43 @@ type PreReviewConfig struct {
 	ReviewModel  string   `json:"review_model,omitempty"`   // default: "haiku"
 	MaxFixRounds int      `json:"max_fix_rounds,omitempty"` // default: 2
 	BlockOn      string   `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
+}
+
+// CrossReviewConfig picks a reviewer family that differs from the PR author's.
+type CrossReviewConfig struct {
+	Enabled   *bool    `json:"enabled,omitempty"`    // default: true; false → reviewer = author family
+	Order     []string `json:"order,omitempty"`      // default: codex, claude, agy
+	Post      *bool    `json:"post,omitempty"`       // default: false; default for klaus review --post
+	MaxRounds int      `json:"max_rounds,omitempty"` // default: 2; cap on posted cross-reviews per PR
+}
+
+// CrossReviewEnabled defaults to true.
+func (c *Config) CrossReviewEnabled() bool {
+	if c.CrossReview == nil || c.CrossReview.Enabled == nil {
+		return true
+	}
+	return *c.CrossReview.Enabled
+}
+
+// CrossReviewOrder returns the reviewer preference order.
+func (c *Config) CrossReviewOrder() []string {
+	if c.CrossReview == nil || len(c.CrossReview.Order) == 0 {
+		return []string{"codex", "claude", "agy"}
+	}
+	return c.CrossReview.Order
+}
+
+// CrossReviewPost defaults to false.
+func (c *Config) CrossReviewPost() bool {
+	return c.CrossReview != nil && c.CrossReview.Post != nil && *c.CrossReview.Post
+}
+
+// CrossReviewMaxRounds defaults to 2.
+func (c *Config) CrossReviewMaxRounds() int {
+	if c.CrossReview == nil || c.CrossReview.MaxRounds <= 0 {
+		return 2
+	}
+	return c.CrossReview.MaxRounds
 }
 
 // RequiresApproval returns true if approval is required before merging.

@@ -220,6 +220,27 @@ Klaus distinguishes between GitHub review approval and internal approval:
   edited) events for these to be picked up without waiting for the reconcile
   heartbeat.
 
+- **Cross-model review** — `klaus review <pr> --post` has a model family other
+  than the PR author's review the diff and submits one `COMMENT` review (never
+  an approval). Its body ends with a hidden marker line
+  `<!-- klaus-cross-review backend=<kind> model=<model> sha=<head-sha> -->`
+  (`pipeline.CrossReviewMarker`). The operator's gh account posts it, and that
+  account need not be in `trusted_reviewers`, so a review carrying the marker
+  counts as trusted when its author is the authenticated gh user. The marker
+  alone grants nothing, so copying it into someone else's review has no effect.
+  From there it is an ordinary trusted review: only reviews with inline
+  comments dispatch a fix agent, a push after the review marks it addressed,
+  and the review-fix circuit breaker stalls the PR if fixes keep failing.
+  Findings that don't land on a diff line go in the body for the operator.
+  `klaus review` itself refuses to post twice for the same reviewer and head
+  commit or beyond `cross_review.max_rounds` (default 2), counting only marker
+  reviews by the operator's account, so review → fix → review cannot spin.
+  Within a session, a lock file per PR (`locks/review-<owner>-<repo>-<n>.lock`)
+  covers the whole check → review → post span. The check runs again just
+  before posting, along with a check that the PR head hasn't moved; stale
+  findings posted after a push would otherwise read as unaddressed. The pipeline does not dispatch cross-reviews on its own
+  yet; `review.RunPRReview` is the hook for that.
+
 - **`klaus approve`** — marks PRs as ready for merge in the internal state. PR approval
   is strictly a human task — it exists only to ensure that all changes are gated
   by operator approval before merging. The coordinator session must never approve PRs.
