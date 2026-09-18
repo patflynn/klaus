@@ -89,3 +89,80 @@ func TestAgyResumeDoesNotRepeatInstructions(t *testing.T) {
 		t.Fatal(argv)
 	}
 }
+
+func TestOneShot(t *testing.T) {
+	for _, kind := range []Kind{Claude, Codex, Agy} {
+		for _, mode := range []string{"one-shot", "new-thread", "resume"} {
+			t.Run(string(kind)+"/"+mode, func(t *testing.T) {
+				opts := OneShotOptions{AgyAgent: "read-only-agent", Prompt: "question", SystemPrompt: "system", Model: "model", Effort: "high", Threaded: mode != "one-shot"}
+				if mode == "new-thread" {
+					opts.SessionID = "new-id"
+				}
+				if mode == "resume" {
+					opts.ResumeID = "prior-id"
+				}
+				argv, err := OneShot(kind, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				joined := strings.Join(argv, "\n")
+				require := func(parts ...string) {
+					t.Helper()
+					for _, p := range parts {
+						if !strings.Contains(joined, p) {
+							t.Fatalf("missing %q in %q", p, argv)
+						}
+					}
+				}
+				if strings.Contains(joined, "dangerously") || strings.Contains(joined, "stream-json") {
+					t.Fatalf("unsafe argv: %q", argv)
+				}
+				require("--model\nmodel")
+				switch kind {
+				case Claude:
+					require("-p", "--safe-mode", "--output-format\ntext", "--tools\nRead,Grep,Glob", "--permission-mode\ndontAsk", "--strict-mcp-config", "--system-prompt\nsystem", "--effort\nhigh")
+					if mode == "one-shot" {
+						require("--no-session-persistence")
+					} else if strings.Contains(joined, "--no-session-persistence") {
+						t.Fatal("thread persistence disabled")
+					}
+					if mode == "new-thread" {
+						require("--session-id\nnew-id")
+					}
+					if mode == "resume" {
+						require("--resume\nprior-id")
+					}
+				case Codex:
+					if strings.Contains(joined, "mcp_servers={}") {
+						t.Fatalf("ineffective MCP override: %q", argv)
+					}
+					require("--ignore-user-config", "features.apps=false", "features.plugins=false", "features.hooks=false", "features.multi_agent=false", "--sandbox\nread-only", `approval_policy="never"`, `developer_instructions="system"`, `model_reasoning_effort="high"`)
+					if mode == "one-shot" {
+						require("--ephemeral")
+					} else if strings.Contains(joined, "--ephemeral") {
+						t.Fatal("thread persistence disabled")
+					}
+					if mode == "resume" {
+						require("resume\nprior-id")
+					}
+					if argv[len(argv)-1] != "-" {
+						t.Fatal("prompt must come from stdin")
+					}
+				case Agy:
+					require("--agent\nread-only-agent", "--mode\nplan", "--sandbox", "--output-format\ntext", "--print\nsystem\n\nquestion", "--effort\nhigh")
+					if mode == "resume" {
+						require("--conversation\nprior-id")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestOneShotMisconfiguration(t *testing.T) {
+	for _, kind := range []Kind{Agy, Kind("unknown")} {
+		if argv, err := OneShot(kind, OneShotOptions{}); err == nil || argv != nil {
+			t.Fatalf("%s: argv=%v, err=%v", kind, argv, err)
+		}
+	}
+}

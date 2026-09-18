@@ -1170,7 +1170,7 @@ func commitAndPush(t *testing.T, worktree, branch string) {
 func TestFinalizeWithPRDeletesBranch(t *testing.T) {
 	_, repo, worktree, branch := setupBareRemote(t)
 	commitAndPush(t, worktree, branch)
-	prLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/owner/repo/pull/9"}]}}
+	prLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/acme/widget/pull/9"}]}}
 {"type":"result","subtype":"success","total_cost_usd":1,"duration_ms":1000}
 `
 	store, state, _ := finalizeRealRepo(t, repo, worktree, branch, prLog, nil)

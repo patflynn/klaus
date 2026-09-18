@@ -14,6 +14,7 @@ import (
 
 // Config holds the klaus configuration.
 type Config struct {
+	Consult                   ConsultConfig              `json:"consult"`
 	DefaultCoordinatorBackend string                     `json:"default_coordinator_backend,omitempty"`
 	DefaultAgentBackend       string                     `json:"default_agent_backend,omitempty"`
 	BackendDefaults           map[string]BackendDefaults `json:"backends,omitempty"`
@@ -49,6 +50,11 @@ type Config struct {
 	// coordinator's window is never split; "pane" splits the coordinator's
 	// window as klaus used to. Empty means "detached".
 	AgentDisplay string `json:"agent_display,omitempty"`
+}
+
+type ConsultConfig struct {
+	Order       []string `json:"order"`
+	DefaultRole string   `json:"default_role"`
 }
 
 // BackendDefaults keeps model identifiers and reasoning levels within their CLI.
@@ -254,6 +260,7 @@ func (c *Config) PRReviewerOrDefault() string {
 // Defaults returns a Config with default values.
 func Defaults() Config {
 	return Config{
+		Consult:           ConsultConfig{Order: []string{"codex", "claude", "agy"}, DefaultRole: "partner"},
 		WorktreeBase:      filepath.Join(os.TempDir(), "klaus-sessions"),
 		DefaultBudget:     "5.00",
 		DataRef:           "refs/klaus/data",
@@ -566,6 +573,17 @@ silently accepts expired tokens because the time comparison on line 87 uses Befo
 instead of After(). Fix the comparison and add a test in internal/auth/verify_test.go
 that confirms expired tokens are rejected. See issue #42 for the user report."
 ` + "```" + `
+
+## Conversation partners
+
+Use ` + "`klaus consult --role critic --file <plan> \"Critique this plan\"`" + ` before dispatching any build larger than a bug fix; use ` + "`--panel`" + ` for a genuine design fork and keep a ` + "`--thread`" + ` per topic.
+Consults are read-only thinking conversations, cheap compared to a launch.
+Flags: ` + "`--backend`, `--model`, `--effort`, `--role`, `--thread`, `--dir` / `--repo`, `--file` (repeatable), `--prompt-file`, `--panel`, `--list`" + `.
+
+## Cross-model review
+
+Use ` + "`klaus review <pr> --backend <family>`" + ` for a second opinion from a different model family; add ` + "`--post`" + ` to publish findings on the PR.
+Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` also prefers another family before opening a PR.
 
 ## Managing agents
 

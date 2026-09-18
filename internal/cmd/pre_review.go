@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -91,26 +90,21 @@ var preReviewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		result := &review.ReviewResult{}
 		kind, model, err := review.ChooseReviewer(author, cfg)
-		switch {
-		case errors.Is(err, review.ErrAgyReviewer): // only agy available; don't block agy-only setups
-			fmt.Printf("Peer Review: skipped (%v)\n\n", err)
-		case err != nil:
+		if err != nil {
 			return err
-		default:
-			fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
-			result, err = review.ReviewDiff(dir, review.ReviewConfig{
-				Backend:      string(kind),
-				Model:        model,
-				MaxFixRounds: cfg.PreReviewMaxFixRounds(),
-			}, cfg.DefaultBranch)
-			if err != nil {
-				return fmt.Errorf("running peer review: %w", err)
-			}
-			printFindings(os.Stdout, result.Findings)
-			fmt.Println()
 		}
+		fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
+		result, err := review.ReviewDiff(dir, review.ReviewConfig{
+			Backend:      string(kind),
+			Model:        model,
+			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
+		}, cfg.DefaultBranch)
+		if err != nil {
+			return fmt.Errorf("running peer review: %w", err)
+		}
+		printFindings(os.Stdout, result.Findings)
+		fmt.Println()
 
 		// Determine if we should block
 		blockOn := cfg.PreReviewBlockOn()

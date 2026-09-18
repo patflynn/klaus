@@ -134,15 +134,17 @@ case "$1 $2" in
 esac
 `, 0o755)
 	write("codex", `#!/bin/sh
-out=; sandbox=
+out=; sandbox=; isolated=; skipgit=
 while [ $# -gt 0 ]; do
   case "$1" in
     --output-last-message) shift; out=$1 ;;
     --sandbox) shift; sandbox=$1 ;;
+    --ignore-user-config) isolated=yes ;;
+    --skip-git-repo-check) skipgit=yes ;;
   esac
   shift
 done
-[ "$sandbox" = read-only ] || exit 3
+[ "$sandbox" = read-only ] && [ "$isolated" = yes ] && [ "$skipgit" = yes ] || exit 3
 [ -z "$(ls -A .)" ] || exit 4
 cat > "$FAKE_DIR/prompt"
 if [ -n "$FAKE_CODEX_HOLD" ]; then

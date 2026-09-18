@@ -4,14 +4,15 @@ import "time"
 
 // Event represents a single event in the klaus event log.
 type Event struct {
-	Timestamp string                 `json:"timestamp"`       // RFC3339
-	RunID     string                 `json:"run_id"`          // Run that produced the event
-	Type      string                 `json:"type"`            // e.g. "agent:completed"
-	Data      map[string]interface{} `json:"data,omitempty"`  // Type-specific payload
+	Timestamp string                 `json:"timestamp"`      // RFC3339
+	RunID     string                 `json:"run_id"`         // Run that produced the event
+	Type      string                 `json:"type"`           // e.g. "agent:completed"
+	Data      map[string]interface{} `json:"data,omitempty"` // Type-specific payload
 }
 
 // Supported event types.
 const (
+	ConsultCompleted    = "consult:completed"
 	AgentStarted        = "agent:started"
 	AgentCompleted      = "agent:completed"
 	AgentPRCreated      = "agent:pr-created"

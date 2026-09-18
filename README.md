@@ -88,8 +88,7 @@ original instructions.
 
 Pre-PR peer review prefers a different family from the worker's (see below)
 and falls back to the worker's own backend, so Codex workers do not require
-Claude to be installed. agy cannot review yet (it has no read-only mode), so an
-agy worker with no other reviewer CLI installed skips peer review. Authenticate each selected CLI beforehand and
+Claude to be installed. Authenticate each selected CLI beforehand and
 make it available on PATH on the machine that executes it (including any
 `sandbox_host`). Workers retain Klaus's existing unattended permission policy;
 Codex uses its explicit approval/sandbox bypass, and agy uses its permission
@@ -110,8 +109,8 @@ model family from the one that wrote it:
 The reviewer family is `backends.<author>.review_backend` if set, else the first
 `cross_review.order` entry that is not the author and whose CLI is on PATH, else
 the author's own family. `enabled: false` skips the order and keeps the author's
-family. agy is skipped in `order` and refused as an explicit reviewer until it
-can run read-only (pending #307). The model is `backends.<reviewer>.review_model`, else
+family. All three backends can review. The model is
+`backends.<reviewer>.review_model`, else
 `pre_review.review_model` for Claude (default `haiku`), else the CLI default.
 The same choice drives the `_pre-review` agents run before opening a PR; it
 prints the reviewer it used.
@@ -127,10 +126,9 @@ klaus review 303 --post                           # submit it to the PR
 The PR's author family comes from the klaus run that opened it (Claude if none).
 klaus refuses a same-family review unless you pass `--backend` together with
 `--allow-same-family`. The reviewer sees only `gh pr diff` plus the PR title and
-description and runs read-only in an empty temp directory: Claude gets only the
-Read/Grep/Glob tools in safe mode with no MCP servers, and Codex runs in its
-read-only sandbox without user config. It returns findings and a short verdict
-on whether the change matches its stated intent.
+description and runs read-only in an empty temp directory, using the same
+isolation as [consultations](#consulting-other-models). It returns findings and a
+short verdict on whether the change matches its stated intent.
 
 `--post` (default: `cross_review.post`) submits one GitHub review with event
 `COMMENT`: findings on lines in the diff become inline comments, the rest go in
@@ -151,6 +149,67 @@ tool; other backends use their own background tools or `klaus status` and
 
 CLI event contracts: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)
 and [Antigravity headless mode](https://antigravity.google/docs/cli/headless).
+
+### Consulting other models
+
+Use `klaus consult` for a read-only thinking partner without a worker, worktree,
+or branch. It chooses an installed family other than `KLAUS_BACKEND`, in the
+configured order; `--backend` overrides that choice. Model and effort use the
+same per-backend defaults as launch.
+
+```bash
+klaus consult --role critic --file plan.md --thread auth "Critique this plan"
+klaus consult --panel "Should we use polling or webhooks for build status?"
+```
+
+Configure selection and the default role in `~/.klaus/config.json` or
+`.klaus/config.json`:
+
+```json
+{
+  "consult": { "order": ["codex","claude","agy"], "default_role": "partner" }
+}
+```
+
+Consultations and reviews share the same read-only isolation.
+Codex uses its read-only sandbox and `--ignore-user-config` to avoid loading
+MCP servers from `$CODEX_HOME/config.toml`; authentication still uses
+`CODEX_HOME`. Model and effort come from Klaus flags/defaults, and apps, plugins,
+hooks, and subagents are explicitly disabled. Claude uses safe mode (no custom
+hooks/plugins) and exposes only Read/Grep/Glob; agy
+uses plan mode and a temporary primary-agent definition exposing only file reads
+and search. The agy definition is removed after the call; large prompts travel
+in that definition to avoid the OS argument-size limit.
+
+Roles are `partner`, `critic`, `reviewer`, or your own system-prompt text.
+`--dir` selects a workspace (default: cwd); `--repo` resolves a registered local
+project. Repeat `--file` to inline attachments, up to 200KB total, or supply the
+question via `--prompt-file`. File paths resolve from the invoking directory.
+
+Keep a `--thread NAME` per topic. Threads retain their backend, model, effort,
+role, and workspace; incompatible overrides are rejected. Metadata and readable
+transcripts live in `~/.klaus/sessions/<session-id>/consults/NAME.{json,log}`.
+New transcript turns are JSON lines, persisted as `pending` before the backend
+starts and atomically updated to `ok` or `error: <message>`. Each records backend,
+model, resume ID, repository revision, and session-ID source (`stderr`,
+`stdout-json`, `diagnostic-log`, or `text`; `assigned`/`resume` identify known IDs).
+An interrupted turn stays `pending`; legacy transcript text is retained. Failed
+turns preserve stdout/stderr in `NAME.<turn>.raw`, and extraction errors report
+the paths tried and raw-output filename. Turn numbers include failed attempts;
+`--list` counts successful turns.
+
+`klaus consult --list` shows backend, turns, and last-used time. Outside a pane,
+threads use the most recent Klaus session; one-shot questions need no session.
+
+`--panel` queries every installed family other than the caller concurrently and
+prints responses as they finish under backend/model headings. Responses are
+buffered to avoid interleaving; a failed member makes the command fail after
+printing the other answers. `--timeout` sets a positive per-backend deadline
+(default `10m`, e.g. `--timeout 30s`); timed-out panel members print `timed out`
+while the others finish. The deadline also applies to single-backend consults.
+Panel mode cannot be combined with `--thread` or
+`--backend`. Consults emit `consult:completed` events for `klaus watch` and never
+create agent run state.
 
 ## What happens when you run `klaus`
 

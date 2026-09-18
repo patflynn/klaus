@@ -77,9 +77,6 @@ type prInfo struct {
 // RunPRReview reviews PR prNumber of repo ("owner/repo") from its diff alone, in an empty temp dir, and with opts.Post submits one COMMENT review (never APPROVE/REQUEST_CHANGES).
 // A refused or failed post still returns the result alongside the error.
 func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*ReviewResult, error) {
-	if err := CheckReviewer(opts.Backend); err != nil {
-		return nil, err
-	}
 	if opts.Post {
 		if opts.LockDir == "" {
 			return nil, errors.New("RunPRReview: Post requires LockDir")
