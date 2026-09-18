@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -76,24 +77,24 @@ var preReviewCmd = &cobra.Command{
 			fmt.Println()
 		}
 
-		// Run peer review
-		backendName := os.Getenv("KLAUS_BACKEND")
-		if backendName == "" {
+		// Run peer review with a different model family than the worker's.
+		authorName := os.Getenv("KLAUS_BACKEND")
+		if authorName == "" {
 			selected, err := resolveAgentBackend(cmd, cfg)
 			if err != nil {
 				return err
 			}
-			backendName = string(selected)
+			authorName = string(selected)
 		}
-		kind, err := backend.Parse(backendName)
+		author, err := backend.Parse(authorName)
 		if err != nil {
 			return err
 		}
-		model := cfg.PreReviewModel()
-		if d := cfg.BackendDefaults[string(kind)]; kind != backend.Claude || d.ReviewModel != "" {
-			model = d.ReviewModel
+		kind, model, err := review.ChooseReviewer(author, cfg)
+		if err != nil {
+			return err
 		}
-		fmt.Printf("Peer Review (%s %s):\n", kind, model)
+		fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
@@ -103,18 +104,7 @@ var preReviewCmd = &cobra.Command{
 			return fmt.Errorf("running peer review: %w", err)
 		}
 
-		if len(result.Findings) == 0 {
-			fmt.Println("  No issues found.")
-		} else {
-			for _, f := range result.Findings {
-				sev := strings.ToUpper(f.Severity)
-				if f.Line > 0 {
-					fmt.Printf("  %-8s %s:%d — %s\n", sev, f.File, f.Line, f.Description)
-				} else {
-					fmt.Printf("  %-8s %s — %s\n", sev, f.File, f.Description)
-				}
-			}
-		}
+		printFindings(os.Stdout, result.Findings)
 		fmt.Println()
 
 		// Determine if we should block
@@ -144,6 +134,28 @@ var preReviewCmd = &cobra.Command{
 		fmt.Println("All checks passed.")
 		return nil
 	},
+}
+
+func modelLabel(model string) string {
+	if model == "" {
+		return "(default model)"
+	}
+	return model
+}
+
+func printFindings(w io.Writer, findings []review.Finding) {
+	if len(findings) == 0 {
+		fmt.Fprintln(w, "  No issues found.")
+		return
+	}
+	for _, f := range findings {
+		sev := strings.ToUpper(f.Severity)
+		if f.Line > 0 {
+			fmt.Fprintf(w, "  %-8s %s:%d — %s\n", sev, f.File, f.Line, f.Description)
+		} else {
+			fmt.Fprintf(w, "  %-8s %s — %s\n", sev, f.File, f.Description)
+		}
+	}
 }
 
 // severitiesAtOrAbove returns a set of severity levels at or above the given level.

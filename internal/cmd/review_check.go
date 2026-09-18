@@ -17,6 +17,7 @@ type ghReview struct {
 	User        ghUser `json:"user"`
 	State       string `json:"state"`
 	SubmittedAt string `json:"submitted_at"`
+	Body        string `json:"body"`
 }
 
 type ghUser struct {
@@ -137,10 +138,22 @@ func latestTrustedReviewTime(ownerRepo, prNumber string, trustedSet map[string]b
 	}
 
 	// Collect trusted reviewer reviews with state COMMENTED or CHANGES_REQUESTED.
+	// A `klaus review --post` review is trusted when the operator's gh account
+	// posted it; the marker alone is not, or anyone could trigger fix agents.
 	var candidates []ghReview
+	var operator *string
 	for _, r := range reviews {
 		if !trustedSet[r.User.Login] {
-			continue
+			if !strings.Contains(r.Body, pipeline.CrossReviewMarker) {
+				continue
+			}
+			if operator == nil {
+				login, _ := github.NewGHCLIClient("").GetAuthenticatedUser(context.TODO())
+				operator = &login
+			}
+			if *operator == "" || r.User.Login != *operator {
+				continue
+			}
 		}
 		state := strings.ToUpper(r.State)
 		if state != "COMMENTED" && state != "CHANGES_REQUESTED" {

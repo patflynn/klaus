@@ -27,7 +27,7 @@ func installFakeGHWithConversation(t *testing.T, reviews, comments, conversation
 }
 
 // installFakeGHWithAuthor is installFakeGHWithConversation with the PR author
-// login served from the pulls endpoint.
+// login served from the pulls endpoint and as the authenticated gh user.
 func installFakeGHWithAuthor(t *testing.T, author, reviews, comments, conversation, commits string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -51,6 +51,7 @@ func installFakeGHWithAuthor(t *testing.T, author, reviews, comments, conversati
 		"*/comments*) cat '" + commentsPath + "' ;;\n" +
 		"*/commits*) cat '" + commitsPath + "' ;;\n" +
 		"*/pulls/*) cat '" + prPath + "' ;;\n" +
+		"user) echo '" + author + "' ;;\n" +
 		"*) echo '[]' ;;\n" +
 		"esac\n"
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
@@ -257,5 +258,29 @@ func TestHasUnaddressedTrustedComments_EditedConversationCommentAfterPush(t *tes
 	)
 	if !hasUnaddressedTrustedComments("owner/repo", "22") {
 		t.Error("conversation comment edited after the latest push must count as unaddressed")
+	}
+}
+
+// `klaus review --post` posts through the operator's gh account, which need not be in trusted_reviewers.
+func TestHasUnaddressedTrustedComments_OperatorCrossReview(t *testing.T) {
+	for _, tt := range []struct {
+		login string
+		want  bool
+	}{
+		{login: "patflynn", want: true},       // the authenticated gh user
+		{login: "drive-by-user", want: false}, // copied marker grants nothing
+	} {
+		t.Run(tt.login, func(t *testing.T) {
+			body := `"**Cross-model review** by codex\n\n` + pipeline.CrossReviewMarker + ` backend=codex model= sha=abc -->"`
+			installFakeGHWithAuthor(t, "patflynn",
+				`[{"id": 300, "user": {"login": "`+tt.login+`"}, "state": "COMMENTED", "submitted_at": "2026-09-18T10:00:00Z", "body": `+body+`}]`,
+				`[{"pull_request_review_id": 300, "body": "nil deref"}]`,
+				`[]`,
+				`[{"commit": {"committer": {"date": "2026-09-18T09:00:00Z"}}}]`,
+			)
+			if got := hasUnaddressedTrustedComments("owner/repo", "303"); got != tt.want {
+				t.Errorf("cross-review by %s: unaddressed = %v, want %v", tt.login, got, tt.want)
+			}
+		})
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/event"
 	ghutil "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/review"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -840,6 +841,9 @@ func dispatchRepo(c *Controller, status *PRStatus) string {
 // detection skips comments carrying this marker. It is an HTML comment so it
 // doesn't render on GitHub.
 const AgentReplyMarker = "<!-- klaus-agent-reply -->"
+
+// CrossReviewMarker opens the hidden line in a `klaus review --post` review body. Such a review counts as trusted when posted by the operator's gh account.
+const CrossReviewMarker = review.CrossReviewMarker
 
 // FixCommand and ActionableMarker are the two ways a PR author opts a PR
 // conversation comment in as review feedback. The operator and fix agents post

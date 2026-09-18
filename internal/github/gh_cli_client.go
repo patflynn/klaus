@@ -545,9 +545,24 @@ func (c *GHCLIClient) APIPostJSON(ctx context.Context, path string, body interfa
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api POST %s: %w", path, wrapTimeoutErr(ctx, "gh api POST "+path, err))
+		return nil, fmt.Errorf("gh api POST %s: %w: %s", path, wrapTimeoutErr(ctx, "gh api POST "+path, err), strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
+}
+
+// PRDiff returns the uncolored `gh pr diff` output for prRef.
+func (c *GHCLIClient) PRDiff(ctx context.Context, prRef string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "gh", c.ghArgs([]string{"pr", "diff", "--color", "never"}, prRef)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", wrapTimeoutErr(ctx, "gh pr diff", fmt.Errorf("gh pr diff %s: %s", prRef, strings.TrimSpace(stderr.String())))
+	}
+	return stdout.String(), nil
 }
 
 // FetchPRMetadata fetches PR URL, title, head branch, and state from GitHub via gh CLI.

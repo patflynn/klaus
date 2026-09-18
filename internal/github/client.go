@@ -18,6 +18,7 @@ type Client interface {
 	GetBranch(ctx context.Context, prRef string) (string, error)
 	GetURL(ctx context.Context, prRef string) (string, error)
 	GetTitle(ctx context.Context, prRef string) string
+	PRDiff(ctx context.Context, prRef string) (string, error)
 
 	// PR mutations
 	Merge(ctx context.Context, prNumber, mergeMethod string, deleteBranch bool) error
