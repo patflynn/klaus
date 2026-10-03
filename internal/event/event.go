@@ -12,6 +12,7 @@ type Event struct {
 
 // Supported event types.
 const (
+	ConsultStarted      = "consult:started"
 	ConsultCompleted    = "consult:completed"
 	AgentStarted        = "agent:started"
 	AgentCompleted      = "agent:completed"

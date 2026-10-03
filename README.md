@@ -208,8 +208,20 @@ printing the other answers. `--timeout` sets a positive per-backend deadline
 (default `10m`, e.g. `--timeout 30s`); timed-out panel members print `timed out`
 while the others finish. The deadline also applies to single-backend consults.
 Panel mode cannot be combined with `--thread` or
-`--backend`. Consults emit `consult:completed` events for `klaus watch` and never
-create agent run state.
+`--backend`. Consults never create agent run state.
+
+Inside a Klaus session, each backend call emits a `consult:started` event
+before the model runs and a `consult:completed` event when it ends; both appear
+in the default `klaus watch` filter. The pair shares a `run_id` of the form
+`consult-YYYYMMDD-HHMM-xxxxxxxx`, and a panel emits one pair per member. Both
+events carry `backend`, `model`, `effort` and `role` (after defaults), `thread`
+(empty for one-shot), `dir` (absolute workspace), `repo` (with `--repo`),
+`panel`, `prompt` (first line, up to 120 characters) and `prompt_file` (with
+`--prompt-file`). `consult:completed` adds `duration_ms`, `success`, and on
+failure a short `error` such as `timeout after 10m0s` or `interrupted`; it never
+contains model output. SIGINT and SIGTERM still produce the completion, so
+every start has a matching completion unless the process is killed with
+SIGKILL. Consults outside a session emit nothing.
 
 ## What happens when you run `klaus`
 
@@ -254,7 +266,7 @@ You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, agent errors) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
+Pipeline events (PR created/approved/merged, CI passed/failed, agent errors) and consult events (`consult:started`, `consult:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
 
 ```bash
 klaus watch                          # default filter, follow new events

@@ -26,22 +26,24 @@ import (
 // types that aren't emitted yet (reserved entries) so the filter remains
 // forward-compatible as the pipeline grows.
 var defaultWatchFilter = []string{
-	event.ConsultCompleted,
-	event.AgentPRCreated,  // live
-	"agent:error",         // reserved
-	event.PRApproved,      // live
-	event.PRMerged,        // live
-	event.PipelineStalled, // live
-	"ci:failed",           // reserved (closest live equivalent: agent:ci-failed)
-	"ci:passed",           // reserved (closest live equivalent: agent:ci-passed)
-	"pr:comment",          // reserved
+	event.ConsultStarted,   // live
+	event.ConsultCompleted, // live
+	event.AgentPRCreated,   // live
+	"agent:error",          // reserved
+	event.PRApproved,       // live
+	event.PRMerged,         // live
+	event.PipelineStalled,  // live
+	"ci:failed",            // reserved (closest live equivalent: agent:ci-failed)
+	"ci:passed",            // reserved (closest live equivalent: agent:ci-passed)
+	"pr:comment",           // reserved
 }
 
 // knownEventTypes maps event types to a one-line description and whether the
 // type is currently emitted somewhere in klaus ("live") or reserved for future
 // use. --list-types renders this table.
 var knownEventTypes = []eventTypeInfo{
-	{event.ConsultCompleted, "live", "A read-only model consultation finished"},
+	{event.ConsultStarted, "live", "A read-only model consultation started"},
+	{event.ConsultCompleted, "live", "A read-only model consultation finished (success, failure, timeout or interrupt)"},
 	{event.AgentStarted, "live", "An agent run started"},
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
@@ -77,7 +79,8 @@ followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
   agent:pr-created, agent:error, pr:approved, pr:merged,
-  pipeline:stalled, consult:completed, ci:failed, ci:passed, pr:comment
+  pipeline:stalled, consult:started, consult:completed, ci:failed,
+  ci:passed, pr:comment
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -399,8 +402,36 @@ func eventSummary(evt event.Event) string {
 	prURL := get("pr_url")
 
 	switch evt.Type {
-	case event.ConsultCompleted:
-		return truncateLine(fmt.Sprintf("%s role=%s thread=%s (%sms)", get("backend"), get("role"), get("thread"), get("duration_ms")), 160)
+	case event.ConsultStarted, event.ConsultCompleted:
+		parts := []string{get("backend")}
+		if m := get("model"); m != "" {
+			parts[0] += "/" + m
+		}
+		for _, k := range []string{"effort", "role"} {
+			if v := get(k); v != "" {
+				parts = append(parts, v)
+			}
+		}
+		for _, k := range []string{"thread", "repo"} {
+			if v := get(k); v != "" {
+				parts = append(parts, k+"="+v)
+			}
+		}
+		if get("panel") == "true" {
+			parts = append(parts, "panel")
+		}
+		head := strings.Join(parts, " ")
+		if evt.Type == event.ConsultStarted {
+			return truncateLine(head+": "+get("prompt"), 160)
+		}
+		status := "ok"
+		if get("success") != "true" {
+			status = "failed"
+			if e := get("error"); e != "" {
+				status += ": " + e
+			}
+		}
+		return truncateLine(fmt.Sprintf("%s (%sms) %s", head, get("duration_ms"), status), 160)
 	case event.AgentStarted:
 		prompt := get("prompt")
 		if prompt != "" {
