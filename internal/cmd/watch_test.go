@@ -473,6 +473,10 @@ func TestWatchListTypes(t *testing.T) {
 	if !strings.Contains(out, "ci:failed") {
 		t.Errorf("expected ci:failed (reserved) in output, got: %s", out)
 	}
+	live, _, _ := strings.Cut(out, "Reserved event types")
+	if !strings.Contains(live, event.ConsultStarted) {
+		t.Errorf("expected consult:started among live types, got: %s", out)
+	}
 }
 
 // Sanity check that multiple emissions arrive in order.

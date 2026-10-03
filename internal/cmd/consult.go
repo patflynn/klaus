@@ -43,7 +43,10 @@ relative to the invoking directory. --dir selects the partner's workspace;
 families other than the caller concurrently and groups their answers by backend.
 Panel answers are buffered to keep each response together. Each backend has a
 10-minute deadline; use --timeout to change it. Timed-out members report
-"timed out" while other members finish.`,
+"timed out" while other members finish.
+
+Inside a Klaus session each backend call emits consult:started and
+consult:completed events (see klaus watch) sharing a consult-... run ID.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runConsult,
 	}
@@ -118,6 +121,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	if strings.TrimSpace(prompt) == "" {
 		return fmt.Errorf("question must not be empty")
 	}
+	excerpt := promptExcerpt(prompt)
 	files, _ := cmd.Flags().GetStringArray("file")
 	prompt, err = consult.InlineFiles(prompt, files)
 	if err != nil {
@@ -243,10 +247,40 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		}
 		threads = append(threads, t)
 	}
-	ask := func(t *consult.Thread, out, errOut io.Writer) error {
+	ask := func(t *consult.Thread, out, errOut io.Writer) (askErr error) {
 		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 		start := time.Now()
+		if baseDir != "" {
+			consultID, data := consultEventID(), map[string]interface{}{"backend": t.Backend, "model": t.Model, "effort": t.Effort, "role": t.Role, "thread": name, "dir": t.Dir, "panel": panel, "prompt": excerpt}
+			if str("repo") != "" {
+				data["repo"] = str("repo")
+			}
+			if str("prompt-file") != "" {
+				data["prompt_file"] = str("prompt-file")
+			}
+			emitEvent(baseDir, consultID, event.ConsultStarted, data)
+			// SIGINT/SIGTERM cancel cmd.Context() rather than killing the
+			// process, so every start gets a completion except on SIGKILL.
+			defer func() {
+				done := make(map[string]interface{}, len(data)+3)
+				for k, v := range data {
+					done[k] = v
+				}
+				done["duration_ms"] = time.Since(start).Milliseconds()
+				done["success"] = askErr == nil
+				switch {
+				case askErr == nil:
+				case cmd.Context().Err() != nil:
+					done["error"] = "interrupted"
+				case errors.Is(callCtx.Err(), context.DeadlineExceeded):
+					done["error"] = "timeout after " + timeout.String()
+				default:
+					done["error"] = truncateLine(strings.SplitN(askErr.Error(), "\n", 2)[0], 200)
+				}
+				emitEvent(baseDir, consultID, event.ConsultCompleted, done)
+			}()
+		}
 		id := ""
 		if name != "" && t.Backend == backend.Claude && t.BackendSessionID == "" {
 			id = genUUIDv4()
@@ -280,9 +314,6 @@ func runConsult(cmd *cobra.Command, args []string) error {
 				askErr = errors.Join(askErr, store.Save(name, t))
 			}
 			askErr = errors.Join(askErr, store.FinishTurn(name, turn, result, askErr))
-		}
-		if baseDir != "" {
-			emitEvent(baseDir, "", event.ConsultCompleted, map[string]interface{}{"backend": t.Backend, "role": t.Role, "thread": name, "duration_ms": time.Since(start).Milliseconds(), "success": askErr == nil})
 		}
 		return askErr
 	}
@@ -322,6 +353,27 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// consultEventID identifies one backend call in events.jsonl, using the run ID
+// format with a consult- prefix so it never collides with an agent run.
+func consultEventID() string {
+	id, err := run.GenID()
+	if err != nil {
+		id = time.Now().Format("20060102-1504")
+	}
+	return "consult-" + id
+}
+
+// promptExcerpt is the first non-blank line of the question, capped at 120
+// characters, so events identify a consult without carrying the full prompt.
+func promptExcerpt(prompt string) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		if strings.TrimSpace(line) != "" {
+			return truncateLine(line, 120)
+		}
+	}
+	return ""
 }
 
 func init() { rootCmd.AddCommand(newConsultCmd()) }
