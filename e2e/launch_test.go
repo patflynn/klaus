@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/cmd"
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -368,7 +370,8 @@ func TestLaunchSizeGuard(t *testing.T) {
 	if res.ExitCode == 0 {
 		t.Fatalf("launch should fail the size guard\nstdout:\n%s", res.Stdout)
 	}
-	for _, want := range []string{"over the 12000-byte limit", "the worker system prompt is 13008 bytes"} {
+	wantSize := fmt.Sprintf("the worker system prompt is %d bytes", len(config.WithWorkerRules(sysPrompt)))
+	for _, want := range []string{"over the 12000-byte limit", wantSize} {
 		if !strings.Contains(res.Stderr, want) {
 			t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
 		}
