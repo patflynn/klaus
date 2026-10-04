@@ -21,6 +21,7 @@ type Config struct {
 	WorktreeBase              string                     `json:"worktree_base"`
 	DefaultBudget             string                     `json:"default_budget"`
 	DataRef                   string                     `json:"data_ref"`
+	PushDataRef               bool                       `json:"push_data_ref"` // default false: the data ref stays in the local clone
 	DefaultBranch             string                     `json:"default_branch"`
 	TrustedReviewers          []string                   `json:"trusted_reviewers"`
 	RequireApproval           *bool                      `json:"require_approval,omitempty"`
@@ -527,9 +528,11 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
 - ` + "`klaus launch --pr <num> \"<prompt>\"`" + ` against a budget-paused PR does the
   same thing automatically via **trajectory replay**: klaus stores each run's
   conversation on ` + "`refs/klaus/data`" + ` at finalize time, and on relaunch it restores
-  that transcript into the new worktree and resumes it. It falls back to a fresh
-  agent when the trajectory is missing, sensitive-skipped, has no known session
-  UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
+  that transcript into the new worktree and resumes it. The data ref stays in the
+  local clone unless ` + "`push_data_ref`" + ` is true, so replay works on the machine
+  that ran the paused agent; replaying on another machine needs the push. It
+  falls back to a fresh agent when the trajectory is missing, sensitive-skipped,
+  has no known session UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
   a very large transcript can cost more to replay than to re-explore). Replay is
   local-only — sandbox runs always start fresh.
 - ` + "`--replay`" + ` forces replay past the size threshold; ` + "`--no-replay`" + ` forces a fresh

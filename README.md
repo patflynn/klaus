@@ -305,11 +305,12 @@ The new agent sees the WIP commit and picks up from there. When the follow-up ag
 
 ### Trajectory replay
 
-By default, `klaus launch --pr` against a budget-paused PR does more than pick up the WIP commit: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus stores the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) on `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it fetches that blob, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
+By default, `klaus launch --pr` against a budget-paused PR does more than pick up the WIP commit: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus commits the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) to the local clone's `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it makes a best-effort fetch of the ref from origin, reads that blob from the local ref, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
 
 Replay is best-effort and **falls back to a fresh agent** when any of these hold:
 
-- The trajectory was never pushed (skipped because `klaus` detected potentially sensitive content), or the PR pre-dates this feature.
+- The trajectory was never stored (skipped because `klaus` detected potentially sensitive content), or the PR pre-dates this feature.
+- The paused agent ran on another machine. The data ref stays in the clone that ran the agent unless [`push_data_ref`](#configuration) is true there, so replaying on a different machine needs that push.
 - The trajectory is larger than the size threshold (default 300KB; replaying a very large trajectory can cost more than re-exploration). Configure with `replay_threshold_kb` in `~/.klaus/config.json` or `--replay-threshold-kb`.
 - No Claude session UUID could be determined for the paused run.
 - You pass `--no-replay`.
@@ -402,7 +403,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
-| `klaus push-log <id>` | Force-push a log held back for sensitivity |
+| `klaus push-log <id> [--push]` | Store a log held back for sensitivity on the data ref (`--push` also pushes the ref to origin) |
 | `klaus project add <owner/repo>` | Register a project (clones if needed) |
 | `klaus project list` | Show registered projects |
 | `klaus project remove <name>` | Unregister a project |
@@ -623,6 +624,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "worktree_base": "/tmp/klaus-sessions",
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
+  "push_data_ref": false,
   "default_branch": "main",
   "trusted_reviewers": ["gemini-code-assist[bot]"],
   "require_approval": true,
@@ -633,6 +635,8 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "agent_display": "detached"
 }
 ```
+
+`push_data_ref` controls whether finalize pushes `data_ref` to origin. It defaults to `false`: each run's state, log and Claude conversation are committed to the data ref in the local clone, where trajectory replay reads them, and nothing is pushed. Set it to `true` (in `~/.klaus/config.json` or the target repo's `.klaus/config.json`) to push the ref after every run, which lets replay work across machines. Agent transcripts contain prompts, file contents and environment details, and a pushed data ref is readable by anyone who can read the repo, so leave it off for public repos. A push sends the ref's whole history, including runs committed while pushing was off. `klaus push-log <id> --push` pushes once without changing the setting.
 
 `trusted_reviewers` lists GitHub logins whose comments dispatch a fix agent even without a formal "changes requested" review. Both inline review comments and PR conversation comments count. A comment stops counting once a newer commit is pushed; editing a comment counts as new, so feedback added to an older comment after the latest push is picked up.
 
@@ -660,8 +664,8 @@ Conversation comments by the PR author are the exception: the operator and fix a
 - **tmux panes** manage each agent's process lifecycle. They live in a detached `klaus-agents-<session-id>` session owned by the tmux server, so they cost you no screen space and agents survive the coordinator exiting (`agent_display: "pane"` splits your window instead)
 - **JSONL logs** are saved for replay and post-run analysis
 - **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting
-- **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts sync to the repo's data ref
-- **Data ref** (`refs/klaus/data`) stores run metadata without polluting your branch list
+- **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts are committed to the local clone's data ref
+- **Data ref** (`refs/klaus/data`) stores run metadata without polluting your branch list. It is pushed to origin only when `push_data_ref` is true
 
 ## Requirements
 

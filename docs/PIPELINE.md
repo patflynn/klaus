@@ -285,14 +285,17 @@ After an agent completes:
   — these power the dashboard and contain cost, duration, PR URL, and approval
   status.
 
-- **Data ref sync** — state and logs are committed to `refs/klaus/data` (a
-  custom git ref that doesn't show up as a branch). This is pushed to the remote
-  so run history travels with the repo.
+- **Data ref sync** — state, logs and the resumable Claude conversation are
+  committed to `refs/klaus/data` (a custom git ref that doesn't show up as a
+  branch) in the local clone, where trajectory replay reads them. The ref is
+  pushed to origin only when `push_data_ref` is true; a pushed ref is readable
+  by anyone who can read the repo.
 
 - **Sensitivity scanning** — before syncing logs to the data ref, a scanner
   checks for private IPs, SSH keys, credential patterns, and `.age` secret
   references. If anything is found, the log is held back and only the state file
-  is synced. Use `klaus push-log <id>` to force-push a held log after review.
+  is synced. Use `klaus push-log <id>` to store a held log after review, and
+  add `--push` to also push the data ref to origin.
 
 ## Putting It Together
 

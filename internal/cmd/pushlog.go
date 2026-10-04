@@ -9,24 +9,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var pushLogPush bool
+
 var pushLogCmd = &cobra.Command{
 	Use:   "push-log <run-id>",
-	Short: "Force-push a previously skipped log to the data ref",
-	Long: `Pushes a log file that was previously skipped due to sensitivity
-warnings. Use after reviewing the log and confirming it's safe.`,
+	Short: "Store a log held back for sensitivity on the data ref",
+	Long: `Commits a run's log to the data ref after the sensitivity scan held it
+back at finalize. Use after reviewing the log and confirming it's safe.
+
+The commit goes to the data ref in the run's local clone. It is pushed to
+origin only with --push, or when push_data_ref is true in config. A pushed
+data ref is world-readable on a public repo, and the push sends the ref's
+whole history, not just this log.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
-
-		root, err := git.RepoRoot()
-		if err != nil {
-			return fmt.Errorf("not inside a git repository")
-		}
-
-		cfg, err := config.Load(root)
-		if err != nil {
-			return err
-		}
 
 		store, err := sessionStore()
 		if err != nil {
@@ -37,6 +34,19 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 			return fmt.Errorf("no run found with id: %s", id)
 		}
 
+		// Same repo _finalize synced to, so replay finds it there.
+		var root string
+		if state.CloneDir != nil {
+			root = *state.CloneDir
+		} else if root, err = git.RepoRoot(); err != nil {
+			return fmt.Errorf("not inside a git repository")
+		}
+
+		cfg, err := config.Load(root)
+		if err != nil {
+			return err
+		}
+
 		if state.LogFile == nil {
 			return fmt.Errorf("no log file for run %s", id)
 		}
@@ -44,8 +54,6 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 		if _, err := os.Stat(*state.LogFile); err != nil {
 			return fmt.Errorf("log file not found: %s", *state.LogFile)
 		}
-
-		fmt.Printf("Force-pushing log for %s (bypassing sensitivity check)...\n", id)
 
 		ctx := cmd.Context()
 		gitClient := git.NewExecClient()
@@ -59,17 +67,22 @@ warnings. Use after reviewing the log and confirming it's safe.`,
 		if err := gitClient.SyncToDataRef(ctx, root, cfg.DataRef, "Run "+id, files); err != nil {
 			return fmt.Errorf("syncing to data ref: %w", err)
 		}
+		fmt.Printf("Committed log for %s to %s in %s (sensitivity check bypassed).\n", id, cfg.DataRef, root)
 
-		// Push to remote
-		if err := gitClient.PushDataRef(ctx, root, cfg.DataRef); err != nil {
-			fmt.Printf("  warning: push to remote failed: %v\n", err)
+		if !pushLogPush && !cfg.PushDataRef {
+			fmt.Printf("Not pushed: push_data_ref is false, so %s stays local. Pass --push to publish it to origin.\n", cfg.DataRef)
+			return nil
 		}
 
-		fmt.Println("Done.")
+		if err := gitClient.PushDataRef(ctx, root, cfg.DataRef); err != nil {
+			return fmt.Errorf("pushing %s to origin (the local commit is kept): %w", cfg.DataRef, err)
+		}
+		fmt.Printf("Pushed %s to origin.\n", cfg.DataRef)
 		return nil
 	},
 }
 
 func init() {
+	pushLogCmd.Flags().BoolVar(&pushLogPush, "push", false, "also push the data ref to origin (default: push only when push_data_ref is true)")
 	rootCmd.AddCommand(pushLogCmd)
 }

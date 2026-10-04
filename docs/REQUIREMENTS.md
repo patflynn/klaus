@@ -42,13 +42,13 @@ Klaus is a multi-agent orchestrator for Claude Code. It manages parallel autonom
 - Scan JSONL logs before persisting to git
 - Detect: private IPs, SSH keys, credential patterns, secret file references
 - Skip log push if sensitive data found, warn user
-- `klaus push-log` to force-push after manual review
+- `klaus push-log` to store a held-back log after manual review (`--push` also pushes the data ref)
 
 ### Data Persistence
 - Store run state in `.git/klaus/runs/`
 - Store logs in `.git/klaus/logs/`
 - Sync completed runs to `refs/klaus/data` (custom git ref, not a branch)
-- Push data ref to remote
+- Push data ref to remote only when `push_data_ref` is true (default: keep it in the local clone)
 
 ### Configuration (`klaus init`)
 - Scaffold `.klaus/` directory with default config
