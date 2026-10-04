@@ -41,7 +41,7 @@ State + Log files (local .git/klaus/)
   → Sensitivity scan on log
   → If clean: commit both to refs/klaus/data using temp index
   → If sensitive: commit state only, warn user
-  → Push refs/klaus/data to remote
+  → Push refs/klaus/data to remote only if push_data_ref is true (default false)
 ```
 
 ## State File Format
@@ -71,6 +71,7 @@ State + Log files (local .git/klaus/)
   "worktree_base": "/tmp/klaus-sessions",
   "default_budget": "5.00",
   "data_ref": "refs/klaus/data",
+  "push_data_ref": false,
   "default_branch": "main"
 }
 ```
@@ -86,6 +87,8 @@ State + Log files (local .git/klaus/)
 1. **Single cobra dependency**: Keeps the binary small and supply chain minimal.
 2. **JSON config (not YAML)**: Uses stdlib `encoding/json`, no extra dependency.
 3. **Custom git ref**: `refs/klaus/data` doesn't appear as a branch in GitHub UI.
+   It stays in the local clone by default; a pushed ref is readable by anyone
+   who can read the repo, so pushing is opt-in (`push_data_ref`).
 4. **Temp index for commits**: Git plumbing operations avoid touching the working tree.
 5. **Sensitivity scanning**: Regex-based, runs before any log is persisted to git.
 6. **Generic system prompt**: Template-based, works with any repo (not hardcoded).

@@ -125,7 +125,7 @@ var finalizeCmd = &cobra.Command{
 		if baseDir != "" && !paused {
 			emitFinalizeEvents(baseDir, state, salvage)
 		}
-		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, state)
+		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, cfg.PushDataRef, state)
 
 		if salvage != nil && salvage.dirty {
 			// WIP commit failed; removing the worktree would discard it.
@@ -803,13 +803,18 @@ func ExtractClaudeSessionID(logPath string) string {
 	return ""
 }
 
-func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gitClient git.Client, dataRef string, state *run.State) {
+// syncRunToDataRef commits the run's state, log and resumable conversation to
+// the data ref in root. It pushes the ref to origin only when push is set
+// (config push_data_ref): the ref is world-readable on a public repo, so by
+// default it stays in the local clone, where trajectory replay reads it.
+func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gitClient git.Client, dataRef string, push bool, state *run.State) {
 	stateFile := store.StateDir() + "/" + state.ID + ".json"
 	files := map[string]string{
 		"runs/" + state.ID + ".json": stateFile,
 	}
 
-	// Check log sensitivity before including
+	// Check log sensitivity before including. The scan applies even when the
+	// ref stays local: a later push publishes the ref's whole history.
 	if state.LogFile != nil {
 		logF, err := os.Open(*state.LogFile)
 		if err == nil {
@@ -819,11 +824,11 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 			if len(findings) == 0 {
 				files["logs/"+state.ID+".jsonl"] = *state.LogFile
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: skipping log push for %s: potentially sensitive data detected\n", state.ID)
+				fmt.Fprintf(os.Stderr, "warning: keeping log for %s off the data ref: potentially sensitive data detected\n", state.ID)
 				for _, f := range findings {
 					fmt.Fprintf(os.Stderr, "  - %s\n", f.Category)
 				}
-				fmt.Fprintf(os.Stderr, "  Use 'klaus push-log %s' to push manually.\n", state.ID)
+				fmt.Fprintf(os.Stderr, "  Use 'klaus push-log %s' to store it after review.\n", state.ID)
 			}
 		}
 	}
@@ -839,7 +844,7 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 			if len(findings) == 0 {
 				files["sessions/"+state.ID+".jsonl"] = convPath
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: skipping conversation push for %s: potentially sensitive data detected\n", state.ID)
+				fmt.Fprintf(os.Stderr, "warning: keeping conversation for %s off the data ref: potentially sensitive data detected\n", state.ID)
 			}
 		}
 	}
@@ -849,8 +854,9 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 		return
 	}
 
-	if err := gitClient.PushDataRef(ctx, root, dataRef); err != nil {
-		// Silently ignore push failures (no remote, etc.)
+	if push {
+		// Best-effort: a missing remote or a rejected push must not fail finalize.
+		_ = gitClient.PushDataRef(ctx, root, dataRef)
 	}
 }
 

@@ -67,10 +67,13 @@ or staged.
 For a budget-paused PR, klaus continues the previous agent's Claude
 conversation by default (trajectory replay): it restores the stored
 conversation and runs 'claude --resume', avoiding a cold re-exploration of
-the repo. It falls back to a fresh agent when the trajectory is missing,
-oversized, sensitive-skipped, or its session UUID is unknown. Use --no-replay
-to force a fresh agent, --replay to force replay (bypassing the size
-threshold), and --replay-threshold-kb to tune the per-launch size cap.
+the repo. The conversation is read from the local clone's data ref, which is
+pushed to origin only when push_data_ref is true, so by default replay works
+on the machine that ran the paused agent. It falls back to a fresh agent when
+the trajectory is missing, oversized, sensitive-skipped, or its session UUID
+is unknown. Use --no-replay to force a fresh agent, --replay to force replay
+(bypassing the size threshold), and --replay-threshold-kb to tune the
+per-launch size cap.
 
 Use --backend to select claude, codex, or agy independently of the coordinator.
 The saved session worker selection overrides default_agent_backend in config.

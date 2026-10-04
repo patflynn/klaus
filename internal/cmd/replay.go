@@ -20,10 +20,12 @@ import (
 //
 // Mechanism: klaus stores the resume-able conversation JSONL (the file
 // claude itself writes under ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl)
-// on refs/klaus/data at sessions/<run-id>.jsonl. On 'klaus launch --pr'
-// against a paused PR, we fetch that blob and restore it into the *new*
-// worktree's project dir, then invoke 'claude --resume <uuid>'. claude
-// re-anchors to the new cwd; the conversation picks up where it paused.
+// on the local clone's refs/klaus/data at sessions/<run-id>.jsonl. On 'klaus
+// launch --pr' against a paused PR, we read that blob and restore it into the
+// *new* worktree's project dir, then invoke 'claude --resume <uuid>'. claude
+// re-anchors to the new cwd; the conversation picks up where it paused. The
+// ref reaches origin only when push_data_ref is set, so by default replay
+// works only on the machine whose clone ran the paused agent.
 //
 // IMPORTANT: this is NOT the stream-json log at logs/<run-id>.jsonl —
 // claude --resume rejects that format ("No conversation found"). The two
@@ -239,8 +241,10 @@ func resolveBudgetPausedReplay(ctx context.Context, p replayParams) replayDecisi
 		return replayDecision{Reason: "no prior run recorded for this branch"}
 	}
 
-	// Best-effort: pull the latest data ref so the trajectory blob is present
-	// even on a fresh machine. Errors are expected (no remote, ref absent).
+	// Best-effort: pull the data ref so a blob another machine pushed (with
+	// push_data_ref) is present. Errors are expected: no remote, ref absent
+	// from origin (the default), or a local ref ahead of origin's, which the
+	// non-forced fetch refuses to rewind. The read below uses the local ref.
 	_ = p.GitClient.FetchDataRef(ctx, p.RepoRoot, p.DataRef)
 
 	// Use the most recent candidate that actually has a stored trajectory.
@@ -248,7 +252,7 @@ func resolveBudgetPausedReplay(ctx context.Context, p replayParams) replayDecisi
 		treePath := "sessions/" + s.ID + ".jsonl"
 		blob, err := p.GitClient.ReadDataRefFile(ctx, p.RepoRoot, p.DataRef, treePath)
 		if err != nil {
-			// Sensitive-skipped, never pushed, or pre-dates this feature.
+			// Sensitive-skipped, stored on another machine, or pre-dates this feature.
 			continue
 		}
 
@@ -278,5 +282,5 @@ func resolveBudgetPausedReplay(ctx context.Context, p replayParams) replayDecisi
 		}
 	}
 
-	return replayDecision{Reason: "no stored trajectory found on the data ref (sensitive-skipped or pre-dates replay)"}
+	return replayDecision{Reason: "no stored trajectory found on the data ref (sensitive-skipped, stored on another machine, or pre-dates replay)"}
 }

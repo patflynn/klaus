@@ -73,7 +73,7 @@ Runtime requirements (from `README.md` "Requirements"): `tmux`, `claude`, `git`,
 ## Gotchas
 - `klaus launch` must be run inside a `tmux` session (see `internal/cmd/launch.go` long help; tmux is required to host the agent's pane).
 - `.gitignore` excludes `*.jsonl` and `*.log` at the repo root — be careful adding fixtures with those extensions; place them inside subdirectories or rename if they need to be tracked.
-- Session state in `~/.klaus/sessions/` is ephemeral and machine-local; finalized run artifacts are written to the `refs/klaus/data` git ref (`README.md` "Under the hood").
+- Session state in `~/.klaus/sessions/` is ephemeral and machine-local; finalized run artifacts are committed to the `refs/klaus/data` git ref in the local clone, and pushed to origin only when `push_data_ref` is true (`README.md` "Under the hood").
 - `klaus webhook setup` requires both `webhook.relay_url` and `webhook.secret_file` in config (`README.md` "`klaus webhook`").
 - When `sandbox_host` is configured, agents run over SSH on the sandbox and the worktree is rsynced both ways; falls back to local automatically if unreachable (`README.md` "Sandbox").
 - `projectsync` is intentionally read-mostly: dirty trees, detached HEADs, diverged branches, or missing upstreams are *skipped*, never coerced (see package comment in `internal/projectsync/projectsync.go`).
