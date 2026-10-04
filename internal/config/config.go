@@ -450,6 +450,20 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
 }
 
+// WorkerRules states the run contract every worker backend shares: the run
+// ends with the agent's turn. It is not part of the templates, so a custom
+// .klaus/prompt.md cannot drop it.
+const WorkerRules = `## Non-interactive run
+You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
+- Run long builds and tests in the foreground with a generous timeout, or wait for them in a foreground loop that exits when they finish.
+- Never end your turn while a background command, monitor, or build is still running. Wait for it to finish, or stop it first.
+`
+
+// WithWorkerRules appends WorkerRules to a worker system prompt.
+func WithWorkerRules(systemPrompt string) string {
+	return strings.TrimRight(systemPrompt, "\n") + "\n\n" + WorkerRules
+}
+
 const defaultSessionPromptTemplate = `You are a **coordinator** running inside a klaus session (session ID: {{.RunID}}).
 {{if .RepoName}}
 Your working directory is an isolated git worktree on branch {{.Branch}} for repo {{.RepoName}}.

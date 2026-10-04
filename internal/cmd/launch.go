@@ -313,6 +313,7 @@ are synced back after completion. Use --local to force local execution, or
 		if err != nil {
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
+		sysPrompt = config.WithWorkerRules(sysPrompt)
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 		promptPath := filepath.Join(run.PromptDir(store), id+".md")

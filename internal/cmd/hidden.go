@@ -80,6 +80,15 @@ var finalizeCmd = &cobra.Command{
 		// Decide: did this run end normally, or did it exhaust its budget?
 		paused := handleBudgetPauseIfNeeded(ctx, baseDir, state, resultSubtype, hadPRURLBefore)
 
+		// A worker that ended its turn mid-build leaves no PR; say why before
+		// cleanup interrupts the build.
+		if !paused && (state.PRURL == nil || *state.PRURL == "") && state.FailureReason == nil && state.Worktree != "" {
+			if procs := lingeringProcesses(state.Worktree); len(procs) > 0 {
+				reason := "background work still running (" + strings.Join(procs, ", ") + ")"
+				state.FailureReason = &reason
+			}
+		}
+
 		// Sync to data ref — use the target repo's clone dir if available,
 		// otherwise fall back to the current git repo.
 		var syncRoot string

@@ -341,9 +341,11 @@ When a run finishes without a PR (for example a Claude session-limit stop) or cr
 1. Commits any uncommitted changes (`wip: klaus finalize salvage <id>`).
 2. Pushes the branch to `origin` (plain `git push -u`, never forced) unless `origin`'s live tip already matches. Push failures are logged; nothing is deleted. Branches of runs that already have a PR are not pushed.
 3. Keeps the local branch and removes the worktree (the worktree is kept if the WIP commit failed). Finalize never deletes a branch unless its work is on the default branch or `origin`'s live tip (checked with `ls-remote`, not cached `origin/*` refs) matches it; an unreachable remote counts as not pushed.
-4. Emits `agent:needs-attention` with `branch`, `pushed`, and `reason` (`no_pr`, `session_limit`, or the crash reason) instead of `agent:completed`. `klaus status` shows `needs-attention`; the dashboard shows `ATTN`.
+4. Emits `agent:needs-attention` with `branch`, `pushed`, and `reason` (`no_pr`, `session_limit`, `background work still running (<commands>)`, or the crash reason) instead of `agent:completed`. `klaus status` shows `needs-attention`; the dashboard shows `ATTN`.
 
-Runs that ended without a PR and left no commits beyond the default branch still finish as `agent:completed`.
+A run ends when the agent's turn ends, so an agent that stops while a build it started is still running never sees the result, and cleanup interrupts the build. On Linux, finalize looks for processes still running inside the worktree and records them as the run's `failure_reason`, for example `background work still running (nix)`.
+
+Runs that ended without a PR, left no commits beyond the default branch, and left no background work running still finish as `agent:completed`.
 
 There is no subcommand named `klaus resume` or `klaus finalize` — resuming happens through flags on `klaus launch`, and `_finalize` handles the WIP commit automatically:
 
@@ -648,7 +650,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 
-**`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow.
+**`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow. Klaus appends a short "Non-interactive run" section to every worker prompt, custom or default (including `pr-fix-prompt.md`), so agents know their run ends with their turn.
 
 **`.klaus/session-prompt.md`** — Custom prompt for the coordinator session. Same template variables.
 
@@ -659,7 +661,8 @@ Conversation comments by the PR author are the exception: the operator and fix a
 - **Agents run headless** — `claude -p` and `codex exec` read the prompt on stdin from its file, `agy --print`
   takes it in argv, so there is no way to type at a running agent. Correcting one mid-run means relaunching with
   `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
-  for why in-place messaging isn't offered and what it would take
+  for why in-place messaging isn't offered and what it would take. The run ends when the agent's turn ends, so every worker prompt
+  tells the agent to run long builds and tests in the foreground and never end its turn with background work still running
 - **Worktrees** isolate each agent — they can't step on each other or your working tree
 - **tmux panes** manage each agent's process lifecycle. They live in a detached `klaus-agents-<session-id>` session owned by the tmux server, so they cost you no screen space and agents survive the coordinator exiting (`agent_display: "pane"` splits your window instead)
 - **JSONL logs** are saved for replay and post-run analysis

@@ -181,7 +181,7 @@ func runNew(cmd *cobra.Command, args []string) error {
 	logFile := filepath.Join(store.LogDir(), id+".jsonl")
 
 	// Build claude command
-	sysPrompt := "You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done."
+	sysPrompt := config.WithWorkerRules("You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done.")
 	promptPath := filepath.Join(run.PromptDir(store), id+".md")
 	if err := run.WritePromptFile(promptPath, prompt); err != nil {
 		return err
