@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
-	"github.com/patflynn/klaus/internal/run"
 )
 
 // TestWorkerPromptCarriesRunContract checks that every backend's worker is told
@@ -86,8 +85,10 @@ func TestFinalizeNamesLeftoverBackgroundWork(t *testing.T) {
 					}
 				})
 			}
-			h.WriteStub("claude", "#!/usr/bin/env bash\necho wip > unfinished.txt\n"+bg+
-				`echo '{"type":"result","subtype":"success","total_cost_usd":0.01,"duration_ms":10,"session_id":"11111111-2222-4333-8444-555555555555"}'`+"\n")
+			// Block until released like the default stub: a worker that exits
+			// before launch saves its state finalizes nothing.
+			h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.01,"duration_ms":10,"session_id":"11111111-2222-4333-8444-555555555555"}` + "\n")
+			h.WriteStub("claude", h.claudeStubScript()+"echo wip > unfinished.txt\n"+bg)
 
 			res := h.RunKlaus("launch", "build it")
 			if res.ExitCode != 0 {
@@ -97,13 +98,11 @@ func TestFinalizeNamesLeftoverBackgroundWork(t *testing.T) {
 			if len(ids) != 1 {
 				t.Fatalf("runs: %v", ids)
 			}
-			var pane string
-			if s, err := h.ReadState(ids[0]); err == nil && s.TmuxPane != nil {
-				pane = *s.TmuxPane
-			}
-			st := h.WaitForState(ids[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
-			if pane != "" {
-				waitPaneGone(t, h, pane, 30*time.Second)
+			h.WaitForClaudeStart(30 * time.Second)
+			releaseBackendWorkers(t, h)
+			st, err := h.ReadState(ids[0])
+			if err != nil {
+				t.Fatal(err)
 			}
 			if st.NeedsAttention == nil {
 				t.Fatalf("salvaged run not marked needs-attention: %+v", st)
