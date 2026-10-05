@@ -386,3 +386,33 @@ func TestDashboardRepoColumnForMultipleRepos(t *testing.T) {
 		}
 	}
 }
+
+// A branch pushed without a PR (#281) is open work awaiting integration: it
+// sorts with the open PRs, shows its branch and short SHA, and is never
+// hidden as an old finished run.
+func TestDashboardShowsBranchAwaitingIntegration(t *testing.T) {
+	old := time.Now().Add(-6 * time.Hour).Format(time.RFC3339)
+	branch := "agent/20261005-0300-0002"
+	m := dashboardModel{
+		states: []*run.State{
+			{ID: "20261005-0300-0001", Type: "launch", Prompt: "exited 01", CostUSD: float64Ptr(1), CreatedAt: old},
+			{ID: "20261005-0300-0002", Type: "launch", Prompt: "open 01", CostUSD: float64Ptr(2), CreatedAt: old,
+				Branch: branch, PushedBranch: strPtr(branch), PushedSHA: strPtr("0123456789abcdef0123456789abcdef01234567")},
+		},
+		tmuxDeps:  testDashboardTmuxDeps(),
+		ghStatus:  map[string]*prStatus{},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	m = send(m, tea.WindowSizeMsg{Width: 160, Height: 30})
+
+	view := m.View()
+	if rows, _ := visibleRows(view); strings.Join(rows, ",") != "open 01" {
+		t.Errorf("visible rows = %v, want only the pushed branch", rows)
+	}
+	plain := ansi.Strip(view)
+	for _, want := range []string{"1 open · 1 finished", "1 hidden", "PUSHED  " + branch + "@0123456"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("view missing %q:\n%s", want, plain)
+		}
+	}
+}

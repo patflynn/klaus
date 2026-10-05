@@ -117,6 +117,10 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	if s.PRURL != nil {
 		return "pr-created"
 	}
+	if s.PushedSHA != nil {
+		// Direct-push finish: the branch on origin waits for the operator.
+		return "awaiting-integration"
+	}
 	return "exited"
 }
 

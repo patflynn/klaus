@@ -66,13 +66,14 @@ Use --all to show all events, or --json for machine-readable output.`,
 
 func printSummary(events []event.Event) {
 	var (
-		prsReady      []string
+		prsReady       []string
 		needsAttention []string
-		completed     []completedInfo
-		prCreated     []string
-		ciFailed      []string
-		ciPassed      []string
-		prMerged      []string
+		completed      []completedInfo
+		prCreated      []string
+		branchPushed   []string
+		ciFailed       []string
+		ciPassed       []string
+		prMerged       []string
 	)
 
 	for _, evt := range events {
@@ -90,6 +91,10 @@ func printSummary(events []event.Event) {
 				prURL = ""
 			}
 			prCreated = append(prCreated, fmt.Sprintf("#%s (%s)", prNumberFromURL(prURL), id))
+		case event.AgentBranchPushed:
+			branch, _ := evt.Data["branch"].(string)
+			sha, _ := evt.Data["sha"].(string)
+			branchPushed = append(branchPushed, fmt.Sprintf("%s@%s (%s)", branch, shortSHA(sha), id))
 		case event.AgentCIPassed:
 			prURL, ok := evt.Data["pr_url"].(string)
 			if !ok {
@@ -139,6 +144,9 @@ func printSummary(events []event.Event) {
 	}
 	if len(prCreated) > 0 {
 		fmt.Printf("%d PR(s) created: %s\n", len(prCreated), strings.Join(prCreated, ", "))
+	}
+	if len(branchPushed) > 0 {
+		fmt.Printf("%d branch(es) awaiting integration: %s\n", len(branchPushed), strings.Join(branchPushed, ", "))
 	}
 	if len(ciPassed) > 0 {
 		fmt.Printf("%d CI passed: %s\n", len(ciPassed), strings.Join(ciPassed, ", "))

@@ -266,7 +266,7 @@ You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, agent errors) and consult events (`consult:started`, `consult:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
+Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors) and consult events (`consult:started`, `consult:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
 
 ```bash
 klaus watch                          # default filter, follow new events
@@ -336,7 +336,9 @@ To abandon the work, close the draft PR. To redirect, push manual commits to its
 
 ### Runs that end without a PR
 
-When a run finishes without a PR (for example a Claude session-limit stop) or crashes, `_finalize` salvages the worktree instead of discarding it:
+A run that finishes cleanly with its branch already on `origin` — the normal finish in a direct-push repo, where you integrate branches by hand instead of through PRs — is not salvaged. `_finalize` checks `origin` with `git ls-remote` before cleanup, records the branch and its head SHA on the run (`pushed_branch`, `pushed_sha`), and emits `agent:completed` plus `agent:branch-pushed` with `repo`, `branch` and `sha`. `klaus status` shows the run as `awaiting-integration`, and the dashboard lists it with the open PRs as `PUSHED <branch>@<short sha>`. The local branch is deleted; the branch on `origin` is the record. Runs with a PR emit `agent:pr-created` instead, never both.
+
+When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
 
 1. Commits any uncommitted changes (`wip: klaus finalize salvage <id>`).
 2. Pushes the branch to `origin` (plain `git push -u`, never forced) unless `origin`'s live tip already matches. Push failures are logged; nothing is deleted. Branches of runs that already have a PR are not pushed.
@@ -517,9 +519,9 @@ The status dashboard shows these columns for each run:
 
 Live TUI view of the PR pipeline. Auto-refreshes via filesystem watching and GitHub polling every 30s.
 
-Runs are listed one per row (agents working on the same PR share its row): active and running runs first, then runs needing attention (`ATTN`: salvaged work, stalled or budget-paused PRs), then open PRs, then finished runs, most recent first within each group. A repo column appears when the session spans more than one repo. The list scrolls when it doesn't fit the pane, and the line above it shows the position (e.g. `12–30 of 34`). The selection stays on its row as runs reorder, and is kept in view.
+Runs are listed one per row (agents working on the same PR share its row): active and running runs first, then runs needing attention (`ATTN`: salvaged work, stalled or budget-paused PRs), then open PRs and branches awaiting integration (`PUSHED <branch>@<short sha>`), then finished runs, most recent first within each group. A repo column appears when the session spans more than one repo. The list scrolls when it doesn't fit the pane, and the line above it shows the position (e.g. `12–30 of 34`). The selection stays on its row as runs reorder, and is kept in view.
 
-Merged, closed and cleaned-up runs older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Active, running and needs-attention runs are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
+Merged, closed and cleaned-up runs older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Active, running and needs-attention runs, open PRs and branches awaiting integration are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
 
 On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status and help lines are dropped, before any rows are.
 

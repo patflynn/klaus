@@ -70,6 +70,10 @@ func (c *ExecClient) BranchPushed(ctx context.Context, repoDir, branch string) (
 	return BranchPushed(ctx, repoDir, branch)
 }
 
+func (c *ExecClient) RemoteBranchSHA(ctx context.Context, repoDir, branch string) (string, error) {
+	return RemoteBranchSHA(ctx, repoDir, branch)
+}
+
 func (c *ExecClient) EnsureDataRef(ctx context.Context, repoDir, dataRef string) error {
 	return EnsureDataRef(ctx, repoDir, dataRef)
 }

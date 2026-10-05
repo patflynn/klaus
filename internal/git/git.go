@@ -303,14 +303,24 @@ func BranchPushed(ctx context.Context, repoDir, branch string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	remote, err := RemoteBranchSHA(ctx, repoDir, branch)
+	if err != nil {
+		return false, err
+	}
+	return remote == local, nil
+}
+
+// RemoteBranchSHA returns origin's tip of branch, or "" when origin has no
+// such branch. It asks the remote (ls-remote), not cached origin/* refs.
+func RemoteBranchSHA(ctx context.Context, repoDir, branch string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, verifyTimeout)
 	defer cancel()
 	out, err := runGitNetwork(ctx, repoDir, "ls-remote", "--heads", "origin", "refs/heads/"+branch)
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	remote, _, _ := strings.Cut(out, "\t")
-	return remote == local, nil
+	sha, _, _ := strings.Cut(out, "\t")
+	return sha, nil
 }
 
 func revListCount(ctx context.Context, repoDir string, args ...string) (int, error) {

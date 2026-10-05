@@ -284,14 +284,28 @@ func bareAgentParts(r dashRow) []string {
 		status = yellowStyle.Render("RUNNING")
 	case r.category == catAttention:
 		status = redStyle.Render(agentStatusLabel(s))
+	case r.category == catOpen:
+		status = cyanStyle.Render(agentStatusLabel(s))
 	default:
 		status = dimStyle.Render(agentStatusLabel(s))
 	}
-	parts := []string{status, dimStyle.Render(formatCost(s))}
+	parts := []string{status}
+	if s.PushedBranch != nil && s.PushedSHA != nil {
+		parts = append(parts, *s.PushedBranch+"@"+shortSHA(*s.PushedSHA))
+	}
+	parts = append(parts, dimStyle.Render(formatCost(s)))
 	if tag := sandboxTag(s); tag != "" {
 		parts = append(parts, strings.TrimPrefix(tag, " "))
 	}
 	return parts
+}
+
+// shortSHA abbreviates a commit SHA to its first seven characters.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 // isAnyRunApproved returns true if any of the given run states has been

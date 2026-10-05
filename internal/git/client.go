@@ -56,6 +56,10 @@ type Client interface {
 	// checked against the remote itself; an error means unverified.
 	BranchPushed(ctx context.Context, repoDir, branch string) (bool, error)
 
+	// RemoteBranchSHA returns origin's tip of branch, or "" when origin has
+	// no such branch, checked against the remote itself.
+	RemoteBranchSHA(ctx context.Context, repoDir, branch string) (string, error)
+
 	// EnsureDataRef ensures the custom data ref exists. Creates it with an empty
 	// initial commit if it doesn't.
 	EnsureDataRef(ctx context.Context, repoDir, dataRef string) error
