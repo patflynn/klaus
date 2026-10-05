@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -63,21 +64,30 @@ func TestHumanizeDuration(t *testing.T) {
 }
 
 // TestSelectedPRURLForOpenHandler verifies the path the 'o' key uses:
-// selectablePRs + clampCursor yields the entry whose state carries the URL to
-// open in the browser.
+// selectedPR yields the row whose state carries the URL to open in the
+// browser.
 func TestSelectedPRURLForOpenHandler(t *testing.T) {
 	states := []*run.State{
 		{ID: "a", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/1"), CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "b", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/2"), CreatedAt: "2026-01-01T00:01:00Z"},
 	}
-	m := dashboardModel{states: states, cursor: 1}
+	// Rows are most recent first, so cursor 1 is the older PR, #1.
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), cursor: 1}
 
-	entries := selectablePRs(m.states)
-	e := entries[clampCursor(m.cursor, len(entries))]
-	if e.state == nil || e.state.PRURL == nil {
-		t.Fatal("selected entry has no PRURL")
+	r, ok := m.selectedPR("open")
+	if !ok || r.state().PRURL == nil {
+		t.Fatal("selected row has no PRURL")
 	}
-	if got := *e.state.PRURL; got != "https://github.com/o/r/pull/2" {
-		t.Errorf("selected PR URL = %q, want pull/2", got)
+	if got := *r.state().PRURL; got != "https://github.com/o/r/pull/1" {
+		t.Errorf("selected PR URL = %q, want pull/1", got)
+	}
+
+	// A bare agent has no PR to open: a hint is noted instead.
+	m = dashboardModel{states: []*run.State{{ID: "20260101-0000-beef", Prompt: "p", CreatedAt: "2026-01-01T00:00:00Z"}}, tmuxDeps: testDashboardTmuxDeps()}
+	if _, ok := m.selectedPR("open"); ok {
+		t.Error("selectedPR on a bare agent row should report no PR")
+	}
+	if len(m.recentErrors) != 1 || !strings.Contains(m.recentErrors[0].Message, "agent:beef has no PR") {
+		t.Errorf("recentErrors = %v, want a no-PR hint", m.recentErrors)
 	}
 }

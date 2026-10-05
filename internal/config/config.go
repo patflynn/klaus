@@ -35,6 +35,7 @@ type Config struct {
 	SandboxHost        string             `json:"sandbox_host,omitempty"`
 	PRReviewer         string             `json:"pr_reviewer,omitempty"`
 	Webhook            *WebhookConfig     `json:"webhook,omitempty"`
+	Dashboard          *DashboardConfig   `json:"dashboard,omitempty"`
 	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
 	// 'klaus launch --pr' will restore for claude --resume when continuing a
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
@@ -120,6 +121,14 @@ type WebhookConfig struct {
 	// when polling is active (PollFallback true), since polling already
 	// re-fetches every 30s. Set to a negative value to disable entirely.
 	ReconcileIntervalSeconds int `json:"reconcile_interval_seconds"`
+}
+
+// DashboardConfig tunes the klaus dashboard TUI.
+type DashboardConfig struct {
+	// HideFinishedAfterMinutes hides merged, closed and cleaned-up runs once
+	// they are older than this many minutes, until "show all" is toggled.
+	// Zero means the default (60); a negative value never hides them.
+	HideFinishedAfterMinutes int `json:"hide_finished_after_minutes,omitempty"`
 }
 
 // PreReviewConfig configures the pre-PR review checks.

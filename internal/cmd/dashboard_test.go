@@ -208,22 +208,19 @@ func TestComputeTotalCost_Empty(t *testing.T) {
 	}
 }
 
-func TestCountAgents(t *testing.T) {
-	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+func TestFooterCountsRunningAgents(t *testing.T) {
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	states := []*run.State{
-		{ID: "1", Type: "launch"},                                                           // not running (no pane)
-		{ID: "2", Type: "launch", TmuxPane: strPtr("%2"), CostUSD: float64Ptr(1.0)},         // finished
-		{ID: "3", Type: "pr-fix", TmuxPane: strPtr("%3")},                                    // running
-		{ID: "4", Type: "session"},                                                          // excluded
-		{ID: "5", Type: "launch", TmuxPane: strPtr("%5"), DurationMS: int64Ptr(5000)},       // finished
-		{ID: "6", Type: "launch", TmuxPane: strPtr("%6")},                                   // running
+		{ID: "1", Type: "launch"}, // not running (no pane)
+		{ID: "2", Type: "launch", TmuxPane: strPtr("%2"), CostUSD: float64Ptr(1.0)},   // finished
+		{ID: "3", Type: "pr-fix", TmuxPane: strPtr("%3")},                             // running
+		{ID: "4", Type: "session"},                                                    // excluded
+		{ID: "5", Type: "launch", TmuxPane: strPtr("%5"), DurationMS: int64Ptr(5000)}, // finished
+		{ID: "6", Type: "launch", TmuxPane: strPtr("%6")},                             // running
 	}
-	running, total := m.countAgents(states)
-	if total != 5 {
-		t.Errorf("total = %d, want 5", total)
-	}
-	if running != 2 {
-		t.Errorf("running = %d, want 2", running)
+	m.states = states
+	if footer := m.renderFooter(m.resolve(time.Now()), 200); !strings.Contains(footer, "2/5 agents running") {
+		t.Errorf("footer = %q, want 2/5 agents running", footer)
 	}
 }
 
@@ -526,6 +523,18 @@ func TestCILabel(t *testing.T) {
 	}
 }
 
+// renderOnlyRow builds the dashboard rows for states (which must form exactly
+// one row) and renders that row.
+func renderOnlyRow(t *testing.T, m dashboardModel, states []*run.State, selected bool) string {
+	t.Helper()
+	m.states = states
+	rows := m.buildRows()
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	return m.renderRow(rows[0], selected, newRowLayout(rows, 80), time.Now())
+}
+
 func TestRenderPRLine(t *testing.T) {
 	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
 	s := &run.State{
@@ -536,7 +545,7 @@ func TestRenderPRLine(t *testing.T) {
 	}
 
 	// Without GitHub status
-	line := m.renderPRLine("42", []*run.State{s}, nil, false)
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
 	if !strings.Contains(line, "#42") {
 		t.Error("should contain PR number")
 	}
@@ -554,7 +563,8 @@ func TestRenderPRLine(t *testing.T) {
 		CI:        "passing",
 		Conflicts: "yes",
 	}
-	line = m.renderPRLine("42", []*run.State{s}, ps, false)
+	m.ghStatus["42"] = ps
+	line = renderOnlyRow(t, m, []*run.State{s}, false)
 	if !strings.Contains(line, "CI ✓") {
 		t.Error("should show passing CI")
 	}
@@ -564,7 +574,7 @@ func TestRenderPRLine(t *testing.T) {
 
 	// Merged PR
 	ps.State = "MERGED"
-	line = m.renderPRLine("42", []*run.State{s}, ps, false)
+	line = renderOnlyRow(t, m, []*run.State{s}, false)
 	if !strings.Contains(line, "MERGED") {
 		t.Error("should show MERGED")
 	}
@@ -573,27 +583,25 @@ func TestRenderPRLine(t *testing.T) {
 func TestRenderPRLineHyperlink(t *testing.T) {
 	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
 
-	// With a PR URL, the PR number is wrapped in an OSC 8 hyperlink.
+	// The PR number is wrapped in an OSC 8 hyperlink; the padding sits inside
+	// the link so the escape bytes don't throw off column alignment.
 	withURL := &run.State{
 		ID:     "20260307-0900-aaaa",
 		Prompt: "fix bug",
 		Type:   "launch",
 		PRURL:  strPtr("https://github.com/o/r/pull/42"),
 	}
-	line := m.renderPRLine("42", []*run.State{withURL}, nil, false)
+	line := renderOnlyRow(t, m, []*run.State{withURL}, false)
 	want := hyperlink("https://github.com/o/r/pull/42", "#42   ")
 	if !strings.Contains(line, want) {
 		t.Errorf("expected OSC 8 hyperlink %q in line %q", want, line)
 	}
 
-	// Without a PR URL, there is no escape sequence and the number is plain.
+	// A run without a PR URL is a bare agent row: no escape sequence.
 	noURL := &run.State{ID: "id", Prompt: "fix bug", Type: "launch"}
-	line = m.renderPRLine("42", []*run.State{noURL}, nil, false)
+	line = renderOnlyRow(t, m, []*run.State{noURL}, false)
 	if strings.Contains(line, "\x1b]8;;") {
 		t.Errorf("expected no OSC 8 hyperlink when PRURL is nil, got %q", line)
-	}
-	if !strings.Contains(line, "#42") {
-		t.Errorf("expected plain PR number when PRURL is nil, got %q", line)
 	}
 }
 
@@ -609,7 +617,7 @@ func TestRenderPRLineSelectedWithHyperlink(t *testing.T) {
 	// A selected row must show BOTH the selection gutter marker and keep the
 	// OSC 8 hyperlink on the PR number intact (lipgloss styling must not strip
 	// the hyperlink escape).
-	line := m.renderPRLine("42", []*run.State{s}, nil, true)
+	line := renderOnlyRow(t, m, []*run.State{s}, true)
 	if !strings.Contains(line, "> ") {
 		t.Errorf("selected row should show the '> ' gutter marker, got %q", line)
 	}
@@ -657,8 +665,10 @@ func TestRenderPRLineApproval(t *testing.T) {
 		PRURL:  strPtr("https://github.com/o/r/pull/10"),
 	}
 
+	m.ghStatus = map[string]*prStatus{"10": {State: "OPEN"}}
+
 	// No approval — should not show indicator
-	line := m.renderPRLine("10", []*run.State{base}, &prStatus{State: "OPEN"}, false)
+	line := renderOnlyRow(t, m, []*run.State{base}, false)
 	if strings.Contains(line, "approved") {
 		t.Error("should not show approved when not approved")
 	}
@@ -666,7 +676,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 	// Single run approved
 	approvedRun := *base
 	approvedRun.Approved = &approved
-	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "OPEN"}, false)
+	line = renderOnlyRow(t, m, []*run.State{&approvedRun}, false)
 	if !strings.Contains(line, "approved") {
 		t.Error("should show approved indicator")
 	}
@@ -674,52 +684,16 @@ func TestRenderPRLineApproval(t *testing.T) {
 	// Multiple runs, only second is approved
 	notApprovedRun := *base
 	notApprovedRun.Approved = &notApproved
-	line = m.renderPRLine("10", []*run.State{&notApprovedRun, &approvedRun}, &prStatus{State: "OPEN"}, false)
+	line = renderOnlyRow(t, m, []*run.State{&notApprovedRun, &approvedRun}, false)
 	if !strings.Contains(line, "approved") {
 		t.Error("should show approved when any run is approved")
 	}
 
 	// Approved but MERGED — should not show indicator
-	line = m.renderPRLine("10", []*run.State{&approvedRun}, &prStatus{State: "MERGED"}, false)
+	m.ghStatus["10"] = &prStatus{State: "MERGED"}
+	line = renderOnlyRow(t, m, []*run.State{&approvedRun}, false)
 	if strings.Contains(line, "approved") {
 		t.Error("should not show approved for merged PRs")
-	}
-}
-
-func TestRenderGroupCounts(t *testing.T) {
-	m := dashboardModel{width: 80, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{}}
-	g := repoGroup{
-		Repo: "owner/repo",
-		Runs: []*run.State{
-			{ID: "1", Type: "launch", PRURL: strPtr("https://github.com/o/r/pull/1")},
-			{ID: "2", Type: "launch", PRURL: strPtr("https://github.com/o/r/pull/2")},
-			{ID: "3", Type: "launch"},
-		},
-		PRMap: map[string]*prStatus{},
-	}
-
-	rendered := m.renderGroup(g)
-	if !strings.Contains(rendered, "3 agents") {
-		t.Errorf("should show '3 agents', got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "2 PRs") {
-		t.Errorf("should show '2 PRs', got: %s", rendered)
-	}
-}
-
-func TestRightAlignPad(t *testing.T) {
-	got := rightAlignPad("hello", 10)
-	if len(got) != 10 {
-		t.Errorf("rightAlignPad length = %d, want 10", len(got))
-	}
-	if !strings.HasSuffix(got, "hello") {
-		t.Errorf("rightAlignPad should end with 'hello', got %q", got)
-	}
-
-	// When string is wider than total
-	got = rightAlignPad("hello", 3)
-	if got != "hello" {
-		t.Errorf("rightAlignPad with narrow width should return original, got %q", got)
 	}
 }
 
@@ -772,7 +746,7 @@ func TestHostFieldOmittedWhenNil(t *testing.T) {
 }
 
 func TestRenderBareAgentLineWithHost(t *testing.T) {
-	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	host := "klaus-worker-0"
 	s := &run.State{
 		ID:       "20260328-1915-e4b3",
@@ -781,38 +755,45 @@ func TestRenderBareAgentLineWithHost(t *testing.T) {
 		Host:     &host,
 	}
 
-	line := m.renderBareAgentLine(s)
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
 	if !strings.Contains(line, "[sandbox]") {
 		t.Error("bare agent with Host set should show [sandbox], got:", line)
 	}
 }
 
 func TestRenderBareAgentLineWithoutHost(t *testing.T) {
-	m := &dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	s := &run.State{
 		ID:       "20260328-1915-e4b3",
 		Prompt:   "fix tests",
 		TmuxPane: strPtr("%5"),
 	}
 
-	line := m.renderBareAgentLine(s)
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
 	if strings.Contains(line, "[sandbox]") {
 		t.Error("bare agent without Host should not show [sandbox], got:", line)
 	}
 }
 
-func TestRenderAgentSublineWithHost(t *testing.T) {
+func TestRenderPRLineRunningAgentWithHost(t *testing.T) {
+	// An agent running on a PR (e.g. a dispatched CI fix) is named on the PR
+	// row, with its sandbox tag.
+	m := dashboardModel{tmuxDeps: testDashboardTmuxDeps()}
 	host := "klaus-worker-0"
 	s := &run.State{
 		ID:       "20260328-1915-e4b3",
 		Prompt:   "fix tests",
 		TmuxPane: strPtr("%5"),
 		Host:     &host,
+		PRURL:    strPtr("https://github.com/o/r/pull/9"),
 	}
 
-	line := renderAgentSubline(s)
+	line := renderOnlyRow(t, m, []*run.State{s}, false)
+	if !strings.Contains(line, "agent:e4b3 running") {
+		t.Error("PR row should name the running agent, got:", line)
+	}
 	if !strings.Contains(line, "[sandbox]") {
-		t.Error("agent subline with Host set should show [sandbox], got:", line)
+		t.Error("running agent with Host set should show [sandbox], got:", line)
 	}
 }
 

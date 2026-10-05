@@ -2,7 +2,11 @@ package cmd
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -28,46 +32,32 @@ func (c *captureTmux) SelectPane(_ context.Context, paneID string) error {
 	return nil
 }
 
-func TestSelectablePRsOrdering(t *testing.T) {
-	// Two repos; aaa sorts before zzz. Within a repo, PRs appear in first-seen
-	// order. A session run and a bare (no-PR) agent are not selectable.
+func TestBuildRowsOneRowPerPRAndBareAgent(t *testing.T) {
+	// Sessions get no row; a bare (no-PR) agent gets its own; agents on the
+	// same PR share one row, which carries the first agent's state. Rows of the
+	// same category are most recent first, across repos.
 	states := []*run.State{
 		{ID: "s1", Type: "session", Prompt: "session"},
-		{ID: "a1", Prompt: "p1", TargetRepo: strPtr("zzz"), PRURL: strPtr("https://github.com/o/zzz/pull/5"), CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "first", Prompt: "p1", TargetRepo: strPtr("zzz"), PRURL: strPtr("https://github.com/o/zzz/pull/7"), CreatedAt: "2026-01-01T00:00:00Z"},
 		{ID: "a2", Prompt: "p2", TargetRepo: strPtr("aaa"), PRURL: strPtr("https://github.com/o/aaa/pull/9"), CreatedAt: "2026-01-01T00:01:00Z"},
-		{ID: "a3", Prompt: "p3", TargetRepo: strPtr("aaa"), PRURL: strPtr("https://github.com/o/aaa/pull/3"), CreatedAt: "2026-01-01T00:02:00Z"},
-		{ID: "a4", Prompt: "bare", TargetRepo: strPtr("aaa"), CreatedAt: "2026-01-01T00:03:00Z"},
+		{ID: "second", Prompt: "p3", TargetRepo: strPtr("zzz"), PRURL: strPtr("https://github.com/o/zzz/pull/7"), CreatedAt: "2026-01-01T00:02:00Z"},
+		{ID: "bare", Prompt: "bare", TargetRepo: strPtr("aaa"), Worktree: "/wt", CreatedAt: "2026-01-01T00:03:00Z"},
 	}
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps()}
 
-	got := selectablePRs(states)
-	want := []struct{ repo, pr string }{
-		{"aaa", "9"},
-		{"aaa", "3"},
-		{"zzz", "5"},
+	var got []string
+	for _, r := range m.buildRows() {
+		got = append(got, r.key)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("selectablePRs len = %d, want %d (%v)", len(got), len(want), got)
+	// Both PRs are open; #7's latest activity (00:02) is newer than #9's. The
+	// exited bare agent is finished, so it sorts last.
+	want := []string{"pr:zzz#7", "pr:aaa#9", "run:bare"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("row keys = %v, want %v", got, want)
 	}
-	for i, w := range want {
-		if got[i].repo != w.repo || got[i].prNum != w.pr {
-			t.Errorf("entry %d = {%s #%s}, want {%s #%s}", i, got[i].repo, got[i].prNum, w.repo, w.pr)
-		}
-	}
-}
-
-func TestSelectablePRsDedupesAgentsPerPR(t *testing.T) {
-	// Two agents on the same PR collapse to a single selectable entry, and the
-	// entry carries the first agent's state.
-	states := []*run.State{
-		{ID: "first", Prompt: "p1", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/7"), CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "second", Prompt: "p2", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/7"), CreatedAt: "2026-01-01T00:01:00Z"},
-	}
-	got := selectablePRs(states)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(got))
-	}
-	if got[0].state == nil || got[0].state.ID != "first" {
-		t.Errorf("entry state = %v, want first agent's state", got[0].state)
+	rows := m.buildRows()
+	if len(rows[0].runs) != 2 || rows[0].state().ID != "first" {
+		t.Errorf("PR #7 row runs = %d, state = %s; want 2 runs, first agent's state", len(rows[0].runs), rows[0].state().ID)
 	}
 }
 
@@ -87,41 +77,30 @@ func TestClampCursor(t *testing.T) {
 	}
 }
 
-func TestReconcileSelectionKeepsSelectedPR(t *testing.T) {
+func TestSelectionFollowsRowWhenListChanges(t *testing.T) {
 	prevStates := []*run.State{
-		{ID: "a", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/1"), CreatedAt: "2026-01-01T00:00:00Z"},
+		{ID: "a", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/1"), CreatedAt: "2026-01-01T00:02:00Z"},
 		{ID: "b", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/2"), CreatedAt: "2026-01-01T00:01:00Z"},
-		{ID: "c", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/3"), CreatedAt: "2026-01-01T00:02:00Z"},
+		{ID: "c", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/3"), CreatedAt: "2026-01-01T00:00:00Z"},
 	}
-	m := dashboardModel{states: prevStates, cursor: 2} // selecting PR #3
-	prev := selectablePRs(m.states)
+	m := dashboardModel{states: prevStates, tmuxDeps: testDashboardTmuxDeps(), cursor: 2}
+	m.syncView(time.Now())
+	if r, _ := m.selectedRow(); r.prNum != "3" {
+		t.Fatalf("selected PR #%s, want #3", r.prNum)
+	}
 
 	// PR #1 is removed; #3 still exists but shifts to index 1.
-	m.states = []*run.State{prevStates[1], prevStates[2]}
-	m.reconcileSelection(prev)
-
-	if _, prNum, ok := m.selectedPR(); !ok || prNum != "3" {
-		t.Errorf("after reload selection = %q (ok=%v), want PR #3", prNum, ok)
+	next, _ := m.Update(statesLoadedMsg{states: []*run.State{prevStates[1], prevStates[2]}})
+	m = next.(dashboardModel)
+	if r, _ := m.selectedRow(); r.prNum != "3" || m.cursor != 1 {
+		t.Errorf("after reload selection = #%s at %d, want PR #3 at 1", r.prNum, m.cursor)
 	}
-}
 
-func TestReconcileSelectionClampsWhenSelectedPRGone(t *testing.T) {
-	prevStates := []*run.State{
-		{ID: "a", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/1"), CreatedAt: "2026-01-01T00:00:00Z"},
-		{ID: "b", Prompt: "p", TargetRepo: strPtr("r"), PRURL: strPtr("https://github.com/o/r/pull/2"), CreatedAt: "2026-01-01T00:01:00Z"},
-	}
-	m := dashboardModel{states: prevStates, cursor: 1} // selecting PR #2
-	prev := selectablePRs(m.states)
-
-	// PR #2 removed; only PR #1 remains. Cursor must clamp to a valid index.
-	m.states = []*run.State{prevStates[0]}
-	m.reconcileSelection(prev)
-
-	if m.cursor != 0 {
-		t.Errorf("cursor = %d, want clamped to 0", m.cursor)
-	}
-	if _, prNum, ok := m.selectedPR(); !ok || prNum != "1" {
-		t.Errorf("selection = %q (ok=%v), want PR #1", prNum, ok)
+	// PR #3 is removed; the selection stays at its position, clamped.
+	next, _ = m.Update(statesLoadedMsg{states: []*run.State{prevStates[0]}})
+	m = next.(dashboardModel)
+	if r, _ := m.selectedRow(); r.prNum != "1" || m.cursor != 0 {
+		t.Errorf("after removal selection = #%s at %d, want PR #1 at 0", r.prNum, m.cursor)
 	}
 }
 
@@ -188,15 +167,11 @@ func TestApproveSelectedPRMarksRightRun(t *testing.T) {
 		}
 	}
 
-	// Cursor on the second PR (#22). Approve via the same path the 'a' key uses.
-	m := dashboardModel{store: store, states: states, cursor: 1}
-	entries := selectablePRs(m.states)
-	e := entries[clampCursor(m.cursor, len(entries))]
-	if e.prNum != "22" {
-		t.Fatalf("selected PR = %s, want 22", e.prNum)
-	}
-	if err := markApproved(e.state, m.store); err != nil {
-		t.Fatalf("markApproved: %v", err)
+	// #22 is the more recent open PR, so it is listed first: move down to
+	// #11 and back up to #22, then approve with the 'a' key.
+	var model tea.Model = dashboardModel{store: store, states: states, tmuxDeps: testDashboardTmuxDeps()}
+	for _, k := range []string{"j", "k", "a"} {
+		model, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)})
 	}
 
 	s22, _ := store.Load("r2")

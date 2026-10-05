@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -15,7 +16,6 @@ import (
 
 var (
 	headerStyle   = lipgloss.NewStyle().Bold(true)
-	repoStyle     = lipgloss.NewStyle().Bold(true)
 	greenStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	redStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	yellowStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
@@ -26,110 +26,217 @@ var (
 	selectedStyle = lipgloss.NewStyle().Bold(true).Background(lipgloss.Color("237"))
 )
 
-func (m dashboardModel) renderGroup(g repoGroup) string {
-	var b strings.Builder
+// defaultDashboardWidth is assumed until the terminal reports its size.
+const defaultDashboardWidth = 80
 
-	// Repo header with counts
-	prCount := 0
-	agentCount := 0
-	for _, s := range g.Runs {
-		if s.Type == "session" {
-			continue
-		}
-		agentCount++
-		if s.PRURL != nil {
-			prCount++
-		}
-	}
+// chromeKind is a line of the dashboard outside the scrolling run list.
+type chromeKind int
 
-	repoLabel := repoStyle.Render(fmt.Sprintf(" %s", g.Repo))
-	counts := dimStyle.Render(fmt.Sprintf(
-		"%d agent%s, %d PR%s",
-		agentCount, pluralS(agentCount),
-		prCount, pluralS(prCount),
-	))
-	b.WriteString(fmt.Sprintf("%s%s\n", repoLabel, rightAlignPad(counts, m.width-lipgloss.Width(repoLabel))))
-	b.WriteString(dimStyle.Render(" " + strings.Repeat("─", clamp(m.width-2, 0, 120))))
-	b.WriteString("\n")
+const (
+	chromeHeader  chromeKind = iota // title, session duration and cost
+	chromeSource                    // polling / webhook status
+	chromeSandbox                   // sandbox host reachability
+	chromeSummary                   // run counts, scroll position, hidden count
+	chromeBlank                     // spacing
+	chromeError                     // a recent pipeline error
+	chromeFooter                    // agent count and key help
+)
 
-	// Group agents by PR number in a single pass (O(N)).
-	prToAgents := make(map[string][]*run.State)
-	var bareAgents []*run.State
-	var prOrder []string
-	seenPRs := make(map[string]bool)
-
-	for _, s := range g.Runs {
-		if s.Type == "session" {
-			continue
-		}
-		prNum := extractPRNumber(s)
-		if prNum != "" {
-			prToAgents[prNum] = append(prToAgents[prNum], s)
-			if !seenPRs[prNum] {
-				prOrder = append(prOrder, prNum)
-				seenPRs[prNum] = true
-			}
-		} else {
-			bareAgents = append(bareAgents, s)
-		}
-	}
-
-	// Determine which PR row (if any) is currently selected so it can be
-	// rendered with the highlight gutter.
-	selRepo, selPR, hasSel := m.selectedPR()
-
-	// Render PRs and their agents
-	for _, prNum := range prOrder {
-		agents := prToAgents[prNum]
-		if len(agents) == 0 {
-			continue
-		}
-		selected := hasSel && selRepo == g.Repo && selPR == prNum
-		b.WriteString(m.renderPRLine(prNum, agents, g.PRMap[prNum], selected))
-		b.WriteString("\n")
-		for _, s := range agents {
-			if m.isAgentRunning(s) {
-				b.WriteString(renderAgentSubline(s))
-				b.WriteString("\n")
-			}
-		}
-	}
-
-	// Render bare agents
-	for _, s := range bareAgents {
-		b.WriteString(m.renderBareAgentLine(s))
-		b.WriteString("\n")
-	}
-
-	return b.String()
+// chromeItem is one chrome line. Top items render above the run list, the
+// rest below it.
+type chromeItem struct {
+	kind chromeKind
+	top  bool
+	idx  int // index into recentErrors for chromeError
 }
 
-func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prStatus, selected bool) string {
-	s := agents[0]
-	// Gutter marker for the cursor-selected row.
-	gutter := "  "
-	if selected {
-		gutter = "> "
+// dropRank orders chrome lines for removal on short panes: the highest rank
+// goes first. The summary line, which carries the scroll position, goes last.
+func dropRank(k chromeKind) int {
+	switch k {
+	case chromeBlank:
+		return 6
+	case chromeSource, chromeSandbox:
+		return 5
+	case chromeError:
+		return 4
+	case chromeFooter:
+		return 3
+	case chromeHeader:
+		return 2
+	default:
+		return 1
 	}
-	// Build the visible PR label first (visible width 6), then wrap only the
-	// visible text in a hyperlink so the OSC 8 escape bytes are not counted in
-	// the %-5s padding and column alignment is preserved.
-	prText := fmt.Sprintf("#%-5s", prNum)
-	if s.PRURL != nil && *s.PRURL != "" {
-		prText = hyperlink(*s.PRURL, prText)
-	}
-	prLabel := gutter + prText
-	prompt := truncate(s.Prompt, 20)
+}
 
-	state := "OPEN"
-	if s.MergedAt != nil {
-		state = "MERGED"
-	} else if ps != nil && ps.State != "" {
-		state = ps.State
+// fitLayout picks the chrome lines to draw and the number of run rows that
+// fit in the pane. On a short pane it drops chrome, least useful first, until
+// a few rows fit, so rows are dropped last. An unknown height (0) shows
+// everything.
+func (m dashboardModel) fitLayout(nRows int) ([]chromeItem, int) {
+	items := []chromeItem{{kind: chromeHeader, top: true}, {kind: chromeSource, top: true}}
+	if len(m.sandboxHosts) > 0 {
+		items = append(items, chromeItem{kind: chromeSandbox, top: true})
+	}
+	items = append(items,
+		chromeItem{kind: chromeSummary, top: true},
+		chromeItem{kind: chromeBlank, top: true},
+		chromeItem{kind: chromeBlank},
+	)
+	for i := range m.recentErrors {
+		items = append(items, chromeItem{kind: chromeError, idx: i})
+	}
+	items = append(items, chromeItem{kind: chromeFooter})
+
+	if m.height <= 0 {
+		return items, nRows
+	}
+	// The body needs a line even with no rows, for the "no runs" message.
+	minBody := clamp(nRows, 1, 3)
+	for len(items) > 0 && m.height-len(items) < minBody {
+		// Drop the highest-ranked line; among equals the bottom-most, except
+		// errors, where the oldest goes first.
+		drop := 0
+		for i, it := range items {
+			r, best := dropRank(it.kind), dropRank(items[drop].kind)
+			if r > best || (r == best && it.kind != chromeError) {
+				drop = i
+			}
+		}
+		items = append(items[:drop], items[drop+1:]...)
+	}
+	return items, clamp(m.height-len(items), 0, nRows)
+}
+
+// rowLayout holds the column widths shared by every row, computed over all
+// rows so columns don't shift while scrolling.
+type rowLayout struct {
+	repoW   int // 0 hides the repo column (single-repo lists)
+	idW     int
+	promptW int // 0 hides the prompt column
+}
+
+func newRowLayout(rows []dashRow, width int) rowLayout {
+	lay := rowLayout{idW: 6} // "#" plus a five-digit PR number
+	repos := make(map[string]bool)
+	for _, r := range rows {
+		repos[r.repo] = true
+		if r.prNum == "" {
+			lay.idW = 10 // "agent:" plus a four-character run ID
+		}
+	}
+	if len(repos) > 1 {
+		for repo := range repos {
+			lay.repoW = max(lay.repoW, len([]rune(shortRepoName(repo))))
+		}
+		lay.repoW = min(lay.repoW, 14)
+		if width < 60 {
+			lay.repoW = min(lay.repoW, 6)
+		}
+	}
+	fixed := 2 + lay.idW // gutter and ID
+	if lay.repoW > 0 {
+		fixed += lay.repoW + 2
+	}
+	lay.promptW = promptWidth(width, fixed+2)
+	return lay
+}
+
+// promptWidth shares a row between the prompt and the status labels after
+// it. The prompt grows on wide panes and shrinks first on narrow ones, so the
+// labels stay visible as long as possible; anything that still doesn't fit is
+// cut at the right edge rather than wrapped onto another line.
+func promptWidth(width, fixed int) int {
+	const statusRoom = 34 // e.g. "OPEN  CI ✓  conflicts ✗  ready  2h"
+	const minPrompt, maxPrompt = 12, 48
+	if w := width - fixed - statusRoom; w >= minPrompt {
+		return min(w, maxPrompt)
+	}
+	// Narrow pane: keep room for a state label and squeeze the prompt.
+	w := clamp(width-fixed-10, 0, minPrompt)
+	if w < 4 {
+		return 0
+	}
+	return w
+}
+
+// shortRepoName drops the owner from "owner/repo".
+func shortRepoName(repo string) string {
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		return repo[i+1:]
+	}
+	return repo
+}
+
+// renderRow renders one run-list row as a single line.
+func (m dashboardModel) renderRow(r dashRow, selected bool, lay rowLayout, now time.Time) string {
+	s := r.state()
+	var b strings.Builder
+	// Gutter marker for the cursor-selected row.
+	if selected {
+		b.WriteString("> ")
+	} else {
+		b.WriteString("  ")
+	}
+	if lay.repoW > 0 {
+		fmt.Fprintf(&b, "%-*s  ", lay.repoW, truncateLine(shortRepoName(r.repo), lay.repoW))
+	}
+	if r.prNum != "" {
+		// Pad the visible label first, then wrap only the visible text in a
+		// hyperlink so the OSC 8 escape bytes are not counted in the padding
+		// and column alignment is preserved.
+		label := fmt.Sprintf("#%-*s", lay.idW-1, r.prNum)
+		if s.PRURL != nil && *s.PRURL != "" {
+			label = hyperlink(*s.PRURL, label)
+		}
+		b.WriteString(label)
+	} else {
+		fmt.Fprintf(&b, "%-*s", lay.idW, "agent:"+shortRunID(s.ID))
+	}
+	if lay.promptW > 0 {
+		fmt.Fprintf(&b, "  %-*s", lay.promptW, truncateLine(s.Prompt, lay.promptW))
+	}
+
+	prefix := b.String()
+	switch {
+	case selected:
+		prefix = selectedStyle.Render(prefix)
+	case r.category == catFinished:
+		prefix = dimStyle.Render(prefix)
 	}
 
 	var parts []string
-	parts = append(parts, stateLabel(state))
+	if r.prNum != "" {
+		parts = m.prStatusParts(r)
+	} else {
+		parts = bareAgentParts(r)
+	}
+	if !r.lastSeen.IsZero() {
+		parts = append(parts, dimStyle.Render(humanizeDuration(now.Sub(r.lastSeen))))
+	}
+	return prefix + "  " + strings.Join(parts, "  ")
+}
+
+// prStatusParts returns the status labels for a PR row.
+func (m dashboardModel) prStatusParts(r dashRow) []string {
+	ps := r.ps
+	state := "OPEN"
+	for _, s := range r.runs {
+		if s.MergedAt != nil {
+			state = "MERGED"
+		}
+	}
+	if state != "MERGED" && ps != nil && ps.State != "" {
+		state = ps.State
+	}
+
+	parts := []string{stateLabel(state)}
+	if len(r.running) > 0 {
+		parts = append(parts, runningLabel(r.running))
+	}
+	if r.category == catAttention {
+		parts = append(parts, redStyle.Render("ATTN"))
+	}
 
 	if ps != nil && state == "OPEN" {
 		parts = append(parts, ciLabel(ps.CI))
@@ -148,20 +255,43 @@ func (m dashboardModel) renderPRLine(prNum string, agents []*run.State, ps *prSt
 	}
 
 	// Show klaus-internal approval if any run for this PR is approved.
-	if state == "OPEN" && isAnyRunApproved(agents) {
+	if state == "OPEN" && isAnyRunApproved(r.runs) {
 		parts = append(parts, cyanStyle.Render("✓ approved"))
 	}
 
 	// Append pipeline stage if available.
-	if pps, ok := m.pipelineStates[prNum]; ok {
+	if pps, ok := m.pipelineStates[r.prNum]; ok {
 		parts = append(parts, dimStyle.Render(pipeline.StageLabel(pps.Stage)))
 	}
+	return parts
+}
 
-	prefix := fmt.Sprintf("%s  %-20s", prLabel, prompt)
-	if selected {
-		prefix = selectedStyle.Render(prefix)
+// runningLabel names the agent running on a PR, e.g. a dispatched CI fix.
+func runningLabel(running []*run.State) string {
+	if len(running) > 1 {
+		return yellowStyle.Render(fmt.Sprintf("%d agents running", len(running)))
 	}
-	return fmt.Sprintf("%s  %s", prefix, strings.Join(parts, "  "))
+	s := running[0]
+	return yellowStyle.Render("agent:"+shortRunID(s.ID)+" running") + sandboxTag(s)
+}
+
+// bareAgentParts returns the status labels for an agent row with no PR.
+func bareAgentParts(r dashRow) []string {
+	s := r.state()
+	var status string
+	switch {
+	case len(r.running) > 0:
+		status = yellowStyle.Render("RUNNING")
+	case r.category == catAttention:
+		status = redStyle.Render(agentStatusLabel(s))
+	default:
+		status = dimStyle.Render(agentStatusLabel(s))
+	}
+	parts := []string{status, dimStyle.Render(formatCost(s))}
+	if tag := sandboxTag(s); tag != "" {
+		parts = append(parts, strings.TrimPrefix(tag, " "))
+	}
+	return parts
 }
 
 // isAnyRunApproved returns true if any of the given run states has been
@@ -175,24 +305,100 @@ func isAnyRunApproved(states []*run.State) bool {
 	return false
 }
 
-func renderAgentSubline(s *run.State) string {
-	shortID := shortRunID(s.ID)
-	prompt := truncate(s.Prompt, 20)
-	hostTag := sandboxTag(s)
-	return yellowStyle.Render(fmt.Sprintf("   └─ agent:%s %s...%s", shortID, prompt, hostTag))
+// renderSummary renders the line above the run list: the repo, counts per
+// category, and on the right the scroll position and how many runs are hidden.
+func (m dashboardModel) renderSummary(v dashView, width int) string {
+	var counts [catFinished + 1]int
+	repos := make(map[string]bool)
+	for _, r := range v.all {
+		counts[r.category]++
+		repos[r.repo] = true
+	}
+	var left []string
+	switch len(repos) {
+	case 0:
+	case 1:
+		for repo := range repos {
+			left = append(left, repo)
+		}
+	default:
+		left = append(left, fmt.Sprintf("%d repos", len(repos)))
+	}
+	names := [...]string{"active", "attention", "open", "finished"}
+	for c, n := range counts {
+		if n > 0 {
+			left = append(left, fmt.Sprintf("%d %s", n, names[c]))
+		}
+	}
+
+	var right []string
+	if n := len(v.rows); n > 0 {
+		last := min(v.offset+v.bodyH, n)
+		first := min(v.offset+1, last)
+		right = append(right, fmt.Sprintf("%d–%d of %d", first, last, n))
+	}
+	if v.hidden > 0 {
+		right = append(right, yellowStyle.Render(fmt.Sprintf("%d hidden", v.hidden)))
+	} else if m.showAll {
+		right = append(right, "all shown")
+	}
+
+	// The right side wins on a narrow pane: cut the counts, not the position.
+	rightText := strings.Join(right, " · ")
+	rw := lipgloss.Width(rightText)
+	leftText := ansi.Truncate("  "+strings.Join(left, " · "), max(width-rw-2, 0), "…")
+	pad := max(width-lipgloss.Width(leftText)-rw-1, 1)
+	return dimStyle.Render(leftText) + strings.Repeat(" ", pad) + rightText
 }
 
-func (m *dashboardModel) renderBareAgentLine(s *run.State) string {
-	shortID := shortRunID(s.ID)
-	status := agentStatusLabel(s)
-	cost := formatCost(s)
-	prompt := truncate(s.Prompt, 20)
-	hostTag := sandboxTag(s)
-
-	if m.isAgentRunning(s) {
-		return yellowStyle.Render(fmt.Sprintf("  agent:%s  %-20s  RUNNING   %s", shortID, prompt, cost)) + hostTag
+// renderFooter renders the agent count and key help, falling back to shorter
+// help on narrower panes.
+func (m dashboardModel) renderFooter(v dashView, width int) string {
+	running, total := 0, 0
+	for _, r := range v.all {
+		running += len(r.running)
+		total += len(r.runs)
 	}
-	return dimStyle.Render(fmt.Sprintf("  agent:%s  %-20s  %s   %s", shortID, prompt, status, cost)) + hostTag
+	showKey := "h show all"
+	if m.showAll {
+		showKey = "h hide old"
+	}
+	variants := []string{
+		fmt.Sprintf("  %d/%d agents running | j/k move · pgup/pgdn page · g/G top/bottom · %s · a approve · d discuss · o open | r refresh · q quit",
+			running, total, showKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open · r refresh · q quit", showKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open · q quit", showKey),
+	}
+	footer := variants[len(variants)-1]
+	for _, f := range variants {
+		if lipgloss.Width(f) <= width {
+			footer = f
+			break
+		}
+	}
+	return dimStyle.Render(footer)
+}
+
+// renderSourceLine renders the data source status line.
+func (m dashboardModel) renderSourceLine() string {
+	if !m.useWebhook {
+		return dimStyle.Render("  polling: 30s")
+	}
+	addr := m.webhookAddr
+	if addr == "" {
+		addr = "starting..."
+	}
+	tag := fmt.Sprintf("  webhook: listening on %s", addr)
+	if m.pollEnabled {
+		tag += " + polling: 30s"
+	} else if m.reconcileEvery > 0 {
+		tag += fmt.Sprintf(" + reconcile: %s", formatDuration(m.reconcileEvery))
+	}
+	// Freshness indicator: humanized age of the last webhook delivery,
+	// color-coded so a long silence is visible. It re-renders on the
+	// existing 30s tick, so the displayed age advances without a new timer.
+	freshText, sev := webhookFreshnessText(m.lastWebhookAt, time.Now())
+	return dimStyle.Render(tag) + webhookSeverityStyle(sev).Render(" · "+freshText)
 }
 
 // sandboxTag returns a styled "[sandbox]" tag if the agent ran on a sandbox host.
@@ -260,15 +466,6 @@ func ciLabel(ci string) string {
 	default:
 		return dimStyle.Render("CI ?")
 	}
-}
-
-func rightAlignPad(s string, totalWidth int) string {
-	w := lipgloss.Width(s)
-	pad := totalWidth - w
-	if pad <= 0 {
-		return s
-	}
-	return strings.Repeat(" ", pad) + s
 }
 
 func clamp(v, lo, hi int) int {

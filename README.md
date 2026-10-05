@@ -515,7 +515,27 @@ The status dashboard shows these columns for each run:
 
 ### `klaus dashboard`
 
-Live TUI view of the PR pipeline. Groups runs by repository, auto-refreshes via filesystem watching and GitHub polling every 30s. Keyboard shortcuts: `j`/`k` (or `↑`/`↓`) move the PR selection, `a` approve the selected PR, `d` discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there), `o` open the selected PR in a browser, `r` force refresh, `q` quit.
+Live TUI view of the PR pipeline. Auto-refreshes via filesystem watching and GitHub polling every 30s.
+
+Runs are listed one per row (agents working on the same PR share its row): active and running runs first, then runs needing attention (`ATTN`: salvaged work, stalled or budget-paused PRs), then open PRs, then finished runs, most recent first within each group. A repo column appears when the session spans more than one repo. The list scrolls when it doesn't fit the pane, and the line above it shows the position (e.g. `12–30 of 34`). The selection stays on its row as runs reorder, and is kept in view.
+
+Merged, closed and cleaned-up runs older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Active, running and needs-attention runs are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
+
+On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status and help lines are dropped, before any rows are.
+
+Keyboard shortcuts:
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` (or `↑` / `↓`) | move the selection |
+| `PgUp` / `PgDn` | move a page |
+| `g` / `G` (or `Home` / `End`) | jump to the top / bottom |
+| `h` | show all runs / hide old finished runs |
+| `a` | approve the selected PR |
+| `d` | discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there) |
+| `o` | open the selected PR in a browser |
+| `r` | force refresh |
+| `q` | quit |
 
 When webhook mode is enabled, the data-source line shows a freshness indicator for the most recent webhook delivery (e.g. `· last event 5m`), color-coded as it ages (dim under 30m, yellow under 2h, red beyond). Note this surfaces the age of the last delivery, not delivery health — a long silence can mean a quiet repo or a broken delivery path, so it's a hint for a human to judge rather than a definitive check.
 
@@ -634,7 +654,8 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "merge_verify_command": "nix build",
   "default_agent_model": "claude-sonnet-5",
   "default_agent_effort": "medium",
-  "agent_display": "detached"
+  "agent_display": "detached",
+  "dashboard": {"hide_finished_after_minutes": 60}
 }
 ```
 
@@ -647,6 +668,8 @@ Conversation comments by the PR author are the exception: the operator and fix a
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 
 `default_agent_model` / `default_agent_effort` set the `claude --model` / `--effort` for launched agents when the launch doesn't pass the corresponding flag. When unset, the flag is omitted from the `claude` command entirely.
+
+`dashboard.hide_finished_after_minutes` sets how long merged, closed and cleaned-up runs stay on the dashboard before they're hidden behind `h` (default 60; negative never hides them).
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 

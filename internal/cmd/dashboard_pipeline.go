@@ -39,6 +39,28 @@ func (m *dashboardModel) isAgentRunning(s *run.State) bool {
 	return s.IsAgentRunningWith(m.tmuxDeps)
 }
 
+// agentRunning is isAgentRunning read from the snapshot taken when states,
+// GitHub status or the tick last arrived, so rendering and scrolling don't
+// query tmux for every run on every keypress. Runs missing from the snapshot
+// are checked live.
+func (m *dashboardModel) agentRunning(s *run.State) bool {
+	if running, ok := m.runningSnap[s.ID]; ok {
+		return running
+	}
+	return m.isAgentRunning(s)
+}
+
+// snapshotRunning records which agents are running right now.
+func (m *dashboardModel) snapshotRunning() {
+	snap := make(map[string]bool, len(m.states))
+	for _, s := range m.states {
+		if s.Type != "session" {
+			snap[s.ID] = m.isAgentRunning(s)
+		}
+	}
+	m.runningSnap = snap
+}
+
 // agentStatusLabel returns a display label for a non-running agent.
 func agentStatusLabel(s *run.State) string {
 	if s.NeedsAttention != nil {
@@ -117,21 +139,6 @@ func computeTotalCost(states []*run.State) float64 {
 		}
 	}
 	return total
-}
-
-// countAgents returns (running, total) agent counts (excludes sessions).
-func (m *dashboardModel) countAgents(states []*run.State) (int, int) {
-	var running, total int
-	for _, s := range states {
-		if s.Type == "session" {
-			continue
-		}
-		total++
-		if m.isAgentRunning(s) {
-			running++
-		}
-	}
-	return running, total
 }
 
 // computeSessionDuration returns the duration from the oldest active run's creation time to now.
