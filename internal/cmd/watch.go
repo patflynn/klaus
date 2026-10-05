@@ -26,16 +26,18 @@ import (
 // types that aren't emitted yet (reserved entries) so the filter remains
 // forward-compatible as the pipeline grows.
 var defaultWatchFilter = []string{
-	event.ConsultStarted,   // live
-	event.ConsultCompleted, // live
-	event.AgentPRCreated,   // live
-	"agent:error",          // reserved
-	event.PRApproved,       // live
-	event.PRMerged,         // live
-	event.PipelineStalled,  // live
-	"ci:failed",            // reserved (closest live equivalent: agent:ci-failed)
-	"ci:passed",            // reserved (closest live equivalent: agent:ci-passed)
-	"pr:comment",           // reserved
+	event.ConsultStarted,      // live
+	event.ConsultCompleted,    // live
+	event.AgentPRCreated,      // live
+	event.AgentBranchPushed,   // live
+	event.AgentNeedsAttention, // live
+	"agent:error",             // reserved
+	event.PRApproved,          // live
+	event.PRMerged,            // live
+	event.PipelineStalled,     // live
+	"ci:failed",               // reserved (closest live equivalent: agent:ci-failed)
+	"ci:passed",               // reserved (closest live equivalent: agent:ci-passed)
+	"pr:comment",              // reserved
 }
 
 // knownEventTypes maps event types to a one-line description and whether the
@@ -47,6 +49,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.AgentStarted, "live", "An agent run started"},
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
+	{event.AgentBranchPushed, "live", "An agent finished with its branch on origin and no PR (awaiting integration)"},
 	{event.AgentCIPassed, "live", "CI passed on an agent-owned PR"},
 	{event.AgentCIFailed, "live", "CI failed on an agent-owned PR"},
 	{event.AgentNeedsAttention, "live", "An agent stopped and needs operator input"},
@@ -78,9 +81,9 @@ Events are read from ~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl,
 followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
-  agent:pr-created, agent:error, pr:approved, pr:merged,
-  pipeline:stalled, consult:started, consult:completed, ci:failed,
-  ci:passed, pr:comment
+  agent:pr-created, agent:branch-pushed, agent:needs-attention,
+  agent:error, pr:approved, pr:merged, pipeline:stalled,
+  consult:started, consult:completed, ci:failed, ci:passed, pr:comment
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -452,6 +455,16 @@ func eventSummary(evt event.Event) string {
 			return prURL
 		}
 		return "PR created"
+	case event.AgentBranchPushed:
+		msg := "branch " + get("branch")
+		if sha := get("sha"); sha != "" {
+			msg += "@" + shortSHA(sha)
+		}
+		msg += " pushed, awaiting integration"
+		if repo := get("repo"); repo != "" {
+			msg += " (" + repo + ")"
+		}
+		return msg
 	case event.AgentCIPassed:
 		if prNum != "" {
 			return fmt.Sprintf("CI passed on PR #%s", prNum)

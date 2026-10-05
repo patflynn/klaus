@@ -69,6 +69,9 @@ func agentStatusLabel(s *run.State) string {
 	if s.PRURL != nil {
 		return "PR"
 	}
+	if s.PushedSHA != nil {
+		return "PUSHED"
+	}
 	return "EXITED"
 }
 

@@ -675,7 +675,7 @@ What happens after ` + "`klaus launch`" + `:
 1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
 2. Agent runs its selected backend in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
-4. Events are emitted (agent:completed, agent:pr-created)
+4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until the operator integrates the branch)
 5. Dashboard detects state change and updates display
 6. Pipeline evaluates the PR and manages CI/review/merge cycle
 

@@ -107,11 +107,19 @@ var finalizeCmd = &cobra.Command{
 		}
 
 		gitClient := git.NewExecClient()
+		noPR := state.PRURL == nil || *state.PRURL == ""
 
 		// No PR (or a crash): the worktree may hold the only copy of the work.
 		var salvage *salvageResult
-		if !paused && (state.PRURL == nil || *state.PRURL == "" || state.FailureReason != nil) {
+		if !paused && (noPR || state.FailureReason != nil) {
 			salvage = salvageUnfinishedWork(ctx, budgetPauseRunner, gitClient, state, cfg.DefaultBranch)
+		}
+		// Without a PR, the branch on origin is the only record of the work
+		// (direct-push repos). Look it up before cleanup deletes the local
+		// branch, so status and the dashboard never ask the remote. A failed
+		// salvage push already showed origin lacks the branch's tip.
+		if !paused && noPR && (salvage == nil || salvage.pushed) {
+			recordPushedBranch(ctx, gitClient, state)
 		}
 		// Persist before the data-ref sync, which reads the state file.
 		if err := store.Save(state); err != nil {
@@ -155,7 +163,8 @@ var finalizeCmd = &cobra.Command{
 // run. A salvaged or crashed run (FailureReason set) emits
 // agent:needs-attention and nothing else, so a pipeline never mistakes it for
 // a completed, PR-creating run. A normal run emits agent:completed plus
-// agent:pr-created when a PR URL is known.
+// agent:pr-created when a PR URL is known, or agent:branch-pushed when its
+// branch is on origin without a PR.
 func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult) {
 	if state == nil || baseDir == "" {
 		return
@@ -196,7 +205,62 @@ func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult
 			"pr_url":    *state.PRURL,
 			"pr_number": extractPRNumberFromURL(*state.PRURL),
 		})
+	} else if state.PushedBranch != nil && state.PushedSHA != nil {
+		emitEvent(baseDir, state.ID, event.AgentBranchPushed, map[string]interface{}{
+			"id":     state.ID,
+			"repo":   pushedRepo(state),
+			"branch": *state.PushedBranch,
+			"sha":    *state.PushedSHA,
+		})
 	}
+}
+
+// recordPushedBranch sets PushedBranch and PushedSHA when origin has the
+// run's branch. An unreachable remote records nothing.
+func recordPushedBranch(ctx context.Context, gc git.Client, state *run.State) {
+	if state.Branch == "" {
+		return
+	}
+	dir := state.Worktree
+	if _, err := os.Stat(dir); err != nil {
+		dir = runRepoDir(state)
+	}
+	if dir == "" {
+		return
+	}
+	sha, err := gc.RemoteBranchSHA(ctx, dir, state.Branch)
+	if err != nil {
+		slog.Warn("could not check origin for the run's branch", "id", state.ID, "branch", state.Branch, "err", err)
+		return
+	}
+	if sha == "" {
+		return
+	}
+	branch := state.Branch
+	state.PushedBranch = &branch
+	state.PushedSHA = &sha
+}
+
+// pushedRepo names the repo a pushed branch lives in: the run's target repo,
+// or else the origin URL of its clone.
+func pushedRepo(state *run.State) string {
+	if state.TargetRepo != nil && *state.TargetRepo != "" {
+		return *state.TargetRepo
+	}
+	if dir := runRepoDir(state); dir != "" {
+		return gitRemoteURL(dir)
+	}
+	return ""
+}
+
+// runRepoDir returns the checkout a run's worktree belongs to: its clone, or
+// else the current repo. Returns "" when neither is known.
+func runRepoDir(state *run.State) string {
+	if state.CloneDir != nil {
+		return *state.CloneDir
+	}
+	root, _ := git.RepoRoot()
+	return root
 }
 
 // handleBudgetPauseIfNeeded decides whether the just-finalized run hit its
@@ -363,8 +427,10 @@ type salvageResult struct {
 
 // salvageUnfinishedWork commits a dirty worktree as WIP and best-effort pushes
 // the branch; cleanupWorktree then keeps any branch still unpushed. Returns nil
-// when there is no work beyond the default branch. Never pushes onto a known
-// PR, so WIP can't land on a live review.
+// when there is no work beyond the default branch, or when a clean, PR-less
+// run already pushed all of it (a direct-push finish, which awaits
+// integration rather than attention). Never pushes onto a known PR, so WIP
+// can't land on a live review.
 func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, state *run.State, defaultBranch string) *salvageResult {
 	wt, branch := state.Worktree, state.Branch
 	if wt == "" || branch == "" {
@@ -382,7 +448,8 @@ func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, s
 		res.reason = "session_limit"
 	}
 
-	if _, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID); err != nil {
+	committed, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: salvage WIP commit: %v\n", err)
 		res.dirty = true
 	}
@@ -393,7 +460,10 @@ func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, s
 
 	hasPR := state.PRURL != nil && *state.PRURL != ""
 	if ok, err := gc.BranchPushed(ctx, wt, branch); err == nil && ok {
-		res.pushed = true // origin tip == local tip, e.g. direct-push repos
+		if !committed && !res.dirty && !hasPR && res.reason == "no_pr" {
+			return nil // the agent pushed its finished work itself
+		}
+		res.pushed = true // origin tip == local tip
 	} else if !hasPR {
 		if _, err := r.Git(ctx, wt, "push", "-u", "origin", branch); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: salvage push of %s: %v\n", branch, err)

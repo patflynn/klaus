@@ -39,6 +39,10 @@ const (
 	// coordinator watching the channel gets one loud notification instead of
 	// a per-poll stream, and knows the PR now needs a human.
 	PipelineStalled = "pipeline:stalled"
+	// AgentBranchPushed signals that a run finished without a PR but with its
+	// branch on origin — the normal finish in a direct-push repo, where the
+	// operator integrates the branch by hand. It carries repo, branch and sha.
+	AgentBranchPushed = "agent:branch-pushed"
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have

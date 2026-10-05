@@ -1085,6 +1085,12 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		if na["branch"] != branch || na["pushed"] != true || na["reason"] != "session_limit" {
 			t.Errorf("needs-attention data = %v", na)
 		}
+		if _, ok := evts[event.AgentBranchPushed]; ok {
+			t.Error("a salvaged run must not emit agent:branch-pushed")
+		}
+		if got := determineStatus(context.Background(), state, &fakeTmux{}); got != "needs-attention" {
+			t.Errorf("status = %q, want needs-attention", got)
+		}
 	})
 
 	t.Run("push failure keeps the local branch", func(t *testing.T) {
@@ -1108,18 +1114,24 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 
 	cleanLog := `{"type":"result","subtype":"success","result":"Pushed the branch.","total_cost_usd":1,"duration_ms":1000}
 `
-	t.Run("already-pushed branch (direct-push) is reported, not re-pushed", func(t *testing.T) {
-		_, repo, worktree, branch := setupBareRemote(t)
+	t.Run("pushed branch with uncommitted changes is salvaged on top", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
 		commitAndPush(t, worktree, branch)
+		if err := os.WriteFile(filepath.Join(worktree, "late.txt"), []byte("after push\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 
 		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
 
-		na := runEvents(t, store.BaseDir(), state.ID)[event.AgentNeedsAttention]
-		if na == nil || na["pushed"] != true || na["reason"] != "no_pr" || na["branch"] != branch {
+		evts := runEvents(t, store.BaseDir(), state.ID)
+		if na := evts[event.AgentNeedsAttention]; na == nil || na["pushed"] != true || na["reason"] != "no_pr" {
 			t.Errorf("needs-attention data = %v", na)
 		}
-		if subj, _ := gitOut(t, repo, "log", "-1", "--format=%s", "origin/"+branch); subj != "feat: done" {
-			t.Errorf("clean tree must not get a WIP commit; origin tip = %q", subj)
+		if _, ok := evts[event.AgentBranchPushed]; ok {
+			t.Error("a salvaged run must not emit agent:branch-pushed")
+		}
+		if subj, _ := gitOut(t, origin, "log", "-1", "--format=%s", branch); subj != "wip: klaus finalize salvage "+state.ID {
+			t.Errorf("origin tip = %q, want the salvage WIP commit", subj)
 		}
 	})
 
@@ -1191,4 +1203,117 @@ func TestFinalizeWithPRDeletesBranch(t *testing.T) {
 	if _, ok := evts[event.AgentPRCreated]; !ok {
 		t.Error("expected agent:pr-created")
 	}
+	if _, ok := evts[event.AgentBranchPushed]; ok {
+		t.Error("PR run must not emit agent:branch-pushed")
+	}
+	if state.PushedSHA != nil {
+		t.Errorf("PushedSHA = %q, want nil for a PR run", *state.PushedSHA)
+	}
+}
+
+// Regression for #281: a direct-push run (branch pushed, no PR) must be
+// visible as agent:branch-pushed and awaiting-integration.
+func TestFinalizeDirectPush(t *testing.T) {
+	cleanLog := `{"type":"result","subtype":"success","result":"Pushed the branch.","total_cost_usd":1,"duration_ms":1000}
+`
+	t.Run("pushed branch emits branch-pushed and records the SHA", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		commitAndPush(t, worktree, branch)
+		head, err := gitOut(t, origin, "rev-parse", "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("branch missing on origin: %v", err)
+		}
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		if state.PushedBranch == nil || *state.PushedBranch != branch || state.PushedSHA == nil || *state.PushedSHA != head {
+			t.Errorf("recorded push = %q@%q, want %s@%s", strOrNil(state.PushedBranch), strOrNil(state.PushedSHA), branch, head)
+		}
+		if state.NeedsAttention != nil {
+			t.Errorf("NeedsAttention = %q, want nil", *state.NeedsAttention)
+		}
+		if got := determineStatus(context.Background(), state, &fakeTmux{}); got != "awaiting-integration" {
+			t.Errorf("status = %q, want awaiting-integration", got)
+		}
+
+		evts := runEvents(t, store.BaseDir(), state.ID)
+		bp, ok := evts[event.AgentBranchPushed]
+		if !ok {
+			t.Fatalf("expected agent:branch-pushed, got %v", evts)
+		}
+		if bp["branch"] != branch || bp["sha"] != head || bp["repo"] != origin {
+			t.Errorf("branch-pushed data = %v, want branch %s sha %s repo %s", bp, branch, head, origin)
+		}
+		if _, ok := evts[event.AgentCompleted]; !ok {
+			t.Error("expected agent:completed")
+		}
+		for _, typ := range []string{event.AgentNeedsAttention, event.AgentPRCreated} {
+			if _, ok := evts[typ]; ok {
+				t.Errorf("unexpected %s", typ)
+			}
+		}
+
+		// The remote branch is the record: no WIP commit, local branch gone.
+		if subj, _ := gitOut(t, origin, "log", "-1", "--format=%s", branch); subj != "feat: done" {
+			t.Errorf("origin tip = %q, want the agent's commit", subj)
+		}
+		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+			t.Error("local branch should be deleted once origin has it")
+		}
+	})
+
+	t.Run("failed WIP commit keeps the worktree", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root can read the unreadable file, so git add succeeds")
+		}
+		_, repo, worktree, branch := setupBareRemote(t)
+		commitAndPush(t, worktree, branch)
+		unreadable := filepath.Join(worktree, "unreadable.txt")
+		if err := os.WriteFile(unreadable, []byte("uncommitted\n"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		if _, err := os.Stat(unreadable); err != nil {
+			t.Errorf("uncommitted file lost: %v", err)
+		}
+		evts := runEvents(t, store.BaseDir(), state.ID)
+		if _, ok := evts[event.AgentNeedsAttention]; !ok {
+			t.Errorf("expected agent:needs-attention, got %v", evts)
+		}
+		if _, ok := evts[event.AgentBranchPushed]; ok {
+			t.Error("a dirty run must not emit agent:branch-pushed")
+		}
+	})
+
+	t.Run("nothing pushed emits no branch-pushed", func(t *testing.T) {
+		_, repo, worktree, branch := setupBareRemote(t)
+		if err := os.Remove(filepath.Join(worktree, "wip.txt")); err != nil {
+			t.Fatal(err)
+		}
+
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+
+		evts := runEvents(t, store.BaseDir(), state.ID)
+		if _, ok := evts[event.AgentBranchPushed]; ok {
+			t.Errorf("unexpected agent:branch-pushed: %v", evts)
+		}
+		if _, ok := evts[event.AgentCompleted]; !ok {
+			t.Error("expected agent:completed")
+		}
+		if state.PushedBranch != nil || state.PushedSHA != nil {
+			t.Errorf("recorded push = %q@%q, want none", strOrNil(state.PushedBranch), strOrNil(state.PushedSHA))
+		}
+		if got := determineStatus(context.Background(), state, &fakeTmux{}); got != "exited" {
+			t.Errorf("status = %q, want exited", got)
+		}
+	})
+}
+
+func strOrNil(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
 }

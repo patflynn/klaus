@@ -72,6 +72,16 @@ func TestWatchFilterMatches(t *testing.T) {
 			want:      true,
 		},
 		{
+			name:      "agent:branch-pushed is in default filter",
+			eventType: event.AgentBranchPushed,
+			want:      true,
+		},
+		{
+			name:      "agent:needs-attention is in default filter",
+			eventType: event.AgentNeedsAttention,
+			want:      true,
+		},
+		{
 			name:      "reserved type ci:failed is in default filter",
 			eventType: "ci:failed",
 			want:      true,
@@ -477,6 +487,15 @@ func TestWatchListTypes(t *testing.T) {
 	if !strings.Contains(live, event.ConsultStarted) {
 		t.Errorf("expected consult:started among live types, got: %s", out)
 	}
+	if !strings.Contains(live, event.AgentBranchPushed) {
+		t.Errorf("expected agent:branch-pushed among live types, got: %s", out)
+	}
+	_, def, _ := strings.Cut(out, "Default filter:")
+	for _, typ := range []string{event.AgentBranchPushed, event.AgentNeedsAttention} {
+		if !strings.Contains(def, typ) {
+			t.Errorf("expected %s in the default filter, got: %s", typ, def)
+		}
+	}
 }
 
 // Sanity check that multiple emissions arrive in order.
@@ -535,6 +554,33 @@ func TestWatchStreamsPipelineStalled(t *testing.T) {
 	}
 	if !strings.Contains(line, "PR #734 stalled — auto-merge failed after 3 attempts") {
 		t.Errorf("expected formatted stall summary, got %q", line)
+	}
+
+	p.stopSIGTERM(t)
+}
+
+// The default filter (no --filter) must surface a direct-push finish (#281).
+func TestWatchStreamsBranchPushed(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	touchEventsFile(t, sessionDir)
+	em := newEmitter(sessionDir)
+
+	p := startWatch(t, bin, sessionID, home)
+	time.Sleep(300 * time.Millisecond)
+
+	em.emit(t, "20261005-0300-abcd", event.AgentBranchPushed, map[string]interface{}{
+		"repo":   "the-valley",
+		"branch": "agent/20261005-0300-abcd",
+		"sha":    "0123456789abcdef0123456789abcdef01234567",
+	})
+
+	line := p.nextLine(t, 5*time.Second)
+	if !strings.Contains(line, "agent:branch-pushed") {
+		t.Errorf("expected agent:branch-pushed line, got %q", line)
+	}
+	if !strings.Contains(line, "branch agent/20261005-0300-abcd@0123456 pushed, awaiting integration (the-valley)") {
+		t.Errorf("expected formatted branch-pushed summary, got %q", line)
 	}
 
 	p.stopSIGTERM(t)

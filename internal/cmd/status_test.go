@@ -107,6 +107,21 @@ func TestDetermineStatus(t *testing.T) {
 			want: "pr-created",
 		},
 		{
+			name: "pushed branch without PR returns awaiting-integration",
+			s:    &run.State{PushedBranch: strPtr("agent/x"), PushedSHA: strPtr("0123456789abcdef")},
+			want: "awaiting-integration",
+		},
+		{
+			name: "salvaged pushed branch still needs attention",
+			s:    &run.State{NeedsAttention: strPtr("no_pr"), PushedBranch: strPtr("agent/x"), PushedSHA: strPtr("0123456789abcdef")},
+			want: "needs-attention",
+		},
+		{
+			name: "merged pushed branch returns merged",
+			s:    &run.State{MergedAt: strPtr("2026-10-05T03:00:00Z"), PushedBranch: strPtr("agent/x"), PushedSHA: strPtr("0123456789abcdef")},
+			want: "merged",
+		},
+		{
 			name: "session type with missing worktree returns ended",
 			s:    &run.State{Type: "session", Worktree: "/nonexistent/path/that/does/not/exist"},
 			want: "ended",

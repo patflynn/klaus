@@ -18,7 +18,7 @@ type rowCategory int
 const (
 	catActive    rowCategory = iota // an agent is running on it
 	catAttention                    // needs the operator: salvaged work, stalled or budget-paused PR
-	catOpen                         // open PR with no agent running
+	catOpen                         // open PR or pushed branch awaiting integration, no agent running
 	catFinished                     // merged or closed PR, or an agent that exited
 )
 
@@ -137,7 +137,8 @@ func (m dashboardModel) classify(r *dashRow) {
 		r.hideable = true
 	case attention:
 		r.category = catAttention
-	case r.prNum != "":
+	case r.prNum != "" || r.state().PushedSHA != nil:
+		// A pushed branch is open work until the operator integrates it.
 		r.category = catOpen
 	default:
 		r.category = catFinished

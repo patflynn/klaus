@@ -43,6 +43,8 @@ type State struct {
 	RepoRoot         *string  `json:"repo_root,omitempty"`         // absolute path to base repo for worktree recreation
 	FailureReason    *string  `json:"failure_reason,omitempty"`    // set when the agent crashed (e.g. error_during_execution) or, without a PR, left background work running; suppresses success events and blocks resume chaining
 	NeedsAttention   *string  `json:"needs_attention,omitempty"`   // set when finalize salvaged unfinished work (no PR, or crash); names the preserved branch
+	PushedBranch     *string  `json:"pushed_branch,omitempty"`     // set when finalize found a PR-less run's branch on origin (e.g. direct-push repos)
+	PushedSHA        *string  `json:"pushed_sha,omitempty"`        // origin's tip of PushedBranch at finalize
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 }
