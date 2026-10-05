@@ -12,6 +12,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
@@ -34,8 +36,8 @@ var dashboardCmd = &cobra.Command{
 	Use:   "dashboard",
 	Short: "Live TUI dashboard for monitoring agents and PRs",
 	Long: `Shows a persistent, auto-refreshing terminal UI that monitors all active
-agent runs and their PR statuses. Groups runs by repository and displays
-CI status, merge conflicts, and review decisions.
+agent runs and their PR statuses: CI status, merge conflicts, and review
+decisions.
 
 Local state updates instantly via filesystem watching.
 GitHub state (CI, conflicts, reviews) polls every 30 seconds by default.
@@ -48,8 +50,19 @@ In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
 a full status re-fetch every 5 minutes by default (configurable via
 "reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
 
+Runs are listed one per row: active runs first, then runs needing attention,
+then open PRs, then finished runs, most recent first within each group. The
+list scrolls when it doesn't fit the pane; the line above it shows the
+position (e.g. "12–30 of 34"). Merged, closed and cleaned-up runs older than
+an hour are hidden until you press h; the same line says how many are hidden.
+Set "dashboard": {"hide_finished_after_minutes": N} in config to change the
+threshold, or a negative N to never hide them.
+
 Keyboard shortcuts:
-  j / k or ↑ / ↓  move the PR selection
+  j / k or ↑ / ↓  move the selection
+  PgUp / PgDn     move a page
+  g / G           jump to the top / bottom (also Home / End)
+  h               show all runs / hide old finished runs
   a               approve the selected PR
   d               discuss the selected PR with the coordinator
   o               open the selected PR in a browser
@@ -155,7 +168,14 @@ type dashboardModel struct {
 	ghClient       gh.Client
 	tmuxDeps       run.TmuxDeps
 	tmux           tmux.Client // for keyboard-driven actions (discuss)
-	cursor         int         // index into selectablePRs(states) for keyboard selection
+	cursor         int         // index into the displayed rows of the selected row
+	selKey         string      // dashRow.key of the selected row; survives reordering
+	offset         int         // index of the first row in the viewport
+	showAll        bool        // show old finished runs that are hidden by default
+	hideAfter      time.Duration
+	runningSnap    map[string]bool      // run ID -> agent running, see agentRunning
+	seenUnfinished map[string]bool      // row keys seen before they finished
+	finishedAt     map[string]time.Time // when a watched row was first seen finished
 	states         []*run.State
 	ghStatus       map[string]*prStatus // keyed by PR number
 	sandboxHosts   map[string]bool      // host -> reachable
@@ -214,6 +234,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
 		pipelineStates: make(map[string]*pipeline.PRPipelineState),
+		hideAfter:      hideFinishedAfter(cfg.Dashboard),
 		logFile:        logFile,
 		eventsPath:     eventsPath,
 	}
@@ -238,6 +259,24 @@ func (m dashboardModel) Init() tea.Cmd {
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	dm, ok := next.(dashboardModel)
+	if !ok {
+		return next, cmd
+	}
+	// Re-resolve the run list whenever it or the pane can have changed, so
+	// the selection stays on its row and in view.
+	switch msg.(type) {
+	case statesLoadedMsg, ghStatusMsg, tickMsg:
+		dm.snapshotRunning()
+		dm.syncView(time.Now())
+	case tea.KeyMsg, tea.WindowSizeMsg:
+		dm.syncView(time.Now())
+	}
+	return dm, cmd
+}
+
+func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -253,24 +292,27 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fetchGHStatusCmd(m.ghClient, m.states),
 			)
 		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.moveSelection(-1, 0)
 		case "down", "j":
-			if n := len(selectablePRs(m.states)); m.cursor < n-1 {
-				m.cursor++
-			}
+			m.moveSelection(1, 0)
+		case "pgup":
+			m.moveSelection(0, -1)
+		case "pgdown":
+			m.moveSelection(0, 1)
+		case "g", "home":
+			m.selectEdge(false)
+		case "G", "end":
+			m.selectEdge(true)
+		case "h":
+			m.showAll = !m.showAll
 		case "a":
 			// Approve the selected PR immediately (no confirmation).
-			entries := selectablePRs(m.states)
-			if len(entries) == 0 {
+			r, ok := m.selectedPR("approve")
+			if !ok {
 				break
 			}
-			e := entries[clampCursor(m.cursor, len(entries))]
-			if e.state != nil {
-				if err := markApproved(e.state, m.store); err != nil {
-					m.noteError(fmt.Sprintf("approve PR #%s: %v", e.prNum, err))
-				}
+			if err := markApproved(r.state(), m.store); err != nil {
+				m.noteError(fmt.Sprintf("approve PR #%s: %v", r.prNum, err))
 			}
 			// Reload so the row reflects approval immediately; the fsnotify
 			// watcher also catches the save, but this avoids the round-trip lag.
@@ -278,31 +320,30 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "d":
 			// Discuss the selected PR with the coordinator: pre-fill a prompt
 			// in the coordinator pane and switch focus there.
-			entries := selectablePRs(m.states)
-			if len(entries) == 0 {
+			r, ok := m.selectedPR("discuss")
+			if !ok {
 				break
 			}
-			e := entries[clampCursor(m.cursor, len(entries))]
 			pane := m.coordinatorPane()
 			if pane == "" {
 				m.noteError("coordinator pane unknown (older session; relaunch to enable discuss)")
 				break
 			}
-			if err := m.discussPR(e.prNum, pane); err != nil {
-				m.noteError(fmt.Sprintf("discuss PR #%s: %v", e.prNum, err))
+			if err := m.discussPR(r.prNum, pane); err != nil {
+				m.noteError(fmt.Sprintf("discuss PR #%s: %v", r.prNum, err))
 			}
 		case "o":
 			// Open the selected PR in the system browser.
-			entries := selectablePRs(m.states)
-			if len(entries) == 0 {
+			r, ok := m.selectedPR("open")
+			if !ok {
 				break
 			}
-			e := entries[clampCursor(m.cursor, len(entries))]
-			if e.state == nil || e.state.PRURL == nil || *e.state.PRURL == "" {
+			s := r.state()
+			if s.PRURL == nil || *s.PRURL == "" {
 				break
 			}
-			url := *e.state.PRURL
-			prNum := e.prNum
+			url := *s.PRURL
+			prNum := r.prNum
 			// Fire-and-forget so Update stays clean and the UI never blocks on
 			// the browser launch. Surface a transient hint on failure.
 			return m, func() tea.Msg {
@@ -318,9 +359,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case statesLoadedMsg:
-		prevEntries := selectablePRs(m.states)
 		m.states = msg.states
-		m.reconcileSelection(prevEntries)
 		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
 		for _, s := range m.states {
 			if s.IsStaleWith(m.tmuxDeps) {
@@ -526,93 +565,63 @@ func (m dashboardModel) View() string {
 		return "Loading..."
 	}
 
-	groups := groupByRepo(m.states)
+	now := time.Now()
+	v := m.resolve(now)
+	width := m.width
+	if width <= 0 {
+		width = defaultDashboardWidth
+	}
 
-	// Populate each group's PRMap from the fetched GitHub statuses.
-	for i := range groups {
-		for _, s := range groups[i].Runs {
-			prNum := extractPRNumber(s)
-			if prNum != "" {
-				if ps, ok := m.ghStatus[prNum]; ok {
-					groups[i].PRMap[prNum] = ps
-				}
-			}
+	chrome := func(c chromeItem) string {
+		switch c.kind {
+		case chromeHeader:
+			title := " klaus dashboard"
+			headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f",
+				formatDuration(computeSessionDuration(m.states)), computeTotalCost(m.states))
+			pad := max(width-2-lipgloss.Width(title)-lipgloss.Width(headerRight), 1)
+			return headerStyle.Render(title + strings.Repeat(" ", pad) + headerRight)
+		case chromeSource:
+			return m.renderSourceLine()
+		case chromeSandbox:
+			return strings.TrimSuffix(renderSandboxStatus(m.sandboxHosts), "\n")
+		case chromeSummary:
+			return m.renderSummary(v, width)
+		case chromeError:
+			e := m.recentErrors[c.idx]
+			line := fmt.Sprintf("  %s ✗ %s", e.Time.Format("15:04"), e.Message)
+			return dimRedStyle.Render(truncateLine(line, max(width-1, 1)))
+		case chromeFooter:
+			return m.renderFooter(v, width)
+		}
+		return ""
+	}
+
+	var lines []string
+	for _, c := range v.chrome {
+		if c.top {
+			lines = append(lines, chrome(c))
+		}
+	}
+	if len(v.rows) == 0 && (m.height <= 0 || m.height > len(v.chrome)) {
+		msg := "  No runs found."
+		if v.hidden > 0 {
+			msg = fmt.Sprintf("  No runs to show: %d finished hidden (h to show all).", v.hidden)
+		}
+		lines = append(lines, dimStyle.Render(msg))
+	}
+	lay := newRowLayout(v.all, width)
+	for i := v.offset; i < v.offset+v.bodyH && i < len(v.rows); i++ {
+		lines = append(lines, m.renderRow(v.rows[i], i == v.cursor, lay, now))
+	}
+	for _, c := range v.chrome {
+		if !c.top {
+			lines = append(lines, chrome(c))
 		}
 	}
 
-	totalCost := computeTotalCost(m.states)
-	runningCount, totalCount := m.countAgents(m.states)
-	sessionDur := computeSessionDuration(m.states)
-
-	var b strings.Builder
-
-	// Header
-	headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f", formatDuration(sessionDur), totalCost)
-	header := headerStyle.Render(fmt.Sprintf(
-		" klaus dashboard%s",
-		rightAlignPad(headerRight, m.width-18),
-	))
-	b.WriteString(header)
-	b.WriteString("\n")
-
-	// Data source status line
-	if m.useWebhook {
-		addr := m.webhookAddr
-		if addr == "" {
-			addr = "starting..."
-		}
-		tag := fmt.Sprintf("  webhook: listening on %s", addr)
-		if m.pollEnabled {
-			tag += " + polling: 30s"
-		} else if m.reconcileEvery > 0 {
-			tag += fmt.Sprintf(" + reconcile: %s", formatDuration(m.reconcileEvery))
-		}
-		b.WriteString(dimStyle.Render(tag))
-		// Freshness indicator: humanized age of the last webhook delivery,
-		// color-coded so a long silence is visible. It re-renders on the
-		// existing 30s tick, so the displayed age advances without a new timer.
-		freshText, sev := webhookFreshnessText(m.lastWebhookAt, time.Now())
-		b.WriteString(webhookSeverityStyle(sev).Render(" · " + freshText))
-		b.WriteString("\n")
-	} else {
-		b.WriteString(dimStyle.Render("  polling: 30s"))
-		b.WriteString("\n")
+	// Never wrap: a wrapped line would push rows off the bottom of the pane.
+	for i, l := range lines {
+		lines[i] = ansi.Truncate(l, width, "…")
 	}
-
-	// Sandbox status line (only if any runs have a Host set)
-	if sandboxLine := renderSandboxStatus(m.sandboxHosts); sandboxLine != "" {
-		b.WriteString(sandboxLine)
-	}
-	b.WriteString("\n")
-
-	if len(groups) == 0 {
-		b.WriteString(dimStyle.Render("  No runs found."))
-		b.WriteString("\n")
-	}
-
-	for _, g := range groups {
-		b.WriteString(m.renderGroup(g))
-		b.WriteString("\n")
-	}
-
-	// Pipeline errors
-	if len(m.recentErrors) > 0 {
-		for _, e := range m.recentErrors {
-			ts := e.Time.Format("15:04")
-			line := fmt.Sprintf("  %s ✗ %s", ts, e.Message)
-			b.WriteString(dimRedStyle.Render(truncate(line, clamp(m.width-2, 20, 120))))
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// Footer
-	footer := dimStyle.Render(fmt.Sprintf(
-		"  %d/%d agents running | j/k move · a approve · d discuss · o open | r refresh · q quit",
-		runningCount, totalCount,
-	))
-	b.WriteString(footer)
-	b.WriteString("\n")
-
-	return b.String()
+	return strings.Join(lines, "\n")
 }
