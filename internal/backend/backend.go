@@ -45,6 +45,12 @@ func (k Kind) ValidateEffort(s string) error {
 	return fmt.Errorf("invalid effort %q for %s: choose %s", s, k, allowed)
 }
 
+// ClaudeSettings turns off Claude Code's commit trailer, PR-body line and
+// session link. --settings layers this over the user's settings files rather
+// than replacing them. Klaus work must not carry AI attribution; the
+// commit-msg hook and the agent brief enforce the same rule.
+const ClaudeSettings = `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`
+
 type Options struct {
 	SystemPrompt, Prompt, RunID, ResumeID, Model, Effort, Budget string
 	// SystemPromptFile replaces SystemPrompt for Claude workers; other backends have no file flag.
@@ -63,7 +69,7 @@ func (k Kind) Worker(o Options) (args []string, promptOnStdin bool) {
 		if o.ResumeID != "" {
 			a = append(a, "--resume", o.ResumeID, "--fork-session")
 		}
-		a = append(a, "--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "--max-budget-usd", o.Budget)
+		a = append(a, "--dangerously-skip-permissions", "--verbose", "--output-format", "stream-json", "--max-budget-usd", o.Budget, "--settings", ClaudeSettings)
 		if o.SystemPromptFile != "" {
 			a = append(a, "--append-system-prompt-file", o.SystemPromptFile)
 		} else {
@@ -95,7 +101,7 @@ func (k Kind) Coordinator(o Options) []string {
 	var a []string
 	switch k {
 	case Claude:
-		a = []string{"claude", "--dangerously-skip-permissions", "-n", o.RunID, "--append-system-prompt", o.SystemPrompt}
+		a = []string{"claude", "--dangerously-skip-permissions", "-n", o.RunID, "--settings", ClaudeSettings, "--append-system-prompt", o.SystemPrompt}
 		if o.Continue {
 			if o.ResumeID != "" {
 				a = append(a, "--resume", o.ResumeID)

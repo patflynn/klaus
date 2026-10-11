@@ -79,6 +79,36 @@ func TestWorkerPromptTransport(t *testing.T) {
 	}
 }
 
+// Claude sessions that can commit or open PRs must run with attribution off;
+// the setting is Claude-only, so other backends' argv must not carry it.
+func TestClaudeAttributionDisabled(t *testing.T) {
+	var settings struct {
+		Attribution struct {
+			Commit, PR *string
+			SessionURL *bool `json:"sessionUrl"`
+		}
+	}
+	if err := json.Unmarshal([]byte(ClaudeSettings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if a := settings.Attribution; a.Commit == nil || *a.Commit != "" || a.PR == nil || *a.PR != "" || a.SessionURL == nil || *a.SessionURL {
+		t.Fatalf("attribution not disabled: %s", ClaudeSettings)
+	}
+	for _, k := range []Kind{Claude, Codex, Agy} {
+		for _, resume := range []string{"", "prior-session"} {
+			o := Options{SystemPrompt: "system", Prompt: "prompt", RunID: "run", Budget: "5", ResumeID: resume, Continue: resume != ""}
+			worker, _ := k.Worker(o)
+			for name, argv := range map[string][]string{"worker": worker, "coordinator": k.Coordinator(o)} {
+				joined := strings.Join(argv, "\n")
+				has := strings.Contains(joined, "--settings\n"+ClaudeSettings)
+				if has != (k == Claude) || (k != Claude && strings.Contains(joined, "--settings")) {
+					t.Errorf("%s %s resume=%q: --settings present = %v: %q", k, name, resume, has, argv)
+				}
+			}
+		}
+	}
+}
+
 func TestAgyWorkspaceResume(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
