@@ -404,3 +404,80 @@ func TestLaunchSizeGuard(t *testing.T) {
 	h.ReleaseClaude()
 	h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
 }
+
+// TestLaunchDeliveryFollowsOrigin: launch reads the repo's origin to pick the
+// worker's delivery. The harness origin is a local bare repo, like a valley
+// remote with no GitHub PRs, so the agent is told to push its branch and
+// report; a github.com origin keeps the PR workflow. The GitHub case serves
+// the github.com URL from the same bare repo through an ssh stub, so launch's
+// real fetch works offline.
+func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		github     bool
+		wantPrompt []string
+		noPrompt   []string
+	}{
+		{
+			name:       "direct-push origin",
+			wantPrompt: []string{"Do not create a PR", "head SHA", "Every check and test you ran"},
+			noPrompt:   []string{"Create a PR.", "--reviewer"},
+		},
+		{
+			name:       "github origin",
+			github:     true,
+			wantPrompt: []string{"6. Create a PR.", "Use --reviewer"},
+			noPrompt:   []string{"Do not create a PR", "head SHA"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			if tc.github {
+				// git runs `ssh [opts] git@github.com "git-upload-pack 'acme/widget.git'"`;
+				// run that service against the local bare origin instead.
+				h.WriteStub("ssh", fmt.Sprintf(`#!/usr/bin/env bash
+service="${@: -1}"
+exec "${service%%%% *}" %q
+`, h.OriginDir))
+				h.git(h.RepoDir, "remote", "set-url", "origin", "git@github.com:acme/widget.git")
+			}
+
+			res := h.RunKlaus("launch", "tidy the README")
+			if res.ExitCode != 0 {
+				t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			if got := strings.Contains(res.Stdout, "delivery: push branch, no PR"); got == tc.github {
+				t.Errorf("delivery line printed = %v, want %v\nstdout:\n%s", got, !tc.github, res.Stdout)
+			}
+
+			h.WaitForClaudeStart(30 * time.Second)
+			argv := strings.Split(h.ClaudeArgv(), "\n")
+			var sysFile string
+			for i, a := range argv {
+				if a == "--append-system-prompt-file" && i+1 < len(argv) {
+					sysFile = argv[i+1]
+				}
+			}
+			data, err := os.ReadFile(sysFile)
+			if err != nil {
+				t.Fatalf("reading system prompt file %q: %v", sysFile, err)
+			}
+			sysPrompt := string(data)
+			for _, want := range append(tc.wantPrompt, "`git push -u origin HEAD`", "Never commit directly to the default branch") {
+				if !strings.Contains(sysPrompt, want) {
+					t.Errorf("system prompt missing %q:\n%s", want, sysPrompt)
+				}
+			}
+			for _, absent := range tc.noPrompt {
+				if strings.Contains(sysPrompt, absent) {
+					t.Errorf("system prompt should not contain %q:\n%s", absent, sysPrompt)
+				}
+			}
+
+			h.ReleaseClaude()
+			h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+		})
+	}
+}

@@ -320,6 +320,12 @@ func TestParseRepoRef(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			input:     "ssh://git@github.com/patflynn/cosmo.git",
+			wantOwner: "patflynn",
+			wantRepo:  "cosmo",
+			wantURL:   "https://github.com/patflynn/cosmo.git",
+		},
+		{
 			input:     "http://github.com/owner/repo",
 			wantOwner: "owner",
 			wantRepo:  "repo",

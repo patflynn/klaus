@@ -89,7 +89,9 @@ claude (JSONL) ──► tee (save log) ──► _format-stream (live display)
 ```
 
 4. **Push & PR** — the agent commits, pushes its branch, and creates a PR via
-   `gh pr create`.
+   `gh pr create`. When the repo's `origin` is not on github.com, the agent is
+   told to push its branch without a PR and report the branch, head SHA, diff
+   summary and checks it ran; the operator integrates from there.
 
 5. **Finalization** — `_finalize` parses the JSONL log to extract cost, duration,
    and PR URL, then updates the run state file. It also cleans up the worktree

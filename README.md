@@ -336,6 +336,8 @@ To abandon the work, close the draft PR. To redirect, push manual commits to its
 
 ### Runs that end without a PR
 
+`klaus launch` reads the target repo's `origin` to decide how the agent delivers. A github.com origin (`git@github.com:o/r.git`, `https://github.com/o/r`, `ssh://git@github.com/o/r.git`) gets the PR workflow. Any other origin, such as a plain ssh remote like `git@10.100.0.1:cosmo.git` or a local path, is a direct-push repo: the default worker prompt tells the agent to push its branch, not to open a PR or use `gh`, and to end with a report of the branch, head SHA, diff summary and every check it ran, which is what you review before integrating. Launch prints `delivery: push branch, no PR` for these runs. Sandbox runs are decided from the same local repo their worktree is made from.
+
 A run that finishes cleanly with its branch already on `origin` — the normal finish in a direct-push repo, where you integrate branches by hand instead of through PRs — is not salvaged. `_finalize` checks `origin` with `git ls-remote` before cleanup, records the branch and its head SHA on the run (`pushed_branch`, `pushed_sha`), and emits `agent:completed` plus `agent:branch-pushed` with `repo`, `branch` and `sha`. `klaus status` shows the run as `awaiting-integration`, and the dashboard lists it with the open PRs as `PUSHED <branch>@<short sha>`. The local branch is deleted; the branch on `origin` is the record. Runs with a PR emit `agent:pr-created` instead, never both.
 
 When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
@@ -692,7 +694,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 
-**`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`. Customize this to match your repo's conventions, test commands, and PR workflow. Klaus appends a short "Non-interactive run" section to every worker prompt, custom or default (including `pr-fix-prompt.md`), so agents know their run ends with their turn.
+**`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`, `{{.Reviewer}}`, `{{.DirectPush}}` (true when the repo's `origin` is not on github.com; see [Runs that end without a PR](#runs-that-end-without-a-pr)). Customize this to match your repo's conventions, test commands, and PR workflow. Klaus appends a short "Non-interactive run" section to every worker prompt, custom or default (including `pr-fix-prompt.md`), so agents know their run ends with their turn.
 
 **`.klaus/session-prompt.md`** — Custom prompt for the coordinator session. Same template variables.
 

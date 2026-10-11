@@ -480,39 +480,69 @@ func CloneURL(owner, repo string) string {
 	return fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
 }
 
+// githubURLPrefixes are the URL forms that name a repository on github.com.
+var githubURLPrefixes = []string{
+	"https://github.com/",
+	"http://github.com/",
+	"git@github.com:",
+	"ssh://git@github.com/",
+}
+
+// cutGitHubPrefix strips a github.com URL prefix from ref, reporting whether
+// it had one.
+func cutGitHubPrefix(ref string) (string, bool) {
+	for _, p := range githubURLPrefixes {
+		if rest, ok := strings.CutPrefix(ref, p); ok {
+			return rest, true
+		}
+	}
+	return ref, false
+}
+
 // CleanGitHubRef strips GitHub URL prefixes, .git suffix, and trailing slashes
 // from a repo reference, returning the bare "owner/repo" or short name form.
 func CleanGitHubRef(ref string) string {
 	ref = strings.TrimSuffix(ref, ".git")
-
-	switch {
-	case strings.HasPrefix(ref, "https://github.com/"):
-		ref = strings.TrimPrefix(ref, "https://github.com/")
-	case strings.HasPrefix(ref, "http://github.com/"):
-		ref = strings.TrimPrefix(ref, "http://github.com/")
-	case strings.HasPrefix(ref, "git@github.com:"):
-		ref = strings.TrimPrefix(ref, "git@github.com:")
-	}
-
+	ref, _ = cutGitHubPrefix(ref)
 	return strings.TrimRight(ref, "/")
 }
 
+// IsGitHubRemote reports whether remote, a git remote URL, names an owner/repo
+// on github.com (https, scp-style ssh, or ssh:// form). A bare "owner/repo"
+// reference is not a remote URL and reports false.
+func IsGitHubRemote(remote string) bool {
+	if _, ok := cutGitHubPrefix(remote); !ok {
+		return false
+	}
+	_, _, err := splitRepoRef(remote)
+	return err == nil
+}
+
 // ParseRepoRef parses a GitHub repo reference into owner, repo name, and clone URL.
-// Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]"
+// Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]",
+// "ssh://git@github.com/owner/repo[.git]"
 func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
+	owner, repo, err = splitRepoRef(ref)
+	if err != nil {
+		return "", "", "", err
+	}
+	return owner, repo, CloneURL(owner, repo), nil
+}
+
+// splitRepoRef is ParseRepoRef without the clone URL, which may shell out to gh.
+func splitRepoRef(ref string) (owner, repo string, err error) {
 	ref = CleanGitHubRef(ref)
 	parts := strings.SplitN(ref, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", "", fmt.Errorf("invalid repo reference %q: expected owner/repo", ref)
+		return "", "", fmt.Errorf("invalid repo reference %q: expected owner/repo", ref)
 	}
 
 	owner = parts[0]
 	repo = parts[1]
 	if strings.Contains(owner, "..") || strings.Contains(repo, "..") {
-		return "", "", "", fmt.Errorf("invalid repo reference %q: path traversal not allowed", ref)
+		return "", "", fmt.Errorf("invalid repo reference %q: path traversal not allowed", ref)
 	}
-	cloneURL = CloneURL(owner, repo)
-	return owner, repo, cloneURL, nil
+	return owner, repo, nil
 }
 
 // EnsureClone clones a repo to destDir if it doesn't already exist.
