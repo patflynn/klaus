@@ -402,6 +402,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
+| `klaus launch --branch <name> "<prompt>"` | Name the new run's branch instead of deriving it from the brief |
 | `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
@@ -434,6 +435,22 @@ klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 ```
 
 The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
+
+### Branch names and `klaus launch --branch`
+
+Every run without `--pr` works on a new branch named `<slug>-<tail>`. The tail is the random end of the run ID (`bd92f081` for run `20261011-1843-bd92f081`), which keeps names unique and ties each branch to its run. The slug comes from the first of these that yields one:
+
+1. the `--issue` title, when it can be fetched;
+2. the brief's first `# ` heading, outside code fences;
+3. the brief's first non-empty line.
+
+The text loses a leading `<repo-name>:`, is lowercased, has each run of characters outside `[a-z0-9]` turned into one `-`, and is cut at a word boundary to at most 40 characters. A brief that opens with `# cosmo: the klaus-env guest starts with classic-laddie` in `cosmo` names its branch `the-klaus-env-guest-starts-with-classic-bd92f081`. When nothing yields a slug, or git rejects the name, the branch is `agent/<run-id>`.
+
+```bash
+klaus launch --branch fix/healthz-timeout --prompt-file /tmp/task.md
+```
+
+`--branch` sets the name exactly. It must pass `git check-ref-format --branch` and must not already exist locally or on origin, and it can't be combined with `--pr`, which works on the PR's branch. A `--resume-from` follow-up gets a new branch named the same way.
 
 ### `klaus launch --prompt-file`
 

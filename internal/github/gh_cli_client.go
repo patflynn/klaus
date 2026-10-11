@@ -316,6 +316,22 @@ func (c *GHCLIClient) GetURL(ctx context.Context, prRef string) (string, error) 
 }
 
 // GetTitle fetches the title of a PR.
+// GetIssueTitle returns the title of an issue (number or URL).
+func (c *GHCLIClient) GetIssueTitle(ctx context.Context, issueRef string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	args := c.ghArgs([]string{"issue", "view", "--json", "title", "-q", ".title"}, issueRef)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("gh issue view: %w: %s", wrapTimeoutErr(ctx, "gh issue view", err), strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 func (c *GHCLIClient) GetTitle(ctx context.Context, prRef string) string {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()

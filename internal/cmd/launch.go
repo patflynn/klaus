@@ -58,11 +58,22 @@ follow-up picks up from the WIP commit klaus left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
 
+A run without --pr gets a new branch named <slug>-<tail>. The tail is the
+random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug comes
+from the --issue title, else the prompt's first '# ' heading, else its first
+non-empty line: a leading '<repo-name>:' is dropped, the text is lowercased,
+each run of characters outside [a-z0-9] becomes one '-', and it is cut at a word
+boundary to at most 40 characters. A brief that opens with a descriptive
+'# title' names its branch. When no slug comes out, or git rejects the name, the
+branch is agent/<run-id>. Use --branch <name> to name it exactly: the name must
+pass 'git check-ref-format --branch' and must not exist locally or on origin.
+--branch and --pr are mutually exclusive.
+
 Use --resume-from <run-id> to continue a previous run's Claude conversation in
-a fresh worktree, paused or not — the follow-up keeps what the earlier agent
-learned instead of re-exploring the repo. Prior errors produce a warning but
-do not prevent resume. It starts fresh if the transcript cannot be located
-or staged.
+a fresh worktree on a new branch, paused or not — the follow-up keeps what the
+earlier agent learned instead of re-exploring the repo. Prior errors produce a
+warning but do not prevent resume. It starts fresh if the transcript cannot be
+located or staged.
 
 For a budget-paused PR, klaus continues the previous agent's Claude
 conversation by default (trajectory replay): it restores the stored
@@ -107,6 +118,7 @@ are synced back after completion. Use --local to force local execution, or
 		replayFlag, _ := cmd.Flags().GetBool("replay")
 		noReplay, _ := cmd.Flags().GetBool("no-replay")
 		replayThresholdKB, _ := cmd.Flags().GetInt("replay-threshold-kb")
+		branchFlag, _ := cmd.Flags().GetString("branch")
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
@@ -116,6 +128,14 @@ are synced back after completion. Use --local to force local execution, or
 
 		if replayFlag && noReplay {
 			return fmt.Errorf("--replay and --no-replay are mutually exclusive")
+		}
+		if cmd.Flags().Changed("branch") {
+			if prNumber != "" {
+				return fmt.Errorf("--branch and --pr are mutually exclusive: --pr works on the PR's branch")
+			}
+			if err := git.CheckBranchName(ctx, branchFlag); err != nil {
+				return fmt.Errorf("--branch: %w", err)
+			}
 		}
 
 		// Host repo — optional when --repo is specified or session target is set
@@ -286,8 +306,31 @@ are synced back after completion. Use --local to force local execution, or
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}
+		} else if branchFlag != "" {
+			// A new run's branch must be new: reusing one would build on, or
+			// reset, whatever work it already holds.
+			const pickAnother = "pick a new name, or use --pr to work on an existing PR's branch"
+			if git.RefExists(ctx, repoRoot, "refs/heads/"+branchFlag) {
+				return fmt.Errorf("branch %q already exists in %s; %s", branchFlag, repoName, pickAnother)
+			}
+			sha, err := gitClient.RemoteBranchSHA(ctx, repoRoot, branchFlag)
+			if err != nil {
+				return fmt.Errorf("checking origin for branch %q: %w", branchFlag, err)
+			}
+			if sha != "" {
+				return fmt.Errorf("branch %q already exists on origin; %s", branchFlag, pickAnother)
+			}
+			branch = branchFlag
 		} else {
-			branch = "agent/" + id
+			var issueTitle string
+			if issue != "" {
+				title, err := gh.NewGHCLIClient(resolveGHRepo(repoRef, repoRoot)).GetIssueTitle(ctx, issue)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not fetch the title of issue %s for the branch name: %v\n", issue, err)
+				}
+				issueTitle = title
+			}
+			branch = defaultBranchName(ctx, id, repoName, issueTitle, prompt)
 		}
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
@@ -949,6 +992,7 @@ func init() {
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
+	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr")
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for a budget-paused --pr (continue the prior conversation, bypassing the size threshold)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for a budget-paused --pr; dispatch a fresh agent instead")
 	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")

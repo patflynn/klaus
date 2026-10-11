@@ -544,14 +544,24 @@ func (h *Harness) SeedState(st *run.State) {
 
 func (h *Harness) git(dir string, args ...string) {
 	h.t.Helper()
+	h.GitOutput(dir, args...)
+}
+
+// GitOutput runs real git in dir with the harness's git config and returns
+// its trimmed stdout, failing the test if git fails.
+func (h *Harness) GitOutput(dir string, args ...string) string {
+	h.t.Helper()
 	cmd := exec.Command("git", args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(os.Environ(), "HOME="+h.Home, "GIT_CONFIG_GLOBAL="+filepath.Join(h.Home, ".gitconfig"), "GIT_CONFIG_NOSYSTEM=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		h.t.Fatalf("git %v: %v: %s", args, err, out)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		h.t.Fatalf("git %v: %v: %s%s", args, err, stdout.String(), stderr.String())
 	}
+	return strings.TrimSpace(stdout.String())
 }
 
 func mustBash(t *testing.T) string {
