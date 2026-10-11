@@ -322,6 +322,10 @@ type PromptVars struct {
 	PR       string
 	Reviewer string // GitHub user to request review from
 	Projects string // Formatted list of registered projects for session prompt
+	// DirectPush is true when the target repo's origin is not on GitHub: the
+	// agent delivers by pushing its branch for the operator to integrate,
+	// instead of opening a PR.
+	DirectPush bool
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -390,27 +394,42 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 3. Test your changes.
 4. Create a focused git commit.
 5. Push your branch: ` + "`git push -u origin HEAD`" + `
+{{- if .DirectPush}}
+
+This repository's origin is not on GitHub. Pushing the branch is the delivery: the operator integrates it from there.
+Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
+{{- if .Issue}}
+Reference issue #{{.Issue}} in your commit message.
+{{- end}}
+
+End your turn with a final report the operator can review from, since there is no PR:
+- Run: {{.RunID}}
+- The branch name and the head SHA you pushed (` + "`git rev-parse HEAD`" + `)
+- A diff summary: the files changed (` + "`git diff --stat`" + ` against the branch you started from) and what changed and why
+- Every check and test you ran, each with its result
+{{else}}
 6. Create a PR. Include the following footer at the bottom of the PR body:
    Run: {{.RunID}}{{if .Issue}}
    Fixes #{{.Issue}}{{end}}
 {{if .Reviewer}}
 Use --reviewer {{.Reviewer}} when creating the PR.
 {{end}}
-Do not include any AI attribution or 'Generated with Claude Code' lines in the PR body.
+{{- end}}
+Do not include any AI attribution or 'Generated with Claude Code' lines in {{if .DirectPush}}commit messages or the report{{else}}the PR body{{end}}.
 
 ## Testing
 - Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
 - Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
 - A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
 - Run ` + "`go build ./...`" + ` before committing to verify compilation.
-- Run the project's test suite before creating a PR. Fix failures before pushing.
+- Run the project's test suite before pushing, and fix any failures.
 
-## Pre-PR Review
-- Before creating a PR, run ` + "`klaus _pre-review`" + ` in your worktree.
-- If it reports critical or high findings, fix them before proceeding with the PR.
+## Pre-push Review
+- Before pushing, run ` + "`klaus _pre-review`" + ` in your worktree.
+- If it reports critical or high findings, fix them before pushing.
 
 ## Conventions
-- Never commit directly to the default branch — always use a PR branch.
+- Never commit directly to the default branch — always work on your own branch.
 
 ## Documentation
 - If you add or change a CLI command or flag, update the help text in the cobra command definition.

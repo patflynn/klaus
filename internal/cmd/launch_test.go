@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -951,4 +952,111 @@ func validateEffort(effort string) error { return backend.Claude.ValidateEffort(
 func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeID, model, effort string) string {
 	args, _ := backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort})
 	return backend.ShellCommand(args)
+}
+
+// TestIsDirectPushRepo decides delivery from real repos' origin remotes: only
+// a github.com origin gets the PR flow.
+func TestIsDirectPushRepo(t *testing.T) {
+	tests := []struct {
+		origin string
+		want   bool
+	}{
+		{"git@github.com:o/r.git", false},
+		{"git@github.com:o/r", false},
+		{"https://github.com/o/r", false},
+		{"https://github.com/o/r.git", false},
+		{"https://github.com/o/r/", false},
+		{"ssh://git@github.com/o/r.git", false},
+		{"git@10.100.0.1:cosmo.git", true},
+		{"git@classic-laddie:the-valley.git", true},
+		{"file:///srv/git/widget.git", true},
+		{"/srv/git/widget.git", true},
+		// Not github.com, though ParseRepoRef alone accepts the scp form.
+		{"git@gitlab.com:o/r.git", true},
+		{"https://gitlab.com/o/r.git", true},
+		{"https://github.com.evil.example/o/r", true},
+		{"git@github.com.evil.example:o/r.git", true},
+		// No owner/repo after the host.
+		{"https://github.com/", true},
+		{"git@github.com:../evil.git", true},
+		// A bare owner/repo is a relative path as a remote, not GitHub.
+		{"o/r", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.origin, func(t *testing.T) {
+			dir := initRepo(t, filepath.Join(t.TempDir(), "repo"), tt.origin)
+			if got := isDirectPushRepo(dir); got != tt.want {
+				t.Errorf("isDirectPushRepo(origin %q) = %v, want %v", tt.origin, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("no origin", func(t *testing.T) {
+		dir := initRepo(t, filepath.Join(t.TempDir(), "repo"), "/srv/git/widget.git")
+		if out, err := exec.Command("git", "-C", dir, "remote", "remove", "origin").CombinedOutput(); err != nil {
+			t.Fatalf("git remote remove: %v\n%s", err, out)
+		}
+		if !isDirectPushRepo(dir) {
+			t.Error("a repo without origin cannot open a PR; want direct push")
+		}
+	})
+}
+
+// TestDefaultPromptFollowsOriginDelivery renders the default worker prompt the
+// way launch does, for a GitHub origin and a valley-style origin.
+func TestDefaultPromptFollowsOriginDelivery(t *testing.T) {
+	render := func(origin string) string {
+		t.Helper()
+		dir := initRepo(t, filepath.Join(t.TempDir(), "repo"), origin)
+		prompt, err := config.RenderPrompt(dir, config.PromptVars{
+			RunID:      "20261011-1905-7f6906fc",
+			Issue:      "42",
+			Branch:     "agent/20261011-1905-7f6906fc",
+			Reviewer:   "octocat",
+			DirectPush: isDirectPushRepo(dir),
+		})
+		if err != nil {
+			t.Fatalf("RenderPrompt: %v", err)
+		}
+		return prompt
+	}
+	github := render("git@github.com:patflynn/klaus.git")
+	valley := render("git@10.100.0.1:cosmo.git")
+
+	for _, want := range []string{"6. Create a PR.", "Fixes #42", "Use --reviewer octocat"} {
+		if !strings.Contains(github, want) {
+			t.Errorf("GitHub prompt missing %q:\n%s", want, github)
+		}
+		if strings.Contains(valley, want) {
+			t.Errorf("direct-push prompt should not contain %q:\n%s", want, valley)
+		}
+	}
+	for _, want := range []string{"Do not create a PR", "head SHA", "diff summary", "Every check and test you ran", "Reference issue #42"} {
+		if !strings.Contains(valley, want) {
+			t.Errorf("direct-push prompt missing %q:\n%s", want, valley)
+		}
+		if strings.Contains(github, want) {
+			t.Errorf("GitHub prompt should not contain %q:\n%s", want, github)
+		}
+	}
+	// Shared in both modes.
+	for _, want := range []string{
+		"Run: 20261011-1905-7f6906fc",
+		"`git push -u origin HEAD`",
+		"## Testing",
+		"Run the project's test suite before pushing",
+		"Before pushing, run `klaus _pre-review`",
+		"Never commit directly to the default branch",
+		"## Documentation",
+		"Do not include any AI attribution",
+	} {
+		for name, prompt := range map[string]string{"GitHub": github, "direct-push": valley} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s prompt missing %q:\n%s", name, want, prompt)
+			}
+		}
+	}
+	if strings.Contains(github+valley, "before creating a PR") {
+		t.Error("shared sections should say \"before pushing\", not \"before creating a PR\"")
+	}
 }

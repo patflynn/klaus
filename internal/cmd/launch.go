@@ -51,6 +51,11 @@ Use --repo to launch an agent against a different repository. If the name
 matches a registered project (no owner/ prefix), the project's local path is
 used directly. Otherwise, the repo is cloned from GitHub.
 
+The agent is told to deliver by opening a PR when the target repo's origin is
+on github.com. For any other origin (a plain ssh or local remote) it is told to
+push its branch and not open a PR, and to end with a report of the branch, head
+SHA, diff summary and checks run, for the operator to integrate from.
+
 Use --pr to push fixes to an existing PR's branch instead of creating a new
 PR. The agent will commit and push to the PR branch directly. This is also
 how you resume a budget-paused PR: relaunch against the paused PR and the
@@ -292,6 +297,7 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
 		var sysPrompt string
+		directPush := !isPRFix && isDirectPushRepo(repoRoot)
 		if isPRFix {
 			sysPrompt, err = config.RenderPRFixPrompt(repoRoot, config.PromptVars{
 				RunID:    id,
@@ -303,11 +309,12 @@ are synced back after completion. Use --local to force local execution, or
 		} else {
 			reviewer := hostCfg.PRReviewerOrDefault()
 			sysPrompt, err = config.RenderPrompt(repoRoot, config.PromptVars{
-				RunID:    id,
-				Issue:    issue,
-				Branch:   branch,
-				RepoName: repoName,
-				Reviewer: reviewer,
+				RunID:      id,
+				Issue:      issue,
+				Branch:     branch,
+				RepoName:   repoName,
+				Reviewer:   reviewer,
+				DirectPush: directPush,
 			})
 		}
 		if err != nil {
@@ -388,6 +395,9 @@ are synced back after completion. Use --local to force local execution, or
 
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
+		if directPush {
+			fmt.Printf("  delivery: push branch, no PR (origin is not on GitHub)\n")
+		}
 
 		if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
@@ -819,6 +829,14 @@ func resolveRepoTarget(repoFlag, sessionTarget string, reg *project.Registry) (r
 	}
 
 	return repoRef, projectLocalPath
+}
+
+// isDirectPushRepo reports whether agents deliver to repoRoot by pushing their
+// branch for the operator to integrate, rather than opening a PR: true unless
+// its origin is a github.com URL. Sandbox runs sync a worktree made from
+// repoRoot, so they are decided the same way.
+func isDirectPushRepo(repoRoot string) bool {
+	return !git.IsGitHubRemote(gitRemoteURL(repoRoot))
 }
 
 // resolveGHRepo returns an owner/repo string suitable for --repo flags on gh CLI calls.

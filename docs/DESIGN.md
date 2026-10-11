@@ -81,6 +81,9 @@ State + Log files (local .git/klaus/)
 - `{{.Issue}}` — GitHub issue number (if provided)
 - `{{.Branch}}` — The agent's branch name
 - `{{.RepoName}}` — Repository name
+- `{{.Reviewer}}` — GitHub user to request PR review from
+- `{{.DirectPush}}` — true when the repo's `origin` is not on github.com, so the
+  agent pushes its branch for the operator to integrate instead of opening a PR
 
 ## Design Decisions
 
