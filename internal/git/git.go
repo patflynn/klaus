@@ -184,6 +184,26 @@ func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error,
 	return retry()
 }
 
+// CheckBranchName reports whether name can be used verbatim as a new branch
+// name, by git check-ref-format --branch. A name git would expand, such as
+// @{-1}, is rejected too.
+func CheckBranchName(ctx context.Context, name string) error {
+	out, err := runGit(ctx, "", "check-ref-format", "--branch", name)
+	if err != nil {
+		return fmt.Errorf("%q is not a valid branch name", name)
+	}
+	if out != name {
+		return fmt.Errorf("%q is not a valid branch name (git reads it as %q)", name, out)
+	}
+	return nil
+}
+
+// RefExists reports whether ref resolves to an object in repoDir.
+func RefExists(ctx context.Context, repoDir, ref string) bool {
+	_, err := runGit(ctx, repoDir, "rev-parse", "--verify", "--quiet", ref)
+	return err == nil
+}
+
 // BranchDelete deletes a local branch.
 func BranchDelete(ctx context.Context, repoDir, branch string) error {
 	_, err := runGit(ctx, repoDir, "branch", "-D", branch)

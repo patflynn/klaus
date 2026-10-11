@@ -512,6 +512,7 @@ klaus launch --pr <number> ...                # push fixes to an existing PR's b
 klaus launch --budget <usd> ...               # spend cap in USD (default from config)
 klaus launch --repo <name|owner/repo> ...     # target a registered project or another GitHub repo
 klaus launch --resume-from <run-id> ...       # continue a previous agent's Claude conversation
+klaus launch --branch <name> ...              # name the new run's branch exactly (not with --pr)
 klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold
 klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
@@ -523,6 +524,12 @@ klaus launch --host <name> ...                # override the configured sandbox 
 ` + "```" + `
 
 **Always use --issue when working on a GitHub issue.** The agent needs the issue context.
+
+**Open every brief with a descriptive ` + "`# title`" + `.** Without --branch, a new run's
+branch is named from the --issue title, else the brief's first ` + "`# `" + ` heading, else its
+first line, followed by the run ID's random tail: ` + "`# klaus: retry budget for fetches`" + `
+in run ` + "`20261011-1843-bd92f081`" + ` gives ` + "`retry-budget-for-fetches-bd92f081`" + `. On repos
+without PRs the operator picks work by branch name, so the title is what they read.
 
 **Match model and effort to the task.** A cheap mechanical task (doc fix, capture
 task, small refactor) can run a smaller model at low effort, while a large build

@@ -20,8 +20,10 @@ internal/config/           → Configuration loading and defaults
 User prompt
   → klaus launch "<prompt>" --issue N --budget N
   → Generate run ID (YYYYMMDD-HHMM-XXXX)
+  → Name the branch <slug>-XXXX, the slug from the issue title or the brief's
+    first "# " heading or line (--branch <name> sets it; agent/<id> if no slug)
   → git fetch origin main
-  → git worktree add /tmp/klaus-sessions/<id> -b agent/<id> origin/main
+  → git worktree add /tmp/klaus-sessions/<id> -b <branch> origin/main
   → Write state file to .git/klaus/runs/<id>.json
   → Build claude command with stream-json output
   → tmux split-window: claude | tee <log> | klaus _format-stream; klaus _finalize <id>
@@ -51,7 +53,7 @@ State + Log files (local .git/klaus/)
   "id": "20260210-1430-a3f2",
   "prompt": "Add bluetooth config",
   "issue": "42",
-  "branch": "agent/20260210-1430-a3f2",
+  "branch": "add-bluetooth-config-a3f2",
   "worktree": "/tmp/klaus-sessions/20260210-1430-a3f2",
   "tmux_pane": "%5",
   "budget": "5.00",
