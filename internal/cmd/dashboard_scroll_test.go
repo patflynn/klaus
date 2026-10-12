@@ -18,10 +18,11 @@ import (
 // and the expected on-screen order of the rows shown by default and with
 // "show all". Each row is identified by its unique prompt, e.g. "attn 03".
 //
-//   - 4 active: three bare agents and a PR with a CI-fix agent running; one
-//     started 5h ago and must never be hidden
-//   - 7 needing attention, all over an hour old and cleaned up, never hidden
-//   - 5 open PRs, one 3h old
+//   - 7 needing attention (yours), all over an hour old and cleaned up, never
+//     hidden
+//   - 4 active (agents): three bare agents and a PR with a CI-fix agent
+//     running; one started 5h ago and must never be hidden
+//   - 5 open PRs (pipeline), one 3h old
 //   - 21 merged PRs: 6 within the hour, 15 older (hidden)
 //   - 6 exited agents whose worktrees were cleaned up, all old (hidden)
 //   - 1 exited agent whose worktree is still there (kept: not cleaned up)
@@ -79,8 +80,8 @@ func longSession(now time.Time) (states []*run.State, shown, all []string) {
 		return out
 	}
 	var head []string
-	head = append(head, seq("active", 1, 4)...)
 	head = append(head, seq("attn", 1, 7)...)
+	head = append(head, seq("active", 1, 4)...)
 	head = append(head, seq("open", 1, 5)...)
 	shown = append(append(append([]string{}, head...), seq("merged", 1, 6)...), "kept 01")
 	all = append(append(append(append([]string{}, head...), seq("merged", 1, 21)...), seq("exited", 1, 6)...), "kept 01")
@@ -169,13 +170,13 @@ func TestDashboardLongListOrderingAndHiding(t *testing.T) {
 	if strings.Join(rows, ",") != strings.Join(shown, ",") {
 		t.Errorf("visible rows:\n got %v\nwant %v", rows, shown)
 	}
-	if selected != "active 01" {
+	if selected != "attn 01" {
 		t.Errorf("selected = %q, want the first row", selected)
 	}
 	plain := ansi.Strip(view)
 	for _, want := range []string{
 		"1–23 of 23", "21 hidden", "testowner/testrepo",
-		"4 active · 7 attention · 5 open · 28 finished",
+		"7 yours · 4 agents · 5 pipeline · 28 done",
 		"4/45 agents running", "agent:0003 running", "h show all",
 	} {
 		if !strings.Contains(plain, want) {
@@ -286,7 +287,7 @@ func TestDashboardKeepsPRMergedWhileWatchedVisible(t *testing.T) {
 	// full threshold; one that only ever saw it merged hides it at once.
 	now := time.Now()
 	watching, _, _ := newLongSessionModel(now, 160, 100)
-	watching.ghStatus["605"] = &prStatus{PRNumber: "605", State: "MERGED"}
+	watching.ghStatus["https://github.com/testowner/testrepo/pull/605"] = &prStatus{PRNumber: "605", State: "MERGED"}
 	watching = send(watching, tickMsg{})
 
 	fresh, _, _ := newLongSessionModel(now, 160, 100)
@@ -365,7 +366,7 @@ func TestDashboardEmptyAndAllHidden(t *testing.T) {
 	m.states = []*run.State{{ID: "20261004-1200-0001", Prompt: "merged", Type: "launch", CreatedAt: old, MergedAt: &old,
 		PRURL: strPtr("https://github.com/o/r/pull/1")}}
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "1 finished hidden (h to show all)") || !strings.Contains(view, "1 hidden") {
+	if !strings.Contains(view, "1 done hidden (h to show all)") || !strings.Contains(view, "1 hidden") {
 		t.Errorf("all-hidden list should say how many are hidden:\n%s", view)
 	}
 }
@@ -387,9 +388,9 @@ func TestDashboardRepoColumnForMultipleRepos(t *testing.T) {
 	}
 }
 
-// A branch pushed without a PR (#281) is open work awaiting integration: it
-// sorts with the open PRs, shows its branch and short SHA, and is never
-// hidden as an old finished run.
+// A branch pushed without a PR (#281) waits for the operator to submit it:
+// it sorts with their rows as SUBMIT, shows its branch and short SHA, and is
+// never hidden as an old done row.
 func TestDashboardShowsBranchAwaitingIntegration(t *testing.T) {
 	old := time.Now().Add(-6 * time.Hour).Format(time.RFC3339)
 	branch := "agent/20261005-0300-0002"
@@ -410,7 +411,7 @@ func TestDashboardShowsBranchAwaitingIntegration(t *testing.T) {
 		t.Errorf("visible rows = %v, want only the pushed branch", rows)
 	}
 	plain := ansi.Strip(view)
-	for _, want := range []string{"1 open · 1 finished", "1 hidden", "PUSHED  " + branch + "@0123456"} {
+	for _, want := range []string{"1 yours · 1 done", "1 hidden", "SUBMIT  " + branch + "@0123456"} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("view missing %q:\n%s", want, plain)
 		}

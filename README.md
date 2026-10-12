@@ -338,7 +338,16 @@ To abandon the work, close the draft PR. To redirect, push manual commits to its
 
 `klaus launch` reads the target repo's `origin` to decide how the agent delivers. A github.com origin (`git@github.com:o/r.git`, `https://github.com/o/r`, `ssh://git@github.com/o/r.git`) gets the PR workflow. Any other origin, such as a plain ssh remote like `git@10.100.0.1:cosmo.git` or a local path, is a direct-push repo: the default worker prompt tells the agent to push its branch, not to open a PR or use `gh`, and to end with a report of the branch, head SHA, diff summary and every check it ran, which is what you review before integrating. Launch prints `delivery: push branch, no PR` for these runs. Sandbox runs are decided from the same local repo their worktree is made from.
 
-A run that finishes cleanly with its branch already on `origin` — the normal finish in a direct-push repo, where you integrate branches by hand instead of through PRs — is not salvaged. `_finalize` checks `origin` with `git ls-remote` before cleanup, records the branch and its head SHA on the run (`pushed_branch`, `pushed_sha`), and emits `agent:completed` plus `agent:branch-pushed` with `repo`, `branch` and `sha`. `klaus status` shows the run as `awaiting-integration`, and the dashboard lists it with the open PRs as `PUSHED <branch>@<short sha>`. The local branch is deleted; the branch on `origin` is the record. Runs with a PR emit `agent:pr-created` instead, never both.
+A run that finishes cleanly with its branch already on `origin` — the normal finish in a direct-push repo, where you integrate branches by hand instead of through PRs — is not salvaged. `_finalize` checks `origin` with `git ls-remote` before cleanup, records the branch and its head SHA on the run (`pushed_branch`, `pushed_sha`), and emits `agent:completed` plus `agent:branch-pushed` with `repo`, `branch` and `sha`. `klaus status` shows the run as `awaiting-integration`, and the dashboard lists it as yours to submit: `SUBMIT <branch>@<short sha>`. The local branch is deleted; the branch on `origin` is the record. Runs with a PR emit `agent:pr-created` instead, never both.
+
+Whether a pushed branch has landed is observed, not recorded: `klaus status` and the dashboard check it against the run's own clone (`clone_dir`) each time they look, and nothing is written to the run. One check per repo takes a snapshot of `origin` with `git ls-remote`, fetches the default branch and the pushed branches that still exist, and then judges each run:
+
+- **integrated** (`INTEGRATED` on the dashboard): the pushed SHA, or the branch's current tip, is an ancestor of the default branch. The current tip counts because you may rebase the branch onto the default branch and force-push it before it fast-forwards.
+- **integrated by content** (`INTEGRATED~`): a first-parent commit on the default branch, made after the run started, has the same `git patch-id --stable` as the branch's change (its diff from the merge base). This catches an integrator that lands a change as one new commit on the default branch. It is strong evidence, not proof. If the default branch changed lines next to the edit, the patch-ids differ and the run keeps waiting; check it yourself.
+- **branch-gone** (`GONE`): the branch was deleted from `origin` and neither check matched, for example a rejected or superseded change.
+- otherwise **awaiting-integration** (`SUBMIT`).
+
+If the clone is missing or `origin` can't be listed or fetched, the run stays awaiting; an incomplete check never reports a branch as gone.
 
 When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
 
@@ -529,6 +538,7 @@ The status dashboard shows these columns for each run:
 
 | Column | Values | Meaning |
 |--------|--------|---------|
+| STATUS | `running` / `needs-attention` / `pr-created` / `merged` / `closed` / `no-access` / `awaiting-integration` / `integrated` / `branch-gone` / `exited` | Where the run stands. `no-access`: GitHub won't show the PR with the current credentials, and the other PR columns aren't queried. `awaiting-integration`, `integrated` and `branch-gone` apply to runs that pushed a branch without a PR (see [Runs that end without a PR](#runs-that-end-without-a-pr)) |
 | CI | `passing` / `failing` / `pending` / `unknown` | CI check status for the PR |
 | CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
 | BEHIND | `-` / `N` | Commits the base branch has that the PR head lacks (stale-but-mergeable when >0) |
@@ -538,9 +548,22 @@ The status dashboard shows these columns for each run:
 
 Live TUI view of the PR pipeline. Auto-refreshes via filesystem watching and GitHub polling every 30s.
 
-Runs are listed one per row (agents working on the same PR share its row): active and running runs first, then runs needing attention (`ATTN`: salvaged work, stalled or budget-paused PRs), then open PRs and branches awaiting integration (`PUSHED <branch>@<short sha>`), then finished runs, most recent first within each group. A repo column appears when the session spans more than one repo. The list scrolls when it doesn't fit the pane, and the line above it shows the position (e.g. `12–30 of 34`). The selection stays on its row as runs reorder, and is kept in view.
+Runs are listed one per row (agents working on the same PR share its row), grouped by whose move it is, most recent first within each group:
 
-Merged, closed and cleaned-up runs older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Active, running and needs-attention runs, open PRs and branches awaiting integration are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
+| Group | What's in it |
+|-------|--------------|
+| **yours** | runs needing attention (`ATTN`: salvaged work, stalled or budget-paused PRs); pushed branches to submit (`SUBMIT <branch>@<short sha>`); open, non-draft PRs that are ready to merge and not yet approved with `klaus approve` |
+| **agents** | rows with a running agent, whatever else is true of them |
+| **pipeline** | every other open PR: CI pending or failing (fix agents are dispatched automatically), conflicts, behind, approved and waiting to merge, CI unknown |
+| **done** | merged, closed, integrated (`INTEGRATED`, or `INTEGRATED~` for a content match), gone (`GONE`), no access (`NO ACCESS`), and exited agents |
+
+The line above the list counts each group, starting with yours (e.g. `2 yours · 3 agents · 5 pipeline · 12 done`), and shows the position (e.g. `12–30 of 34`). A repo column appears when the session spans more than one repo. The list scrolls when it doesn't fit the pane. The selection stays on its row as runs reorder, and is kept in view.
+
+The dashboard checks pushed branches every minute in the background, independently of GitHub polling (see [Runs that end without a PR](#runs-that-end-without-a-pr)). A PR the agent can no longer read on GitHub (a 404, a 403 that isn't a rate limit, or "Could not resolve to a PullRequest/Repository") shows `NO ACCESS` and is done; the dashboard skips its CI, conflict and review queries and asks again every 30 minutes, so a fixed credential recovers on its own.
+
+Done rows older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Exited agents count only once their worktree is cleaned up. A row the dashboard watched finish (a PR it saw merge, a branch it saw as `SUBMIT` integrate) stays for the full hour after it finished. Rows in yours, agents and pipeline are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
+
+Set `"dashboard": {"submit_command": "cd ~/hack/{repo} && valley review {branch}"}` and the footer shows the expanded command whenever a `SUBMIT` row is selected. `{repo}` is the short project name and `{branch}` the pushed branch. It's there to copy and run on your own machine; the dashboard never runs it.
 
 On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status and help lines are dropped, before any rows are.
 
@@ -551,7 +574,7 @@ Keyboard shortcuts:
 | `j` / `k` (or `↑` / `↓`) | move the selection |
 | `PgUp` / `PgDn` | move a page |
 | `g` / `G` (or `Home` / `End`) | jump to the top / bottom |
-| `h` | show all runs / hide old finished runs |
+| `h` | show all runs / hide old done rows |
 | `a` | approve the selected PR |
 | `d` | discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there) |
 | `o` | open the selected PR in a browser |
@@ -676,7 +699,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "default_agent_model": "claude-sonnet-5",
   "default_agent_effort": "medium",
   "agent_display": "detached",
-  "dashboard": {"hide_finished_after_minutes": 60}
+  "dashboard": {"hide_finished_after_minutes": 60, "submit_command": "cd ~/hack/{repo} && valley review {branch}"}
 }
 ```
 
@@ -690,7 +713,9 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `default_agent_model` / `default_agent_effort` set the `claude --model` / `--effort` for launched agents when the launch doesn't pass the corresponding flag. When unset, the flag is omitted from the `claude` command entirely.
 
-`dashboard.hide_finished_after_minutes` sets how long merged, closed and cleaned-up runs stay on the dashboard before they're hidden behind `h` (default 60; negative never hides them).
+`dashboard.hide_finished_after_minutes` sets how long done rows (merged, closed, integrated, gone, no access, cleaned up) stay on the dashboard before they're hidden behind `h` (default 60; negative never hides them).
+
+`dashboard.submit_command` is a template for the command that submits a pushed branch, shown in the dashboard footer when a `SUBMIT` row is selected. `{repo}` expands to the short project name and `{branch}` to the pushed branch. It's empty by default, and klaus never runs it.
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 

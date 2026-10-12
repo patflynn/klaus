@@ -13,7 +13,8 @@ type Client interface {
 	GetConflicts(ctx context.Context, prRef string) string
 	GetCommitsBehind(ctx context.Context, prRef string) int
 	GetReviewDecision(ctx context.Context, prRef string) string
-	GetState(ctx context.Context, prRef string) string
+	GetState(ctx context.Context, prRef string) string // OPEN, MERGED, CLOSED, StateNoAccess or UNKNOWN
+	IsDraft(ctx context.Context, prRef string) bool
 	GetLabels(ctx context.Context, prRef string) []string
 	GetBranch(ctx context.Context, prRef string) (string, error)
 	GetURL(ctx context.Context, prRef string) (string, error)

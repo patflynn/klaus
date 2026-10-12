@@ -260,16 +260,26 @@ func (c *GHCLIClient) GetLabels(ctx context.Context, prRef string) []string {
 	return labels
 }
 
-// GetState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED").
+// StateNoAccess is the PR state GetState reports when GitHub says the PR
+// doesn't exist or can't be read with the current credentials. A transient
+// failure (network, timeout, rate limit) reports "UNKNOWN" instead.
+const StateNoAccess = "NOACCESS"
+
+// GetState returns the PR state (e.g. "OPEN", "MERGED", "CLOSED"),
+// StateNoAccess when the PR can't be read, or "UNKNOWN" on other failures.
 func (c *GHCLIClient) GetState(ctx context.Context, prRef string) string {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()
 
 	args := c.ghArgs([]string{"pr", "view", "--json", "state", "-q", ".state"}, prRef)
 	cmd := exec.CommandContext(ctx, "gh", args...)
-	var stdout bytes.Buffer
+	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() == nil && IsNoAccess(stderr.String()) {
+			return StateNoAccess
+		}
 		return "UNKNOWN"
 	}
 	val := strings.TrimSpace(stdout.String())
@@ -277,6 +287,42 @@ func (c *GHCLIClient) GetState(ctx context.Context, prRef string) string {
 		return "UNKNOWN"
 	}
 	return strings.ToUpper(val)
+}
+
+// IsNoAccess reports whether gh's stderr says the PR (or its repo) doesn't
+// exist or can't be read: GraphQL's "Could not resolve to a PullRequest" or
+// "... to a Repository", or an HTTP 404 or 403. A 403 for a rate limit is
+// transient, not a lack of access.
+func IsNoAccess(stderr string) bool {
+	if strings.Contains(strings.ToLower(stderr), "rate limit") {
+		return false
+	}
+	for _, marker := range []string{
+		"Could not resolve to a PullRequest",
+		"Could not resolve to a Repository",
+		"HTTP 404",
+		"HTTP 403",
+	} {
+		if strings.Contains(stderr, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDraft reports whether a PR is a draft (false on any error).
+func (c *GHCLIClient) IsDraft(ctx context.Context, prRef string) bool {
+	ctx, cancel := ensureTimeout(ctx)
+	defer cancel()
+
+	args := c.ghArgs([]string{"pr", "view", "--json", "isDraft", "-q", ".isDraft"}, prRef)
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return strings.TrimSpace(stdout.String()) == "true"
 }
 
 // GetBranch returns the head branch name for a PR.

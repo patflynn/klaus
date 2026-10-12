@@ -8,22 +8,28 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
+	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 )
 
-// rowCategory orders dashboard rows: the operator's focus comes first.
+// rowCategory groups dashboard rows by whose move it is; the operator's come
+// first.
 type rowCategory int
 
 const (
-	catActive    rowCategory = iota // an agent is running on it
-	catAttention                    // needs the operator: salvaged work, stalled or budget-paused PR
-	catOpen                         // open PR or pushed branch awaiting integration, no agent running
-	catFinished                     // merged or closed PR, or an agent that exited
+	catYours    rowCategory = iota // the operator's move: needs attention, a branch to submit, a PR ready to approve
+	catAgents                      // an agent is running on it
+	catPipeline                    // an open PR the pipeline is moving: CI, conflicts, behind, approved and waiting
+	catDone                        // merged, closed, integrated, gone, no access, or an agent that exited
 )
 
-// defaultHideFinishedAfter is how long a merged, closed or cleaned-up run
-// stays on the dashboard before it is hidden behind "show all".
+// categoryNames label the categories in the summary line.
+var categoryNames = [...]string{catYours: "yours", catAgents: "agents", catPipeline: "pipeline", catDone: "done"}
+
+// defaultHideFinishedAfter is how long a done row stays on the dashboard
+// before it is hidden behind "show all".
 const defaultHideFinishedAfter = time.Hour
 
 // hideFinishedAfter resolves the hide threshold from config. A zero value
@@ -49,7 +55,15 @@ type dashRow struct {
 	ps       *prStatus    // GitHub status, nil until fetched or for bare agents
 	category rowCategory
 	lastSeen time.Time // most recent activity across runs, for ordering and hiding
-	hideable bool      // merged, closed or cleaned up: may be hidden once old
+	hideable bool      // merged, closed, integrated, gone, no access or cleaned up: may be hidden once old
+	// attention is set when the row is the operator's because something
+	// needs attention (salvaged work, a stalled or budget-paused PR).
+	attention bool
+	// verdict is the latest integration check of a bare pushed run.
+	verdict integration.Verdict
+	// provisional marks a SUBMIT row with no definite integration verdict
+	// yet: it may turn out to have landed long ago.
+	provisional bool
 }
 
 // state returns the row's first agent's run state, which carries the PR URL
@@ -59,8 +73,8 @@ func (r dashRow) state() *run.State {
 }
 
 // buildRows turns the run states into dashboard rows, sorted by category
-// (active, needs attention, open PRs, finished) and most recent first within
-// each category. Sessions are excluded; agents on the same PR share a row.
+// (yours, agents, pipeline, done) and most recent first within each
+// category. Sessions are excluded; agents on the same PR share a row.
 func (m dashboardModel) buildRows() []dashRow {
 	var rows []dashRow
 	for _, g := range groupByRepo(m.states) {
@@ -81,7 +95,7 @@ func (m dashboardModel) buildRows() []dashRow {
 				repo:  g.Repo,
 				prNum: prNum,
 				runs:  []*run.State{s},
-				ps:    m.ghStatus[prNum],
+				ps:    m.ghStatus[extractPRRef(s)],
 			})
 		}
 	}
@@ -102,7 +116,10 @@ func (m dashboardModel) buildRows() []dashRow {
 }
 
 // classify fills in a row's running agents, category, recency and whether
-// it may be hidden once old.
+// it may be hidden once old. Precedence: a running agent makes it the
+// agents'; then merged, closed, no access, integrated or gone make it done;
+// then needs attention, a branch to submit or a PR ready to approve make it
+// yours; any other open PR is the pipeline's; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow) {
 	merged, attention := false, false
 	for _, s := range r.runs {
@@ -119,32 +136,62 @@ func (m dashboardModel) classify(r *dashRow) {
 			r.lastSeen = t
 		}
 	}
-	closed := false
+	closed, noAccess := false, false
 	if r.ps != nil {
 		merged = merged || r.ps.State == "MERGED"
 		closed = r.ps.State == "CLOSED"
+		noAccess = r.ps.State == gh.StateNoAccess
 	}
 	if pps, ok := m.pipelineStates[r.prNum]; ok && r.prNum != "" {
 		merged = merged || pps.Stage == pipeline.StageMerged
 		attention = attention || pps.Stage == pipeline.StageStalled || pps.Stage == pipeline.StageBudgetPaused
 	}
+	pushed := r.prNum == "" && awaitsIntegration(r.state())
+	if pushed {
+		r.verdict = m.integration[r.state().ID]
+	}
 
 	switch {
 	case len(r.running) > 0:
-		r.category = catActive
-	case merged || closed:
-		r.category = catFinished
+		r.category = catAgents
+	case merged || closed || noAccess || r.verdict.Landed() || r.verdict == integration.Gone:
+		r.category = catDone
 		r.hideable = true
 	case attention:
-		r.category = catAttention
-	case r.prNum != "" || r.state().PushedSHA != nil:
-		// A pushed branch is open work until the operator integrates it.
-		r.category = catOpen
-	default:
-		r.category = catFinished
+		r.category = catYours
+		r.attention = true
+	case pushed:
+		// A pushed branch waits for the operator to submit it, as far as
+		// anyone knows: Unknown (or no check yet) is provisional.
+		r.category = catYours
+		r.provisional = r.verdict == integration.Unknown
+	case r.prNum == "":
+		r.category = catDone
 		// A bare agent is hideable once its worktree has been cleaned up.
 		r.hideable = r.state().Worktree == ""
+	case r.readyToApprove():
+		r.category = catYours
+	default:
+		r.category = catPipeline
 	}
+}
+
+// readyToApprove reports whether a PR row waits on the operator's approval:
+// open, not a draft, ready to merge, and not yet approved with klaus approve.
+func (r dashRow) readyToApprove() bool {
+	ps := r.ps
+	return ps != nil && ps.State == "OPEN" && !ps.Draft &&
+		computeMergeStatus(ps.CI, ps.Conflicts, ps.ReviewDecision, ps.BehindBy) == "ready" &&
+		!isAnyRunApproved(r.runs)
+}
+
+// awaitsIntegration reports whether a run finished by pushing its branch,
+// with nothing else (a running agent aside) deciding how it is shown: no PR,
+// no merge and nothing needing attention. Only such runs get an integration
+// check.
+func awaitsIntegration(s *run.State) bool {
+	return s.Type != "session" && s.Type != "track" && integration.Applies(s) &&
+		s.PRURL == nil && s.MergedAt == nil && s.NeedsAttention == nil
 }
 
 // runLastActivity returns the latest time known for a run: its creation,
@@ -174,9 +221,12 @@ func runLastActivity(s *run.State) time.Time {
 }
 
 // noteFinished records when a row the dashboard watched while it was still in
-// progress is first seen finished. A PR merged on GitHub has no local merge
-// time, so this keeps it visible for the full threshold after the dashboard
-// saw it finish instead of hiding it at once.
+// progress is first seen done. A PR merged on GitHub has no local merge time,
+// and a branch integrated on origin has no local time at all, so this keeps
+// such a row visible for the full threshold after the dashboard saw it finish
+// instead of hiding it at once. A SUBMIT row without a definite integration
+// verdict doesn't count as watched: until the first check it may be work
+// that landed long ago.
 func (m *dashboardModel) noteFinished(rows []dashRow, now time.Time) {
 	if m.seenUnfinished == nil {
 		m.seenUnfinished = make(map[string]bool)
@@ -185,8 +235,10 @@ func (m *dashboardModel) noteFinished(rows []dashRow, now time.Time) {
 		m.finishedAt = make(map[string]time.Time)
 	}
 	for _, r := range rows {
-		if r.category != catFinished {
-			m.seenUnfinished[r.key] = true
+		if r.category != catDone {
+			if !r.provisional {
+				m.seenUnfinished[r.key] = true
+			}
 			delete(m.finishedAt, r.key)
 			continue
 		}
@@ -196,11 +248,11 @@ func (m *dashboardModel) noteFinished(rows []dashRow, now time.Time) {
 	}
 }
 
-// isHidden reports whether a row is an old finished run that the dashboard
-// hides until "show all" is toggled. Active, attention and open rows are never
+// isHidden reports whether a row is an old done row that the dashboard hides
+// until "show all" is toggled. Rows in yours, agents and pipeline are never
 // hidden.
 func (m dashboardModel) isHidden(r dashRow, now time.Time) bool {
-	if m.showAll || m.hideAfter <= 0 || r.category != catFinished || !r.hideable {
+	if m.showAll || m.hideAfter <= 0 || r.category != catDone || !r.hideable {
 		return false
 	}
 	finished := r.lastSeen
@@ -215,7 +267,7 @@ func (m dashboardModel) isHidden(r dashRow, now time.Time) bool {
 type dashView struct {
 	all    []dashRow // every row, including hidden ones
 	rows   []dashRow // rows on display, in order
-	hidden int       // rows hidden as old finished runs
+	hidden int       // rows hidden as old done rows
 	chrome []chromeItem
 	bodyH  int // rows that fit in the viewport
 	cursor int // index into rows of the selected row

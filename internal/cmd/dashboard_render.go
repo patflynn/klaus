@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -201,7 +202,7 @@ func (m dashboardModel) renderRow(r dashRow, selected bool, lay rowLayout, now t
 	switch {
 	case selected:
 		prefix = selectedStyle.Render(prefix)
-	case r.category == catFinished:
+	case r.category == catDone:
 		prefix = dimStyle.Render(prefix)
 	}
 
@@ -234,8 +235,13 @@ func (m dashboardModel) prStatusParts(r dashRow) []string {
 	if len(r.running) > 0 {
 		parts = append(parts, runningLabel(r.running))
 	}
-	if r.category == catAttention {
+	if r.attention {
 		parts = append(parts, redStyle.Render("ATTN"))
+	}
+	if state == gh.StateNoAccess {
+		// Nothing else is known about a PR the agent can't read, and any
+		// pipeline stage is from before access was lost.
+		return parts
 	}
 
 	if ps != nil && state == "OPEN" {
@@ -278,16 +284,19 @@ func runningLabel(running []*run.State) string {
 // bareAgentParts returns the status labels for an agent row with no PR.
 func bareAgentParts(r dashRow) []string {
 	s := r.state()
+	label := agentStatusLabel(s, r.verdict)
 	var status string
 	switch {
 	case len(r.running) > 0:
 		status = yellowStyle.Render("RUNNING")
-	case r.category == catAttention:
-		status = redStyle.Render(agentStatusLabel(s))
-	case r.category == catOpen:
-		status = cyanStyle.Render(agentStatusLabel(s))
+	case r.attention:
+		status = redStyle.Render(label)
+	case r.category == catYours:
+		status = cyanStyle.Render(label)
+	case r.verdict.Landed():
+		status = greenStyle.Render(label)
 	default:
-		status = dimStyle.Render(agentStatusLabel(s))
+		status = dimStyle.Render(label)
 	}
 	parts := []string{status}
 	if s.PushedBranch != nil && s.PushedSHA != nil {
@@ -320,9 +329,10 @@ func isAnyRunApproved(states []*run.State) bool {
 }
 
 // renderSummary renders the line above the run list: the repo, counts per
-// category, and on the right the scroll position and how many runs are hidden.
+// category (always including yours), and on the right the scroll position and
+// how many runs are hidden.
 func (m dashboardModel) renderSummary(v dashView, width int) string {
-	var counts [catFinished + 1]int
+	var counts [catDone + 1]int
 	repos := make(map[string]bool)
 	for _, r := range v.all {
 		counts[r.category]++
@@ -338,10 +348,9 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 	default:
 		left = append(left, fmt.Sprintf("%d repos", len(repos)))
 	}
-	names := [...]string{"active", "attention", "open", "finished"}
 	for c, n := range counts {
-		if n > 0 {
-			left = append(left, fmt.Sprintf("%d %s", n, names[c]))
+		if n > 0 || (c == int(catYours) && len(v.all) > 0) {
+			left = append(left, fmt.Sprintf("%d %s", n, categoryNames[c]))
 		}
 	}
 
@@ -366,7 +375,8 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 }
 
 // renderFooter renders the agent count and key help, falling back to shorter
-// help on narrower panes.
+// help on narrower panes. When the selected row is a branch to submit and
+// dashboard.submit_command is set, the footer leads with that command.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
 	for _, r := range v.all {
@@ -383,6 +393,19 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open · r refresh · q quit", showKey),
 		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open · q quit", showKey),
 	}
+	style := func(f string) string { return dimStyle.Render(f) }
+	if len(v.rows) > 0 {
+		if cmd := m.submitCommand(v.rows[v.cursor]); cmd != "" {
+			for i, f := range variants {
+				variants[i] = "  submit: " + cmd + " |" + strings.TrimPrefix(f, " ")
+			}
+			variants = append(variants, "  submit: "+cmd)
+			style = func(f string) string {
+				rest := strings.TrimPrefix(f, "  submit: "+cmd)
+				return dimStyle.Render("  submit: ") + cyanStyle.Render(cmd) + dimStyle.Render(rest)
+			}
+		}
+	}
 	footer := variants[len(variants)-1]
 	for _, f := range variants {
 		if lipgloss.Width(f) <= width {
@@ -390,7 +413,22 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 			break
 		}
 	}
-	return dimStyle.Render(footer)
+	return style(footer)
+}
+
+// submitCommand expands dashboard.submit_command for a SUBMIT row: {repo} is
+// the short project name and {branch} the pushed branch. It returns "" for
+// any other row or when no command is configured.
+func (m dashboardModel) submitCommand(r dashRow) string {
+	if m.submitTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
+		return ""
+	}
+	s := r.state()
+	if !awaitsIntegration(s) {
+		return ""
+	}
+	repo := strings.TrimSuffix(shortRepoName(r.repo), ".git")
+	return strings.NewReplacer("{repo}", repo, "{branch}", *s.PushedBranch).Replace(m.submitTemplate)
 }
 
 // renderSourceLine renders the data source status line.
@@ -464,6 +502,8 @@ func stateLabel(state string) string {
 		return greenStyle.Render("MERGED")
 	case "CLOSED":
 		return dimStyle.Render("CLOSED")
+	case gh.StateNoAccess:
+		return dimStyle.Render("NO ACCESS")
 	default:
 		return yellowStyle.Render("OPEN")
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/webhook"
@@ -25,7 +26,15 @@ type statesLoadedMsg struct {
 }
 
 type ghStatusMsg struct {
-	statuses map[string]*prStatus
+	statuses map[string]*prStatus // keyed by PR URL
+}
+
+// integrationTickMsg starts an integration check of pushed runs.
+type integrationTickMsg struct{}
+
+// integrationMsg carries the verdicts of an integration check, by run ID.
+type integrationMsg struct {
+	verdicts map[string]integration.Verdict
 }
 
 type fsEventMsg struct{}
@@ -71,19 +80,20 @@ type internalEventMsg struct {
 }
 
 type trustedCommentsMsg struct {
-	prNumber             string
+	prURL                 string
 	hasNewTrustedComments bool
 }
 
 // prStatus holds the GitHub-fetched status for a single PR.
 type prStatus struct {
 	PRNumber              string
-	State                 string // OPEN, MERGED, CLOSED
-	CI                    string // passing, failing, pending, unknown
-	Conflicts             string // yes, none, unknown
-	BehindBy              int    // commits base has that head lacks; >0 = stale-but-mergeable
-	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
-	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
+	State                 string   // OPEN, MERGED, CLOSED, NOACCESS (gh.StateNoAccess) or UNKNOWN
+	Draft                 bool     // checked only when the PR is otherwise ready to merge
+	CI                    string   // passing, failing, pending, unknown
+	Conflicts             string   // yes, none, unknown
+	BehindBy              int      // commits base has that head lacks; >0 = stale-but-mergeable
+	ReviewDecision        string   // APPROVED, CHANGES_REQUESTED, etc.
+	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
 	Labels                []string // applied PR labels (used to surface klaus:budget-paused)
 }
 
@@ -99,21 +109,71 @@ func loadStatesCmd(store run.StateStore) tea.Cmd {
 	}
 }
 
-func fetchGHStatusCmd(client gh.Client, states []*run.State) tea.Cmd {
+// noAccessRecheck is how long a PR the agent can't read goes without being
+// queried again, so a fixed credential recovers on its own without the
+// dashboard asking GitHub about it on every poll.
+const noAccessRecheck = 30 * time.Minute
+
+// fetchGHStatusCmd fetches the GitHub status of every PR the states refer
+// to, keyed by PR URL so equal PR numbers in different repos don't collide.
+// PRs last found unreadable less than noAccessRecheck ago are skipped; their
+// NOACCESS status stays in place.
+func (m dashboardModel) fetchGHStatusCmd(states []*run.State) tea.Cmd {
+	skip := make(map[string]bool)
+	now := time.Now()
+	for url, at := range m.noAccessAt {
+		if now.Sub(at) < noAccessRecheck {
+			skip[url] = true
+		}
+	}
+	return fetchGHStatusCmd(m.ghClient, states, skip)
+}
+
+func fetchGHStatusCmd(client gh.Client, states []*run.State, skip map[string]bool) tea.Cmd {
 	return func() tea.Msg {
 		statuses := make(map[string]*prStatus)
-		seen := make(map[string]bool)
 		for _, s := range states {
-			prNum := extractPRNumber(s)
 			prRef := extractPRRef(s)
-			if prNum == "" || seen[prNum] {
+			if prRef == "" || skip[prRef] || statuses[prRef] != nil {
 				continue
 			}
-			seen[prNum] = true
-			statuses[prNum] = fetchPRStatus(client, prNum, prRef)
+			statuses[prRef] = fetchPRStatus(client, extractPRNumber(s), prRef)
 		}
 		return ghStatusMsg{statuses: statuses}
 	}
+}
+
+// integrationInterval is how often the dashboard checks whether pushed runs
+// have landed. It is independent of GitHub polling.
+const integrationInterval = time.Minute
+
+// integrationTimeout bounds one integration check.
+const integrationTimeout = 5 * time.Minute
+
+// checkIntegrationCmd checks, in the background, the runs that are waiting
+// for their pushed branch to be integrated.
+func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.Cmd {
+	if checker == nil {
+		return nil
+	}
+	var pushed []*run.State
+	for _, s := range states {
+		if awaitsIntegration(s) {
+			cp := *s // the check runs off the Update goroutine
+			pushed = append(pushed, &cp)
+		}
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
+		defer cancel()
+		return integrationMsg{verdicts: checker.Check(ctx, pushed)}
+	}
+}
+
+func integrationTickAfterCmd() tea.Cmd {
+	return tea.Tick(integrationInterval, func(time.Time) tea.Msg {
+		return integrationTickMsg{}
+	})
 }
 
 func waitForWebhookCmd(ch <-chan webhook.Event) tea.Cmd {
@@ -295,7 +355,7 @@ func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
 	ctx := context.TODO()
 	ps := &prStatus{PRNumber: prNumber}
 	ps.State = client.GetState(ctx, prRef)
-	if ps.State == "MERGED" || ps.State == "CLOSED" {
+	if ps.State == "MERGED" || ps.State == "CLOSED" || ps.State == gh.StateNoAccess {
 		return ps
 	}
 	ps.CI = client.GetCI(ctx, prRef)
@@ -303,6 +363,11 @@ func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
 	ps.BehindBy = client.GetCommitsBehind(ctx, prRef)
 	ps.ReviewDecision = client.GetReviewDecision(ctx, prRef)
 	ps.Labels = client.GetLabels(ctx, prRef)
+	// A ready PR waits on the operator unless it's a draft; only then does
+	// draft-ness matter, so only then is it asked for.
+	if computeMergeStatus(ps.CI, ps.Conflicts, ps.ReviewDecision, ps.BehindBy) == "ready" {
+		ps.Draft = client.IsDraft(ctx, prRef)
+	}
 
 	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
 	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.

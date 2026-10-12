@@ -283,8 +283,11 @@ After an agent completes:
   `origin`'s live tip matches it (the PR branch on the remote stays). A
   clean run without a PR whose branch is already on `origin` (direct-push
   repos) records the branch and SHA and emits `agent:branch-pushed`; its
-  status is `awaiting-integration`. Other runs without a PR get a WIP commit
-  and push first and emit `agent:needs-attention`.
+  status is `awaiting-integration` until `klaus status` or the dashboard
+  observes its work on the default branch (`integrated`) or its branch
+  deleted without landing (`branch-gone`). That observation is never
+  persisted. Other runs without a PR get a WIP commit and push first and
+  emit `agent:needs-attention`.
 
 - **State files** persist at `~/.klaus/sessions/{session-id}/runs/{run-id}.json`
   — these power the dashboard and contain cost, duration, PR URL, and approval

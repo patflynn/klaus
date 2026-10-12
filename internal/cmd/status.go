@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -15,6 +16,19 @@ import (
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show all runs and their current state",
+	Long: `Shows all runs in the session and their current state.
+
+STATUS is one of: running, needs-attention, pr-created, merged, closed,
+no-access (GitHub won't show the PR with the current credentials), exited,
+and, for runs that finished by pushing a branch without a PR:
+
+  awaiting-integration  the branch is on origin and hasn't landed
+  integrated            its work is on origin's default branch, by ancestry
+                        or by an equal patch-id
+  branch-gone           the branch was deleted from origin without landing
+
+Integration is checked against each run's clone (one ls-remote and fetch per
+repo). If the check can't complete, the run stays awaiting-integration.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
@@ -40,11 +54,29 @@ var statusCmd = &cobra.Command{
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
 			"------", "------", "-------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
 
-		for _, s := range states {
+		statuses := make([]string, len(states))
+		var pushed []*run.State
+		for i, s := range states {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			status := determineStatus(ctx, s, tmuxClient)
+			statuses[i] = determineStatus(ctx, s, tmuxClient)
+			if statuses[i] == "awaiting-integration" {
+				pushed = append(pushed, s)
+			}
+		}
+		// Whether pushed branches have landed: one check per repo, against
+		// each run's own clone.
+		verdicts := integration.NewGitChecker(nil).Check(ctx, pushed)
+
+		for i, s := range states {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			status := statuses[i]
+			if status == "awaiting-integration" {
+				status = pushedStatus(verdicts[s.ID])
+			}
 			cost := formatCost(s)
 			issue := "-"
 			if s.Issue != nil {
@@ -70,6 +102,9 @@ var statusCmd = &cobra.Command{
 					merge = "merged"
 				case "CLOSED":
 					status = "closed"
+				case gh.StateNoAccess:
+					// GitHub won't show this PR to us: nothing else to ask.
+					status = "no-access"
 				default:
 					ci = ghClient.GetCI(ctx, prRef)
 					conflicts = ghClient.GetConflicts(ctx, prRef)
@@ -119,9 +154,23 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	}
 	if s.PushedSHA != nil {
 		// Direct-push finish: the branch on origin waits for the operator.
+		// The status command refines this with an integration check.
 		return "awaiting-integration"
 	}
 	return "exited"
+}
+
+// pushedStatus is the status of a run awaiting integration once an
+// integration check has looked at it. An unknown verdict (no clone, origin
+// unreachable) keeps it awaiting.
+func pushedStatus(v integration.Verdict) string {
+	switch {
+	case v.Landed():
+		return "integrated"
+	case v == integration.Gone:
+		return "branch-gone"
+	}
+	return "awaiting-integration"
 }
 
 func formatCost(s *run.State) string {
