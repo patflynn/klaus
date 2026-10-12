@@ -16,7 +16,9 @@ type Verdict int
 
 const (
 	// Unknown means the check could not complete (no clone, origin
-	// unreachable, fetch failed). Callers show the run as awaiting.
+	// unreachable, fetch failed), or the branch is gone but the clone lacks
+	// the history to rule out that it landed. Callers show the run as
+	// awaiting.
 	Unknown Verdict = iota
 	// Awaiting means the branch is on origin and its work has not landed.
 	Awaiting
@@ -26,7 +28,8 @@ const (
 	// IntegratedContent means a commit on the default branch carries the
 	// same change as the branch (equal patch-ids). It is evidence, not proof.
 	IntegratedContent
-	// Gone means the branch was deleted from origin without landing.
+	// Gone means the branch was deleted from origin without landing, as far
+	// as a complete check of the clone's history can tell.
 	Gone
 )
 

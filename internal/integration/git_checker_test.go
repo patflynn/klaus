@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -115,6 +116,14 @@ func (f *fixture) advanceMain(name string) {
 	git(f.t, f.ops, "add", name)
 	git(f.t, f.ops, "commit", "-q", "-m", "unrelated "+name)
 	git(f.t, f.ops, "push", "-q", "origin", "main")
+}
+
+// advanceMainAt lands an unrelated commit on main, committed at when.
+func (f *fixture) advanceMainAt(name string, when time.Time) {
+	f.t.Helper()
+	f.t.Setenv("GIT_COMMITTER_DATE", fmt.Sprintf("@%d +0000", when.Unix()))
+	defer os.Unsetenv("GIT_COMMITTER_DATE")
+	f.advanceMain(name)
 }
 
 // fastForward moves main to sha.
@@ -243,6 +252,70 @@ func TestGitCheckerDeletedWithoutLanding(t *testing.T) {
 	}
 }
 
+func TestGitCheckerDeletedAndPrunedIsUnknown(t *testing.T) {
+	// The branch was deleted without landing and the clone no longer has the
+	// pushed commit, so nothing rules out that it landed: unknown, not gone.
+	f := newFixture(t)
+	s := f.agentPush("r1", "agent/pruned", "a.txt")
+	f.advanceMain("other.txt")
+	f.deleteBranch("agent/pruned")
+	git(t, f.clone, "fetch", "-q", "--prune", "origin")
+	git(t, f.clone, "checkout", "-q", "--detach", "origin/main")
+	git(t, f.clone, "reflog", "expire", "--expire=now", "--all")
+	git(t, f.clone, "gc", "-q", "--prune=now")
+	if exec.Command("git", "-C", f.clone, "cat-file", "-e", *s.PushedSHA).Run() == nil {
+		t.Fatal("test setup: the pushed commit should be pruned from the clone")
+	}
+
+	c := NewGitChecker(nil)
+	if v := checkOne(t, c, s); v != Unknown {
+		t.Fatalf("verdict = %v, want unknown", v)
+	}
+
+	// The commit comes back while origin's tips stay put: the unknown wasn't
+	// cached, so the next check has the evidence and says gone.
+	git(t, f.ops, "push", "-q", f.clone, *s.PushedSHA+":refs/heads/restored")
+	if v := checkOne(t, c, s); v != Gone {
+		t.Errorf("after the commit is back: verdict = %v, want gone", v)
+	}
+}
+
+func TestGitCheckerTruncatedScanIsNotGone(t *testing.T) {
+	// Two deleted branches that never landed. The walk of main runs back to
+	// the older run's creation but stops at the cap first: it covers the
+	// newer run, which is gone, but not the older one, whose landing it might
+	// have missed.
+	now := time.Now()
+	f := newFixture(t)
+	old := f.agentPush("old", "agent/old", "a.txt")
+	newer := f.agentPush("newer", "agent/newer", "b.txt")
+	old.CreatedAt = now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	newer.CreatedAt = now.Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	f.advanceMainAt("o1.txt", now.Add(-30*time.Minute))
+	f.advanceMainAt("o2.txt", now.Add(-20*time.Minute))
+	f.advanceMain("o3.txt")
+	f.deleteBranch("agent/old")
+	f.deleteBranch("agent/newer")
+	runs := []*run.State{old, newer}
+
+	c := NewGitChecker(nil)
+	c.scanLimit = 2 // o3 and o2
+	got := c.Check(context.Background(), runs)
+	if got["old"] != Unknown {
+		t.Errorf("old: verdict = %v, want unknown", got["old"])
+	}
+	if got["newer"] != Gone {
+		t.Errorf("newer: verdict = %v, want gone", got["newer"])
+	}
+
+	got = NewGitChecker(nil).Check(context.Background(), runs)
+	for _, s := range runs {
+		if got[s.ID] != Gone {
+			t.Errorf("%s without a cap: verdict = %v, want gone", s.ID, got[s.ID])
+		}
+	}
+}
+
 func TestGitCheckerOneSnapshotForManyRuns(t *testing.T) {
 	// Runs in the same clone share one check: one waiting, one landed by
 	// fast-forward, one landed by the integrator, one deleted.
@@ -272,8 +345,15 @@ func TestGitCheckerUnreachableOriginIsUnknown(t *testing.T) {
 	s := f.agentPush("r1", "agent/x", "a.txt")
 	git(t, f.clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "no-such-origin.git"))
 
-	if v := checkOne(t, NewGitChecker(nil), s); v != Unknown {
-		t.Errorf("verdict = %v, want unknown", v)
+	c := NewGitChecker(nil)
+	if v := checkOne(t, c, s); v != Unknown {
+		t.Fatalf("verdict = %v, want unknown", v)
+	}
+
+	// Once origin is fixed, the next check gives a real verdict.
+	git(t, f.clone, "remote", "set-url", "origin", f.origin)
+	if v := checkOne(t, c, s); v != Awaiting {
+		t.Errorf("after fixing origin: verdict = %v, want awaiting", v)
 	}
 }
 

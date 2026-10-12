@@ -142,7 +142,7 @@ func (m dashboardModel) classify(r *dashRow) {
 		closed = r.ps.State == "CLOSED"
 		noAccess = r.ps.State == gh.StateNoAccess
 	}
-	if pps, ok := m.pipelineStates[r.prNum]; ok && r.prNum != "" {
+	if pps, ok := m.pipelineState(*r); ok {
 		merged = merged || pps.Stage == pipeline.StageMerged
 		attention = attention || pps.Stage == pipeline.StageStalled || pps.Stage == pipeline.StageBudgetPaused
 	}
@@ -174,6 +174,22 @@ func (m dashboardModel) classify(r *dashRow) {
 	default:
 		r.category = catPipeline
 	}
+}
+
+// pipelineState returns the pipeline's state for a PR row. The pipeline
+// keys PRs by number alone, so a state counts only if it tracks this row's
+// PR, not a same-numbered PR in another repo.
+func (m dashboardModel) pipelineState(r dashRow) (*pipeline.PRPipelineState, bool) {
+	pps, ok := m.pipelineStates[r.prNum]
+	if !ok || r.prNum == "" {
+		return nil, false
+	}
+	for _, s := range r.runs {
+		if extractPRRef(s) == pps.PRURL {
+			return pps, true
+		}
+	}
+	return nil, false
 }
 
 // readyToApprove reports whether a PR row waits on the operator's approval:

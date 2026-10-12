@@ -94,7 +94,7 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 		tmuxDeps: testDashboardTmuxDeps(),
 		ghStatus: map[string]*prStatus{},
 		pipelineStates: map[string]*pipeline.PRPipelineState{
-			"2": {PRNumber: "2", Stage: pipeline.StageStalled},
+			"2": {PRNumber: "2", PRURL: *pr(2), Stage: pipeline.StageStalled},
 		},
 		integration: map[string]integration.Verdict{
 			submit.ID:        integration.Awaiting,
@@ -164,6 +164,47 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 	}
 	if line := lineWith(plain, "done no access"); strings.Contains(line, "CI") {
 		t.Errorf("a PR we can't read shows no CI: %q", line)
+	}
+}
+
+// TestPipelineStateIsPerRepo: the pipeline keys PRs by number alone, so its
+// state for o/a#5 must not make o/b#5 the operator's or show its stage.
+func TestPipelineStateIsPerRepo(t *testing.T) {
+	now := time.Now()
+	pr := func(repo string) *run.State {
+		return &run.State{
+			ID: "20261012-1200-" + repo, Type: "launch", Prompt: "repo " + repo, CostUSD: float64Ptr(1),
+			TargetRepo: strPtr("o/" + repo), PRURL: strPtr("https://github.com/o/" + repo + "/pull/5"),
+			CreatedAt: now.Format(time.RFC3339),
+		}
+	}
+	a, b := pr("a"), pr("b")
+	m := dashboardModel{
+		states:   []*run.State{a, b},
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{
+			*a.PRURL: {State: "OPEN", CI: "failing", Conflicts: "none"},
+			*b.PRURL: {State: "OPEN", CI: "pending", Conflicts: "none"},
+		},
+		pipelineStates: map[string]*pipeline.PRPipelineState{
+			"5": {PRNumber: "5", PRURL: *a.PRURL, Stage: pipeline.StageStalled},
+		},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	for _, r := range m.buildRows() {
+		want := map[string]rowCategory{"repo a": catYours, "repo b": catPipeline}[r.state().Prompt]
+		if r.category != want {
+			t.Errorf("%q: category %s, want %s", r.state().Prompt, categoryNames[r.category], categoryNames[want])
+		}
+	}
+
+	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 20})
+	plain := ansi.Strip(m.View())
+	if line := lineWith(plain, "repo a"); !strings.Contains(line, "stalled") {
+		t.Errorf("o/a#5 should show its pipeline stage: %q", line)
+	}
+	if line := lineWith(plain, "repo b"); strings.Contains(line, "stalled") {
+		t.Errorf("o/b#5 should not show o/a#5's pipeline stage: %q", line)
 	}
 }
 

@@ -266,7 +266,7 @@ func (m dashboardModel) prStatusParts(r dashRow) []string {
 	}
 
 	// Append pipeline stage if available.
-	if pps, ok := m.pipelineStates[r.prNum]; ok {
+	if pps, ok := m.pipelineState(r); ok {
 		parts = append(parts, dimStyle.Render(pipeline.StageLabel(pps.Stage)))
 	}
 	return parts

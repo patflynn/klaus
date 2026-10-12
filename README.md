@@ -347,7 +347,7 @@ Whether a pushed branch has landed is observed, not recorded: `klaus status` and
 - **branch-gone** (`GONE`): the branch was deleted from `origin` and neither check matched, for example a rejected or superseded change.
 - otherwise **awaiting-integration** (`SUBMIT`).
 
-If the clone is missing or `origin` can't be listed or fetched, the run stays awaiting; an incomplete check never reports a branch as gone.
+If the clone is missing or `origin` can't be listed or fetched, the run stays awaiting; an incomplete check never reports a branch as gone. A deleted branch also stays awaiting when the clone can't rule out that it landed: the pushed SHA was pruned from the clone, the clone's history is too shallow to find a merge base with the default branch, or the content check stopped at its cap of 500 default-branch commits before reaching the run's start.
 
 When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
 

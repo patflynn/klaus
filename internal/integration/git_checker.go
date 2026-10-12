@@ -40,17 +40,25 @@ const (
 //     branch's change (its diff from the merge base with the default branch).
 //     This catches an integrator that lands a change as one new commit on top
 //     of the default branch.
-//  3. Gone: the branch is no longer on origin and neither check matched.
-//  4. Awaiting: anything else.
+//  3. Gone: the branch is no longer on origin, neither check matched, and
+//     the evidence was complete: the pushed SHA is in the clone, shares
+//     history with the default branch, and its change was compared against
+//     every commit landed since the run was created.
+//  4. Awaiting: the branch is still on origin and neither check matched.
 //
 // A run without a clone, or whose origin can't be listed or fetched, is
-// Unknown; an incomplete check never says Gone.
+// Unknown, and so is a deleted branch whose evidence was incomplete (the
+// pushed SHA was pruned, the clone is shallow, or the scan of landed commits
+// hit its cap): an incomplete check never says Gone.
 //
-// Verdicts are cached in memory by run, pushed SHA, default tip and branch
-// tip, so a check whose tips haven't moved costs one ls-remote per repo.
-// A GitChecker is safe for concurrent use.
+// Verdicts other than Unknown are cached in memory by what they were computed
+// from (the run, its clone, branch, pushed SHA and creation time, and origin's
+// default and branch tips), so a check whose tips haven't moved costs one
+// ls-remote per repo. A GitChecker is safe for concurrent use.
 type GitChecker struct {
 	logger *slog.Logger
+	// scanLimit bounds the walk of the default branch (maxLandedScan).
+	scanLimit int
 
 	mu       sync.Mutex
 	verdicts map[cacheKey]Verdict
@@ -59,7 +67,7 @@ type GitChecker struct {
 
 // cacheKey is what a verdict was computed from.
 type cacheKey struct {
-	runID, pushedSHA, defaultTip, branchTip string
+	runID, cloneDir, pushedBranch, pushedSHA, createdAt, defaultTip, branchTip string
 }
 
 // NewGitChecker returns a GitChecker that logs incomplete checks at debug
@@ -69,9 +77,10 @@ func NewGitChecker(logger *slog.Logger) *GitChecker {
 		logger = slog.Default()
 	}
 	return &GitChecker{
-		logger:   logger,
-		verdicts: make(map[cacheKey]Verdict),
-		patchIDs: make(map[string]string),
+		logger:    logger,
+		scanLimit: maxLandedScan,
+		verdicts:  make(map[cacheKey]Verdict),
+		patchIDs:  make(map[string]string),
 	}
 }
 
@@ -140,7 +149,7 @@ func (c *GitChecker) checkRepo(ctx context.Context, dir string, runs []*run.Stat
 	keys := make(map[string]cacheKey, len(runs))
 	var pending []*run.State
 	for _, s := range runs {
-		key := cacheKey{s.ID, *s.PushedSHA, snap.defaultTip, snap.heads[*s.PushedBranch]}
+		key := cacheKey{s.ID, dir, *s.PushedBranch, *s.PushedSHA, s.CreatedAt, snap.defaultTip, snap.heads[*s.PushedBranch]}
 		keys[s.ID] = key
 		if v, ok := c.verdicts[key]; ok {
 			out[s.ID] = v
@@ -161,14 +170,15 @@ func (c *GitChecker) checkRepo(ctx context.Context, dir string, runs []*run.Stat
 	// The default branch's recent commits are walked at most once per repo,
 	// back to the oldest pending run, and only if a content check needs them.
 	var landed []landedCommit
+	var truncated bool
 	var landedErr error
 	walked := false
-	landedFn := func() ([]landedCommit, error) {
+	landedFn := func() ([]landedCommit, bool, error) {
 		if !walked {
 			walked = true
-			landed, landedErr = c.landedCommits(ctx, dir, snap.defaultTip, oldestCreated(pending), next)
+			landed, truncated, landedErr = c.landedCommits(ctx, dir, snap.defaultTip, oldestCreated(pending), next)
 		}
-		return landed, landedErr
+		return landed, truncated, landedErr
 	}
 
 	for _, s := range pending {
@@ -178,12 +188,18 @@ func (c *GitChecker) checkRepo(ctx context.Context, dir string, runs []*run.Stat
 			continue
 		}
 		out[s.ID] = v
-		next.verdicts[keys[s.ID]] = v
+		// Unknown is never cached: the next check may have what this one
+		// lacked.
+		if v != Unknown {
+			next.verdicts[keys[s.ID]] = v
+		}
 	}
 }
 
-// judge applies the verdicts, in order, to one run.
-func judge(ctx context.Context, dir string, snap snapshot, s *run.State, landed func() ([]landedCommit, error)) (Verdict, error) {
+// judge applies the verdicts, in order, to one run. landed returns the
+// default branch's recent commits and whether the walk was cut short by the
+// cap.
+func judge(ctx context.Context, dir string, snap snapshot, s *run.State, landed func() ([]landedCommit, bool, error)) (Verdict, error) {
 	pushed := *s.PushedSHA
 	tip := snap.heads[*s.PushedBranch]
 	candidates := []string{pushed}
@@ -212,18 +228,26 @@ func judge(ctx context.Context, dir string, snap snapshot, s *run.State, landed 
 		}
 	}
 
+	// complete is set once a candidate's change could be compared: it is
+	// here and shares history with the default branch. Without that, a
+	// deleted branch is Unknown, not Gone.
+	complete := false
 	want := make(map[string]bool)
 	for _, x := range local {
-		id, err := changePatchID(ctx, dir, snap.defaultTip, x)
+		id, ok, err := changePatchID(ctx, dir, snap.defaultTip, x)
 		if err != nil {
 			return Unknown, err
 		}
+		if !ok {
+			continue
+		}
+		complete = true
 		if id != "" {
 			want[id] = true
 		}
 	}
 	if len(want) > 0 {
-		commits, err := landed()
+		commits, truncated, err := landed()
 		if err != nil {
 			return Unknown, err
 		}
@@ -236,12 +260,21 @@ func judge(ctx context.Context, dir string, snap snapshot, s *run.State, landed 
 				return IntegratedContent, nil
 			}
 		}
+		// A walk cut short by the cap covered this run only if it reached a
+		// commit from before the run was created.
+		if truncated && (since.IsZero() || len(commits) == 0 || !commits[len(commits)-1].when.Before(since)) {
+			complete = false
+		}
 	}
 
-	if tip == "" {
+	switch {
+	case tip != "":
+		return Awaiting, nil
+	case complete:
 		return Gone, nil
+	default:
+		return Unknown, nil
 	}
-	return Awaiting, nil
 }
 
 // snapshot is origin's default branch and branch tips at one moment.
@@ -316,21 +349,30 @@ type landedCommit struct {
 	patchID string    // "" for a merge or a commit with no diff
 }
 
-// landedCommits lists up to maxLandedScan first-parent commits of tip
-// committed since since (all of them when since is zero), with their
-// patch-ids. Patch-ids already computed are reused: commits don't change.
-func (c *GitChecker) landedCommits(ctx context.Context, dir, tip string, since time.Time, next *checkCache) ([]landedCommit, error) {
-	args := []string{"log", "--first-parent", "--format=%H %ct", "-n", strconv.Itoa(maxLandedScan)}
+// landedCommits lists up to c.scanLimit first-parent commits of tip
+// committed since since (all of them when since is zero), newest first, with
+// their patch-ids. truncated reports that there were more: the walk stopped
+// at the cap, not at since. Patch-ids already computed are reused: commits
+// don't change.
+func (c *GitChecker) landedCommits(ctx context.Context, dir, tip string, since time.Time, next *checkCache) (commits []landedCommit, truncated bool, err error) {
+	// One commit past the cap tells a full walk from a cut-short one.
+	args := []string{"log", "--first-parent", "--format=%H %ct", "-n", strconv.Itoa(c.scanLimit + 1)}
 	if !since.IsZero() {
 		args = append(args, "--since="+strconv.FormatInt(since.Unix(), 10))
 	}
 	out, err := gitRun(ctx, dir, nil, localTimeout, append(args, tip)...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var commits []landedCommit
+	var lines []string
+	if s := strings.TrimSpace(string(out)); s != "" {
+		lines = strings.Split(s, "\n")
+	}
+	if len(lines) > c.scanLimit {
+		lines, truncated = lines[:c.scanLimit], true
+	}
 	var missing []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range lines {
 		sha, ct, ok := strings.Cut(line, " ")
 		if !ok {
 			continue
@@ -346,7 +388,7 @@ func (c *GitChecker) landedCommits(ctx context.Context, dir, tip string, since t
 	}
 	computed, err := commitPatchIDs(ctx, dir, missing)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	for i := range commits {
 		sha := commits[i].sha
@@ -357,7 +399,7 @@ func (c *GitChecker) landedCommits(ctx context.Context, dir, tip string, since t
 		commits[i].patchID = id
 		next.patchIDs[sha] = id
 	}
-	return commits, nil
+	return commits, truncated, nil
 }
 
 // commitPatchIDs returns the patch-id of each commit's diff against its
@@ -387,28 +429,32 @@ func commitPatchIDs(ctx context.Context, dir string, shas []string) (map[string]
 }
 
 // changePatchID returns the patch-id of x's change relative to base: the
-// diff from their merge base to x. It is "" when they share no history or
-// the change is empty.
-func changePatchID(ctx context.Context, dir, base, x string) (string, error) {
+// diff from their merge base to x, "" when the change is empty. ok is false
+// when the clone has no merge base for them (unrelated or shallow history),
+// so the change can't be compared.
+func changePatchID(ctx context.Context, dir, base, x string) (id string, ok bool, err error) {
 	mb, err := gitRun(ctx, dir, nil, localTimeout, "merge-base", base, x)
 	if exitCode(err) == 1 {
-		return "", nil // no common ancestor
+		return "", false, nil // no common ancestor
 	}
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	diff, err := gitRun(ctx, dir, nil, localTimeout, "diff-tree", "-r", "-p", strings.TrimSpace(string(mb)), x)
-	if err != nil || len(diff) == 0 {
-		return "", err
+	if err != nil {
+		return "", false, err
+	}
+	if len(diff) == 0 {
+		return "", true, nil
 	}
 	out, err := gitRun(ctx, dir, diff, localTimeout, "patch-id", "--stable")
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if f := strings.Fields(string(out)); len(f) > 0 {
-		return f[0], nil
+		return f[0], true, nil
 	}
-	return "", nil
+	return "", true, nil
 }
 
 // hasObject reports whether the object named by a full SHA is in the clone.

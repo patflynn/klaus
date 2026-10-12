@@ -51,7 +51,7 @@ func TestStateTransition_CIPendingToFailed(t *testing.T) {
 	})
 
 	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
+		"42": {PRNumber: "42", PRURL: "https://github.com/owner/repo/pull/42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
 	}
 
 	actions := c.HandleGHStatus(context.Background(), statuses, nil)
@@ -66,6 +66,9 @@ func TestStateTransition_CIPendingToFailed(t *testing.T) {
 	states := c.PipelineStates()
 	if states["42"].Stage != StageCIFailed {
 		t.Errorf("expected stage ci_failed, got %s", states["42"].Stage)
+	}
+	if states["42"].PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("state should record the PR it tracks, got %q", states["42"].PRURL)
 	}
 }
 
