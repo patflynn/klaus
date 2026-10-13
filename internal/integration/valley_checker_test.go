@@ -1,6 +1,10 @@
 package integration
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/patflynn/klaus/internal/run"
@@ -83,6 +87,7 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"earlier version", pushed("cosmo", "nxvp-id", "nxvp-1"), Superseded, "nxvp", 1},
 		{"same change in another repo", pushed("fork", "nxvp-id", "nxvp-2"), Withdrawn, "nxvpf", 1},
 		{"repo from the target repo's name", target("patflynn/cosmo.git", pushed("", "nxvp-id", "nxvp-2")), Ready, "nxvp", 2},
+		{"repo from the target repo's URL", target("git@classic-laddie:fork.git", pushed("", "nxvp-id", "nxvp-2")), Withdrawn, "nxvpf", 1},
 		{"request filed", pushed("cosmo", "appr-id", "appr-1"), Approved, "appr", 1},
 		{"landed", pushed("cosmo", "land-id", "land-2"), Integrated, "land", 2},
 		{"landed, then superseded", pushed("cosmo", "land-id", "land-1"), Integrated, "land", 1},
@@ -124,9 +129,87 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"repo the valley lacks", pushed("other", "nxvp-id", "nxvp-2")},
 		{"repo the valley couldn't read", pushed("dark", "nxvp-id", "nxvp-2")},
 		{"run without a change ID", pushed("cosmo", "", "nxvp-2")},
+		// nxvp-id's head nxvp-2 is in both cosmo and fork: a run that
+		// doesn't know its repo can't tell which is its.
+		{"run without a repo", pushed("", "nxvp-id", "nxvp-2")},
+		{"target repo the valley lacks", target("patflynn/other", pushed("", "nxvp-id", "nxvp-2"))},
 	} {
 		if got, ok := place(changes, tc.run); ok {
 			t.Errorf("%s: placed as %v %+v, want unplaced", tc.name, got.Verdict, *got.Change)
 		}
 	}
+}
+
+// TestValleyCheckerFallsBackToGit runs a ValleyChecker against a fake valley
+// and real git. A run is judged by git when the valley can't vouch for it: its
+// repo's listing carries an error (whatever stale records sit beside it),
+// klaus doesn't know its repo, or valley fails. And git never settles a
+// change finalize marked ready: a deleted branch leaves it Unknown, not Gone.
+func TestValleyCheckerFallsBackToGit(t *testing.T) {
+	f := newFixture(t)
+	bin := t.TempDir()
+	listing := filepath.Join(bin, "changes.json")
+	script := "#!/bin/sh\nif [ \"$1\" = changes ] && [ -f '" + listing + "' ]; then exec cat '" + listing + "'; fi\n" +
+		"echo 'valley: cannot reach classic-laddie' >&2\nexit 1\n"
+	writeFile(t, bin, "valley", script)
+	if err := os.Chmod(filepath.Join(bin, "valley"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	readied := func(id string) *run.State {
+		s := f.agentPush(id, "agent/"+id, id+".txt")
+		s.ChangeID = id + "-id"
+		s.Valley = &run.Valley{Repo: "cosmo", Handle: id, Version: 1}
+		return s
+	}
+	// Listed as landed, but in a repo the valley couldn't read.
+	dark := readied("dark")
+	// Listed as landed in two repos, and the run knows neither its own nor
+	// its target repo.
+	orphan := f.agentPush("orph", "agent/orph", "orph.txt")
+	orphan.ChangeID = "orph-id"
+	// Not listed, and its branch is deleted without landing.
+	gone := readied("gone")
+	// A plain direct-push run whose branch is deleted: git settles it.
+	plain := f.agentPush("plain", "agent/plain", "plain.txt")
+	f.advanceMain("other.txt")
+	f.deleteBranch("agent/gone")
+	f.deleteBranch("agent/plain")
+
+	landed := func(s *run.State) map[string]any {
+		return map[string]any{"change_id": s.ChangeID, "handle": s.ID, "state": "ready", "active": 1,
+			"versions": []any{map[string]any{"n": 1, "head": *s.PushedSHA, "landing": "landed"}}}
+	}
+	data, err := json.Marshal(map[string]any{
+		"schema": valley.SchemaV1, "host": "classic-laddie",
+		"repos": []any{
+			map[string]any{"repo": "cosmo", "error": "fetch failed", "changes": []any{landed(dark)}},
+			map[string]any{"repo": "fork", "error": nil, "changes": []any{landed(orphan)}},
+			map[string]any{"repo": "spoon", "error": nil, "changes": []any{landed(orphan)}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, bin, "changes.json", string(data))
+
+	c := NewValleyChecker(nil)
+	runs := []*run.State{dark, orphan, gone, plain}
+	check := func(want map[*run.State]Verdict) {
+		t.Helper()
+		got := c.Check(context.Background(), runs)
+		for s, v := range want {
+			if r := got[s.ID]; r.Verdict != v || r.Change != nil {
+				t.Errorf("%s: %v %+v, want %v from git", s.ID, r.Verdict, r.Change, v)
+			}
+		}
+	}
+	check(map[*run.State]Verdict{dark: Awaiting, orphan: Awaiting, gone: Unknown, plain: Gone})
+
+	// The valley is unreachable.
+	if err := os.Remove(listing); err != nil {
+		t.Fatal(err)
+	}
+	check(map[*run.State]Verdict{dark: Awaiting, orphan: Awaiting, gone: Unknown, plain: Gone})
 }

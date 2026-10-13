@@ -295,7 +295,8 @@ func runningLabel(running []*run.State) string {
 
 // bareAgentParts returns the status labels for an agent row with no PR. A
 // valley change shows its version and head, any other pushed branch its
-// name and head. A run whose change finalize couldn't mark ready says why.
+// name and head. A valley verdict kept from an earlier check says so, and a
+// run whose change finalize couldn't mark ready says why.
 func bareAgentParts(r dashRow) []string {
 	s := r.state()
 	label := agentStatusLabel(s, r.verdict, r.change != nil)
@@ -315,6 +316,9 @@ func bareAgentParts(r dashRow) []string {
 		status = dimStyle.Render(label)
 	}
 	parts := []string{status}
+	if r.outdated && len(r.running) == 0 {
+		parts = append(parts, dimStyle.Render("(last known)"))
+	}
 	switch c := r.change; {
 	case c != nil && c.Version > 0:
 		parts = append(parts, fmt.Sprintf("v%d@%s", c.Version, shortSHA(c.Head)))
@@ -446,9 +450,11 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 // "approve") or a SUBMIT row (verb "submit"). {repo} is the repo as the row
 // names it, {branch} the pushed branch, {change} the full change ID,
 // {handle} the valley's handle and {head} the pushed head, the one the
-// operator sees. It returns "" for any other row, when no command is
-// configured, or when the template uses a placeholder the row has no value
-// for, such as {handle} on a branch no valley knows.
+// operator sees. Each value is shell-quoted (shellWord): a branch name is
+// the agent's to choose, and the operator pastes the command into a shell.
+// It returns "" for any other row, when no command is configured, or when
+// the template uses a placeholder the row has no value for, such as
+// {handle} on a branch no valley knows.
 func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
 	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
 		return "", ""
@@ -481,9 +487,23 @@ func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
 		if kv[1] == "" && strings.Contains(m.approveTemplate, kv[0]) {
 			return "", ""
 		}
-		pairs = append(pairs, kv[0], kv[1])
+		pairs = append(pairs, kv[0], shellWord(kv[1]))
 	}
 	return verb, strings.NewReplacer(pairs...).Replace(m.approveTemplate)
+}
+
+// shellWord makes s one word for a POSIX shell: as it is when it is only
+// [A-Za-z0-9._/-], which a shell takes literally, so the common command stays
+// readable; else single-quoted (shellQuote).
+func shellWord(s string) string {
+	plain := s != ""
+	for _, c := range s {
+		plain = plain && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._/-", c))
+	}
+	if plain {
+		return s
+	}
+	return shellQuote(s)
 }
 
 // renderSourceLine renders the data source status line.

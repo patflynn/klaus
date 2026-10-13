@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -186,15 +187,14 @@ func command(ctx context.Context, dir string, timeout time.Duration, args ...str
 // prompts: stdin is empty, git's terminal prompt is off, and the command runs
 // in a new session with no controlling terminal, so ssh can't ask for a
 // passphrase on the dashboard's screen. A timeout reports
-// context.DeadlineExceeded.
+// context.DeadlineExceeded, and kills valley and everything it started.
 func execValley(ctx context.Context, dir string, timeout time.Duration, args ...string) (stdout, stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "valley", args...)
 	cmd.Dir = dir
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0") // Environ sets PWD to Dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.WaitDelay = 5 * time.Second
+	isolate(cmd)
 	var out, errOut bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err = cmd.Run()
@@ -227,8 +227,27 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.WaitDelay = 5 * time.Second
+	isolate(cmd)
 	out, err := cmd.Output()
 	return strings.TrimSpace(string(out)), err
+}
+
+// isolate runs cmd, made with exec.CommandContext, in a new session with no
+// controlling terminal. That makes cmd the leader of its own process group
+// (Setpgid on top would fail: a session leader can't change group), and when
+// the context ends the whole group is killed, so a child of cmd, such as the
+// ssh or git carrying out a ready, can't finish the work after klaus has
+// recorded that it timed out.
+func isolate(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	// Bounds the wait for output pipes held open by anything that left the
+	// group.
+	cmd.WaitDelay = 5 * time.Second
 }

@@ -602,3 +602,118 @@ func TestSubmitCommandInFooter(t *testing.T) {
 		t.Errorf("footer should not show a submit command once integrated:\n%s", view)
 	}
 }
+
+// TestApproveCommandQuotesValues runs the expanded approve command in a real
+// shell: values a shell would read as code (a branch an agent named, a
+// handle from the valley) arrive as the literal arguments, and plain values
+// stay unquoted.
+func TestApproveCommandQuotesValues(t *testing.T) {
+	pwn := filepath.Join(t.TempDir(), "pwn")
+	sha := "0123456789abcdef0123456789abcdef01234567"
+	for _, tc := range []struct{ branch, handle string }{
+		{"agent/x;touch${IFS}" + pwn, "nxvp"},
+		{"agent/it's-$(touch${IFS}" + pwn + ")", "nx'; touch " + pwn + "; '"},
+		{"agent/plain-1.2_x", "nxvp"},
+	} {
+		branch := tc.branch
+		s := &run.State{ID: "20261012-0900-0001", Type: "launch", Prompt: "pushed", TargetRepo: strPtr("patflynn/cosmo"),
+			CostUSD: float64Ptr(1), CreatedAt: time.Now().Format(time.RFC3339), ChangeID: "nxvp-id",
+			PushedBranch: &branch, PushedSHA: &sha}
+		m := dashboardModel{states: []*run.State{s}, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
+			hideAfter: defaultHideFinishedAfter, approveTemplate: `printf '%s\n' {repo} {branch} {change} {handle} {head}`}
+		m = send(m, integrationMsg{results: map[string]integration.Result{s.ID: {Verdict: integration.Ready,
+			Change: &integration.Change{Repo: "cosmo", ChangeID: "nxvp-id", Handle: tc.handle, Version: 1, Head: sha}}}})
+		v := m.resolve(time.Now())
+		verb, cmd := m.approveCommand(v.rows[v.cursor])
+		if verb != "approve" {
+			t.Fatalf("%s: verb %q, want approve", branch, verb)
+		}
+		out, err := exec.Command("sh", "-c", cmd).Output()
+		if err != nil {
+			t.Fatalf("%s: sh -c %q: %v", branch, cmd, err)
+		}
+		if want := strings.Join([]string{"cosmo", branch, "nxvp-id", tc.handle, sha}, "\n") + "\n"; string(out) != want {
+			t.Errorf("sh -c %q printed %q, want %q", cmd, out, want)
+		}
+		if _, err := os.Stat(pwn); err == nil {
+			t.Fatalf("sh -c %q ran code from a value", cmd)
+		}
+		if branch == "agent/plain-1.2_x" && !strings.Contains(cmd, " cosmo agent/plain-1.2_x nxvp-id nxvp "+sha) {
+			t.Errorf("plain values should stay unquoted: %q", cmd)
+		}
+	}
+}
+
+// TestValleyChangeOutlivesOutageAndDeletedBranch drives the dashboard with a
+// real ValleyChecker, a fake valley and real git: a change the valley holds
+// as uncertain stays yours through a valley outage and the deletion of its
+// branch, showing its last known verdict. A dashboard that never saw the
+// valley's view still doesn't count the deleted branch as done.
+func TestValleyChangeOutlivesOutageAndDeletedBranch(t *testing.T) {
+	f := newGitFixture(t)
+	bin := t.TempDir()
+	listing := filepath.Join(bin, "changes.json")
+	script := "#!/bin/sh\nif [ \"$1\" = changes ] && [ -f '" + listing + "' ]; then exec cat '" + listing + "'; fi\n" +
+		"echo 'valley: cannot reach classic-laddie' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "valley"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	s := f.push("20261012-0900-0001", "tune the cache", time.Now().Add(-3*time.Hour), "cache.txt")
+	s.ChangeID = "uncrkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+	s.Valley = &run.Valley{Repo: "cosmo", Handle: "uncr", Version: 1, Title: "Tune the cache"}
+	f.advanceMain("other.txt")
+	data := fmt.Sprintf(`{"schema":"valley-changes/v1","host":"classic-laddie","repos":[{"repo":"cosmo","error":null,
+		"changes":[{"change_id":%q,"handle":"uncr","state":"ready","active":1,"versions":[{"n":1,"head":%q,
+		"title":"Tune the cache","landing":"uncertain","request":{"ref":"refs/valley/requests/uncr","commit":"r"}}]}]}]}`,
+		s.ChangeID, *s.PushedSHA)
+	if err := os.WriteFile(listing, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newModel := func() dashboardModel {
+		m := dashboardModel{states: []*run.State{s}, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
+			hideAfter: defaultHideFinishedAfter, checker: integration.NewValleyChecker(nil)}
+		return send(m, tea.WindowSizeMsg{Width: 160, Height: 20})
+	}
+	check := func(m dashboardModel) dashboardModel {
+		return send(m, checkIntegrationCmd(m.checker, m.states)())
+	}
+	expect := func(m dashboardModel, step string, want ...string) {
+		t.Helper()
+		v := m.resolve(time.Now())
+		if len(v.rows) != 1 || v.rows[0].category != catYours {
+			t.Fatalf("%s: the change should be yours: %+v", step, v.rows)
+		}
+		line := lineWith(ansi.Strip(m.View()), "uncr")
+		for _, w := range want {
+			if !strings.Contains(line, w) {
+				t.Errorf("%s: row should show %q: %q", step, w, line)
+			}
+		}
+	}
+
+	m := check(newModel())
+	expect(m, "uncertain", "UNCERTAIN", "Tune the cache")
+	if strings.Contains(ansi.Strip(m.View()), "(last known)") {
+		t.Error("a verdict the valley just gave isn't outdated")
+	}
+
+	if err := os.Remove(listing); err != nil { // the valley goes down
+		t.Fatal(err)
+	}
+	m = check(m)
+	expect(m, "outage", "UNCERTAIN", "(last known)")
+
+	f.git(f.ops, "push", "-q", "origin", "--delete", *s.PushedBranch)
+	m = check(m)
+	expect(m, "outage, branch deleted", "UNCERTAIN", "(last known)")
+
+	// Without the valley's earlier view, git alone can't settle it either.
+	fresh := check(newModel())
+	expect(fresh, "first check in the outage, branch deleted", "APPROVE")
+	if line := lineWith(ansi.Strip(fresh.View()), "uncr"); strings.Contains(line, "GONE") {
+		t.Errorf("a deleted branch shouldn't read GONE for a valley change: %q", line)
+	}
+}

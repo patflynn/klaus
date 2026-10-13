@@ -67,6 +67,9 @@ type dashRow struct {
 	// provisional marks a SUBMIT or APPROVE row with no definite integration
 	// verdict yet: it may turn out to have landed long ago.
 	provisional bool
+	// outdated marks a verdict and change kept from an earlier check because
+	// the latest couldn't ask the valley (integration.Result.Outdated).
+	outdated bool
 }
 
 // state returns the row's first agent's run state, which carries the PR URL
@@ -182,7 +185,7 @@ func (m dashboardModel) classify(r *dashRow) {
 	pushed := r.prNum == "" && awaitsIntegration(r.state())
 	if pushed {
 		res := m.integration[r.state().ID]
-		r.verdict, r.change = res.Verdict, res.Change
+		r.verdict, r.change, r.outdated = res.Verdict, res.Change, res.Outdated
 		if r.change == nil {
 			r.change = integration.RecordedChange(r.state())
 		}

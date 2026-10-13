@@ -432,7 +432,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, checkIntegrationCmd(m.checker, m.states)
 
 	case integrationMsg:
-		m.integration = msg.results
+		m.integration = keepValleyViews(m.integration, msg.results)
 		return m, integrationTickAfterCmd()
 
 	case ghStatusMsg:

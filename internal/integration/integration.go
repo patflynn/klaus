@@ -106,6 +106,9 @@ type Result struct {
 	// Change is the valley's record of the run's change when a valley placed
 	// the run; nil when git judged it.
 	Change *Change
+	// Outdated marks a valley's view from an earlier check, kept by a caller
+	// because the latest check couldn't place the run. Checkers never set it.
+	Outdated bool
 }
 
 // Change is how a valley knows a run: the version of a change that the

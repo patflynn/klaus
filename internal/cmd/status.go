@@ -39,14 +39,15 @@ valley, where the valley's record says the change stands:
   withdrawn             the change was withdrawn
   superseded            another version of the change is the active one
 
-A valley run shows its change's handle in the PR column and its title as the
-prompt.
+A valley run shows its change's handle in place of its run ID, and its
+title as the prompt.
 
 Integration is checked with one "valley changes --all --json" when a valley
 is involved, and otherwise against each run's clone (one ls-remote and fetch
 per repo). If the valley can't be asked, its runs are checked against their
 clones. If the check can't complete, the run stays awaiting-integration (or
-awaiting-approval).`,
+awaiting-approval). A deleted branch alone never settles a valley change: it
+stays awaiting-approval rather than branch-gone.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
@@ -93,7 +94,7 @@ awaiting-approval).`,
 				return err
 			}
 			status := statuses[i]
-			pr := formatPR(s)
+			id := s.ID
 			prompt := truncate(s.Prompt, 40)
 			if status == "awaiting-integration" {
 				res := results[s.ID]
@@ -103,7 +104,7 @@ awaiting-approval).`,
 				}
 				status = pushedStatus(res.Verdict, change != nil)
 				if change != nil {
-					pr = change.Handle
+					id = change.Handle
 					if change.Title != "" {
 						prompt = truncate(change.Title, 40)
 					}
@@ -146,7 +147,7 @@ awaiting-approval).`,
 			}
 
 			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				s.ID, status, runBackendName(s), cost, issue, repo, host, pr, ci, conflicts, behind, merge, prompt)
+				id, status, runBackendName(s), cost, issue, repo, host, formatPR(s), ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil

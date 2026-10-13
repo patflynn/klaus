@@ -134,9 +134,11 @@ type DashboardConfig struct {
 	// "cd ~/hack/{repo} && valley approve {handle} --head {head}". {repo} is
 	// the repo as the row names it, {branch} the pushed branch, {change} the
 	// full change ID, {handle} the valley's handle for the change and {head}
-	// the pushed head. A row that has no value for a placeholder the
-	// template uses shows no command. Empty shows nothing. The dashboard only
-	// displays it; it never runs it.
+	// the pushed head. Each value is shell-quoted unless it is only
+	// [A-Za-z0-9._/-], so placeholders go unquoted in the template. A row
+	// that has no value for a placeholder the template uses shows no
+	// command. Empty shows nothing. The dashboard only displays it; it never
+	// runs it.
 	ApproveCommand string `json:"approve_command,omitempty"`
 	// SubmitCommand is the deprecated name of ApproveCommand, read only
 	// when ApproveCommand is unset.
@@ -702,7 +704,7 @@ What happens after ` + "`klaus launch`" + `:
 1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
 2. Agent runs its selected backend in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
-4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until its work lands on the default branch, when it shows integrated, or its branch is deleted from origin without landing, when it shows branch-gone. ` + "`klaus status`" + ` and the dashboard check this against the run's clone each time they look; nothing is recorded. A PR the agent can no longer read on GitHub shows as no-access. In a repo that delivers to a valley, finalize then marks the pushed head ready as a version of the run's change and emits agent:change-ready with the repo, the change's handle, the version and the title; ` + "`klaus status`" + ` shows the handle in the PR column and the run as awaiting-approval until the valley's record says approved, integrated, uncertain, stale, rejected, failed, withdrawn or superseded. Like PR approval, approving a valley change is strictly a human operator task: never run valley approve.)
+4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until its work lands on the default branch, when it shows integrated, or its branch is deleted from origin without landing, when it shows branch-gone. ` + "`klaus status`" + ` and the dashboard check this against the run's clone each time they look; nothing is recorded. A PR the agent can no longer read on GitHub shows as no-access. In a repo that delivers to a valley, finalize then marks the pushed head ready as a version of the run's change and emits agent:change-ready with the repo, the change's handle, the version and the title; ` + "`klaus status`" + ` shows the handle in place of the run ID and the run as awaiting-approval until the valley's record says approved, integrated, uncertain, stale, rejected, failed, withdrawn or superseded. Like PR approval, approving a valley change is strictly a human operator task: never run valley approve.)
 5. Dashboard detects state change and updates display
 6. Pipeline evaluates the PR and manages CI/review/merge cycle
 

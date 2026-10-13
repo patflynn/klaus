@@ -171,6 +171,22 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.C
 	}
 }
 
+// keepValleyViews returns a check's results, except where the valley placed
+// a run before and git judged it now (the valley couldn't be asked, or
+// couldn't read the repo): unless git found it landed, the run keeps the
+// valley's last view, marked Outdated. A valley outage then leaves an
+// uncertain or rejected change where it was instead of showing it as ready
+// to approve, or as done because its branch went away.
+func keepValleyViews(prev, next map[string]integration.Result) map[string]integration.Result {
+	for id, r := range next {
+		if old, ok := prev[id]; ok && old.Change != nil && r.Change == nil && !r.Verdict.Landed() {
+			old.Outdated = true
+			next[id] = old
+		}
+	}
+	return next
+}
+
 func integrationTickAfterCmd() tea.Cmd {
 	return tea.Tick(integrationInterval, func(time.Time) tea.Msg {
 		return integrationTickMsg{}

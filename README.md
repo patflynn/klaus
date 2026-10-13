@@ -361,7 +361,7 @@ valley ready --change <change_id> --head <pushed_sha> <branch>
 
 The change is the run's `change_id`, the jj-form ID klaus stamps on every agent commit as its `Change-Id` trailer. The valley identifies the pusher from git config `valley.principal`, which the host sets, not klaus. On success valley prints `<repo> <handle> v<n> ready`. Finalize records the repo, the change's handle, the version and the head's subject (its title) on the run as `valley`, and emits `agent:change-ready` with `repo`, `change_id`, `handle`, `version`, `title` and `head`. The call is bounded by 30 seconds. If valley refuses, times out or prints anything else, finalize records a short reason as `valley.error`, prints a warning, and finishes as usual; the dashboard shows the run as `SUBMIT` with the reason.
 
-`klaus status` and the dashboard then ask the valley where each change stands, with one `valley changes --all --json` per check, covering every repo. They read the `valley-changes/v1` view and refuse any other schema. A run's version is the one in its repo, with its change ID, whose head is the run's pushed SHA:
+`klaus status` and the dashboard then ask the valley where each change stands, with one `valley changes --all --json` per check, covering every repo. They read the `valley-changes/v1` view and refuse any other schema. A run's version is the one in its repo, with its change ID, whose head is the run's pushed SHA. The run's repo is the one `valley ready` reported, or else the last component of its target repo without `.git`; a run whose repo klaus doesn't know is never matched, and neither is a run in a repo the listing marks with an `error`, whatever records it lists beside it:
 
 | Dashboard | `klaus status` | Group | The valley's record |
 |-----------|----------------|-------|---------------------|
@@ -373,7 +373,7 @@ The change is the run's `change_id`, the jj-form ID klaus stamps on every agent 
 | `WITHDRAWN` | `withdrawn` | done | the change was withdrawn |
 | `SUPERSEDED` | `superseded` | done | another version of the change is the active one |
 
-A version that landed shows `INTEGRATED` even after a later version replaced it. The valley is asked only when finalize found one for some run. If valley fails, or a run isn't in its listing, the run is checked against its clone as described above, and a change waiting on that check reads `APPROVE` (`awaiting-approval`). The dashboard logs a failed listing at debug level.
+A version that landed shows `INTEGRATED` even after a later version replaced it. The valley is asked only when finalize found one for some run. If valley fails, or a run isn't in its listing, the run is checked against its clone as described above, and a change waiting on that check reads `APPROVE` (`awaiting-approval`). A deleted branch alone never settles a change finalize marked ready: it stays yours (`awaiting-approval`) rather than `GONE`. When the dashboard has seen the valley's record of a change and a later check can't place it, the row keeps that last verdict, marked `(last known)`, unless git finds the work landed. The dashboard logs a failed listing at debug level.
 
 When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
 
@@ -590,7 +590,8 @@ The status dashboard shows these columns for each run:
 | Column | Values | Meaning |
 |--------|--------|---------|
 | STATUS | `running` / `needs-attention` / `pr-created` / `merged` / `closed` / `no-access` / `awaiting-integration` / `integrated` / `branch-gone` / `awaiting-approval` / `approved` / `uncertain` / `stale` / `rejected` / `failed` / `withdrawn` / `superseded` / `exited` | Where the run stands. `no-access`: GitHub won't show the PR with the current credentials, and the other PR columns aren't queried. `awaiting-integration`, `integrated` and `branch-gone` apply to runs that pushed a branch without a PR (see [Runs that end without a PR](#runs-that-end-without-a-pr)); the rest apply to runs whose change is on a valley (see [Repos that deliver to a valley](#repos-that-deliver-to-a-valley)) |
-| PR | `#N` / handle / `-` | The run's PR, or the handle of its change on a valley |
+| RUN ID | run ID / handle | The run's ID, or the handle of its change on a valley |
+| PR | `#N` / `-` | The run's PR |
 | PROMPT | text | The prompt, or the title of the run's change on a valley, cut at 40 characters |
 | CI | `passing` / `failing` / `pending` / `unknown` | CI check status for the PR |
 | CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
@@ -616,7 +617,7 @@ The dashboard checks pushed branches every minute in the background, independent
 
 Done rows older than an hour are hidden by default; the position line says how many (e.g. `21 hidden`), and `h` toggles showing them. Exited agents count only once their worktree is cleaned up. A row the dashboard watched finish (a PR it saw merge, a branch it saw as `SUBMIT` integrate) stays for the full hour after it finished. Rows in yours, agents and pipeline are never hidden. Set the threshold with `"dashboard": {"hide_finished_after_minutes": 60}` in config; a negative value never hides anything.
 
-Set `"dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}` and the footer shows the expanded command (`approve: …`) whenever an `APPROVE` row is selected, and `submit: …` for a `SUBMIT` row. `{repo}` is the repo as the row names it (the valley's name for a valley change, else the short project name), `{branch}` the pushed branch, `{change}` the full change ID, `{handle}` the change's handle and `{head}` the pushed head, so the approval binds the head you saw. A row with no value for a placeholder the template uses, such as `{handle}` on a branch no valley knows, shows no command. It's there to copy and run on your own machine; the dashboard never runs it. `submit_command` is the deprecated name of `approve_command` and is read only when `approve_command` is unset.
+Set `"dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}` and the footer shows the expanded command (`approve: …`) whenever an `APPROVE` row is selected, and `submit: …` for a `SUBMIT` row. `{repo}` is the repo as the row names it (the valley's name for a valley change, else the short project name), `{branch}` the pushed branch, `{change}` the full change ID, `{handle}` the change's handle and `{head}` the pushed head, so the approval binds the head you saw. Each value is shell-quoted unless it is only letters, digits and `._/-`, so a branch name can't inject commands; don't put quotes around placeholders in the template. A row with no value for a placeholder the template uses, such as `{handle}` on a branch no valley knows, shows no command. It's there to copy and run on your own machine; the dashboard never runs it. `submit_command` is the deprecated name of `approve_command` and is read only when `approve_command` is unset.
 
 On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status and help lines are dropped, before any rows are.
 
@@ -771,7 +772,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `dashboard.hide_finished_after_minutes` sets how long done rows (merged, closed, integrated, gone, no access, cleaned up) stay on the dashboard before they're hidden behind `h` (default 60; negative never hides them).
 
-`dashboard.approve_command` is a template for the command that approves a valley change, shown in the dashboard footer when an `APPROVE` row (or a `SUBMIT` row) is selected. `{repo}` expands to the repo as the row names it, `{branch}` to the pushed branch, `{change}` to the full change ID, `{handle}` to the change's handle and `{head}` to the pushed head. A row with no value for a placeholder the template uses shows no command. It's empty by default, and klaus never runs it. `dashboard.submit_command` is its deprecated name, read only when `approve_command` is unset.
+`dashboard.approve_command` is a template for the command that approves a valley change, shown in the dashboard footer when an `APPROVE` row (or a `SUBMIT` row) is selected. `{repo}` expands to the repo as the row names it, `{branch}` to the pushed branch, `{change}` to the full change ID, `{handle}` to the change's handle and `{head}` to the pushed head, each shell-quoted unless it is only letters, digits and `._/-` (so leave placeholders unquoted). A row with no value for a placeholder the template uses shows no command. It's empty by default, and klaus never runs it. `dashboard.submit_command` is its deprecated name, read only when `approve_command` is unset.
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 

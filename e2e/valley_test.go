@@ -363,13 +363,15 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		{superseded, "superseded"},
 		{withdrawn, "withdrawn"},
 	} {
-		if got := statusOf(t, res.Stdout, tc.st.ID); got != tc.status {
+		// A valley run's row leads with its handle in place of the run ID.
+		if got := statusOf(t, res.Stdout, tc.st.Valley.Handle); got != tc.status {
 			t.Errorf("%s: status %q, want %q", tc.st.Valley.Handle, got, tc.status)
 		}
 		for _, line := range strings.Split(res.Stdout, "\n") {
-			if strings.HasPrefix(line, tc.st.ID) && (!strings.Contains(line, " "+tc.st.Valley.Handle+" ") ||
-				!strings.HasSuffix(line, tc.st.Valley.Title)) {
-				t.Errorf("status row should carry handle %s and title %q: %q", tc.st.Valley.Handle, tc.st.Valley.Title, line)
+			if f := strings.Fields(line); len(f) > 7 && f[0] == tc.st.Valley.Handle &&
+				(f[7] != "-" || strings.Contains(line, tc.st.ID) || !strings.HasSuffix(line, tc.st.Valley.Title)) {
+				t.Errorf("status row should show handle %s, no PR, not the run ID, and title %q: %q",
+					tc.st.Valley.Handle, tc.st.Valley.Title, line)
 			}
 		}
 	}
