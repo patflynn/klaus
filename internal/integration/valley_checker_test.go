@@ -52,6 +52,11 @@ const changesFixture = `{
         { "change_id": "drft-id", "handle": "drft", "state": "draft", "active": 1,
           "versions": [ { "n": 1, "head": "drft-1", "landing": "not-landed",
             "request": { "ref": "x", "commit": "r" }, "outcome": { "decision": "rejected" } } ] },
+        { "change_id": "dunc-id", "handle": "dunc", "state": "draft", "active": 1,
+          "versions": [ { "n": 1, "head": "dunc-1", "landing": "uncertain",
+            "request": { "ref": "x", "commit": "r" } } ] },
+        { "change_id": "dlnd-id", "handle": "dlnd", "state": "draft", "active": 1,
+          "versions": [ { "n": 1, "head": "dlnd-1", "landing": "landed-recorded" } ] },
         { "change_id": "frzn-id", "handle": "frzn", "state": "frozen", "active": 1,
           "versions": [ { "n": 1, "head": "frzn-1", "landing": "landed" } ] }
       ] },
@@ -103,6 +108,8 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"failed", pushed("cosmo", "stal-id", "stal-3"), Failed, "stal", 3},
 		{"head readied twice", pushed("cosmo", "redo-id", "redo-h"), Ready, "redo", 2},
 		{"draft, after a rejection", pushed("cosmo", "drft-id", "drft-1"), Draft, "drft", 1},
+		{"draft, landing uncertain", pushed("cosmo", "dunc-id", "dunc-1"), Draft, "dunc", 1},
+		{"draft, landed", pushed("cosmo", "dlnd-id", "dlnd-1"), Integrated, "dlnd", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := place(changes, tc.run)

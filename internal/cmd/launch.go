@@ -639,6 +639,7 @@ are synced back after completion. Use --local to force local execution, or
 			Effort:      stringPtr(effort),
 			ChangeID:    change.ID,
 			Unready:     unready,
+			ChangeRepo:  change.Repo,
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom

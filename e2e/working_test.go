@@ -173,6 +173,9 @@ func TestFollowUpLaunchUnreadiesValleyChange(t *testing.T) {
 			if st == nil || st.ChangeID != prior.ChangeID {
 				t.Fatalf("follow-up state %+v, want change %s\nstdout:\n%s", st, prior.ChangeID, res.Stdout)
 			}
+			if st.ChangeRepo != "widget" {
+				t.Errorf("follow-up recorded change repo %q, want the prior run's %q", st.ChangeRepo, "widget")
+			}
 			h.WaitForClaudeStart(30 * time.Second)
 
 			calls := h.valleyCalls("unready")
@@ -224,4 +227,152 @@ func TestFollowUpLaunchUnreadiesValleyChange(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFollowUpOfRenamedRepoShowsWorking launches a --resume-from follow-up
+// of a valley change from a target repo, acme/source, that the valley calls
+// widget, as the prior run recorded, against a valley that can't unready: the
+// follow-up records the repo of the run it continues, so the prior row reads
+// WORKING while it runs.
+func TestFollowUpOfRenamedRepoShowsWorking(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.installValleyStub()
+	h.joinValley()
+	// Registered as the project "source", which --repo names.
+	h.RegisterProject("acme/source", h.RepoDir)
+	sha := strings.Repeat("1", 40)
+	prior := h.valleyRun("20261013-0900-0001", "add a health check", "nxvp", "Add a health check", 1, sha,
+		time.Now().Add(-time.Hour))
+	prior.TargetRepo = strPtrE2E("acme/source")
+	h.SeedState(prior)
+	h.writeValleyChanges(map[string]any{
+		"schema": "valley-changes/v1",
+		"host":   "classic-laddie",
+		"repos": []any{
+			map[string]any{"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil, "branches": []any{},
+				"changes": []any{change(prior, "ready", 1, version(1, sha, "Add a health check", "not-landed"))}},
+		},
+	})
+	h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"11111111-2222-4333-8444-555555555555"}` + "\n")
+
+	res := h.RunKlaus("launch", "--repo", "source", "--resume-from", prior.ID, "tidy the health check")
+	if res.ExitCode != 0 {
+		t.Fatalf("launch exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	var st *run.State
+	for _, id := range h.RunIDs() {
+		if id != prior.ID {
+			st, _ = h.ReadState(id)
+		}
+	}
+	if st == nil || st.ChangeID != prior.ChangeID {
+		t.Fatalf("follow-up state %+v, want change %s\nstdout:\n%s", st, prior.ChangeID, res.Stdout)
+	}
+	if st.TargetRepo == nil || *st.TargetRepo != "source" || st.Unready != nil || len(h.valleyCalls("unready")) != 0 {
+		t.Fatalf("follow-up should target source without unready: target %v, unready %+v, calls %q",
+			st.TargetRepo, st.Unready, h.valleyCalls("unready"))
+	}
+	if st.ChangeRepo != "widget" {
+		t.Errorf("follow-up recorded change repo %q, want the prior run's %q", st.ChangeRepo, "widget")
+	}
+	h.WaitForClaudeStart(30 * time.Second)
+
+	_, screen := h.startDashboard(170)
+	s := screen("WORKING")
+	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "WORKING  v1@1111111") {
+		t.Errorf("the prior row should read WORKING while its follow-up runs: %q\n%s", row, s)
+	}
+	status := h.RunKlaus("status")
+	if got := statusOf(t, status.Stdout, "nxvp"); got != "working" {
+		t.Errorf("prior: status %q, want working", got)
+	}
+
+	h.ReleaseClaude()
+	h.WaitForState(st.ID, func(s *run.State) bool { return s.DurationMS != nil }, 60*time.Second)
+}
+
+// TestStatusJudgesPanesAsTheDashboardDoes runs the real klaus status while a
+// follow-up of a valley change keeps its pane but no longer runs: the pane is
+// dead (its command exited and tmux kept it), or the run finalized and its
+// pane sits idle at a shell. Status judges panes as the dashboard does, so
+// the follow-up isn't running and the change's own run is the operator's
+// again, not working.
+func TestStatusJudgesPanesAsTheDashboardDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		finalized bool
+	}{
+		{name: "dead pane"},
+		{name: "idle pane after finalize", finalized: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := NewHarness(t)
+			h.installValleyStub()
+			sha := strings.Repeat("1", 40)
+			ready := h.valleyRun("20261013-0900-0001", "prompt one", "nxvp", "Add a health check", 1, sha,
+				time.Now().Add(-10*time.Minute))
+			h.writeValleyChanges(map[string]any{
+				"schema": "valley-changes/v1",
+				"host":   "classic-laddie",
+				"repos": []any{
+					map[string]any{"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil, "branches": []any{},
+						"changes": []any{change(ready, "ready", 1, version(1, sha, "Add a health check", "not-landed"))}},
+				},
+			})
+
+			pane := strings.TrimSpace(h.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "sleep 600"))
+			follow := &run.State{
+				ID: "20261013-0900-0002", Type: "launch", Prompt: "tidy the health check", TargetRepo: strPtrE2E("acme/widget"),
+				Branch: "agent/tidy", Worktree: "/wt", TmuxPane: &pane, ChangeID: ready.ChangeID,
+				CreatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339),
+			}
+			if tc.finalized {
+				cost, dur := 0.5, int64(1000)
+				follow.CostUSD, follow.DurationMS = &cost, &dur
+			}
+			h.SeedState(follow)
+			statuses := func() (string, string) {
+				t.Helper()
+				res := h.RunKlaus("status")
+				if res.ExitCode != 0 {
+					t.Fatalf("status exited %d; stderr: %s", res.ExitCode, res.Stderr)
+				}
+				return statusOf(t, res.Stdout, follow.ID), statusOf(t, res.Stdout, "nxvp")
+			}
+			// While the pane's command runs, the follow-up is running.
+			if f, r := statuses(); f != "running" || r != "working" {
+				t.Fatalf("with the pane busy: follow-up %q, change %q; want running, working", f, r)
+			}
+
+			if tc.finalized {
+				// A shell waiting at its prompt.
+				h.tmux("respawn-pane", "-k", "-t", pane, "exec bash --noprofile --norc")
+				waitForPane(t, h, pane, "#{pane_current_command}", "bash")
+			} else {
+				h.tmux("set-option", "-w", "-t", pane, "remain-on-exit", "on")
+				h.tmux("respawn-pane", "-k", "-t", pane, "true")
+				waitForPane(t, h, pane, "#{pane_dead}", "1")
+			}
+			if !h.PaneExists(pane) {
+				t.Fatalf("pane %s should still exist", pane)
+			}
+			if f, r := statuses(); f != "exited" || r != "awaiting-approval" {
+				t.Errorf("follow-up %q, change %q; want exited, awaiting-approval", f, r)
+			}
+		})
+	}
+}
+
+// waitForPane waits until format, displayed for pane, reads want.
+func waitForPane(t *testing.T, h *Harness, pane, format, want string) {
+	t.Helper()
+	var got string
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if got = strings.TrimSpace(h.tmux("display-message", "-p", "-t", pane, format)); got == want {
+			return
+		}
+	}
+	t.Fatalf("pane %s: %s is %q, want %q", pane, format, got, want)
 }

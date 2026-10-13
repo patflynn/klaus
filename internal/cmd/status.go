@@ -18,9 +18,11 @@ var statusCmd = &cobra.Command{
 	Short: "Show all runs and their current state",
 	Long: `Shows all runs in the session and their current state.
 
-STATUS is one of: running, needs-attention, pr-created, merged, closed,
-no-access (GitHub won't show the PR with the current credentials), exited,
-and, for runs that finished by pushing a branch without a PR:
+STATUS is one of: running (the agent's pane is still running it, judged as
+the dashboard judges it: a dead pane, or an idle one once the run finished,
+isn't running), needs-attention, pr-created, merged, closed, no-access
+(GitHub won't show the PR with the current credentials), exited, and, for
+runs that finished by pushing a branch without a PR:
 
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
@@ -40,7 +42,9 @@ valley, where the valley's record says the change stands:
   superseded            another version of the change is the active one
   draft                 returned to draft ('valley unready'), as launch
                         does when a follow-up run continues the change;
-                        approve refuses it until a head is ready again
+                        approve refuses it until a head is ready again.
+                        A draft reads draft even when its landing is
+                        uncertain; only landing evidence comes first
 
 A run that isn't running and isn't done shows working while another run of
 its change (the same change ID in the same repo) is running: a follow-up
@@ -189,7 +193,9 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 		return "tracking"
 	}
 
-	if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
+	// Running as the dashboard decides it: a pane that exists isn't enough
+	// when its command is dead, or, once the run finalized, idle.
+	if s.IsAgentRunningWith(run.TmuxDepsFor(ctx, tc)) {
 		return "running"
 	}
 

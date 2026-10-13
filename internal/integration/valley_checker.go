@@ -150,13 +150,18 @@ func knownState(state string) bool {
 }
 
 // RepoName is the valley's name for a run's repo, as finalize's `valley
-// ready` or else launch's `valley unready` reported it, or else the short
-// name of the run's target repo: its last path component, without ".git".
-// "" means unknown, and an unknown repo matches none. It is how klaus tells
-// which runs share a change: the same repo and change ID.
+// ready` reported it; or else, for a run that continues another's change, the
+// repo that run had (ChangeRepo), so a follow-up names its change as the run
+// it continues does; or else as launch's `valley unready` reported it; or
+// else the short name of the run's target repo: its last path component,
+// without ".git". "" means unknown, and an unknown repo matches none. It is
+// how klaus tells which runs share a change: the same repo and change ID.
 func RepoName(s *run.State) string {
 	if s.Valley != nil && s.Valley.Repo != "" {
 		return s.Valley.Repo
+	}
+	if s.ChangeRepo != "" {
+		return s.ChangeRepo
 	}
 	if s.Unready != nil && s.Unready.Repo != "" {
 		return s.Unready.Repo
@@ -192,8 +197,10 @@ func versionAt(ch valley.Change, head string) (valley.Version, bool) {
 
 // verdictOf reads the valley's record of version v of change ch, whose state
 // klaus knows. Landing evidence comes first: a landed version is Integrated
-// even after a later version took its place. A draft change is Draft whatever
-// the integrator decided on its version's request: its submitter has it back.
+// even after a later version took its place, or its change went back to
+// draft. A draft change's active version is otherwise Draft, whatever the
+// valley is unsure of or the integrator decided on its request: its submitter
+// has it back, and there is nothing for the operator to do.
 func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	switch {
 	case v.Landing == valley.Landed || v.Landing == valley.LandedRecorded:
@@ -202,10 +209,10 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 		return Withdrawn
 	case v.N != ch.Active:
 		return Superseded
-	case v.Landing == valley.Uncertain:
-		return Uncertain
 	case ch.State == valley.StateDraft:
 		return Draft
+	case v.Landing == valley.Uncertain:
+		return Uncertain
 	case v.Outcome != nil:
 		switch strings.ToLower(v.Outcome.Decision) {
 		case "stale":

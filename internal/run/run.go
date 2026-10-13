@@ -50,6 +50,7 @@ type State struct {
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
 	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
+	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
 }
 
 // Unready is what launch's `valley unready` did to the change a follow-up
@@ -86,6 +87,15 @@ func DefaultTmuxDeps() TmuxDeps {
 		PaneExists: func(paneID string) bool { return tmux.PaneExists(context.Background(), paneID) },
 		PaneIsIdle: func(paneID string) bool { return tmux.PaneIsIdle(context.Background(), paneID) },
 		PaneIsDead: func(paneID string) bool { return tmux.PaneIsDead(context.Background(), paneID) },
+	}
+}
+
+// TmuxDepsFor returns TmuxDeps that ask tc, under ctx.
+func TmuxDepsFor(ctx context.Context, tc tmux.Client) TmuxDeps {
+	return TmuxDeps{
+		PaneExists: func(paneID string) bool { return tc.PaneExists(ctx, paneID) },
+		PaneIsIdle: func(paneID string) bool { return tc.PaneIsIdle(ctx, paneID) },
+		PaneIsDead: func(paneID string) bool { return tc.PaneIsDead(ctx, paneID) },
 	}
 }
 

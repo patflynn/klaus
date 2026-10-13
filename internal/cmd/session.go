@@ -500,11 +500,7 @@ func checkRunningAgents(ctx context.Context, store run.StateStore, tc tmux.Clien
 		return nil
 	}
 
-	td := run.TmuxDeps{
-		PaneExists: func(id string) bool { return tc.PaneExists(ctx, id) },
-		PaneIsIdle: func(id string) bool { return tc.PaneIsIdle(ctx, id) },
-		PaneIsDead: func(id string) bool { return tc.PaneIsDead(ctx, id) },
-	}
+	td := run.TmuxDepsFor(ctx, tc)
 
 	var running []*run.State
 	for _, s := range states {
