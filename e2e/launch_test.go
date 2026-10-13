@@ -409,7 +409,7 @@ func TestLaunchSizeGuard(t *testing.T) {
 // worker's delivery. The harness origin is a local bare repo, like a valley
 // remote with no GitHub PRs, so the agent is told to push its branch and
 // report; a github.com origin keeps the PR workflow. The GitHub case serves
-// the github.com URL from the same bare repo through an ssh stub, so launch's
+// the github.com URL from the same bare repo (UseGitHubOrigin), so launch's
 // real fetch works offline.
 func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
 	t.Parallel()
@@ -435,13 +435,7 @@ func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
 			t.Parallel()
 			h := NewHarness(t)
 			if tc.github {
-				// git runs `ssh [opts] git@github.com "git-upload-pack 'acme/widget.git'"`;
-				// run that service against the local bare origin instead.
-				h.WriteStub("ssh", fmt.Sprintf(`#!/usr/bin/env bash
-service="${@: -1}"
-exec "${service%%%% *}" %q
-`, h.OriginDir))
-				h.git(h.RepoDir, "remote", "set-url", "origin", "git@github.com:acme/widget.git")
+				h.UseGitHubOrigin()
 			}
 
 			res := h.RunKlaus("launch", "tidy the README")
@@ -453,18 +447,7 @@ exec "${service%%%% *}" %q
 			}
 
 			h.WaitForClaudeStart(30 * time.Second)
-			argv := strings.Split(h.ClaudeArgv(), "\n")
-			var sysFile string
-			for i, a := range argv {
-				if a == "--append-system-prompt-file" && i+1 < len(argv) {
-					sysFile = argv[i+1]
-				}
-			}
-			data, err := os.ReadFile(sysFile)
-			if err != nil {
-				t.Fatalf("reading system prompt file %q: %v", sysFile, err)
-			}
-			sysPrompt := string(data)
+			sysPrompt := h.WorkerSystemPrompt()
 			for _, want := range append(tc.wantPrompt, "`git push -u origin HEAD`", "Never commit directly to the default branch") {
 				if !strings.Contains(sysPrompt, want) {
 					t.Errorf("system prompt missing %q:\n%s", want, sysPrompt)

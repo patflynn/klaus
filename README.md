@@ -693,6 +693,7 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
   "push_data_ref": false,
   "default_branch": "main",
   "trusted_reviewers": ["gemini-code-assist[bot]"],
+  "pr_reviewer": "octocat",
   "require_approval": true,
   "auto_merge_on_approval": false,
   "merge_verify_command": "nix build",
@@ -708,6 +709,8 @@ Klaus works out of the box with sensible defaults. To customize, run `klaus init
 `trusted_reviewers` lists GitHub logins whose comments dispatch a fix agent even without a formal "changes requested" review. Both inline review comments and PR conversation comments count. A comment stops counting once a newer commit is pushed; editing a comment counts as new, so feedback added to an older comment after the latest push is picked up.
 
 Conversation comments by the PR author are the exception: the operator and fix agents post through the same GitHub account, so an author's conversation comment is ignored unless it opts in, even when the author is in `trusted_reviewers`. Opt in either by starting the comment with a `/klaus fix` line, or by putting the hidden marker `<!-- klaus-actionable -->` on a line of its own. Quoted lines (`> /klaus fix`) don't count. Trusted reviewers other than the PR author need no opt-in, and inline review comments are unaffected by this rule.
+
+`pr_reviewer` is the GitHub login a launched agent requests review from when it opens its PR (`gh pr create --reviewer`). Klaus uses it as given, without asking GitHub. When it is unset, klaus picks the reviewer at launch. It lists the target repo's collaborators with push access, then leaves out bots and the `gh` user the agents run as, since that user authors their PRs and GitHub ignores a review request aimed at a PR's author. If the repo's owner is still on the list, the owner is the reviewer; otherwise, if exactly one user is left, that user is. If several users are left, or a `gh` call fails, launch prints a one-line warning naming the candidates or the error, and the agent opens its PR without requesting a review. Runs that don't open a new PR (`--pr` fixes and [direct-push repos](#runs-that-end-without-a-pr)) skip the lookup.
 
 `merge_verify_command` runs in the rebased worktree during `klaus merge` to sanity-check the branch before force-push. When unset, klaus runs `go build ./...` only if a `go.mod` is present, otherwise skips the check (non-Go repos rely on CI).
 

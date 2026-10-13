@@ -83,7 +83,11 @@ State + Log files (local .git/klaus/)
 - `{{.Issue}}` — GitHub issue number (if provided)
 - `{{.Branch}}` — The agent's branch name
 - `{{.RepoName}}` — Repository name
-- `{{.Reviewer}}` — GitHub user to request PR review from
+- `{{.Reviewer}}` — GitHub user to request PR review from. It is `pr_reviewer`
+  if set. Otherwise launch picks it from the repo's collaborators with push
+  access, leaving out bots and the gh user (the PR's author): the repo owner if
+  they are one, else the only one. It is empty when no reviewer is found, and
+  for direct-push runs
 - `{{.DirectPush}}` — true when the repo's `origin` is not on github.com, so the
   agent pushes its branch for the operator to integrate instead of opening a PR
 

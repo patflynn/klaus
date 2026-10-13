@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"text/template"
 )
 
@@ -249,29 +247,6 @@ func (c *Config) PreReviewBlockOn() string {
 		return "high"
 	}
 	return c.PreReview.BlockOn
-}
-
-var (
-	ghUserOnce  sync.Once
-	ghUserLogin string
-)
-
-// PRReviewerOrDefault returns the configured PR reviewer. If empty, it shells
-// out to `gh api user -q .login` to get the authenticated user's login and
-// caches the result.
-func (c *Config) PRReviewerOrDefault() string {
-	if c.PRReviewer != "" {
-		return c.PRReviewer
-	}
-	ghUserOnce.Do(func() {
-		cmd := exec.Command("gh", "api", "user", "-q", ".login")
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		if err := cmd.Run(); err == nil {
-			ghUserLogin = strings.TrimSpace(stdout.String())
-		}
-	})
-	return ghUserLogin
 }
 
 // Defaults returns a Config with default values.

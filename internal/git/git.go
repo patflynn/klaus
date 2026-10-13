@@ -514,7 +514,7 @@ func IsGitHubRemote(remote string) bool {
 	if _, ok := cutGitHubPrefix(remote); !ok {
 		return false
 	}
-	_, _, err := splitRepoRef(remote)
+	_, _, err := SplitRepoRef(remote)
 	return err == nil
 }
 
@@ -522,15 +522,15 @@ func IsGitHubRemote(remote string) bool {
 // Accepts: "owner/repo", "https://github.com/owner/repo[.git]", "git@github.com:owner/repo[.git]",
 // "ssh://git@github.com/owner/repo[.git]"
 func ParseRepoRef(ref string) (owner, repo, cloneURL string, err error) {
-	owner, repo, err = splitRepoRef(ref)
+	owner, repo, err = SplitRepoRef(ref)
 	if err != nil {
 		return "", "", "", err
 	}
 	return owner, repo, CloneURL(owner, repo), nil
 }
 
-// splitRepoRef is ParseRepoRef without the clone URL, which may shell out to gh.
-func splitRepoRef(ref string) (owner, repo string, err error) {
+// SplitRepoRef is ParseRepoRef without the clone URL, which may shell out to gh.
+func SplitRepoRef(ref string) (owner, repo string, err error) {
 	ref = CleanGitHubRef(ref)
 	parts := strings.SplitN(ref, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
