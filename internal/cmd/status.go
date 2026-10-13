@@ -38,6 +38,14 @@ valley, where the valley's record says the change stands:
   failed
   withdrawn             the change was withdrawn
   superseded            another version of the change is the active one
+  draft                 returned to draft ('valley unready'), as launch
+                        does when a follow-up run continues the change;
+                        approve refuses it until a head is ready again
+
+A run that isn't running and isn't done shows working while another run of
+its change (the same change ID in the same repo) is running: a follow-up
+(--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
+nothing to approve yet.
 
 A valley run shows its change's handle in place of its run ID, and its
 title as the prompt.
@@ -88,6 +96,14 @@ stays awaiting-approval rather than branch-gone.`,
 		// valley knows, one check per repo against each run's own clone for
 		// the rest.
 		results := integration.NewValleyChecker(nil).Check(ctx, pushed)
+
+		// The running runs of each change: a run that isn't running or done
+		// is working while another run of its change is running.
+		running := make(map[string]bool, len(states))
+		for i, s := range states {
+			running[s.ID] = statuses[i] == "running"
+		}
+		working := runningByChange(states, func(s *run.State) bool { return running[s.ID] })
 
 		for i, s := range states {
 			if err := ctx.Err(); err != nil {
@@ -146,6 +162,10 @@ stays awaiting-approval rather than branch-gone.`,
 				}
 			}
 
+			if live(status) && len(workingOn([]*run.State{s}, working)) > 0 {
+				status = "working"
+			}
+
 			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
 				id, status, runBackendName(s), cost, issue, repo, host, formatPR(s), ci, conflicts, behind, merge, prompt)
 		}
@@ -190,6 +210,18 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	return "exited"
 }
 
+// live reports whether a status leaves something to do for a run that isn't
+// running: salvaged work, an open PR, or a pushed branch that hasn't landed,
+// gone, or been withdrawn or superseded.
+func live(status string) bool {
+	switch status {
+	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-approval",
+		"approved", "uncertain", "stale", "rejected", "failed", "draft":
+		return true
+	}
+	return false
+}
+
 // pushedStatus is the status of a run awaiting integration once an
 // integration check has looked at it; valley says a valley knows the run's
 // change. An unknown verdict (no clone, origin unreachable) keeps it
@@ -208,7 +240,8 @@ func pushedStatus(v integration.Verdict, valley bool) string {
 		}
 		return "awaiting-integration"
 	}
-	// approved, uncertain, stale, rejected, failed, withdrawn, superseded
+	// approved, uncertain, stale, rejected, failed, withdrawn, superseded,
+	// draft
 	return v.String()
 }
 

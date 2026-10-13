@@ -20,7 +20,10 @@ import (
 // each call ("<cwd>: <args>") to valley.argv, answers ready with
 // "widget nxvp v1 ready" or, when valley.refuse exists, refuses with its
 // contents, and answers changes with valley.changes.json or, when that is
-// absent, fails as an unreachable valley does.
+// absent, fails as an unreachable valley does. Its help lists unready only
+// when valley.has-unready exists; unready answers "widget nxvp draft" or,
+// when valley.unready-refuse exists, refuses with its contents, and creates
+// valley.unready-late if the fake agent had already started.
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
@@ -29,10 +32,16 @@ dir=%q
 case "$1" in
 help)
   printf 'usage: valley <verb> [args]\n\n  ready --change <id> --head <sha> <branch>\n  changes [--all] [--json]\n  approve <change>\n'
+  if [ -f "$dir/valley.has-unready" ]; then printf '  unready <change>\n'; fi
   ;;
 ready)
   if [ -f "$dir/valley.refuse" ]; then cat "$dir/valley.refuse" >&2; exit 1; fi
   echo "widget nxvp v1 ready"
+  ;;
+unready)
+  if [ -f "$dir/claude.started" ]; then : > "$dir/valley.unready-late"; fi
+  if [ -f "$dir/valley.unready-refuse" ]; then cat "$dir/valley.unready-refuse" >&2; exit 1; fi
+  echo "widget nxvp draft"
   ;;
 changes)
   if [ -f "$dir/valley.changes.json" ]; then cat "$dir/valley.changes.json"; exit 0; fi
@@ -45,6 +54,21 @@ changes)
   ;;
 esac
 `, h.E2EDir))
+}
+
+// joinValley commits the valley's policy to the sandbox repo's main and
+// pushes it, so the repo delivers to a valley.
+func (h *Harness) joinValley() {
+	h.t.Helper()
+	if err := os.MkdirAll(filepath.Join(h.RepoDir, "policy"), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.RepoDir, "policy", "valley"), []byte("widget\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	h.git(h.RepoDir, "add", "policy")
+	h.git(h.RepoDir, "commit", "-qm", "join the valley")
+	h.git(h.RepoDir, "push", "-q", "origin", "main")
 }
 
 // valleyCalls returns the logged valley calls whose arguments start with
@@ -111,15 +135,7 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			h := NewHarness(t)
 			h.installValleyStub()
 			if tc.policy {
-				if err := os.MkdirAll(filepath.Join(h.RepoDir, "policy"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(h.RepoDir, "policy", "valley"), []byte("widget\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				h.git(h.RepoDir, "add", "policy")
-				h.git(h.RepoDir, "commit", "-qm", "join the valley")
-				h.git(h.RepoDir, "push", "-q", "origin", "main")
+				h.joinValley()
 			}
 			if tc.refuse != "" {
 				if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.refuse"), []byte(tc.refuse), 0o644); err != nil {

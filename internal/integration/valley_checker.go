@@ -18,7 +18,8 @@ import (
 // valley (run.State.Valley). It places a run by repo, change ID and version
 // head: the run's version is the one whose head is the run's pushed SHA, in
 // the listed repo that is the run's own. A run whose repo klaus doesn't know
-// is never placed, and neither is any run in a repo the valley couldn't read.
+// is never placed, and neither is any run in a repo the valley couldn't read
+// or whose change is in a state klaus doesn't know.
 // If valley fails or prints a schema klaus doesn't know, the check is logged
 // at debug level and every run is judged by git.
 //
@@ -106,9 +107,10 @@ func valleyDir(runs []*run.State) (dir string, ok bool) {
 // pushed SHA. When several match, the one that is its change's active version
 // wins. ok is false when none does, when klaus doesn't know the run's repo,
 // or when the valley couldn't read that repo: records listed beside a read
-// error may be stale.
+// error may be stale. A change in a state klaus doesn't know, from a later
+// valley, places nothing.
 func place(changes *valley.Changes, s *run.State) (Result, bool) {
-	repo := valleyRepoName(s)
+	repo := RepoName(s)
 	if !Applies(s) || s.ChangeID == "" || repo == "" {
 		return Result{}, false
 	}
@@ -119,7 +121,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			continue
 		}
 		for _, ch := range vr.Changes {
-			if ch.ChangeID != s.ChangeID {
+			if ch.ChangeID != s.ChangeID || !knownState(ch.State) {
 				continue
 			}
 			v, match := versionAt(ch, *s.PushedSHA)
@@ -142,13 +144,22 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 	return found, ok
 }
 
-// valleyRepoName is the valley's name for a run's repo, as finalize's
-// `valley ready` reported it, or else the short name of the run's target
-// repo: its last path component, without ".git". "" means unknown, and an
-// unknown repo matches none.
-func valleyRepoName(s *run.State) string {
+// knownState reports whether klaus knows what a change state means.
+func knownState(state string) bool {
+	return state == valley.StateReady || state == valley.StateDraft || state == valley.StateWithdrawn
+}
+
+// RepoName is the valley's name for a run's repo, as finalize's `valley
+// ready` or else launch's `valley unready` reported it, or else the short
+// name of the run's target repo: its last path component, without ".git".
+// "" means unknown, and an unknown repo matches none. It is how klaus tells
+// which runs share a change: the same repo and change ID.
+func RepoName(s *run.State) string {
 	if s.Valley != nil && s.Valley.Repo != "" {
 		return s.Valley.Repo
+	}
+	if s.Unready != nil && s.Unready.Repo != "" {
+		return s.Unready.Repo
 	}
 	if s.TargetRepo == nil {
 		return ""
@@ -179,9 +190,10 @@ func versionAt(ch valley.Change, head string) (valley.Version, bool) {
 	return found, ok
 }
 
-// verdictOf reads the valley's record of version v of change ch. Landing
-// evidence comes first: a landed version is Integrated even after a later
-// version took its place.
+// verdictOf reads the valley's record of version v of change ch, whose state
+// klaus knows. Landing evidence comes first: a landed version is Integrated
+// even after a later version took its place. A draft change is Draft whatever
+// the integrator decided on its version's request: its submitter has it back.
 func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	switch {
 	case v.Landing == valley.Landed || v.Landing == valley.LandedRecorded:
@@ -192,6 +204,8 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 		return Superseded
 	case v.Landing == valley.Uncertain:
 		return Uncertain
+	case ch.State == valley.StateDraft:
+		return Draft
 	case v.Outcome != nil:
 		switch strings.ToLower(v.Outcome.Decision) {
 		case "stale":
@@ -202,8 +216,8 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 			return Failed
 		}
 		return Uncertain
-	case ch.State != valley.StateReady || v.Landing != valley.NotLanded:
-		// A state or landing value from a later valley.
+	case v.Landing != valley.NotLanded:
+		// A landing value from a later valley.
 		return Uncertain
 	case v.Request != nil:
 		return Approved

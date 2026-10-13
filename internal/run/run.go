@@ -49,6 +49,16 @@ type State struct {
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
+	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
+}
+
+// Unready is what launch's `valley unready` did to the change a follow-up
+// run continues, before its agent started.
+type Unready struct {
+	Repo   string `json:"repo,omitempty"`   // the valley's name for the repo, when the change became a draft
+	Handle string `json:"handle,omitempty"` // the change's handle, when it became a draft
+	Note   string `json:"note,omitempty"`   // what the valley said when the change wasn't ready
+	Error  string `json:"error,omitempty"`  // why valley unready failed
 }
 
 // Valley is what finalize's `valley ready` recorded for a pushed run: the

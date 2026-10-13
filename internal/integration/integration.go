@@ -55,6 +55,10 @@ const (
 	Withdrawn
 	// Superseded means another version of the change is the active one.
 	Superseded
+	// Draft means the change is back with its submitter (`valley unready`),
+	// as when a follow-up run continues it: approve refuses it until a head
+	// is marked ready again.
+	Draft
 )
 
 // Landed reports whether the verdict says the run's work is on the default
@@ -95,6 +99,8 @@ func (v Verdict) String() string {
 		return "withdrawn"
 	case Superseded:
 		return "superseded"
+	case Draft:
+		return "draft"
 	default:
 		return "unknown"
 	}

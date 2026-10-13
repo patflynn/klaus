@@ -21,6 +21,10 @@ const (
 const (
 	StateReady     = "ready"
 	StateWithdrawn = "withdrawn"
+	// StateDraft is a change its submitter returned from ready (`valley
+	// unready`), as launch does when a follow-up run continues it. approve
+	// refuses it until a head is marked ready again.
+	StateDraft = "draft"
 )
 
 // Changes is a valley's view of every change record it serves, in every
@@ -60,7 +64,7 @@ type Change struct {
 	Handle   string    `json:"handle"` // shortest unique prefix of the ID, at least 4 characters
 	Target   string    `json:"target"`
 	Owner    string    `json:"owner"`
-	State    string    `json:"state"` // StateReady or StateWithdrawn
+	State    string    `json:"state"` // StateReady, StateDraft or StateWithdrawn
 	Record   string    `json:"record"`
 	Seq      int       `json:"seq"`
 	Active   int       `json:"active"` // n of the active version

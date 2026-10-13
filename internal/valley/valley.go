@@ -1,7 +1,7 @@
 // Package valley drives the `valley` CLI of a valley, the self-hosted
 // integration host that direct-push repos deliver to: marking a pushed head
-// ready as a version of its change, and reading the valley's view of every
-// change.
+// ready as a version of its change, returning a change to draft, and reading
+// the valley's view of every change.
 package valley
 
 import (
@@ -23,6 +23,8 @@ import (
 const (
 	// ReadyTimeout bounds `valley ready`.
 	ReadyTimeout = 30 * time.Second
+	// UnreadyTimeout bounds `valley unready`.
+	UnreadyTimeout = 30 * time.Second
 	// ListTimeout bounds `valley changes`.
 	ListTimeout = time.Minute
 	// helpTimeout bounds `valley help`.
@@ -39,6 +41,7 @@ const (
 type Error struct {
 	Verb   string
 	Reason string
+	exited bool // valley ran and exited non-zero: Reason is its own message
 }
 
 func (e *Error) Error() string {
@@ -81,6 +84,53 @@ func parseReady(out []byte) (Readied, error) {
 	return Readied{}, &Error{Verb: "ready", Reason: "unexpected output: " + shortReason(out)}
 }
 
+// Unreadied is what `valley unready` reports. Draft is false when the
+// change wasn't ready (already a draft, or the valley has no record of it),
+// and Note then says what the valley printed.
+type Unreadied struct {
+	Repo   string
+	Handle string
+	Draft  bool
+	Note   string
+}
+
+// draftLine is the line `valley unready` prints on success, e.g.
+// "cosmo nxvp draft".
+var draftLine = regexp.MustCompile(`^(\S+) (\S+) draft$`)
+
+// notReady matches a message that only says the change wasn't ready to
+// begin with, which leaves it as unready asked.
+var notReady = regexp.MustCompile(`(?i)\bnot ready\b|\balready (a )?draft\b|\bno (change )?record\b`)
+
+// Unready runs `valley unready <changeID>` in dir, returning a ready change
+// to draft so approve refuses it while an agent continues it. A change that
+// wasn't ready isn't an error, whether valley says so or refuses for that
+// reason: it is reported with Draft false. Any other output is an error,
+// since the change may still be approvable.
+func Unready(ctx context.Context, dir, changeID string) (Unreadied, error) {
+	out, err := command(ctx, dir, UnreadyTimeout, "unready", changeID)
+	var e *Error
+	if errors.As(err, &e) && e.exited && notReady.MatchString(e.Reason) {
+		return Unreadied{Note: e.Reason}, nil
+	}
+	if err != nil {
+		return Unreadied{}, err
+	}
+	return parseUnready(out)
+}
+
+func parseUnready(out []byte) (Unreadied, error) {
+	for _, line := range strings.Split(string(out), "\n") {
+		if m := draftLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			return Unreadied{Repo: m[1], Handle: m[2], Draft: true}, nil
+		}
+	}
+	if msg := shortReason(out); notReady.MatchString(msg) {
+		return Unreadied{Note: msg}, nil
+	}
+	return Unreadied{}, &Error{Verb: "unready", Reason: "unexpected output: " + shortReason(out)}
+}
+
 // List runs `valley changes --all --json` in dir: one process for every repo
 // the valley serves.
 func List(ctx context.Context, dir string) (*Changes, error) {
@@ -91,17 +141,31 @@ func List(ctx context.Context, dir string) (*Changes, error) {
 	return Decode(out)
 }
 
+// changeVerbs are the verbs klaus needs to mark changes ready and read them.
+var changeVerbs = []string{"ready", "changes"}
+
 // Supported reports whether the valley on PATH has the verbs klaus uses: its
 // help lists both ready and changes. A valley from before change records
 // lacks them, and klaus treats its repos as plain direct-push repos.
 func Supported(ctx context.Context) bool {
+	return hasVerbs(ctx, changeVerbs...)
+}
+
+// hasVerbs reports whether the valley on PATH lists every one of verbs in
+// its help.
+func hasVerbs(ctx context.Context, verbs ...string) bool {
 	if _, err := exec.LookPath("valley"); err != nil {
 		return false
 	}
 	// Some CLIs exit non-zero from help; the listing is what counts.
 	stdout, stderr, _ := execValley(ctx, "", helpTimeout, "help")
 	help := append(stdout, stderr...)
-	return hasVerb(help, "ready") && hasVerb(help, "changes")
+	for _, v := range verbs {
+		if !hasVerb(help, v) {
+			return false
+		}
+	}
+	return true
 }
 
 // hasVerb reports whether help lists verb: a line that starts with it, after
@@ -119,6 +183,17 @@ func hasVerb(help []byte, verb string) bool {
 // from origin first. The cheap checks come first, so a repo without the
 // policy never runs valley.
 func Detect(ctx context.Context, dir, branch, head string) bool {
+	return detect(ctx, dir, branch, head, changeVerbs...)
+}
+
+// DetectUnready is Detect for a launch that continues a change, with head
+// the commit its worktree starts from: it also requires the valley on PATH
+// to list unready, which a valley from before drafts lacks.
+func DetectUnready(ctx context.Context, dir, head string) bool {
+	return detect(ctx, dir, "", head, append(changeVerbs, "unready")...)
+}
+
+func detect(ctx context.Context, dir, branch, head string, verbs ...string) bool {
 	if dir == "" || head == "" {
 		return false
 	}
@@ -130,7 +205,7 @@ func Detect(ctx context.Context, dir, branch, head string) bool {
 		_, _ = gitOutput(ctx, dir, "fetch", "--quiet", "--no-tags", "origin",
 			"+refs/heads/"+branch+":refs/remotes/origin/"+branch)
 	}
-	return HasPolicy(ctx, dir, head) && Supported(ctx)
+	return HasPolicy(ctx, dir, head) && hasVerbs(ctx, verbs...)
 }
 
 // HasPolicy reports whether commit head, in the repo at dir, carries
@@ -170,6 +245,7 @@ func command(ctx context.Context, dir string, timeout time.Duration, args ...str
 		e.Reason = fmt.Sprintf("timed out after %s", timeout)
 	case errors.As(err, &exitErr):
 		// A refusal: the valley's message, from stderr or else stdout.
+		e.exited = true
 		e.Reason = shortReason(stderr)
 		if e.Reason == "" {
 			e.Reason = shortReason(stdout)

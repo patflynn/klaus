@@ -54,10 +54,11 @@ a full status re-fetch every 5 minutes by default (configurable via
 Runs are listed one per row, grouped by whose move it is, most recent first
 within each group:
   yours     needs you: needs attention (ATTN), a valley change to approve
-            (APPROVE) or to look at (STALE, REJECTED, FAILED, UNCERTAIN), a
-            pushed branch to submit (SUBMIT), or a PR that is ready to merge
-            and not yet approved
-  agents    an agent is running on it
+            (APPROVE) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
+            DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready
+            to merge and not yet approved
+  agents    an agent is running on it, or on another run of its change
+            (WORKING)
   pipeline  an open PR the pipeline is handling: CI running or failing,
             conflicts, behind, approved and waiting to merge; or a valley
             change that is approved and waiting on the integrator (APPROVED)
@@ -82,9 +83,17 @@ v2@1a2b3c4). Finalize marked the pushed head ready. Every minute, one
 APPROVE (ready and waiting for you), APPROVED, INTEGRATED (landed),
 UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED (the
 integrator's decision), WITHDRAWN, or SUPERSEDED (another version of the
-change is active). If valley can't be asked, the git check above decides,
-and a change waiting on it reads APPROVE. A run whose change finalize
-couldn't mark ready shows SUBMIT and the reason.
+change is active), or DRAFT (returned to draft, as launch does when a
+follow-up run continues the change, and no run of it is running). If valley
+can't be asked, the git check above decides, and a change waiting on it
+reads APPROVE. A run whose change finalize couldn't mark ready shows SUBMIT
+and the reason.
+
+A row that would be yours or the pipeline's reads WORKING while another run
+of its change (the same change ID in the same repo) is running: a follow-up
+(--pr, --resume-from or a pipeline fix) is still pushing to it. It sorts with
+the agents, offers no approve command, and the footer names the run that is
+working. Once that run exits, the row goes back to its own label.
 
 Done rows older than an hour are hidden until you press h; the line above the
 list says how many are hidden. A row the dashboard watched finish stays for
@@ -97,7 +106,8 @@ to show, in the footer, the command that approves the selected APPROVE row
 the pushed branch, {change} the full change ID, {handle} the change's handle
 and {head} the pushed head, so the approval binds the head you saw. A row
 with no value for a placeholder the template uses, such as {handle} on a
-branch no valley knows, shows no command. The command is for you to run on
+branch no valley knows, shows no command, and neither does a WORKING or
+DRAFT row. The command is for you to run on
 your own machine; the dashboard never runs it. "submit_command" is the
 deprecated name of "approve_command", read only when approve_command is
 unset.

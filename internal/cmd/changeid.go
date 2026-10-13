@@ -21,8 +21,9 @@ type changeIDInput struct {
 
 // changeChoice is the change ID a new run uses, and how it was found.
 type changeChoice struct {
-	ID   string
-	From string // for the launch output
+	ID        string
+	From      string // for the launch output
+	Inherited bool   // the run continues an existing change
 }
 
 // chooseChangeID picks the change ID for a new run. A run that continues
@@ -37,19 +38,19 @@ func chooseChangeID(ctx context.Context, store run.StateStore, in changeIDInput)
 	if in.IsPRFix {
 		states, _ := run.ListAllSessions()
 		if s := prChangeSource(states, in.PRURL, in.PRBranch, in.TargetRepo); s != nil {
-			return changeChoice{ID: s.ChangeID, From: "inherited from run " + s.ID}, nil
+			return changeChoice{ID: s.ChangeID, From: "inherited from run " + s.ID, Inherited: true}, nil
 		}
 		// The PR may have been opened on another machine.
 		if ahead, err := git.CommitsAhead(ctx, in.Worktree, "origin/"+in.DefaultBranch, "HEAD"); err == nil && ahead > 0 {
 			if id, err := git.CommitChangeID(ctx, in.Worktree, "HEAD"); err == nil && run.ValidChangeID(id) {
-				return changeChoice{ID: id, From: "inherited from the PR's head commit"}, nil
+				return changeChoice{ID: id, From: "inherited from the PR's head commit", Inherited: true}, nil
 			}
 		}
 		unknown = "the PR"
 	}
 	if in.ResumeFrom != "" {
 		if prior, err := store.Load(in.ResumeFrom); err == nil && run.ValidChangeID(prior.ChangeID) {
-			return changeChoice{ID: prior.ChangeID, From: "inherited from run " + prior.ID}, nil
+			return changeChoice{ID: prior.ChangeID, From: "inherited from run " + prior.ID, Inherited: true}, nil
 		}
 		if unknown == "" {
 			unknown = "run " + in.ResumeFrom

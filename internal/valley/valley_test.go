@@ -55,6 +55,55 @@ func TestTimeoutKillsValleysChildren(t *testing.T) {
 	}
 }
 
+// TestUnreadyReadsValleysAnswer runs Unready against a fake valley: the
+// draft line means the change became a draft, a change that wasn't ready is
+// no error whether valley says so or refuses for it, and any other refusal
+// or output is one.
+func TestUnreadyReadsValleysAnswer(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	fakeValley := func(stdout, stderr string, code int) {
+		t.Helper()
+		script := "#!/bin/sh\n[ \"$*\" = 'unready nxvp-id' ] || { echo \"bad args: $*\" >&2; exit 9; }\n" +
+			"printf '" + stdout + "'\nprintf '" + stderr + "' >&2\nexit " + strconv.Itoa(code) + "\n"
+		if err := os.WriteFile(filepath.Join(bin, "valley"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name           string
+		stdout, stderr string
+		code           int
+		want           Unreadied
+		wantErr        string
+	}{
+		{name: "draft", stdout: "fetching...\\ncosmo nxvp draft\\n", want: Unreadied{Repo: "cosmo", Handle: "nxvp", Draft: true}},
+		{name: "already a draft, said plainly", stdout: "nxvp is already a draft\\n", want: Unreadied{Note: "nxvp is already a draft"}},
+		{name: "not ready, refused", stderr: "valley: change nxvp is not ready\\n", code: 1,
+			want: Unreadied{Note: "valley: change nxvp is not ready"}},
+		{name: "no record, refused", stderr: "valley: no change record for nxvp-id\\n", code: 1,
+			want: Unreadied{Note: "valley: no change record for nxvp-id"}},
+		{name: "other refusal", stderr: "valley: refused: you do not own nxvp\\n", code: 1,
+			wantErr: "valley unready: valley: refused: you do not own nxvp"},
+		{name: "unexpected output", stdout: "cosmo nxvp v2 ready\\n", wantErr: "valley unready: unexpected output: cosmo nxvp v2 ready"},
+		{name: "no output", wantErr: "valley unready: unexpected output: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeValley(tc.stdout, tc.stderr, tc.code)
+			got, err := Unready(context.Background(), dir, "nxvp-id")
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("Unready = %+v, %v; want error %q", got, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Errorf("Unready = %+v, %v; want %+v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 // alive reports whether process pid exists and isn't a zombie.
 func alive(pid int) bool {
 	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")

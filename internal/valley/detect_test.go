@@ -127,6 +127,20 @@ func TestDetect(t *testing.T) {
 		t.Error("a valley without ready and changes should not be detected")
 	}
 
+	// Returning a change to draft needs unready too, which a valley from
+	// before drafts lacks.
+	fakeValley(newHelp)
+	if DetectUnready(ctx, repo, withValley) {
+		t.Error("a valley without unready should not be detected for unready")
+	}
+	fakeValley(newHelp + "  unready <change>  return a ready change to draft\n")
+	if !DetectUnready(ctx, repo, withValley) {
+		t.Error("a valley that lists unready should be detected for unready")
+	}
+	if DetectUnready(ctx, repo, plain) {
+		t.Error("a head without the policy should not be detected for unready")
+	}
+
 	// A GitHub origin gets PRs, whatever the tree carries.
 	fakeValley(newHelp)
 	runGit(t, repo, "remote", "set-url", "origin", "git@github.com:acme/cosmo.git")

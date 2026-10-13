@@ -19,8 +19,8 @@ import (
 type rowCategory int
 
 const (
-	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a branch to submit, a PR ready to approve
-	catAgents                      // an agent is running on it
+	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a draft, a branch to submit, a PR ready to approve
+	catAgents                      // an agent is running on it, or on another run of its change
 	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide
 	catDone                        // merged, closed, integrated, gone, withdrawn, superseded, no access, or an agent that exited
 )
@@ -59,6 +59,10 @@ type dashRow struct {
 	// attention is set when the row is the operator's because something
 	// needs attention (salvaged work, a stalled or budget-paused PR).
 	attention bool
+	// working are the running runs of the row's change, elsewhere: a
+	// follow-up still pushing to it. Set only on a row with no running run
+	// that isn't done.
+	working []*run.State
 	// verdict is the latest integration check of a bare pushed run.
 	verdict integration.Verdict
 	// change is how a valley knows a bare pushed run: the latest check's
@@ -132,8 +136,9 @@ func (m dashboardModel) buildRows() []dashRow {
 			})
 		}
 	}
+	working := runningByChange(m.states, m.agentRunning)
 	for i := range rows {
-		m.classify(&rows[i])
+		m.classify(&rows[i], working)
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
@@ -149,14 +154,16 @@ func (m dashboardModel) buildRows() []dashRow {
 }
 
 // classify fills in a row's running agents, category, recency and whether
-// it may be hidden once old. Precedence: a running agent makes it the
-// agents'; then merged, closed, no access, integrated, gone, withdrawn or
-// superseded make it done; then needs attention, a pushed branch (to approve
-// or submit, or whose change the integrator turned down or the valley is
-// unsure of) or a PR ready to approve make it yours, except a change already
-// approved, which is the pipeline's like any other open PR; an exited agent
-// is done.
-func (m dashboardModel) classify(r *dashRow) {
+// it may be hidden once old. working maps each change to its running runs
+// (runningByChange). Precedence: a running agent makes it the agents'; then
+// merged, closed, no access, integrated, gone, withdrawn or superseded make
+// it done; then another run of its change still running makes it the
+// agents' (WORKING); then needs attention, a pushed branch (to approve or
+// submit, a draft, or whose change the integrator turned down or the valley
+// is unsure of) or a PR ready to approve make it yours, except a change
+// already approved, which is the pipeline's like any other open PR; an
+// exited agent is done.
+func (m dashboardModel) classify(r *dashRow, working map[changeKey][]*run.State) {
 	merged, attention := false, false
 	for _, s := range r.runs {
 		if m.agentRunning(s) {
@@ -191,12 +198,21 @@ func (m dashboardModel) classify(r *dashRow) {
 		}
 	}
 
+	settled := merged || closed || noAccess || r.verdict.Settled()
+	exited := r.prNum == "" && !pushed && !attention
+	if len(r.running) == 0 && !settled && !exited {
+		r.working = workingOn(r.runs, working)
+	}
+
 	switch {
 	case len(r.running) > 0:
 		r.category = catAgents
-	case merged || closed || noAccess || r.verdict.Settled():
+	case settled:
 		r.category = catDone
 		r.hideable = true
+	case len(r.working) > 0:
+		// An agent is still pushing to the change: nothing to approve yet.
+		r.category = catAgents
 	case attention:
 		r.category = catYours
 		r.attention = true
@@ -217,6 +233,56 @@ func (m dashboardModel) classify(r *dashRow) {
 	default:
 		r.category = catPipeline
 	}
+}
+
+// changeKey identifies a change across runs: its repo, by the rule the
+// ValleyChecker places runs with (integration.RepoName), and its change ID.
+type changeKey struct{ repo, changeID string }
+
+// changeOf returns the change a run belongs to. ok is false for a session or
+// tracked PR, and for a run without a change ID or a known repo: such a run
+// shares its change with none.
+func changeOf(s *run.State) (changeKey, bool) {
+	if s.Type == "session" || s.Type == "track" || s.ChangeID == "" {
+		return changeKey{}, false
+	}
+	repo := integration.RepoName(s)
+	return changeKey{repo, s.ChangeID}, repo != ""
+}
+
+// runningByChange maps each change to the runs of it that running says are
+// running.
+func runningByChange(states []*run.State, running func(*run.State) bool) map[changeKey][]*run.State {
+	out := make(map[changeKey][]*run.State)
+	for _, s := range states {
+		if k, ok := changeOf(s); ok && running(s) {
+			out[k] = append(out[k], s)
+		}
+	}
+	return out
+}
+
+// workingOn returns the running runs, from working (runningByChange), of the
+// changes runs belong to, leaving out runs themselves.
+func workingOn(runs []*run.State, working map[changeKey][]*run.State) []*run.State {
+	var out []*run.State
+	seen := make(map[string]bool)
+	for _, s := range runs {
+		seen[s.ID] = true
+	}
+	for _, s := range runs {
+		k, ok := changeOf(s)
+		if !ok {
+			continue
+		}
+		for _, w := range working[k] {
+			if !seen[w.ID] {
+				seen[w.ID] = true
+				out = append(out, w)
+			}
+		}
+	}
+	return out
 }
 
 // pipelineState returns the pipeline's state for a PR row. The pipeline

@@ -167,6 +167,107 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 	}
 }
 
+// TestWorkingRowsAreTheAgents covers which rows a running follow-up makes
+// WORKING: every row of its change (same repo, same change ID) that would be
+// the operator's or the pipeline's, a PR among them, and no done row. Another
+// repo, another change and runs without a change ID are left alone.
+func TestWorkingRowsAreTheAgents(t *testing.T) {
+	now := time.Now()
+	chg, otherChg := strings.Repeat("k", 32), strings.Repeat("l", 32)
+	n := 0
+	var states []*run.State
+	add := func(prompt, changeID string, s *run.State) *run.State {
+		n++
+		s.ID = fmt.Sprintf("20261013-1200-%04d", n)
+		s.Prompt, s.Type, s.ChangeID = prompt, "launch", changeID
+		if s.TargetRepo == nil {
+			s.TargetRepo = strPtr("o/r")
+		}
+		s.CreatedAt = now.Add(-time.Duration(n) * time.Minute).Format(time.RFC3339)
+		if s.TmuxPane == nil {
+			s.CostUSD = float64Ptr(1)
+		}
+		states = append(states, s)
+		return s
+	}
+	pushed := func(prompt, changeID string) *run.State {
+		return add(prompt, changeID, &run.State{PushedBranch: strPtr("agent/" + strings.ReplaceAll(prompt, " ", "-")),
+			PushedSHA: strPtr("0123456789abcdef0123456789abcdef01234567")})
+	}
+	pr := func(num int) *string { return strPtr(fmt.Sprintf("https://github.com/o/r/pull/%d", num)) }
+
+	follow := add("follow-up", chg, &run.State{TmuxPane: strPtr("%1")})
+	add("no change id running", "", &run.State{TmuxPane: strPtr("%2")})
+	submit := pushed("working submit", chg)
+	add("working pr", chg, &run.State{PRURL: pr(1)})
+	add("working attn", chg, &run.State{NeedsAttention: strPtr("agent/x")})
+	superseded := pushed("done superseded", chg)
+	add("done merged", chg, &run.State{PRURL: pr(2), MergedAt: strPtr(now.Format(time.RFC3339))})
+	add("done exited", chg, &run.State{Worktree: "/wt"})
+	otherRepo := pushed("yours other repo", chg)
+	otherRepo.TargetRepo = strPtr("o/other")
+	otherChange := pushed("yours other change", otherChg)
+	noID := pushed("yours no change id", "")
+	// The valley names the repo "widget", not "r": the follow-up knows that
+	// name once valley unready reported it.
+	renamedChg := strings.Repeat("m", 32)
+	renamedFollow := add("follow-up renamed", renamedChg, &run.State{TmuxPane: strPtr("%3"), Unready: &run.Unready{Repo: "widget", Handle: "mmmm"}})
+	renamed := pushed("working renamed repo", renamedChg)
+	renamed.Valley = &run.Valley{Repo: "widget", Handle: "mmmm", Version: 1}
+
+	m := dashboardModel{
+		states:   states,
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{*pr(1): {State: "OPEN", CI: "passing", Conflicts: "none", ReviewDecision: "APPROVED"}},
+		integration: map[string]integration.Result{
+			submit.ID:      {Verdict: integration.Awaiting},
+			superseded.ID:  {Verdict: integration.Superseded},
+			otherRepo.ID:   {Verdict: integration.Awaiting},
+			otherChange.ID: {Verdict: integration.Awaiting},
+			noID.ID:        {Verdict: integration.Awaiting},
+			renamed.ID:     {Verdict: integration.Ready},
+		},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	for _, r := range m.buildRows() {
+		prompt := r.state().Prompt
+		working := strings.HasPrefix(prompt, "working")
+		want := strings.Fields(prompt)[0]
+		if working || r.state().TmuxPane != nil {
+			want = "agents"
+		}
+		if got := categoryNames[r.category]; got != want {
+			t.Errorf("%q: category %s, want %s", prompt, got, want)
+		}
+		wantRun := follow
+		if prompt == "working renamed repo" {
+			wantRun = renamedFollow
+		}
+		if (len(r.working) > 0) != working || (working && (len(r.working) != 1 || r.working[0] != wantRun)) {
+			t.Errorf("%q: working on %v, want working %v", prompt, r.working, working)
+		}
+	}
+
+	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 40})
+	plain := ansi.Strip(m.View())
+	for prompt, label := range map[string]string{
+		"working submit":       "WORKING",
+		"working pr":           "OPEN  WORKING",
+		"working attn":         "WORKING",
+		"working renamed repo": "WORKING",
+		"done superseded":      "SUPERSEDED",
+		"done exited":          "EXITED",
+		"yours other repo":     "SUBMIT",
+		"yours other change":   "SUBMIT",
+		"yours no change id":   "SUBMIT",
+		"no change id running": "RUNNING",
+	} {
+		if line := lineWith(plain, prompt); !strings.Contains(line, label) {
+			t.Errorf("%q row should show %s: %q", prompt, label, line)
+		}
+	}
+}
+
 // TestPipelineStateIsPerRepo: the pipeline keys PRs by number alone, so its
 // state for o/a#5 must not make o/b#5 the operator's or show its stage.
 func TestPipelineStateIsPerRepo(t *testing.T) {
