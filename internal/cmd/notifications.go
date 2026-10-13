@@ -70,7 +70,9 @@ func printSummary(events []event.Event) {
 		needsAttention []string
 		completed      []completedInfo
 		prCreated      []string
-		branchPushed   []string
+		branchPushed   []runNote
+		changeReady    []string
+		readyRuns      = make(map[string]bool) // runs listed under changeReady
 		ciFailed       []string
 		ciPassed       []string
 		prMerged       []string
@@ -94,7 +96,13 @@ func printSummary(events []event.Event) {
 		case event.AgentBranchPushed:
 			branch, _ := evt.Data["branch"].(string)
 			sha, _ := evt.Data["sha"].(string)
-			branchPushed = append(branchPushed, fmt.Sprintf("%s@%s (%s)", branch, shortSHA(sha), id))
+			branchPushed = append(branchPushed, runNote{id: id, text: fmt.Sprintf("%s@%s (%s)", branch, shortSHA(sha), id)})
+		case event.AgentChangeReady:
+			repo, _ := evt.Data["repo"].(string)
+			handle, _ := evt.Data["handle"].(string)
+			version, _ := evt.Data["version"].(float64)
+			changeReady = append(changeReady, fmt.Sprintf("%s %s v%d (%s)", repo, handle, int(version), id))
+			readyRuns[id] = true
 		case event.AgentCIPassed:
 			prURL, ok := evt.Data["pr_url"].(string)
 			if !ok {
@@ -145,8 +153,18 @@ func printSummary(events []event.Event) {
 	if len(prCreated) > 0 {
 		fmt.Printf("%d PR(s) created: %s\n", len(prCreated), strings.Join(prCreated, ", "))
 	}
-	if len(branchPushed) > 0 {
-		fmt.Printf("%d branch(es) awaiting integration: %s\n", len(branchPushed), strings.Join(branchPushed, ", "))
+	if len(changeReady) > 0 {
+		fmt.Printf("%d change(s) awaiting approval: %s\n", len(changeReady), strings.Join(changeReady, ", "))
+	}
+	// A branch marked ready as a change is listed once, as the change.
+	var awaiting []string
+	for _, b := range branchPushed {
+		if !readyRuns[b.id] {
+			awaiting = append(awaiting, b.text)
+		}
+	}
+	if len(awaiting) > 0 {
+		fmt.Printf("%d branch(es) awaiting integration: %s\n", len(awaiting), strings.Join(awaiting, ", "))
 	}
 	if len(ciPassed) > 0 {
 		fmt.Printf("%d CI passed: %s\n", len(ciPassed), strings.Join(ciPassed, ", "))
@@ -164,6 +182,11 @@ func printSummary(events []event.Event) {
 		}
 		fmt.Printf("%d agent(s) completed since last check ($%.2f total)\n", len(completed), totalCost)
 	}
+}
+
+// runNote is a summary line's entry for one run.
+type runNote struct {
+	id, text string
 }
 
 type completedInfo struct {

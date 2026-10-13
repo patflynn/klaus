@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -112,23 +113,34 @@ func (m dashboardModel) fitLayout(nRows int) ([]chromeItem, int) {
 // rowLayout holds the column widths shared by every row, computed over all
 // rows so columns don't shift while scrolling.
 type rowLayout struct {
-	repoW   int // 0 hides the repo column (single-repo lists)
+	repoW   int // 0 hides the repo column (single-repo lists without valley changes)
 	idW     int
 	promptW int // 0 hides the prompt column
 }
 
+// maxHandleW caps the ID column for a valley change's handle.
+const maxHandleW = 12
+
 func newRowLayout(rows []dashRow, width int) rowLayout {
 	lay := rowLayout{idW: 6} // "#" plus a five-digit PR number
 	repos := make(map[string]bool)
+	changes := false
 	for _, r := range rows {
 		repos[r.repo] = true
-		if r.prNum == "" {
-			lay.idW = 10 // "agent:" plus a four-character run ID
+		switch {
+		case r.prNum != "":
+		case r.change != nil:
+			changes = true
+			lay.idW = max(lay.idW, min(len([]rune(r.change.Handle)), maxHandleW))
+		default:
+			lay.idW = max(lay.idW, 10) // "agent:" plus a four-character run ID
 		}
 	}
-	if len(repos) > 1 {
-		for repo := range repos {
-			lay.repoW = max(lay.repoW, len([]rune(shortRepoName(repo))))
+	// A valley change is known by its repo and handle, so a list with one
+	// shows the repo even when it is the only one.
+	if len(repos) > 1 || changes {
+		for _, r := range rows {
+			lay.repoW = max(lay.repoW, len([]rune(r.repoLabel())))
 		}
 		lay.repoW = min(lay.repoW, 14)
 		if width < 60 {
@@ -180,7 +192,7 @@ func (m dashboardModel) renderRow(r dashRow, selected bool, lay rowLayout, now t
 		b.WriteString("  ")
 	}
 	if lay.repoW > 0 {
-		fmt.Fprintf(&b, "%-*s  ", lay.repoW, truncateLine(shortRepoName(r.repo), lay.repoW))
+		fmt.Fprintf(&b, "%-*s  ", lay.repoW, truncateLine(r.repoLabel(), lay.repoW))
 	}
 	if r.prNum != "" {
 		// Pad the visible label first, then wrap only the visible text in a
@@ -192,10 +204,10 @@ func (m dashboardModel) renderRow(r dashRow, selected bool, lay rowLayout, now t
 		}
 		b.WriteString(label)
 	} else {
-		fmt.Fprintf(&b, "%-*s", lay.idW, "agent:"+shortRunID(s.ID))
+		fmt.Fprintf(&b, "%-*s", lay.idW, truncateLine(r.idLabel(), lay.idW))
 	}
 	if lay.promptW > 0 {
-		fmt.Fprintf(&b, "  %-*s", lay.promptW, truncateLine(s.Prompt, lay.promptW))
+		fmt.Fprintf(&b, "  %-*s", lay.promptW, truncateLine(r.description(), lay.promptW))
 	}
 
 	prefix := b.String()
@@ -281,17 +293,22 @@ func runningLabel(running []*run.State) string {
 	return yellowStyle.Render("agent:"+shortRunID(s.ID)+" running") + sandboxTag(s)
 }
 
-// bareAgentParts returns the status labels for an agent row with no PR.
+// bareAgentParts returns the status labels for an agent row with no PR. A
+// valley change shows its version and head, any other pushed branch its
+// name and head. A valley verdict kept from an earlier check says so, and a
+// run whose change finalize couldn't mark ready says why.
 func bareAgentParts(r dashRow) []string {
 	s := r.state()
-	label := agentStatusLabel(s, r.verdict)
+	label := agentStatusLabel(s, r.verdict, r.change != nil)
 	var status string
 	switch {
 	case len(r.running) > 0:
 		status = yellowStyle.Render("RUNNING")
-	case r.attention:
+	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed:
 		status = redStyle.Render(label)
-	case r.category == catYours:
+	case r.verdict == integration.Stale || r.verdict == integration.Uncertain:
+		status = yellowStyle.Render(label)
+	case r.category == catYours || r.verdict == integration.Approved:
 		status = cyanStyle.Render(label)
 	case r.verdict.Landed():
 		status = greenStyle.Render(label)
@@ -299,12 +316,23 @@ func bareAgentParts(r dashRow) []string {
 		status = dimStyle.Render(label)
 	}
 	parts := []string{status}
-	if s.PushedBranch != nil && s.PushedSHA != nil {
+	if r.outdated && len(r.running) == 0 {
+		parts = append(parts, dimStyle.Render("(last known)"))
+	}
+	switch c := r.change; {
+	case c != nil && c.Version > 0:
+		parts = append(parts, fmt.Sprintf("v%d@%s", c.Version, shortSHA(c.Head)))
+	case c != nil:
+		parts = append(parts, shortSHA(c.Head))
+	case s.PushedBranch != nil && s.PushedSHA != nil:
 		parts = append(parts, *s.PushedBranch+"@"+shortSHA(*s.PushedSHA))
 	}
 	parts = append(parts, dimStyle.Render(formatCost(s)))
 	if tag := sandboxTag(s); tag != "" {
 		parts = append(parts, strings.TrimPrefix(tag, " "))
+	}
+	if v := s.Valley; v != nil && v.Error != "" && r.change == nil {
+		parts = append(parts, redStyle.Render(v.Error))
 	}
 	return parts
 }
@@ -375,8 +403,9 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 }
 
 // renderFooter renders the agent count and key help, falling back to shorter
-// help on narrower panes. When the selected row is a branch to submit and
-// dashboard.submit_command is set, the footer leads with that command.
+// help on narrower panes. When the selected row is a change to approve or a
+// branch to submit and dashboard.approve_command is set, the footer leads
+// with that command.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
 	for _, r := range v.all {
@@ -395,14 +424,15 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 	}
 	style := func(f string) string { return dimStyle.Render(f) }
 	if len(v.rows) > 0 {
-		if cmd := m.submitCommand(v.rows[v.cursor]); cmd != "" {
+		if verb, cmd := m.approveCommand(v.rows[v.cursor]); cmd != "" {
+			lead := "  " + verb + ": "
 			for i, f := range variants {
-				variants[i] = "  submit: " + cmd + " |" + strings.TrimPrefix(f, " ")
+				variants[i] = lead + cmd + " |" + strings.TrimPrefix(f, " ")
 			}
-			variants = append(variants, "  submit: "+cmd)
+			variants = append(variants, lead+cmd)
 			style = func(f string) string {
-				rest := strings.TrimPrefix(f, "  submit: "+cmd)
-				return dimStyle.Render("  submit: ") + cyanStyle.Render(cmd) + dimStyle.Render(rest)
+				rest := strings.TrimPrefix(f, lead+cmd)
+				return dimStyle.Render(lead) + cyanStyle.Render(cmd) + dimStyle.Render(rest)
 			}
 		}
 	}
@@ -416,19 +446,64 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 	return style(footer)
 }
 
-// submitCommand expands dashboard.submit_command for a SUBMIT row: {repo} is
-// the short project name and {branch} the pushed branch. It returns "" for
-// any other row or when no command is configured.
-func (m dashboardModel) submitCommand(r dashRow) string {
-	if m.submitTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
-		return ""
+// approveCommand expands dashboard.approve_command for an APPROVE row (verb
+// "approve") or a SUBMIT row (verb "submit"). {repo} is the repo as the row
+// names it, {branch} the pushed branch, {change} the full change ID,
+// {handle} the valley's handle and {head} the pushed head, the one the
+// operator sees. Each value is shell-quoted (shellWord): a branch name is
+// the agent's to choose, and the operator pastes the command into a shell.
+// It returns "" for any other row, when no command is configured, or when
+// the template uses a placeholder the row has no value for, such as
+// {handle} on a branch no valley knows.
+func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
+	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
+		return "", ""
 	}
 	s := r.state()
 	if !awaitsIntegration(s) {
-		return ""
+		return "", ""
 	}
-	repo := strings.TrimSuffix(shortRepoName(r.repo), ".git")
-	return strings.NewReplacer("{repo}", repo, "{branch}", *s.PushedBranch).Replace(m.submitTemplate)
+	switch agentStatusLabel(s, r.verdict, r.change != nil) {
+	case "APPROVE":
+		verb = "approve"
+	case "SUBMIT":
+		verb = "submit"
+	default:
+		return "", ""
+	}
+	change, handle := s.ChangeID, ""
+	if r.change != nil {
+		change, handle = r.change.ChangeID, r.change.Handle
+	}
+	values := [][2]string{
+		{"{repo}", strings.TrimSuffix(r.repoLabel(), ".git")},
+		{"{branch}", *s.PushedBranch},
+		{"{change}", change},
+		{"{handle}", handle},
+		{"{head}", *s.PushedSHA},
+	}
+	var pairs []string
+	for _, kv := range values {
+		if kv[1] == "" && strings.Contains(m.approveTemplate, kv[0]) {
+			return "", ""
+		}
+		pairs = append(pairs, kv[0], shellWord(kv[1]))
+	}
+	return verb, strings.NewReplacer(pairs...).Replace(m.approveTemplate)
+}
+
+// shellWord makes s one word for a POSIX shell: as it is when it is only
+// [A-Za-z0-9._/-], which a shell takes literally, so the common command stays
+// readable; else single-quoted (shellQuote).
+func shellWord(s string) string {
+	plain := s != ""
+	for _, c := range s {
+		plain = plain && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._/-", c))
+	}
+	if plain {
+		return s
+	}
+	return shellQuote(s)
 }
 
 // renderSourceLine renders the data source status line.

@@ -24,11 +24,30 @@ and, for runs that finished by pushing a branch without a PR:
 
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
-                        or by an equal patch-id
+                        or by an equal patch-id, or the valley says it landed
   branch-gone           the branch was deleted from origin without landing
 
-Integration is checked against each run's clone (one ls-remote and fetch per
-repo). If the check can't complete, the run stays awaiting-integration.`,
+and, for a branch finalize marked ready as a version of its change on a
+valley, where the valley's record says the change stands:
+
+  awaiting-approval     ready and waiting for you to approve it
+  approved              approved; the integrator hasn't decided
+  uncertain             a request was consumed or failed with no landing
+                        evidence: look at it
+  stale, rejected,      the integrator's decision on the request
+  failed
+  withdrawn             the change was withdrawn
+  superseded            another version of the change is the active one
+
+A valley run shows its change's handle in place of its run ID, and its
+title as the prompt.
+
+Integration is checked with one "valley changes --all --json" when a valley
+is involved, and otherwise against each run's clone (one ls-remote and fetch
+per repo). If the valley can't be asked, its runs are checked against their
+clones. If the check can't complete, the run stays awaiting-integration (or
+awaiting-approval). A deleted branch alone never settles a valley change: it
+stays awaiting-approval rather than branch-gone.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
@@ -65,17 +84,31 @@ repo). If the check can't complete, the run stays awaiting-integration.`,
 				pushed = append(pushed, s)
 			}
 		}
-		// Whether pushed branches have landed: one check per repo, against
-		// each run's own clone.
-		verdicts := integration.NewGitChecker(nil).Check(ctx, pushed)
+		// Where pushed branches stand: one valley listing for the runs a
+		// valley knows, one check per repo against each run's own clone for
+		// the rest.
+		results := integration.NewValleyChecker(nil).Check(ctx, pushed)
 
 		for i, s := range states {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			status := statuses[i]
+			id := s.ID
+			prompt := truncate(s.Prompt, 40)
 			if status == "awaiting-integration" {
-				status = pushedStatus(verdicts[s.ID])
+				res := results[s.ID]
+				change := res.Change
+				if change == nil {
+					change = integration.RecordedChange(s)
+				}
+				status = pushedStatus(res.Verdict, change != nil)
+				if change != nil {
+					id = change.Handle
+					if change.Title != "" {
+						prompt = truncate(change.Title, 40)
+					}
+				}
 			}
 			cost := formatCost(s)
 			issue := "-"
@@ -90,9 +123,6 @@ repo). If the check can't complete, the run stays awaiting-integration.`,
 			if s.Host != nil {
 				host = *s.Host
 			}
-			pr := formatPR(s)
-			prompt := truncate(s.Prompt, 40)
-
 			ci, conflicts, behind, merge := "-", "-", "-", "-"
 			if prRef := extractPRRef(s); prRef != "" {
 				prState := ghClient.GetState(ctx, prRef)
@@ -117,7 +147,7 @@ repo). If the check can't complete, the run stays awaiting-integration.`,
 			}
 
 			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				s.ID, status, runBackendName(s), cost, issue, repo, host, pr, ci, conflicts, behind, merge, prompt)
+				id, status, runBackendName(s), cost, issue, repo, host, formatPR(s), ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil
@@ -161,16 +191,25 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 }
 
 // pushedStatus is the status of a run awaiting integration once an
-// integration check has looked at it. An unknown verdict (no clone, origin
-// unreachable) keeps it awaiting.
-func pushedStatus(v integration.Verdict) string {
-	switch {
-	case v.Landed():
+// integration check has looked at it; valley says a valley knows the run's
+// change. An unknown verdict (no clone, origin unreachable) keeps it
+// awaiting.
+func pushedStatus(v integration.Verdict, valley bool) string {
+	switch v {
+	case integration.Integrated, integration.IntegratedContent:
 		return "integrated"
-	case v == integration.Gone:
+	case integration.Gone:
 		return "branch-gone"
+	case integration.Ready:
+		return "awaiting-approval"
+	case integration.Unknown, integration.Awaiting:
+		if valley {
+			return "awaiting-approval"
+		}
+		return "awaiting-integration"
 	}
-	return "awaiting-integration"
+	// approved, uncertain, stale, rejected, failed, withdrawn, superseded
+	return v.String()
 }
 
 func formatCost(s *run.State) string {

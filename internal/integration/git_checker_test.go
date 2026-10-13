@@ -167,11 +167,11 @@ func (f *fixture) deleteBranch(branch string) {
 func checkOne(t *testing.T, c Checker, s *run.State) Verdict {
 	t.Helper()
 	got := c.Check(context.Background(), []*run.State{s})
-	v, ok := got[s.ID]
+	r, ok := got[s.ID]
 	if !ok {
 		t.Fatalf("no verdict for %s: %v", s.ID, got)
 	}
-	return v
+	return r.Verdict
 }
 
 func TestGitCheckerFastForwardLanding(t *testing.T) {
@@ -301,17 +301,17 @@ func TestGitCheckerTruncatedScanIsNotGone(t *testing.T) {
 	c := NewGitChecker(nil)
 	c.scanLimit = 2 // o3 and o2
 	got := c.Check(context.Background(), runs)
-	if got["old"] != Unknown {
-		t.Errorf("old: verdict = %v, want unknown", got["old"])
+	if got["old"].Verdict != Unknown {
+		t.Errorf("old: verdict = %v, want unknown", got["old"].Verdict)
 	}
-	if got["newer"] != Gone {
-		t.Errorf("newer: verdict = %v, want gone", got["newer"])
+	if got["newer"].Verdict != Gone {
+		t.Errorf("newer: verdict = %v, want gone", got["newer"].Verdict)
 	}
 
 	got = NewGitChecker(nil).Check(context.Background(), runs)
 	for _, s := range runs {
-		if got[s.ID] != Gone {
-			t.Errorf("%s without a cap: verdict = %v, want gone", s.ID, got[s.ID])
+		if got[s.ID].Verdict != Gone {
+			t.Errorf("%s without a cap: verdict = %v, want gone", s.ID, got[s.ID].Verdict)
 		}
 	}
 }
@@ -332,8 +332,8 @@ func TestGitCheckerOneSnapshotForManyRuns(t *testing.T) {
 	got := NewGitChecker(nil).Check(context.Background(), []*run.State{waiting, ff, content, gone})
 	want := map[string]Verdict{"waiting": Awaiting, "ff": Integrated, "content": IntegratedContent, "gone": Gone}
 	for id, w := range want {
-		if got[id] != w {
-			t.Errorf("%s: verdict = %v, want %v", id, got[id], w)
+		if got[id].Verdict != w {
+			t.Errorf("%s: verdict = %v, want %v", id, got[id].Verdict, w)
 		}
 	}
 }
@@ -366,11 +366,11 @@ func TestGitCheckerWithoutCloneIsUnknown(t *testing.T) {
 	notPushed := &run.State{ID: "not-pushed"}
 
 	got := NewGitChecker(nil).Check(context.Background(), []*run.State{noClone, missingClone, notPushed})
-	if v, ok := got["no-clone"]; !ok || v != Unknown {
-		t.Errorf("no clone: verdict = %v (present %v), want unknown", v, ok)
+	if r, ok := got["no-clone"]; !ok || r.Verdict != Unknown {
+		t.Errorf("no clone: verdict = %v (present %v), want unknown", r.Verdict, ok)
 	}
-	if v, ok := got["missing-clone"]; !ok || v != Unknown {
-		t.Errorf("missing clone: verdict = %v (present %v), want unknown", v, ok)
+	if r, ok := got["missing-clone"]; !ok || r.Verdict != Unknown {
+		t.Errorf("missing clone: verdict = %v (present %v), want unknown", r.Verdict, ok)
 	}
 	if _, ok := got["not-pushed"]; ok {
 		t.Error("a run that pushed nothing should get no verdict")

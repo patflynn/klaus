@@ -19,10 +19,10 @@ import (
 type rowCategory int
 
 const (
-	catYours    rowCategory = iota // the operator's move: needs attention, a branch to submit, a PR ready to approve
+	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a branch to submit, a PR ready to approve
 	catAgents                      // an agent is running on it
-	catPipeline                    // an open PR the pipeline is moving: CI, conflicts, behind, approved and waiting
-	catDone                        // merged, closed, integrated, gone, no access, or an agent that exited
+	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide
+	catDone                        // merged, closed, integrated, gone, withdrawn, superseded, no access, or an agent that exited
 )
 
 // categoryNames label the categories in the summary line.
@@ -61,15 +61,48 @@ type dashRow struct {
 	attention bool
 	// verdict is the latest integration check of a bare pushed run.
 	verdict integration.Verdict
-	// provisional marks a SUBMIT row with no definite integration verdict
-	// yet: it may turn out to have landed long ago.
+	// change is how a valley knows a bare pushed run: the latest check's
+	// view, or else what finalize recorded. nil for a branch no valley knows.
+	change *integration.Change
+	// provisional marks a SUBMIT or APPROVE row with no definite integration
+	// verdict yet: it may turn out to have landed long ago.
 	provisional bool
+	// outdated marks a verdict and change kept from an earlier check because
+	// the latest couldn't ask the valley (integration.Result.Outdated).
+	outdated bool
 }
 
 // state returns the row's first agent's run state, which carries the PR URL
 // and is the one marked by approve.
 func (r dashRow) state() *run.State {
 	return r.runs[0]
+}
+
+// repoLabel names the row's repo: the valley's name for a valley change,
+// else the short project name.
+func (r dashRow) repoLabel() string {
+	if r.change != nil && r.change.Repo != "" {
+		return r.change.Repo
+	}
+	return shortRepoName(r.repo)
+}
+
+// idLabel names a bare agent's row: a valley change's handle, or else
+// "agent:" and the tail of the run ID.
+func (r dashRow) idLabel() string {
+	if r.change != nil {
+		return r.change.Handle
+	}
+	return "agent:" + shortRunID(r.state().ID)
+}
+
+// description is what the row is about: a valley change's title, or else
+// the prompt.
+func (r dashRow) description() string {
+	if r.change != nil && r.change.Title != "" {
+		return r.change.Title
+	}
+	return r.state().Prompt
 }
 
 // buildRows turns the run states into dashboard rows, sorted by category
@@ -117,9 +150,12 @@ func (m dashboardModel) buildRows() []dashRow {
 
 // classify fills in a row's running agents, category, recency and whether
 // it may be hidden once old. Precedence: a running agent makes it the
-// agents'; then merged, closed, no access, integrated or gone make it done;
-// then needs attention, a branch to submit or a PR ready to approve make it
-// yours; any other open PR is the pipeline's; an exited agent is done.
+// agents'; then merged, closed, no access, integrated, gone, withdrawn or
+// superseded make it done; then needs attention, a pushed branch (to approve
+// or submit, or whose change the integrator turned down or the valley is
+// unsure of) or a PR ready to approve make it yours, except a change already
+// approved, which is the pipeline's like any other open PR; an exited agent
+// is done.
 func (m dashboardModel) classify(r *dashRow) {
 	merged, attention := false, false
 	for _, s := range r.runs {
@@ -148,21 +184,28 @@ func (m dashboardModel) classify(r *dashRow) {
 	}
 	pushed := r.prNum == "" && awaitsIntegration(r.state())
 	if pushed {
-		r.verdict = m.integration[r.state().ID]
+		res := m.integration[r.state().ID]
+		r.verdict, r.change, r.outdated = res.Verdict, res.Change, res.Outdated
+		if r.change == nil {
+			r.change = integration.RecordedChange(r.state())
+		}
 	}
 
 	switch {
 	case len(r.running) > 0:
 		r.category = catAgents
-	case merged || closed || noAccess || r.verdict.Landed() || r.verdict == integration.Gone:
+	case merged || closed || noAccess || r.verdict.Settled():
 		r.category = catDone
 		r.hideable = true
 	case attention:
 		r.category = catYours
 		r.attention = true
+	case pushed && r.verdict == integration.Approved:
+		r.category = catPipeline
 	case pushed:
-		// A pushed branch waits for the operator to submit it, as far as
-		// anyone knows: Unknown (or no check yet) is provisional.
+		// A pushed branch waits for the operator to approve or submit it, or
+		// to look at what became of it, as far as anyone knows: Unknown (or
+		// no check yet) is provisional.
 		r.category = catYours
 		r.provisional = r.verdict == integration.Unknown
 	case r.prNum == "":
@@ -407,7 +450,7 @@ func (m *dashboardModel) selectedPR(action string) (dashRow, bool) {
 		return dashRow{}, false
 	}
 	if r.prNum == "" {
-		m.noteError(fmt.Sprintf("%s: agent:%s has no PR", action, shortRunID(r.state().ID)))
+		m.noteError(fmt.Sprintf("%s: %s has no PR", action, r.idLabel()))
 		return dashRow{}, false
 	}
 	return r, true

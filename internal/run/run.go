@@ -48,6 +48,18 @@ type State struct {
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
+	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
+}
+
+// Valley is what finalize's `valley ready` recorded for a pushed run: the
+// version of its change that the pushed head became, or why it couldn't
+// mark it ready.
+type Valley struct {
+	Repo    string `json:"repo,omitempty"`    // the valley's name for the repo
+	Handle  string `json:"handle,omitempty"`  // the change's handle when it was marked ready
+	Version int    `json:"version,omitempty"` // the version the pushed head became
+	Title   string `json:"title,omitempty"`   // the pushed head's subject
+	Error   string `json:"error,omitempty"`   // why valley ready failed; empty when it succeeded
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.

@@ -334,16 +334,25 @@ func TestAgentStatusLabel(t *testing.T) {
 		{"pushed, landed by ancestry", pushed, "INTEGRATED"},
 		{"pushed, landed by content", pushed, "INTEGRATED~"},
 		{"pushed, branch deleted", pushed, "GONE"},
+		{"valley, not yet checked", pushed, "APPROVE"},
+		{"valley, check fell back to git", pushed, "APPROVE"},
+		{"valley, ready", pushed, "APPROVE"},
+		{"valley, landed", pushed, "INTEGRATED"},
+		{"valley, superseded", pushed, "SUPERSEDED"},
 	}
 	verdicts := map[string]integration.Verdict{
-		"pushed, awaiting":           integration.Awaiting,
-		"pushed, landed by ancestry": integration.Integrated,
-		"pushed, landed by content":  integration.IntegratedContent,
-		"pushed, branch deleted":     integration.Gone,
+		"pushed, awaiting":               integration.Awaiting,
+		"pushed, landed by ancestry":     integration.Integrated,
+		"pushed, landed by content":      integration.IntegratedContent,
+		"pushed, branch deleted":         integration.Gone,
+		"valley, check fell back to git": integration.Awaiting,
+		"valley, ready":                  integration.Ready,
+		"valley, landed":                 integration.Integrated,
+		"valley, superseded":             integration.Superseded,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := agentStatusLabel(tt.s, verdicts[tt.name])
+			got := agentStatusLabel(tt.s, verdicts[tt.name], strings.HasPrefix(tt.name, "valley"))
 			if got != tt.want {
 				t.Errorf("agentStatusLabel() = %q, want %q", got, tt.want)
 			}

@@ -286,8 +286,11 @@ After an agent completes:
   status is `awaiting-integration` until `klaus status` or the dashboard
   observes its work on the default branch (`integrated`) or its branch
   deleted without landing (`branch-gone`). That observation is never
-  persisted. Other runs without a PR get a WIP commit and push first and
-  emit `agent:needs-attention`.
+  persisted. In a repo that delivers to a valley, finalize then runs
+  `valley ready`, records the change's handle and version on the run and
+  emits `agent:change-ready`; the run is `awaiting-approval` until the
+  valley's record of the change says otherwise. Other runs without a PR get
+  a WIP commit and push first and emit `agent:needs-attention`.
 
 - **State files** persist at `~/.klaus/sessions/{session-id}/runs/{run-id}.json`
   — these power the dashboard and contain cost, duration, PR URL, and approval

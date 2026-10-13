@@ -32,9 +32,9 @@ type ghStatusMsg struct {
 // integrationTickMsg starts an integration check of pushed runs.
 type integrationTickMsg struct{}
 
-// integrationMsg carries the verdicts of an integration check, by run ID.
+// integrationMsg carries the results of an integration check, by run ID.
 type integrationMsg struct {
-	verdicts map[string]integration.Verdict
+	results map[string]integration.Result
 }
 
 type fsEventMsg struct{}
@@ -151,7 +151,8 @@ const integrationInterval = time.Minute
 const integrationTimeout = 5 * time.Minute
 
 // checkIntegrationCmd checks, in the background, the runs that are waiting
-// for their pushed branch to be integrated.
+// for their pushed branch to be integrated. With a ValleyChecker that is at
+// most one `valley changes` for all of them.
 func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.Cmd {
 	if checker == nil {
 		return nil
@@ -166,8 +167,24 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.C
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 		defer cancel()
-		return integrationMsg{verdicts: checker.Check(ctx, pushed)}
+		return integrationMsg{results: checker.Check(ctx, pushed)}
 	}
+}
+
+// keepValleyViews returns a check's results, except where the valley placed
+// a run before and git judged it now (the valley couldn't be asked, or
+// couldn't read the repo): unless git found it landed, the run keeps the
+// valley's last view, marked Outdated. A valley outage then leaves an
+// uncertain or rejected change where it was instead of showing it as ready
+// to approve, or as done because its branch went away.
+func keepValleyViews(prev, next map[string]integration.Result) map[string]integration.Result {
+	for id, r := range next {
+		if old, ok := prev[id]; ok && old.Change != nil && r.Change == nil && !r.Verdict.Landed() {
+			old.Outdated = true
+			next[id] = old
+		}
+	}
+	return next
 }
 
 func integrationTickAfterCmd() tea.Cmd {

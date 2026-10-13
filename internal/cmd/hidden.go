@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -22,6 +23,7 @@ import (
 	"github.com/patflynn/klaus/internal/scan"
 	"github.com/patflynn/klaus/internal/stream"
 	"github.com/patflynn/klaus/internal/tmux"
+	"github.com/patflynn/klaus/internal/valley"
 	"github.com/spf13/cobra"
 )
 
@@ -142,6 +144,14 @@ var finalizeCmd = &cobra.Command{
 		if baseDir != "" && !paused {
 			emitFinalizeEvents(baseDir, state, salvage)
 		}
+		// A pushed branch in a repo that delivers to a valley becomes a
+		// version of the run's change. This runs once agent:branch-pushed
+		// is out, so a slow or refusing valley never holds that up.
+		if !paused && salvage == nil && markChangeReady(ctx, baseDir, state) {
+			if err := store.Save(state); err != nil {
+				slog.Warn("failed to save state after valley ready", "id", state.ID, "err", err)
+			}
+		}
 		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, cfg.PushDataRef, state)
 
 		if salvage != nil && salvage.dirty {
@@ -221,10 +231,7 @@ func recordPushedBranch(ctx context.Context, gc git.Client, state *run.State) {
 	if state.Branch == "" {
 		return
 	}
-	dir := state.Worktree
-	if _, err := os.Stat(dir); err != nil {
-		dir = runRepoDir(state)
-	}
+	dir := branchDir(state)
 	if dir == "" {
 		return
 	}
@@ -239,6 +246,67 @@ func recordPushedBranch(ctx context.Context, gc git.Client, state *run.State) {
 	branch := state.Branch
 	state.PushedBranch = &branch
 	state.PushedSHA = &sha
+}
+
+// branchDir is where to look at a run's branch: its worktree while it
+// exists, else the checkout it belongs to.
+func branchDir(state *run.State) string {
+	if _, err := os.Stat(state.Worktree); err == nil {
+		return state.Worktree
+	}
+	return runRepoDir(state)
+}
+
+// markChangeReady marks a pushed run's head ready as a version of the run's
+// change when the run's repo delivers to a valley (valley.Detect): it runs
+// `valley ready`, bounded by valley.ReadyTimeout, records the version on the
+// run and emits agent:change-ready. A refusal or other failure is recorded
+// on the run as a short reason and never fails finalize. It reports whether
+// it recorded anything; a repo that isn't a valley's records nothing.
+func markChangeReady(ctx context.Context, baseDir string, state *run.State) bool {
+	if state.PushedBranch == nil || state.PushedSHA == nil || state.FailureReason != nil ||
+		(state.PRURL != nil && *state.PRURL != "") {
+		return false
+	}
+	dir, branch, head := branchDir(state), *state.PushedBranch, *state.PushedSHA
+	if !valley.Detect(ctx, dir, branch, head) {
+		return false
+	}
+	rec := &run.Valley{Title: commitSubject(ctx, dir, head)}
+	state.Valley = rec
+	if state.ChangeID == "" {
+		rec.Error = "valley ready not run: the run has no change ID"
+	} else if r, err := valley.Ready(ctx, dir, state.ChangeID, head, branch); err != nil {
+		rec.Error = err.Error()
+	} else {
+		rec.Repo, rec.Handle, rec.Version = r.Repo, r.Handle, r.Version
+	}
+	if rec.Error != "" {
+		slog.Warn("could not mark the change ready", "id", state.ID, "err", rec.Error)
+		fmt.Fprintf(os.Stderr, "warning: could not mark the change ready: %s\n", rec.Error)
+		return true
+	}
+	if baseDir != "" {
+		emitEvent(baseDir, state.ID, event.AgentChangeReady, map[string]interface{}{
+			"id":        state.ID,
+			"repo":      rec.Repo,
+			"change_id": state.ChangeID,
+			"handle":    rec.Handle,
+			"version":   rec.Version,
+			"title":     rec.Title,
+			"head":      head,
+		})
+	}
+	return true
+}
+
+// commitSubject returns the subject of commit sha in dir, or "".
+func commitSubject(ctx context.Context, dir, sha string) string {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "log", "-1", "--format=%s", sha).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // pushedRepo names the repo a pushed branch lives in: the run's target repo,
