@@ -226,7 +226,9 @@ func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult
 }
 
 // recordPushedBranch sets PushedBranch and PushedSHA when origin has the
-// run's branch. An unreachable remote records nothing.
+// run's branch, and PushedSubject when the pushed commit is local, as it is
+// when the agent pushed from its worktree. An unreachable remote records
+// nothing.
 func recordPushedBranch(ctx context.Context, gc git.Client, state *run.State) {
 	if state.Branch == "" {
 		return
@@ -246,6 +248,7 @@ func recordPushedBranch(ctx context.Context, gc git.Client, state *run.State) {
 	branch := state.Branch
 	state.PushedBranch = &branch
 	state.PushedSHA = &sha
+	state.PushedSubject = commitSubject(ctx, dir, sha)
 }
 
 // branchDir is where to look at a run's branch: its worktree while it

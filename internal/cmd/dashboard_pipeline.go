@@ -62,20 +62,13 @@ func (m *dashboardModel) snapshotRunning() {
 	m.runningSnap = snap
 }
 
-// workingLabel marks a row whose change another run is still working on.
-const workingLabel = "WORKING"
-
-// agentStatusLabel returns a display label for a non-running agent. A run
-// whose change another run is still working on reads WORKING. A pushed
+// agentStatusLabel returns a display label for a non-running agent. A pushed
 // branch reads SUBMIT, or APPROVE when a valley knows it as a change, until
 // an integration check (v) says it landed (INTEGRATED, or INTEGRATED~ for a
 // content match) or was deleted (GONE), or the valley's record says where
 // the change stands (APPROVED, UNCERTAIN, STALE, REJECTED, FAILED,
 // WITHDRAWN, SUPERSEDED, DRAFT).
-func agentStatusLabel(s *run.State, v integration.Verdict, valley, working bool) string {
-	if working {
-		return workingLabel
-	}
+func agentStatusLabel(s *run.State, v integration.Verdict, valley bool) string {
 	if s.NeedsAttention != nil {
 		return "ATTN"
 	}

@@ -131,7 +131,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			r := Result{
 				Verdict: verdictOf(ch, v),
 				Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
-					Version: v.N, Head: v.Head},
+					Version: v.N, Head: v.Head, Active: v.N == ch.Active},
 			}
 			if v.N == ch.Active {
 				return r, true

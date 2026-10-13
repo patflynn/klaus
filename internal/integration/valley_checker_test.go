@@ -117,7 +117,8 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 				t.Fatal("run not placed")
 			}
 			if got.Verdict != tc.want || got.Change.Handle != tc.handle || got.Change.Version != tc.version ||
-				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID {
+				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID ||
+				got.Change.Active != (tc.want != Superseded && tc.name != "landed, then superseded") {
 				t.Errorf("placed as %v %+v, want %v %s v%d", got.Verdict, *got.Change, tc.want, tc.handle, tc.version)
 			}
 		})

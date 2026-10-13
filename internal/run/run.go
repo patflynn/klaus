@@ -45,6 +45,7 @@ type State struct {
 	NeedsAttention   *string  `json:"needs_attention,omitempty"`   // set when finalize salvaged unfinished work (no PR, or crash); names the preserved branch
 	PushedBranch     *string  `json:"pushed_branch,omitempty"`     // set when finalize found a PR-less run's branch on origin (e.g. direct-push repos)
 	PushedSHA        *string  `json:"pushed_sha,omitempty"`        // origin's tip of PushedBranch at finalize
+	PushedSubject    string   `json:"pushed_subject,omitempty"`    // the subject of the commit at PushedSHA, when finalize had it
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs

@@ -170,6 +170,10 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			if st.PushedSHA == nil || *st.PushedSHA != head {
 				t.Fatalf("pushed SHA = %v, want %s", st.PushedSHA, head)
 			}
+			// The head's subject titles the change's row, valley or not.
+			if st.PushedSubject != "Add a health check" {
+				t.Errorf("pushed subject = %q, want the head's subject", st.PushedSubject)
+			}
 
 			var types []string
 			var ready map[string]any
@@ -379,16 +383,16 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		{superseded, "superseded"},
 		{withdrawn, "withdrawn"},
 	} {
-		// A valley run's row leads with its handle in place of the run ID.
-		if got := statusOf(t, res.Stdout, tc.st.Valley.Handle); got != tc.status {
+		// A valley run's row keeps its run ID, names its change by handle
+		// where a PR run shows its number, and shows the change's title.
+		if got := statusOf(t, res.Stdout, tc.st.ID); got != tc.status {
 			t.Errorf("%s: status %q, want %q", tc.st.Valley.Handle, got, tc.status)
 		}
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			if f := strings.Fields(line); len(f) > 7 && f[0] == tc.st.Valley.Handle &&
-				(f[7] != "-" || strings.Contains(line, tc.st.ID) || !strings.HasSuffix(line, tc.st.Valley.Title)) {
-				t.Errorf("status row should show handle %s, no PR, not the run ID, and title %q: %q",
-					tc.st.Valley.Handle, tc.st.Valley.Title, line)
-			}
+		if got := changeColumn(t, res.Stdout, tc.st.ID); got != tc.st.Valley.Handle {
+			t.Errorf("%s: CHANGE %q, want the handle %q", tc.st.ID, got, tc.st.Valley.Handle)
+		}
+		if line := statusLine(t, res.Stdout, tc.st.ID); !strings.HasSuffix(line, tc.st.Valley.Title) {
+			t.Errorf("status row should end with the title %q: %q", tc.st.Valley.Title, line)
 		}
 	}
 }

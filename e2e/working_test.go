@@ -12,13 +12,14 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
-// TestDashboardShowsWorkingWhileFollowUpRuns runs the real dashboard and
-// klaus status while a follow-up run of a valley change is running: the
-// change's ready row reads WORKING with the agents and offers no approve
-// command, the same change ID in another repo is untouched, a draft change
-// with no running run reads DRAFT, and once the follow-up exits the row is
-// APPROVE again.
-func TestDashboardShowsWorkingWhileFollowUpRuns(t *testing.T) {
+// TestDashboardGroupsRunsByChange runs the real dashboard and klaus status
+// while a follow-up run of a valley change is running. The change's runs
+// share one row, as a PR's do: with the agents, naming the follow-up, and
+// without an approve command. The same change ID in another repo is another
+// row, a draft change with no running run reads DRAFT, and a run without a
+// change ID keeps its own row. Once the follow-up exits, the change's row is
+// the operator's again, reading APPROVE with its command.
+func TestDashboardGroupsRunsByChange(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
 	h.installValleyStub()
@@ -35,6 +36,9 @@ func TestDashboardShowsWorkingWhileFollowUpRuns(t *testing.T) {
 	other.ChangeID, other.TargetRepo, other.Valley.Repo = ready.ChangeID, strPtrE2E("acme/gadget"), "gadget"
 	h.SeedState(other)
 	draft := h.valleyRun("20261013-0900-0004", "prompt four", "drft", "Tune the cache", 1, sha('4'), ago(20))
+	// A run from before change IDs.
+	loneSHA := h.pushBranch("agent/lone", "lone.txt")
+	h.seedPushed("20261013-0900-0005", "lone prompt", "agent/lone", loneSHA, ago(30))
 
 	// The follow-up: not finalized, on a live pane, so it is running.
 	pane := strings.TrimSpace(h.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "sleep 600"))
@@ -61,67 +65,81 @@ func TestDashboardShowsWorkingWhileFollowUpRuns(t *testing.T) {
 	})
 
 	tmuxPane, screen := h.startDashboard(170)
-	s := screen("2 yours", "2 agents", "WORKING", "DRAFT")
-	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "WORKING  v1@1111111") || strings.Contains(row, "APPROVE") {
-		t.Errorf("the ready change should read WORKING while the follow-up runs: %q", row)
+	running := "agent:" + follow.ID[len(follow.ID)-4:] + " running"
+	s := screen("3 yours", "1 agents", running, "DRAFT")
+	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "Add a health check") || !strings.Contains(row, running) {
+		t.Errorf("the change's row should show its title and the running follow-up: %q", row)
+	}
+	if n := strings.Count(s, "tidy the health check") + strings.Count(s, "agent:0003  "); n != 0 {
+		t.Errorf("the follow-up should have no row of its own:\n%s", s)
 	}
 	if row := rowOf(t, s, "nxvpk"); !strings.HasPrefix(strings.TrimPrefix(row, "> "), "gadget") || !strings.Contains(row, "APPROVE  v1@2222222") {
-		t.Errorf("the same change ID in another repo should still read APPROVE: %q", row)
+		t.Errorf("the same change ID in another repo should be its own row, reading APPROVE: %q", row)
 	}
 	if row := rowOf(t, s, "drft"); !strings.Contains(row, "DRAFT  v1@4444444") {
 		t.Errorf("a draft change with no running run should read DRAFT: %q", row)
 	}
-	// Yours first (APPROVE, then DRAFT), then the agents: the follow-up,
-	// then the row it is working on, which is last.
+	if !strings.Contains(s, "agent:0005") || !strings.Contains(s, "SUBMIT  agent/lone@"+loneSHA[:7]) {
+		t.Errorf("a run without a change ID should keep its own SUBMIT row:\n%s", s)
+	}
+	// Yours first, most recent first, then the change the follow-up is
+	// running on, which is last: four rows for five runs.
 	var order []string
 	for _, line := range strings.Split(s, "\n") {
-		for _, l := range []string{"APPROVE", "DRAFT", "RUNNING", "WORKING"} {
-			if strings.Contains(line, l+"  ") {
-				order = append(order, l)
-			}
+		if f := strings.Fields(strings.TrimPrefix(line, ">")); len(f) > 1 && (f[0] == "widget" || f[0] == "gadget") {
+			order = append(order, f[1])
 		}
 	}
-	if strings.Join(order, ",") != "APPROVE,DRAFT,RUNNING,WORKING" {
-		t.Errorf("labels in order %v, want APPROVE,DRAFT,RUNNING,WORKING:\n%s", order, s)
+	if want := []string{"nxvpk", "drft", "agent:0005", "nxvp"}; strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Errorf("rows in order %v, want %v:\n%s", order, want, s)
 	}
 
-	// The DRAFT row offers no approve command either.
+	// The DRAFT row offers no approve command.
 	h.tmux("send-keys", "-t", tmuxPane, "j")
 	s = screen("> widget  drft")
 	if strings.Contains(s, "approve:") {
 		t.Errorf("a DRAFT row should offer no approve command:\n%s", s)
 	}
-
+	// Nor does the change a follow-up is running on; the footer names it.
 	h.tmux("send-keys", "-t", tmuxPane, "G")
-	s = screen("> widget  nxvp ", "agent:0003 is still working on this change")
+	s = screen("> widget  nxvp ", "agent:0003 is working on this change")
 	if strings.Contains(s, "approve:") {
-		t.Errorf("a WORKING row should offer no approve command:\n%s", s)
+		t.Errorf("a change with a running follow-up should offer no approve command:\n%s", s)
 	}
 
 	res := h.RunKlaus("status")
 	if res.ExitCode != 0 {
 		t.Fatalf("status exited %d; stderr: %s", res.ExitCode, res.Stderr)
 	}
-	for handle, want := range map[string]string{"nxvp": "working", "nxvpk": "awaiting-approval", "drft": "draft"} {
-		if got := statusOf(t, res.Stdout, handle); got != want {
-			t.Errorf("%s: status %q, want %q", handle, got, want)
+	for _, tc := range []struct {
+		st             *run.State
+		status, change string
+	}{
+		{ready, "working", "nxvp"},
+		{follow, "running", ready.ChangeID[:8]},
+		{other, "awaiting-approval", "nxvpk"},
+		{draft, "draft", "drft"},
+	} {
+		if got := statusOf(t, res.Stdout, tc.st.ID); got != tc.status {
+			t.Errorf("%s: status %q, want %q", tc.st.ID, got, tc.status)
+		}
+		if got := changeColumn(t, res.Stdout, tc.st.ID); got != tc.change {
+			t.Errorf("%s: CHANGE %q, want %q", tc.st.ID, got, tc.change)
 		}
 	}
-	if got := statusOf(t, res.Stdout, follow.ID); got != "running" {
-		t.Errorf("follow-up: status %q, want running", got)
-	}
 
-	// The follow-up exits: the row is the operator's again, with its command.
+	// The follow-up exits: the change's row is the operator's again, with
+	// its command.
 	h.tmux("kill-pane", "-t", pane)
 	cost, dur := 0.5, int64(1000)
 	follow.TmuxPane, follow.CostUSD, follow.DurationMS = nil, &cost, &dur
 	h.SeedState(follow)
-	s = screen("3 yours", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
+	s = screen("4 yours", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
 	if row := rowOf(t, s, "nxvp"); !strings.HasPrefix(row, "> ") || !strings.Contains(row, "APPROVE  v1@1111111") {
-		t.Errorf("after the follow-up exits the row should be selected and read APPROVE: %q\n%s", row, s)
+		t.Errorf("after the follow-up exits the change's row should be selected and read APPROVE: %q\n%s", row, s)
 	}
-	if strings.Contains(s, "WORKING") || strings.Contains(s, "still working") {
-		t.Errorf("nothing should read WORKING once the follow-up exits:\n%s", s)
+	if strings.Contains(s, " running") || strings.Contains(s, "tidy the health check") {
+		t.Errorf("nothing should be running, and the follow-up should still have no row:\n%s", s)
 	}
 }
 
@@ -229,12 +247,12 @@ func TestFollowUpLaunchUnreadiesValleyChange(t *testing.T) {
 	}
 }
 
-// TestFollowUpOfRenamedRepoShowsWorking launches a --resume-from follow-up
+// TestFollowUpOfRenamedRepoSharesItsRow launches a --resume-from follow-up
 // of a valley change from a target repo, acme/source, that the valley calls
 // widget, as the prior run recorded, against a valley that can't unready: the
-// follow-up records the repo of the run it continues, so the prior row reads
-// WORKING while it runs.
-func TestFollowUpOfRenamedRepoShowsWorking(t *testing.T) {
+// follow-up records the repo of the run it continues, so it runs on the
+// change's row, and the prior run reads working in klaus status.
+func TestFollowUpOfRenamedRepoSharesItsRow(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
 	h.installValleyStub()
@@ -279,12 +297,16 @@ func TestFollowUpOfRenamedRepoShowsWorking(t *testing.T) {
 	h.WaitForClaudeStart(30 * time.Second)
 
 	_, screen := h.startDashboard(170)
-	s := screen("WORKING")
-	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "WORKING  v1@1111111") {
-		t.Errorf("the prior row should read WORKING while its follow-up runs: %q\n%s", row, s)
+	running := "agent:" + st.ID[len(st.ID)-4:] + " running"
+	s := screen("1 agents", running)
+	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "APPROVE  "+running+"  v1@1111111") {
+		t.Errorf("the follow-up should run on the change's row: %q\n%s", row, s)
+	}
+	if strings.Contains(s, "tidy the health check") {
+		t.Errorf("the follow-up should have no row of its own:\n%s", s)
 	}
 	status := h.RunKlaus("status")
-	if got := statusOf(t, status.Stdout, "nxvp"); got != "working" {
+	if got := statusOf(t, status.Stdout, prior.ID); got != "working" {
 		t.Errorf("prior: status %q, want working", got)
 	}
 
@@ -323,6 +345,8 @@ func TestStatusJudgesPanesAsTheDashboardDoes(t *testing.T) {
 			})
 
 			pane := strings.TrimSpace(h.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "sleep 600"))
+			// Until the pane's shell has started sleep, the pane reads idle.
+			waitForPane(t, h, pane, "#{pane_current_command}", "sleep")
 			follow := &run.State{
 				ID: "20261013-0900-0002", Type: "launch", Prompt: "tidy the health check", TargetRepo: strPtrE2E("acme/widget"),
 				Branch: "agent/tidy", Worktree: "/wt", TmuxPane: &pane, ChangeID: ready.ChangeID,
@@ -339,7 +363,7 @@ func TestStatusJudgesPanesAsTheDashboardDoes(t *testing.T) {
 				if res.ExitCode != 0 {
 					t.Fatalf("status exited %d; stderr: %s", res.ExitCode, res.Stderr)
 				}
-				return statusOf(t, res.Stdout, follow.ID), statusOf(t, res.Stdout, "nxvp")
+				return statusOf(t, res.Stdout, follow.ID), statusOf(t, res.Stdout, ready.ID)
 			}
 			// While the pane's command runs, the follow-up is running.
 			if f, r := statuses(); f != "running" || r != "working" {

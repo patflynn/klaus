@@ -51,14 +51,16 @@ In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
 a full status re-fetch every 5 minutes by default (configurable via
 "reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
 
-Runs are listed one per row, grouped by whose move it is, most recent first
-within each group:
+Runs are listed by what they work on: the runs on a PR share its row, and
+the runs without a PR on one change (the same change ID in the same repo)
+share the change's row; a run with neither has a row of its own. Rows are
+grouped by whose move it is, most recent first within each group:
   yours     needs you: needs attention (ATTN), a valley change to approve
             (APPROVE) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
             DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready
             to merge and not yet approved
-  agents    an agent is running on it, or on another run of its change
-            (WORKING)
+  agents    an agent is running on it: a fix agent on a PR, a follow-up
+            (--resume-from, --pr or a pipeline fix) on a change
   pipeline  an open PR the pipeline is handling: CI running or failing,
             conflicts, behind, approved and waiting to merge; or a valley
             change that is approved and waiting on the integrator (APPROVED)
@@ -89,11 +91,14 @@ can't be asked, the git check above decides, and a change waiting on it
 reads APPROVE. A run whose change finalize couldn't mark ready shows SUBMIT
 and the reason.
 
-A row that would be yours or the pipeline's reads WORKING while another run
-of its change (the same change ID in the same repo) is running: a follow-up
-(--pr, --resume-from or a pipeline fix) is still pushing to it. It sorts with
-the agents, offers no approve command, and the footer names the run that is
-working. Once that run exits, the row goes back to its own label.
+A change's row is built like a PR's. It shows the valley's handle, else the
+first 8 characters of the change ID; the valley's title, else the subject
+of the head its latest run pushed; and where the change's active version
+stands, from the latest run that pushed it. Earlier versions fold into the
+row. While an agent runs on a PR or a change, the row names it (e.g.
+"agent:1a2b running"), sorts with the agents and offers no approve command,
+and the footer says which agent is working on it. Once it exits, the row
+goes back to where the PR or change stands.
 
 Done rows older than an hour are hidden until you press h; the line above the
 list says how many are hidden. A row the dashboard watched finish stays for
@@ -106,9 +111,9 @@ to show, in the footer, the command that approves the selected APPROVE row
 the pushed branch, {change} the full change ID, {handle} the change's handle
 and {head} the pushed head, so the approval binds the head you saw. A row
 with no value for a placeholder the template uses, such as {handle} on a
-branch no valley knows, shows no command, and neither does a WORKING or
-DRAFT row. The command is for you to run on
-your own machine; the dashboard never runs it. "submit_command" is the
+branch no valley knows, shows no command, and neither does a DRAFT row or
+one with an agent running on it. The command is for you to run on your own
+machine; the dashboard never runs it. "submit_command" is the
 deprecated name of "approve_command", read only when approve_command is
 unset.
 

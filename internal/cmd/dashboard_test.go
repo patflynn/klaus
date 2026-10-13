@@ -352,7 +352,7 @@ func TestAgentStatusLabel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := agentStatusLabel(tt.s, verdicts[tt.name], strings.HasPrefix(tt.name, "valley"), false)
+			got := agentStatusLabel(tt.s, verdicts[tt.name], strings.HasPrefix(tt.name, "valley"))
 			if got != tt.want {
 				t.Errorf("agentStatusLabel() = %q, want %q", got, tt.want)
 			}

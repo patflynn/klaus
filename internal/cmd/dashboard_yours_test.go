@@ -167,104 +167,141 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 	}
 }
 
-// TestWorkingRowsAreTheAgents covers which rows a running follow-up makes
-// WORKING: every row of its change (same repo, same change ID) that would be
-// the operator's or the pipeline's, a PR among them, and no done row. Another
-// repo, another change and runs without a change ID are left alone.
-func TestWorkingRowsAreTheAgents(t *testing.T) {
+// TestChangeRowsGroupRuns covers how runs without a PR group by change, as
+// runs on a PR share its row: one row per repo and change ID, judged by the
+// run holding the change's active version, so earlier versions fold in and
+// a running follow-up puts the row with the agents and withholds the approve
+// command. Salvaged work counts unless a later run pushed. Runs without a
+// change ID keep a row each.
+func TestChangeRowsGroupRuns(t *testing.T) {
 	now := time.Now()
-	chg, otherChg := strings.Repeat("k", 32), strings.Repeat("l", 32)
 	n := 0
 	var states []*run.State
-	add := func(prompt, changeID string, s *run.State) *run.State {
+	// add records a run made ago minutes ago, on change changeID.
+	add := func(prompt, changeID string, ago int, s *run.State) *run.State {
 		n++
 		s.ID = fmt.Sprintf("20261013-1200-%04d", n)
 		s.Prompt, s.Type, s.ChangeID = prompt, "launch", changeID
 		if s.TargetRepo == nil {
 			s.TargetRepo = strPtr("o/r")
 		}
-		s.CreatedAt = now.Add(-time.Duration(n) * time.Minute).Format(time.RFC3339)
+		s.CreatedAt = now.Add(-time.Duration(ago) * time.Minute).Format(time.RFC3339)
 		if s.TmuxPane == nil {
 			s.CostUSD = float64Ptr(1)
 		}
 		states = append(states, s)
 		return s
 	}
-	pushed := func(prompt, changeID string) *run.State {
-		return add(prompt, changeID, &run.State{PushedBranch: strPtr("agent/" + strings.ReplaceAll(prompt, " ", "-")),
-			PushedSHA: strPtr("0123456789abcdef0123456789abcdef01234567")})
+	pushed := func(prompt, changeID string, ago int) *run.State {
+		sha := fmt.Sprintf("%040d", n+1)
+		return add(prompt, changeID, ago, &run.State{PushedBranch: strPtr("agent/" + strings.ReplaceAll(prompt, " ", "-")), PushedSHA: &sha})
 	}
-	pr := func(num int) *string { return strPtr(fmt.Sprintf("https://github.com/o/r/pull/%d", num)) }
+	chg := func(c byte) string { return strings.Repeat(string(c), 32) }
+	results := map[string]integration.Result{}
+	valley := func(s *run.State, v integration.Verdict, version int) {
+		results[s.ID] = integration.Result{Verdict: v, Change: &integration.Change{Repo: "r", ChangeID: s.ChangeID,
+			Handle: s.ChangeID[:4], Version: version, Head: *s.PushedSHA, Active: v != integration.Superseded}}
+	}
 
-	follow := add("follow-up", chg, &run.State{TmuxPane: strPtr("%1")})
-	add("no change id running", "", &run.State{TmuxPane: strPtr("%2")})
-	submit := pushed("working submit", chg)
-	add("working pr", chg, &run.State{PRURL: pr(1)})
-	add("working attn", chg, &run.State{NeedsAttention: strPtr("agent/x")})
-	superseded := pushed("done superseded", chg)
-	add("done merged", chg, &run.State{PRURL: pr(2), MergedAt: strPtr(now.Format(time.RFC3339))})
-	add("done exited", chg, &run.State{Worktree: "/wt"})
-	otherRepo := pushed("yours other repo", chg)
-	otherRepo.TargetRepo = strPtr("o/other")
-	otherChange := pushed("yours other change", otherChg)
-	noID := pushed("yours no change id", "")
-	// The valley names the repo "widget", not "r": the follow-up knows that
-	// name once valley unready reported it.
-	renamedChg := strings.Repeat("m", 32)
-	renamedFollow := add("follow-up renamed", renamedChg, &run.State{TmuxPane: strPtr("%3"), Unready: &run.Unready{Repo: "widget", Handle: "mmmm"}})
-	renamed := pushed("working renamed repo", renamedChg)
-	renamed.Valley = &run.Valley{Repo: "widget", Handle: "mmmm", Version: 1}
+	// Two versions: the later one is active, the earlier folds in.
+	folded := pushed("folded v1", chg('k'), 30)
+	valley(folded, integration.Superseded, 1)
+	active := pushed("active v2", chg('k'), 20)
+	valley(active, integration.Ready, 2)
+	// The valley made an earlier run's version active again.
+	reactivated := pushed("reactivated v1", chg('q'), 30)
+	valley(reactivated, integration.Ready, 1)
+	newer := pushed("newer v2", chg('q'), 20)
+	valley(newer, integration.Superseded, 2)
+	// A ready version and a follow-up still running.
+	readied := pushed("readied v1", chg('l'), 30)
+	valley(readied, integration.Ready, 1)
+	follow := add("follow-up", chg('l'), 5, &run.State{TmuxPane: strPtr("%1")})
+	// The same change ID in another repo is another change.
+	elsewhere := pushed("elsewhere", chg('l'), 25)
+	elsewhere.TargetRepo = strPtr("o/other")
+	elsewhere.PushedSubject = "Port it elsewhere" // titles a change no valley knows
+	results[elsewhere.ID] = integration.Result{Verdict: integration.Awaiting}
+	// Salvaged work a later run pushed is continued; salvage after a push
+	// needs the operator.
+	add("continued salvage", chg('m'), 40, &run.State{NeedsAttention: strPtr("agent/x")})
+	continuing := pushed("continuing push", chg('m'), 30)
+	valley(continuing, integration.Ready, 1)
+	before := pushed("pushed first", chg('n'), 40)
+	valley(before, integration.Ready, 1)
+	add("salvaged later", chg('n'), 30, &run.State{NeedsAttention: strPtr("agent/y")})
+	landed := pushed("landed first", chg('r'), 40)
+	valley(landed, integration.Integrated, 1)
+	add("salvaged after landing", chg('r'), 30, &run.State{NeedsAttention: strPtr("agent/z")})
+	// Nothing pushed yet.
+	first := add("first run", chg('o'), 3, &run.State{TmuxPane: strPtr("%2")})
+	// A version that landed, then gave way, with the rest, to one from
+	// elsewhere.
+	landedOld := pushed("landed long ago", chg('s'), 46)
+	valley(landedOld, integration.Integrated, 1)
+	results[landedOld.ID].Change.Active = false
+	valley(pushed("gave way later", chg('s'), 45), integration.Superseded, 2)
+	// Every version replaced by one from elsewhere.
+	replaced := pushed("replaced", chg('p'), 50)
+	valley(replaced, integration.Superseded, 1)
+	// No change ID: a row each.
+	loneA := pushed("lone a", "", 10)
+	loneB := pushed("lone b", "", 11)
+	results[loneA.ID] = integration.Result{Verdict: integration.Awaiting}
+	results[loneB.ID] = integration.Result{Verdict: integration.Awaiting}
 
 	m := dashboardModel{
-		states:   states,
-		tmuxDeps: testDashboardTmuxDeps(),
-		ghStatus: map[string]*prStatus{*pr(1): {State: "OPEN", CI: "passing", Conflicts: "none", ReviewDecision: "APPROVED"}},
-		integration: map[string]integration.Result{
-			submit.ID:      {Verdict: integration.Awaiting},
-			superseded.ID:  {Verdict: integration.Superseded},
-			otherRepo.ID:   {Verdict: integration.Awaiting},
-			otherChange.ID: {Verdict: integration.Awaiting},
-			noID.ID:        {Verdict: integration.Awaiting},
-			renamed.ID:     {Verdict: integration.Ready},
-		},
-		hideAfter: defaultHideFinishedAfter,
+		states:          states,
+		tmuxDeps:        testDashboardTmuxDeps(),
+		ghStatus:        map[string]*prStatus{},
+		integration:     results,
+		hideAfter:       defaultHideFinishedAfter,
+		approveTemplate: "valley approve {handle} --head {head}",
 	}
-	for _, r := range m.buildRows() {
-		prompt := r.state().Prompt
-		working := strings.HasPrefix(prompt, "working")
-		want := strings.Fields(prompt)[0]
-		if working || r.state().TmuxPane != nil {
-			want = "agents"
-		}
-		if got := categoryNames[r.category]; got != want {
-			t.Errorf("%q: category %s, want %s", prompt, got, want)
-		}
-		wantRun := follow
-		if prompt == "working renamed repo" {
-			wantRun = renamedFollow
-		}
-		if (len(r.working) > 0) != working || (working && (len(r.working) != 1 || r.working[0] != wantRun)) {
-			t.Errorf("%q: working on %v, want working %v", prompt, r.working, working)
-		}
+	rows := m.buildRows()
+	type want struct {
+		key, id, category, label string
+		runs, running            int
+		approve                  string
 	}
-
+	wants := map[string]want{
+		"active v2":         {"change:r#" + chg('k'), "kkkk", "yours", "APPROVE  v2@", 2, 0, "valley approve kkkk --head " + *active.PushedSHA},
+		"readied v1":        {"change:r#" + chg('l'), "llll", "agents", "APPROVE  agent:" + shortRunID(follow.ID) + " running  v1@", 2, 1, ""},
+		"Port it elsewhere": {"change:other#" + chg('l'), "llllllll", "yours", "SUBMIT", 1, 0, ""},
+		"continuing push":   {"change:r#" + chg('m'), "mmmm", "yours", "APPROVE  v1@", 2, 0, "valley approve mmmm --head " + *continuing.PushedSHA},
+		"pushed first":      {"change:r#" + chg('n'), "nnnn", "yours", "ATTN  v1@", 2, 0, ""},
+		"first run":         {"change:r#" + chg('o'), "oooooooo", "agents", "agent:" + shortRunID(first.ID) + " running", 1, 1, ""},
+		"landed first":      {"change:r#" + chg('r'), "rrrr", "yours", "ATTN  v1@", 2, 0, ""},
+		"reactivated v1":    {"change:r#" + chg('q'), "qqqq", "yours", "APPROVE  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
+		"gave way later":    {"change:r#" + chg('s'), "ssss", "done", "SUPERSEDED  v2@", 2, 0, ""},
+		"replaced":          {"change:r#" + chg('p'), "pppp", "done", "SUPERSEDED", 1, 0, ""},
+		"lone a":            {"run:" + loneA.ID, "agent:" + shortRunID(loneA.ID), "yours", "SUBMIT", 1, 0, ""},
+		"lone b":            {"run:" + loneB.ID, "agent:" + shortRunID(loneB.ID), "yours", "SUBMIT", 1, 0, ""},
+	}
+	if len(rows) != len(wants) {
+		t.Errorf("%d rows, want %d", len(rows), len(wants))
+	}
 	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 40})
 	plain := ansi.Strip(m.View())
-	for prompt, label := range map[string]string{
-		"working submit":       "WORKING",
-		"working pr":           "OPEN  WORKING",
-		"working attn":         "WORKING",
-		"working renamed repo": "WORKING",
-		"done superseded":      "SUPERSEDED",
-		"done exited":          "EXITED",
-		"yours other repo":     "SUBMIT",
-		"yours other change":   "SUBMIT",
-		"yours no change id":   "SUBMIT",
-		"no change id running": "RUNNING",
-	} {
-		if line := lineWith(plain, prompt); !strings.Contains(line, label) {
-			t.Errorf("%q row should show %s: %q", prompt, label, line)
+	for _, r := range rows {
+		desc := r.description()
+		w, ok := wants[desc]
+		if !ok {
+			t.Errorf("unexpected row %q (%s)", desc, r.key)
+			continue
 		}
+		_, cmd := m.approveCommand(r)
+		if r.key != w.key || r.idLabel() != w.id || categoryNames[r.category] != w.category ||
+			len(r.runs) != w.runs || len(r.running) != w.running || cmd != w.approve {
+			t.Errorf("%q: %s %s %s, %d runs, %d running, command %q; want %+v",
+				desc, r.key, r.idLabel(), categoryNames[r.category], len(r.runs), len(r.running), cmd, w)
+		}
+		if line := lineWith(plain, desc); !strings.Contains(line, w.id+" ") || !strings.Contains(line, w.label) {
+			t.Errorf("%q row should show %s and %q: %q", desc, w.id, w.label, line)
+		}
+	}
+	if strings.Count(plain, "SUPERSEDED") != 2 || strings.Contains(plain, "INTEGRATED") {
+		t.Errorf("only the changes with no active version here should read SUPERSEDED, and none INTEGRATED:\n%s", plain)
 	}
 }
 

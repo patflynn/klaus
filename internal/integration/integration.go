@@ -126,6 +126,9 @@ type Change struct {
 	Title    string
 	Version  int    // the run's version
 	Head     string // the version's head, which is the run's pushed SHA
+	// Active is set when the run's version is its change's active one. A
+	// landed version reads Integrated even after another became active.
+	Active bool
 }
 
 // Checker observes integration for a set of pushed runs and returns a result

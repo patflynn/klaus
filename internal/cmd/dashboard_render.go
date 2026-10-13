@@ -247,9 +247,6 @@ func (m dashboardModel) prStatusParts(r dashRow) []string {
 	if len(r.running) > 0 {
 		parts = append(parts, runningLabel(r.running))
 	}
-	if len(r.working) > 0 {
-		parts = append(parts, yellowStyle.Render(workingLabel))
-	}
 	if r.attention {
 		parts = append(parts, redStyle.Render("ATTN"))
 	}
@@ -287,7 +284,8 @@ func (m dashboardModel) prStatusParts(r dashRow) []string {
 	return parts
 }
 
-// runningLabel names the agent running on a PR, e.g. a dispatched CI fix.
+// runningLabel names the agent running on a PR, e.g. a dispatched CI fix, or
+// on a change, e.g. a follow-up.
 func runningLabel(running []*run.State) string {
 	if len(running) > 1 {
 		return yellowStyle.Render(fmt.Sprintf("%d agents running", len(running)))
@@ -296,33 +294,28 @@ func runningLabel(running []*run.State) string {
 	return yellowStyle.Render("agent:"+shortRunID(s.ID)+" running") + sandboxTag(s)
 }
 
-// bareAgentParts returns the status labels for an agent row with no PR. A
+// bareAgentParts returns the status labels for a row with no PR. A change
+// row, like a PR row, shows where the change stands, from its current run,
+// then the agent running on it; a bare agent reads RUNNING while it runs. A
 // valley change shows its version and head, any other pushed branch its
 // name and head. A valley verdict kept from an earlier check says so, and a
 // run whose change finalize couldn't mark ready says why.
 func bareAgentParts(r dashRow) []string {
 	s := r.state()
-	label := agentStatusLabel(s, r.verdict, r.change != nil, len(r.working) > 0)
-	var status string
+	var parts []string
 	switch {
-	case len(r.running) > 0:
-		status = yellowStyle.Render("RUNNING")
-	case len(r.working) > 0:
-		status = yellowStyle.Render(label)
-	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed:
-		status = redStyle.Render(label)
-	case r.verdict == integration.Stale || r.verdict == integration.Uncertain:
-		status = yellowStyle.Render(label)
-	case r.category == catYours || r.verdict == integration.Approved:
-		status = cyanStyle.Render(label)
-	case r.verdict.Landed():
-		status = greenStyle.Render(label)
+	case len(r.running) > 0 && r.changeID == "":
+		parts = append(parts, yellowStyle.Render("RUNNING"))
+	case len(r.running) > 0 && r.current == nil:
+		// Nothing pushed to the change yet: its running agent says it all.
 	default:
-		status = dimStyle.Render(label)
+		parts = append(parts, changeStatus(r))
+		if r.outdated {
+			parts = append(parts, dimStyle.Render("(last known)"))
+		}
 	}
-	parts := []string{status}
-	if r.outdated && len(r.running) == 0 {
-		parts = append(parts, dimStyle.Render("(last known)"))
+	if r.changeID != "" && len(r.running) > 0 {
+		parts = append(parts, runningLabel(r.running))
 	}
 	switch c := r.change; {
 	case c != nil && c.Version > 0:
@@ -340,6 +333,29 @@ func bareAgentParts(r dashRow) []string {
 		parts = append(parts, redStyle.Render(v.Error))
 	}
 	return parts
+}
+
+// changeStatus is the styled label for where a row without a PR stands.
+// Salvaged work on a change reads ATTN whichever of its runs holds it.
+func changeStatus(r dashRow) string {
+	label := agentStatusLabel(r.state(), r.verdict, r.change != nil)
+	if r.attention {
+		label = "ATTN"
+	}
+	var status string
+	switch {
+	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed:
+		status = redStyle.Render(label)
+	case r.verdict == integration.Stale || r.verdict == integration.Uncertain:
+		status = yellowStyle.Render(label)
+	case r.category == catYours || r.verdict == integration.Approved:
+		status = cyanStyle.Render(label)
+	case r.verdict.Landed():
+		status = greenStyle.Render(label)
+	default:
+		status = dimStyle.Render(label)
+	}
+	return status
 }
 
 // shortSHA abbreviates a commit SHA to its first seven characters.
@@ -410,8 +426,8 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 // renderFooter renders the agent count and key help, falling back to shorter
 // help on narrower panes. When the selected row is a change to approve or a
 // branch to submit and dashboard.approve_command is set, the footer leads
-// with that command. When another run of the selected row's change is still
-// running, it leads instead with which run is working on it.
+// with that command. Otherwise, when an agent is running on the selected PR
+// or change, it leads with which one.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
 	for _, r := range v.all {
@@ -435,8 +451,8 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		r := v.rows[v.cursor]
 		if verb, cmd := m.approveCommand(r); cmd != "" {
 			lead, note = "  "+verb+": ", cmd
-		} else if len(r.working) > 0 {
-			lead, note, noteStyle = "  ", workingNote(r.working), yellowStyle
+		} else if len(r.running) > 0 && (r.prNum != "" || r.changeID != "") {
+			lead, note, noteStyle = "  ", runningNote(r), yellowStyle
 		}
 	}
 	if note != "" {
@@ -459,17 +475,21 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 	return style(footer)
 }
 
-// workingNote names the runs still working on a row's change, e.g.
-// "agent:1a2b is still working on this change".
-func workingNote(working []*run.State) string {
-	names := make([]string, len(working))
-	for i, s := range working {
+// runningNote names the agents running on a PR or change row, e.g.
+// "agent:1a2b is working on this change".
+func runningNote(r dashRow) string {
+	what := "change"
+	if r.prNum != "" {
+		what = "PR"
+	}
+	names := make([]string, len(r.running))
+	for i, s := range r.running {
 		names[i] = "agent:" + shortRunID(s.ID)
 	}
 	if len(names) == 1 {
-		return names[0] + " is still working on this change"
+		return names[0] + " is working on this " + what
 	}
-	return strings.Join(names, ", ") + " are still working on this change"
+	return strings.Join(names, ", ") + " are working on this " + what
 }
 
 // approveCommand expands dashboard.approve_command for an APPROVE row (verb
@@ -478,19 +498,19 @@ func workingNote(working []*run.State) string {
 // {handle} the valley's handle and {head} the pushed head, the one the
 // operator sees. Each value is shell-quoted (shellWord): a branch name is
 // the agent's to choose, and the operator pastes the command into a shell.
-// It returns "" for any other row (WORKING and DRAFT rows among them), when
-// no command is configured, or when the template uses a placeholder the row
-// has no value for, such as {handle} on a branch no valley knows.
+// It returns "" for any other row (DRAFT among them), for a row with an
+// agent running on it, when no command is configured, or when the template
+// uses a placeholder the row has no value for, such as {handle} on a branch
+// no valley knows.
 func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
-	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention ||
-		len(r.running) > 0 || len(r.working) > 0 {
+	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
 		return "", ""
 	}
 	s := r.state()
 	if !awaitsIntegration(s) {
 		return "", ""
 	}
-	switch agentStatusLabel(s, r.verdict, r.change != nil, false) {
+	switch agentStatusLabel(s, r.verdict, r.change != nil) {
 	case "APPROVE":
 		verb = "approve"
 	case "SUBMIT":

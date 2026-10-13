@@ -51,8 +51,10 @@ its change (the same change ID in the same repo) is running: a follow-up
 (--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
 nothing to approve yet.
 
-A valley run shows its change's handle in place of its run ID, and its
-title as the prompt.
+CHANGE names the change a run belongs to: its PR's number (#319), else its
+valley change's handle, else the first 8 characters of its change ID, so
+runs of one change share it. A valley run shows its change's title as the
+prompt.
 
 Integration is checked with one "valley changes --all --json" when a valley
 is involved, and otherwise against each run's clone (one ls-remote and fetch
@@ -80,10 +82,10 @@ stays awaiting-approval rather than branch-gone.`,
 
 		ghClient := gh.NewGHCLIClient("")
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"------", "------", "-------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 		statuses := make([]string, len(states))
 		var pushed []*run.State
@@ -101,33 +103,31 @@ stays awaiting-approval rather than branch-gone.`,
 		// the rest.
 		results := integration.NewValleyChecker(nil).Check(ctx, pushed)
 
-		// The running runs of each change: a run that isn't running or done
-		// is working while another run of its change is running.
-		running := make(map[string]bool, len(states))
+		// The changes some run is still running on: any other run of one
+		// that isn't done is working.
+		busy := make(map[changeKey]bool)
 		for i, s := range states {
-			running[s.ID] = statuses[i] == "running"
+			if k, ok := changeOf(s); ok && statuses[i] == "running" {
+				busy[k] = true
+			}
 		}
-		working := runningByChange(states, func(s *run.State) bool { return running[s.ID] })
 
 		for i, s := range states {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			status := statuses[i]
-			id := s.ID
 			prompt := truncate(s.Prompt, 40)
+			var change *integration.Change
 			if status == "awaiting-integration" {
 				res := results[s.ID]
-				change := res.Change
+				change = res.Change
 				if change == nil {
 					change = integration.RecordedChange(s)
 				}
 				status = pushedStatus(res.Verdict, change != nil)
-				if change != nil {
-					id = change.Handle
-					if change.Title != "" {
-						prompt = truncate(change.Title, 40)
-					}
+				if change != nil && change.Title != "" {
+					prompt = truncate(change.Title, 40)
 				}
 			}
 			cost := formatCost(s)
@@ -166,12 +166,12 @@ stays awaiting-approval rather than branch-gone.`,
 				}
 			}
 
-			if live(status) && len(workingOn([]*run.State{s}, working)) > 0 {
+			if k, ok := changeOf(s); ok && busy[k] && live(status) {
 				status = "working"
 			}
 
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				id, status, runBackendName(s), cost, issue, repo, host, formatPR(s), ci, conflicts, behind, merge, prompt)
+			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+				s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, change), ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil
@@ -257,6 +257,22 @@ func formatCost(s *run.State) string {
 	}
 	if s.Budget != nil {
 		return fmt.Sprintf("<$%s", *s.Budget)
+	}
+	return "-"
+}
+
+// changeLabel names the change a run belongs to, for the CHANGE column: its
+// PR's number (#319), else its valley change's handle, else the first 8
+// characters of its change ID, as the dashboard names a change's row; "-"
+// for a run with none of them.
+func changeLabel(s *run.State, change *integration.Change) string {
+	switch {
+	case s.PRURL != nil:
+		return formatPR(s)
+	case change != nil && change.Handle != "":
+		return change.Handle
+	case s.ChangeID != "":
+		return s.ChangeID[:min(8, len(s.ChangeID))]
 	}
 	return "-"
 }
