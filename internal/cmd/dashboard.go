@@ -19,6 +19,7 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -50,19 +51,41 @@ In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
 a full status re-fetch every 5 minutes by default (configurable via
 "reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
 
-Runs are listed one per row: active runs first, then runs needing attention,
-then open PRs, then finished runs, most recent first within each group. The
-list scrolls when it doesn't fit the pane; the line above it shows the
-position (e.g. "12–30 of 34"). Merged, closed and cleaned-up runs older than
-an hour are hidden until you press h; the same line says how many are hidden.
-Set "dashboard": {"hide_finished_after_minutes": N} in config to change the
-threshold, or a negative N to never hide them.
+Runs are listed one per row, grouped by whose move it is, most recent first
+within each group:
+  yours     needs you: needs attention (ATTN), a pushed branch to submit
+            (SUBMIT), or a PR that is ready to merge and not yet approved
+  agents    an agent is running on it
+  pipeline  an open PR the pipeline is handling: CI running or failing,
+            conflicts, behind, approved and waiting to merge
+  done      merged, closed, integrated, gone, no access, or exited
+The line above the list counts each group (e.g. "2 yours") and shows the
+scroll position (e.g. "12–30 of 34").
+
+A pushed branch (a run that finished without a PR) shows SUBMIT until its
+work lands on the default branch. Every minute the dashboard checks the run's
+clone against origin: INTEGRATED means the pushed commit, or the branch's
+current tip, is on the default branch; INTEGRATED~ means a commit on the
+default branch carries the same change (equal patch-id), which is strong
+evidence rather than proof; GONE means the branch was deleted without
+landing. A PR the agent can no longer read on GitHub shows NO ACCESS and is
+re-checked every 30 minutes.
+
+Done rows older than an hour are hidden until you press h; the line above the
+list says how many are hidden. A row the dashboard watched finish stays for
+the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
+to change the threshold, or a negative N to never hide them.
+
+Set "dashboard": {"submit_command": "cd ~/hack/{repo} && valley review {branch}"}
+to show, in the footer, the command that submits the selected SUBMIT row.
+{repo} is the short project name and {branch} the pushed branch. The command
+is for you to run on your own machine; the dashboard never runs it.
 
 Keyboard shortcuts:
   j / k or ↑ / ↓  move the selection
   PgUp / PgDn     move a page
   g / G           jump to the top / bottom (also Home / End)
-  h               show all runs / hide old finished runs
+  h               show all runs / hide old done rows
   a               approve the selected PR
   d               discuss the selected PR with the coordinator
   o               open the selected PR in a browser
@@ -171,17 +194,22 @@ type dashboardModel struct {
 	cursor         int         // index into the displayed rows of the selected row
 	selKey         string      // dashRow.key of the selected row; survives reordering
 	offset         int         // index of the first row in the viewport
-	showAll        bool        // show old finished runs that are hidden by default
+	showAll        bool        // show old done rows that are hidden by default
 	hideAfter      time.Duration
 	runningSnap    map[string]bool      // run ID -> agent running, see agentRunning
 	seenUnfinished map[string]bool      // row keys seen before they finished
 	finishedAt     map[string]time.Time // when a watched row was first seen finished
 	states         []*run.State
-	ghStatus       map[string]*prStatus // keyed by PR number
+	ghStatus       map[string]*prStatus // keyed by PR URL
 	sandboxHosts   map[string]bool      // host -> reachable
 	pipelineCtrl   *pipeline.Controller
 	pipelineStates map[string]*pipeline.PRPipelineState
-	recentErrors   []dashboardError // last N pipeline errors shown in TUI
+	noAccessAt     map[string]time.Time // PR URL -> when last found unreadable
+	checker        integration.Checker
+	integration    map[string]integration.Verdict // run ID -> latest verdict; nil before the first check
+	integrationOn  bool                           // the integration check loop has started
+	submitTemplate string                         // dashboard.submit_command
+	recentErrors   []dashboardError               // last N pipeline errors shown in TUI
 	width          int
 	height         int
 	err            error
@@ -225,6 +253,11 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	ctrl := pipeline.New(store, eventLog, logger)
 	ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
 
+	var submitTemplate string
+	if cfg.Dashboard != nil {
+		submitTemplate = cfg.Dashboard.SubmitCommand
+	}
+
 	return dashboardModel{
 		store:          store,
 		ghClient:       ghClient,
@@ -234,6 +267,9 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		sandboxHosts:   make(map[string]bool),
 		pipelineCtrl:   ctrl,
 		pipelineStates: make(map[string]*pipeline.PRPipelineState),
+		noAccessAt:     make(map[string]time.Time),
+		checker:        integration.NewGitChecker(logger),
+		submitTemplate: submitTemplate,
 		hideAfter:      hideFinishedAfter(cfg.Dashboard),
 		logFile:        logFile,
 		eventsPath:     eventsPath,
@@ -267,7 +303,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Re-resolve the run list whenever it or the pane can have changed, so
 	// the selection stays on its row and in view.
 	switch msg.(type) {
-	case statesLoadedMsg, ghStatusMsg, tickMsg:
+	case statesLoadedMsg, ghStatusMsg, tickMsg, integrationMsg:
 		dm.snapshotRunning()
 		dm.syncView(time.Now())
 	case tea.KeyMsg, tea.WindowSizeMsg:
@@ -289,7 +325,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, tea.Batch(
 				loadStatesCmd(m.store),
-				fetchGHStatusCmd(m.ghClient, m.states),
+				m.fetchGHStatusCmd(m.states),
 			)
 		case "up", "k":
 			m.moveSelection(-1, 0)
@@ -367,17 +403,50 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				markRunFailed(m.store, s)
 			}
 		}
-		return m, fetchGHStatusCmd(m.ghClient, m.states)
+		cmd := m.fetchGHStatusCmd(m.states)
+		if !m.integrationOn {
+			// The first load starts the integration check loop; it then
+			// re-arms itself each time a check completes.
+			m.integrationOn = true
+			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states))
+		}
+		return m, cmd
+
+	case integrationTickMsg:
+		return m, checkIntegrationCmd(m.checker, m.states)
+
+	case integrationMsg:
+		m.integration = msg.verdicts
+		return m, integrationTickAfterCmd()
 
 	case ghStatusMsg:
-		for k, v := range msg.statuses {
-			m.ghStatus[k] = v
+		now := time.Now()
+		for url, v := range msg.statuses {
+			m.ghStatus[url] = v
+			if v.State == gh.StateNoAccess {
+				m.noAccessAt[url] = now
+			} else {
+				delete(m.noAccessAt, url)
+			}
 		}
-		// Feed statuses to pipeline controller.
+		// Feed statuses to the pipeline controller, which keys PRs by number:
+		// the first run state for a number decides which PR it tracks. PRs the
+		// agent can't read are left out; the pipeline can't act on them.
 		pStatuses := make(map[string]*pipeline.PRStatus, len(msg.statuses))
-		for k, v := range msg.statuses {
+		claimed := make(map[string]bool)
+		for _, s := range m.states {
+			prNum, url := extractPRNumber(s), extractPRRef(s)
+			if prNum == "" || claimed[prNum] {
+				continue
+			}
+			claimed[prNum] = true
+			v, ok := msg.statuses[url]
+			if !ok || v.State == gh.StateNoAccess {
+				continue
+			}
 			ps := &pipeline.PRStatus{
 				PRNumber:              v.PRNumber,
+				PRURL:                 url,
 				State:                 v.State,
 				CI:                    v.CI,
 				Conflicts:             v.Conflicts,
@@ -386,20 +455,10 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				HasNewTrustedComments: v.HasNewTrustedComments,
 				Labels:                v.Labels,
 			}
-			// Find the PR URL and target repo from run states.
-			for _, s := range m.states {
-				prNum := extractPRNumber(s)
-				if prNum == k {
-					if s.PRURL != nil {
-						ps.PRURL = *s.PRURL
-					}
-					if s.TargetRepo != nil {
-						ps.TargetRepo = *s.TargetRepo
-					}
-					break
-				}
+			if s.TargetRepo != nil {
+				ps.TargetRepo = *s.TargetRepo
 			}
-			pStatuses[k] = ps
+			pStatuses[prNum] = ps
 		}
 		actions := m.pipelineCtrl.HandleGHStatus(context.Background(), pStatuses, m.states)
 		m.pipelineStates = m.pipelineCtrl.PipelineStates()
@@ -453,7 +512,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(matchedStates) > 0 {
 				return m, tea.Batch(
-					fetchGHStatusCmd(m.ghClient, matchedStates),
+					m.fetchGHStatusCmd(matchedStates),
 					waitForWebhookCmd(m.webhookCh),
 				)
 			}
@@ -461,7 +520,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Push to default branch — re-fetch all open PRs since
 			// conflicts may have changed.
 			return m, tea.Batch(
-				fetchGHStatusCmd(m.ghClient, m.states),
+				m.fetchGHStatusCmd(m.states),
 				waitForWebhookCmd(m.webhookCh),
 			)
 		}
@@ -498,7 +557,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if len(matchedStates) > 0 {
 				return m, tea.Batch(
-					fetchGHStatusCmd(m.ghClient, matchedStates),
+					m.fetchGHStatusCmd(matchedStates),
 					waitForInternalEventCmd(m.internalEventCh),
 				)
 			}
@@ -506,7 +565,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForInternalEventCmd(m.internalEventCh)
 
 	case trustedCommentsMsg:
-		existing, ok := m.ghStatus[msg.prNumber]
+		existing, ok := m.ghStatus[msg.prURL]
 		if ok {
 			existing.HasNewTrustedComments = msg.hasNewTrustedComments
 		}
@@ -519,7 +578,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// itself; it is never scheduled when polling is active (which already
 		// re-fetches every 30s), so there is no double-fetch.
 		return m, tea.Batch(
-			fetchGHStatusCmd(m.ghClient, m.states),
+			m.fetchGHStatusCmd(m.states),
 			reconcileTickAfterCmd(m.reconcileEvery),
 		)
 
@@ -539,7 +598,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			tickAfterCmd(),
 		}
 		if m.pollEnabled {
-			cmds = append(cmds, fetchGHStatusCmd(m.ghClient, m.states))
+			cmds = append(cmds, m.fetchGHStatusCmd(m.states))
 		}
 		return m, tea.Batch(cmds...)
 
@@ -605,7 +664,7 @@ func (m dashboardModel) View() string {
 	if len(v.rows) == 0 && (m.height <= 0 || m.height > len(v.chrome)) {
 		msg := "  No runs found."
 		if v.hidden > 0 {
-			msg = fmt.Sprintf("  No runs to show: %d finished hidden (h to show all).", v.hidden)
+			msg = fmt.Sprintf("  No runs to show: %d done hidden (h to show all).", v.hidden)
 		}
 		lines = append(lines, dimStyle.Render(msg))
 	}

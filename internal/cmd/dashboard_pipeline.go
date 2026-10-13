@@ -8,6 +8,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -61,8 +62,10 @@ func (m *dashboardModel) snapshotRunning() {
 	m.runningSnap = snap
 }
 
-// agentStatusLabel returns a display label for a non-running agent.
-func agentStatusLabel(s *run.State) string {
+// agentStatusLabel returns a display label for a non-running agent. A pushed
+// branch reads SUBMIT until an integration check (v) says it landed
+// (INTEGRATED, or INTEGRATED~ for a content match) or was deleted (GONE).
+func agentStatusLabel(s *run.State, v integration.Verdict) string {
 	if s.NeedsAttention != nil {
 		return "ATTN"
 	}
@@ -70,7 +73,15 @@ func agentStatusLabel(s *run.State) string {
 		return "PR"
 	}
 	if s.PushedSHA != nil {
-		return "PUSHED"
+		switch v {
+		case integration.Integrated:
+			return "INTEGRATED"
+		case integration.IntegratedContent:
+			return "INTEGRATED~"
+		case integration.Gone:
+			return "GONE"
+		}
+		return "SUBMIT"
 	}
 	return "EXITED"
 }

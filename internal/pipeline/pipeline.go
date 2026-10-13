@@ -49,6 +49,7 @@ type PRStatus struct {
 // PRPipelineState tracks per-PR pipeline state.
 type PRPipelineState struct {
 	PRNumber                string
+	PRURL                   string // the PR this state tracks; the number alone is ambiguous across repos
 	Stage                   Stage
 	LastAgentID             string // run ID of last dispatched agent
 	AgentRunning            bool   // whether the dispatched agent is still active
@@ -225,6 +226,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		}
 
 		ps := c.getOrCreateState(prNum, status)
+		ps.PRURL = status.PRURL
 
 		// Update agent running status.
 		wasRunning := ps.AgentRunning

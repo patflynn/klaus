@@ -12,6 +12,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -319,6 +320,7 @@ func TestPluralS(t *testing.T) {
 }
 
 func TestAgentStatusLabel(t *testing.T) {
+	pushed := &run.State{PushedBranch: strPtr("agent/x"), PushedSHA: strPtr("0123456789abcdef0123456789abcdef01234567")}
 	tests := []struct {
 		name string
 		s    *run.State
@@ -327,10 +329,21 @@ func TestAgentStatusLabel(t *testing.T) {
 		{"with PR", &run.State{PRURL: strPtr("https://github.com/o/r/pull/1")}, "PR"},
 		{"no PR", &run.State{}, "EXITED"},
 		{"needs attention", &run.State{NeedsAttention: strPtr("no_pr"), PRURL: strPtr("https://github.com/o/r/pull/1")}, "ATTN"},
+		{"pushed, not yet checked", pushed, "SUBMIT"},
+		{"pushed, awaiting", pushed, "SUBMIT"},
+		{"pushed, landed by ancestry", pushed, "INTEGRATED"},
+		{"pushed, landed by content", pushed, "INTEGRATED~"},
+		{"pushed, branch deleted", pushed, "GONE"},
+	}
+	verdicts := map[string]integration.Verdict{
+		"pushed, awaiting":           integration.Awaiting,
+		"pushed, landed by ancestry": integration.Integrated,
+		"pushed, landed by content":  integration.IntegratedContent,
+		"pushed, branch deleted":     integration.Gone,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := agentStatusLabel(tt.s)
+			got := agentStatusLabel(tt.s, verdicts[tt.name])
 			if got != tt.want {
 				t.Errorf("agentStatusLabel() = %q, want %q", got, tt.want)
 			}
@@ -563,7 +576,7 @@ func TestRenderPRLine(t *testing.T) {
 		CI:        "passing",
 		Conflicts: "yes",
 	}
-	m.ghStatus["42"] = ps
+	m.ghStatus["https://github.com/o/r/pull/42"] = ps
 	line = renderOnlyRow(t, m, []*run.State{s}, false)
 	if !strings.Contains(line, "CI ✓") {
 		t.Error("should show passing CI")
@@ -665,7 +678,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 		PRURL:  strPtr("https://github.com/o/r/pull/10"),
 	}
 
-	m.ghStatus = map[string]*prStatus{"10": {State: "OPEN"}}
+	m.ghStatus = map[string]*prStatus{"https://github.com/o/r/pull/10": {State: "OPEN"}}
 
 	// No approval — should not show indicator
 	line := renderOnlyRow(t, m, []*run.State{base}, false)
@@ -690,7 +703,7 @@ func TestRenderPRLineApproval(t *testing.T) {
 	}
 
 	// Approved but MERGED — should not show indicator
-	m.ghStatus["10"] = &prStatus{State: "MERGED"}
+	m.ghStatus["https://github.com/o/r/pull/10"] = &prStatus{State: "MERGED"}
 	line = renderOnlyRow(t, m, []*run.State{&approvedRun}, false)
 	if strings.Contains(line, "approved") {
 		t.Error("should not show approved for merged PRs")
