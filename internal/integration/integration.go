@@ -126,19 +126,35 @@ type Change struct {
 	Title    string
 	Version  int    // the run's version
 	Head     string // the version's head, which is the run's pushed SHA
+	Branch   string // the branch the version's head was pushed to, when known
 	// Active is set when the run's version is its change's active one. A
 	// landed version reads Integrated even after another became active.
 	Active bool
 }
 
-// Checker observes integration for a set of pushed runs and returns a result
-// per run ID. Runs it can't judge are Unknown or missing from the result;
-// callers treat both as awaiting.
+// ChangeKey identifies a change across runs and in a valley's listing: the
+// valley's name for its repo (RepoName) and its change ID.
+type ChangeKey struct{ Repo, ChangeID string }
+
+// Report is what a check observed.
+type Report struct {
+	// Runs holds a result per pushed run, by run ID. Runs a check can't
+	// judge are Unknown or missing; callers treat both as awaiting.
+	Runs map[string]Result
+	// Changes holds a valley's view of every change it lists in a repo it
+	// could read and a state klaus knows: the change's active version, with
+	// Active set, whichever machine marked it ready. It decides where a
+	// change stands; a run's own result says only where its version does.
+	// nil when no valley was asked, or it couldn't be.
+	Changes map[ChangeKey]Result
+}
+
+// Checker observes integration for a set of pushed runs.
 //
 // GitChecker judges runs with git alone. ValleyChecker asks a valley about
 // the runs it serves and defers to a GitChecker for the rest.
 type Checker interface {
-	Check(ctx context.Context, runs []*run.State) map[string]Result
+	Check(ctx context.Context, runs []*run.State) Report
 }
 
 // Applies reports whether a run carries what a check needs: the branch it
@@ -155,5 +171,9 @@ func RecordedChange(s *run.State) *Change {
 	if v == nil || v.Handle == "" || s.PushedSHA == nil {
 		return nil
 	}
-	return &Change{Repo: v.Repo, ChangeID: s.ChangeID, Handle: v.Handle, Title: v.Title, Version: v.Version, Head: *s.PushedSHA}
+	c := &Change{Repo: v.Repo, ChangeID: s.ChangeID, Handle: v.Handle, Title: v.Title, Version: v.Version, Head: *s.PushedSHA}
+	if s.PushedBranch != nil {
+		c.Branch = *s.PushedBranch
+	}
+	return c
 }

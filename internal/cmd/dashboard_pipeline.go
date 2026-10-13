@@ -76,38 +76,44 @@ func agentStatusLabel(s *run.State, v integration.Verdict, valley bool) string {
 		return "PR"
 	}
 	if s.PushedSHA != nil {
-		switch v {
-		case integration.Integrated:
-			return "INTEGRATED"
-		case integration.IntegratedContent:
-			return "INTEGRATED~"
-		case integration.Gone:
-			return "GONE"
-		case integration.Ready:
-			return "APPROVE"
-		case integration.Approved:
-			return "APPROVED"
-		case integration.Uncertain:
-			return "UNCERTAIN"
-		case integration.Stale:
-			return "STALE"
-		case integration.Rejected:
-			return "REJECTED"
-		case integration.Failed:
-			return "FAILED"
-		case integration.Withdrawn:
-			return "WITHDRAWN"
-		case integration.Superseded:
-			return "SUPERSEDED"
-		case integration.Draft:
-			return "DRAFT"
-		}
-		if valley {
-			return "APPROVE"
-		}
-		return "SUBMIT"
+		return pushedLabel(v, valley)
 	}
 	return "EXITED"
+}
+
+// pushedLabel is the label of pushed work whose check says v; valley says a
+// valley knows it as a change.
+func pushedLabel(v integration.Verdict, valley bool) string {
+	switch v {
+	case integration.Integrated:
+		return "INTEGRATED"
+	case integration.IntegratedContent:
+		return "INTEGRATED~"
+	case integration.Gone:
+		return "GONE"
+	case integration.Ready:
+		return "APPROVE"
+	case integration.Approved:
+		return "APPROVED"
+	case integration.Uncertain:
+		return "UNCERTAIN"
+	case integration.Stale:
+		return "STALE"
+	case integration.Rejected:
+		return "REJECTED"
+	case integration.Failed:
+		return "FAILED"
+	case integration.Withdrawn:
+		return "WITHDRAWN"
+	case integration.Superseded:
+		return "SUPERSEDED"
+	case integration.Draft:
+		return "DRAFT"
+	}
+	if valley {
+		return "APPROVE"
+	}
+	return "SUBMIT"
 }
 
 // groupByRepo organizes states into repo groups, sorted by repo name.

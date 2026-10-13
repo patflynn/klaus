@@ -295,8 +295,8 @@ func runningLabel(running []*run.State) string {
 }
 
 // bareAgentParts returns the status labels for a row with no PR. A change
-// row, like a PR row, shows where the change stands, from its current run,
-// then the agent running on it; a bare agent reads RUNNING while it runs. A
+// row, like a PR row, shows where the change stands (placeChange), then the
+// agent running on it; a bare agent reads RUNNING while it runs. A
 // valley change shows its version and head, any other pushed branch its
 // name and head. A valley verdict kept from an earlier check says so, and a
 // run whose change finalize couldn't mark ready says why.
@@ -306,7 +306,7 @@ func bareAgentParts(r dashRow) []string {
 	switch {
 	case len(r.running) > 0 && r.changeID == "":
 		parts = append(parts, yellowStyle.Render("RUNNING"))
-	case len(r.running) > 0 && r.current == nil:
+	case len(r.running) > 0 && !r.pushed:
 		// Nothing pushed to the change yet: its running agent says it all.
 	default:
 		parts = append(parts, changeStatus(r))
@@ -335,13 +335,22 @@ func bareAgentParts(r dashRow) []string {
 	return parts
 }
 
-// changeStatus is the styled label for where a row without a PR stands.
-// Salvaged work on a change reads ATTN whichever of its runs holds it.
-func changeStatus(r dashRow) string {
-	label := agentStatusLabel(r.state(), r.verdict, r.change != nil)
-	if r.attention {
-		label = "ATTN"
+// statusLabel is where a row without a PR stands: ATTN for salvaged work,
+// whichever of a change's runs holds it; for pushed work, what its verdict
+// says; else what its run's state says.
+func (r dashRow) statusLabel() string {
+	switch {
+	case r.attention:
+		return "ATTN"
+	case r.pushed:
+		return pushedLabel(r.verdict, r.change != nil)
 	}
+	return agentStatusLabel(r.state(), r.verdict, r.change != nil)
+}
+
+// changeStatus is the styled label for where a row without a PR stands.
+func changeStatus(r dashRow) string {
+	label := r.statusLabel()
 	var status string
 	switch {
 	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed:
@@ -427,7 +436,8 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 // help on narrower panes. When the selected row is a change to approve or a
 // branch to submit and dashboard.approve_command is set, the footer leads
 // with that command. Otherwise, when an agent is running on the selected PR
-// or change, it leads with which one.
+// or change, it leads with which one. Then, for a change, it notes a newer
+// local push the valley doesn't hold as a version.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
 	for _, r := range v.all {
@@ -445,24 +455,39 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open · q quit", showKey),
 	}
 	style := func(f string) string { return dimStyle.Render(f) }
-	// lead, then note in noteStyle, go before the key help.
-	lead, note, noteStyle := "", "", cyanStyle
+	// The notes on the selected row, each part in its style, go before the
+	// key help.
+	type part struct {
+		text  string
+		style lipgloss.Style
+	}
+	var notes []part
 	if len(v.rows) > 0 {
 		r := v.rows[v.cursor]
 		if verb, cmd := m.approveCommand(r); cmd != "" {
-			lead, note = "  "+verb+": ", cmd
+			notes = append(notes, part{verb + ": ", dimStyle}, part{cmd, cyanStyle})
 		} else if len(r.running) > 0 && (r.prNum != "" || r.changeID != "") {
-			lead, note, noteStyle = "  ", runningNote(r), yellowStyle
+			notes = append(notes, part{runningNote(r), yellowStyle})
+		}
+		if r.unplaced != "" {
+			if len(notes) > 0 {
+				notes = append(notes, part{" · ", dimStyle})
+			}
+			notes = append(notes, part{"a newer push " + shortSHA(r.unplaced) + " isn't ready", yellowStyle})
 		}
 	}
-	if note != "" {
-		for i, f := range variants {
-			variants[i] = lead + note + " |" + strings.TrimPrefix(f, " ")
+	if len(notes) > 0 {
+		lead, styled := "  ", dimStyle.Render("  ")
+		for _, p := range notes {
+			lead += p.text
+			styled += p.style.Render(p.text)
 		}
-		variants = append(variants, lead+note)
+		for i, f := range variants {
+			variants[i] = lead + " |" + strings.TrimPrefix(f, " ")
+		}
+		variants = append(variants, lead)
 		style = func(f string) string {
-			rest := strings.TrimPrefix(f, lead+note)
-			return dimStyle.Render(lead) + noteStyle.Render(note) + dimStyle.Render(rest)
+			return styled + dimStyle.Render(strings.TrimPrefix(f, lead))
 		}
 	}
 	footer := variants[len(variants)-1]
@@ -496,21 +521,17 @@ func runningNote(r dashRow) string {
 // "approve") or a SUBMIT row (verb "submit"). {repo} is the repo as the row
 // names it, {branch} the pushed branch, {change} the full change ID,
 // {handle} the valley's handle and {head} the pushed head, the one the
-// operator sees. Each value is shell-quoted (shellWord): a branch name is
+// operator sees: for a valley change, its active version's. Each value is shell-quoted (shellWord): a branch name is
 // the agent's to choose, and the operator pastes the command into a shell.
 // It returns "" for any other row (DRAFT among them), for a row with an
 // agent running on it, when no command is configured, or when the template
 // uses a placeholder the row has no value for, such as {handle} on a branch
 // no valley knows.
 func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
-	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 {
+	if m.approveTemplate == "" || r.prNum != "" || r.category != catYours || r.attention || len(r.running) > 0 || !r.pushed {
 		return "", ""
 	}
-	s := r.state()
-	if !awaitsIntegration(s) {
-		return "", ""
-	}
-	switch agentStatusLabel(s, r.verdict, r.change != nil) {
+	switch r.statusLabel() {
 	case "APPROVE":
 		verb = "approve"
 	case "SUBMIT":
@@ -518,16 +539,22 @@ func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
 	default:
 		return "", ""
 	}
-	change, handle := s.ChangeID, ""
-	if r.change != nil {
-		change, handle = r.change.ChangeID, r.change.Handle
+	var change, handle, branch, head string
+	if s := r.pushedRun(); s != nil {
+		change, branch, head = s.ChangeID, *s.PushedBranch, *s.PushedSHA
+	}
+	if c := r.change; c != nil {
+		change, handle, head = c.ChangeID, c.Handle, c.Head
+		if branch == "" {
+			branch = c.Branch
+		}
 	}
 	values := [][2]string{
 		{"{repo}", strings.TrimSuffix(r.repoLabel(), ".git")},
-		{"{branch}", *s.PushedBranch},
+		{"{branch}", branch},
 		{"{change}", change},
 		{"{handle}", handle},
-		{"{head}", *s.PushedSHA},
+		{"{head}", head},
 	}
 	var pairs []string
 	for _, kv := range values {

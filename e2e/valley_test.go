@@ -294,7 +294,9 @@ func rowOf(t *testing.T, screen, handle string) string {
 // TestDashboardShowsValleyChanges runs the real dashboard and klaus status
 // over runs a fake valley reports in every state: each valley row shows the
 // repo, the handle and the title, under its label and in its group, and the
-// footer offers the approve command bound to the head on screen.
+// footer offers the approve command bound to the head on screen. A change
+// whose active version was marked ready elsewhere reads as that version,
+// while klaus status shows the local run's own version superseded.
 func TestDashboardShowsValleyChanges(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -334,7 +336,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 	})
 
 	pane, screen := h.startDashboard(170)
-	s := screen("2 yours", "3 done", "SUPERSEDED", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
+	s := screen("3 yours", "2 done", "APPROVE  v2@6666666", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
 	for handle, want := range map[string]string{
 		"nxvp": "Add a health check",
 		"uncr": "Tune the cache",
@@ -348,7 +350,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		}
 	}
 	// Yours first (most recent first), then done.
-	labels := []string{"APPROVE  v1@1111111", "UNCERTAIN", "INTEGRATED", "SUPERSEDED", "WITHDRAWN"}
+	labels := []string{"APPROVE  v1@1111111", "UNCERTAIN", "APPROVE  v2@6666666", "INTEGRATED", "WITHDRAWN"}
 	var order []string
 	for _, line := range strings.Split(s, "\n") {
 		for _, l := range labels {

@@ -166,7 +166,7 @@ func (f *fixture) deleteBranch(branch string) {
 
 func checkOne(t *testing.T, c Checker, s *run.State) Verdict {
 	t.Helper()
-	got := c.Check(context.Background(), []*run.State{s})
+	got := c.Check(context.Background(), []*run.State{s}).Runs
 	r, ok := got[s.ID]
 	if !ok {
 		t.Fatalf("no verdict for %s: %v", s.ID, got)
@@ -300,7 +300,7 @@ func TestGitCheckerTruncatedScanIsNotGone(t *testing.T) {
 
 	c := NewGitChecker(nil)
 	c.scanLimit = 2 // o3 and o2
-	got := c.Check(context.Background(), runs)
+	got := c.Check(context.Background(), runs).Runs
 	if got["old"].Verdict != Unknown {
 		t.Errorf("old: verdict = %v, want unknown", got["old"].Verdict)
 	}
@@ -308,7 +308,7 @@ func TestGitCheckerTruncatedScanIsNotGone(t *testing.T) {
 		t.Errorf("newer: verdict = %v, want gone", got["newer"].Verdict)
 	}
 
-	got = NewGitChecker(nil).Check(context.Background(), runs)
+	got = NewGitChecker(nil).Check(context.Background(), runs).Runs
 	for _, s := range runs {
 		if got[s.ID].Verdict != Gone {
 			t.Errorf("%s without a cap: verdict = %v, want gone", s.ID, got[s.ID].Verdict)
@@ -329,7 +329,7 @@ func TestGitCheckerOneSnapshotForManyRuns(t *testing.T) {
 	f.integrate("agent/content")
 	f.deleteBranch("agent/gone")
 
-	got := NewGitChecker(nil).Check(context.Background(), []*run.State{waiting, ff, content, gone})
+	got := NewGitChecker(nil).Check(context.Background(), []*run.State{waiting, ff, content, gone}).Runs
 	want := map[string]Verdict{"waiting": Awaiting, "ff": Integrated, "content": IntegratedContent, "gone": Gone}
 	for id, w := range want {
 		if got[id].Verdict != w {
@@ -365,7 +365,7 @@ func TestGitCheckerWithoutCloneIsUnknown(t *testing.T) {
 	missingClone := &run.State{ID: "missing-clone", PushedBranch: &branch, PushedSHA: &sha, CloneDir: &missing}
 	notPushed := &run.State{ID: "not-pushed"}
 
-	got := NewGitChecker(nil).Check(context.Background(), []*run.State{noClone, missingClone, notPushed})
+	got := NewGitChecker(nil).Check(context.Background(), []*run.State{noClone, missingClone, notPushed}).Runs
 	if r, ok := got["no-clone"]; !ok || r.Verdict != Unknown {
 		t.Errorf("no clone: verdict = %v (present %v), want unknown", r.Verdict, ok)
 	}

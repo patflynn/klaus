@@ -215,7 +215,7 @@ func TestValleyCheckerFallsBackToGit(t *testing.T) {
 	runs := []*run.State{dark, orphan, gone, plain}
 	check := func(want map[*run.State]Verdict) {
 		t.Helper()
-		got := c.Check(context.Background(), runs)
+		got := c.Check(context.Background(), runs).Runs
 		for s, v := range want {
 			if r := got[s.ID]; r.Verdict != v || r.Change != nil {
 				t.Errorf("%s: %v %+v, want %v from git", s.ID, r.Verdict, r.Change, v)

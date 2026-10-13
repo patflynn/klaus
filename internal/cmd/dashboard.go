@@ -64,8 +64,8 @@ grouped by whose move it is, most recent first within each group:
   pipeline  an open PR the pipeline is handling: CI running or failing,
             conflicts, behind, approved and waiting to merge; or a valley
             change that is approved and waiting on the integrator (APPROVED)
-  done      merged, closed, integrated, gone, withdrawn, superseded, no
-            access, or exited
+  done      merged, closed, integrated, gone, withdrawn, no access, or
+            exited
 The line above the list counts each group (e.g. "2 yours") and shows the
 scroll position (e.g. "12–30 of 34").
 
@@ -84,18 +84,21 @@ v2@1a2b3c4). Finalize marked the pushed head ready. Every minute, one
 "valley changes --all --json" for all such runs says where each stands:
 APPROVE (ready and waiting for you), APPROVED, INTEGRATED (landed),
 UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED (the
-integrator's decision), WITHDRAWN, or SUPERSEDED (another version of the
-change is active), or DRAFT (returned to draft, as launch does when a
-follow-up run continues the change, and no run of it is running). If valley
+integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as launch
+does when a follow-up run continues the change, and no run of it is
+running). If valley
 can't be asked, the git check above decides, and a change waiting on it
 reads APPROVE. A run whose change finalize couldn't mark ready shows SUBMIT
 and the reason.
 
 A change's row is built like a PR's. It shows the valley's handle, else the
 first 8 characters of the change ID; the valley's title, else the subject
-of the head its latest run pushed; and where the change's active version
-stands, from the latest run that pushed it. Earlier versions fold into the
-row. While an agent runs on a PR or a change, the row names it (e.g.
+of the head its latest run pushed; and where the valley says the change's
+active version stands, with that version's head to approve, wherever it
+was marked ready (for a change no valley lists, where its latest push
+stands). Earlier versions fold into the row. A newer push the valley
+doesn't hold as a version, as when its ready failed, doesn't take the row
+over: the footer notes it ("a newer push 1a2b3c4 isn't ready"). While an agent runs on a PR or a change, the row names it (e.g.
 "agent:1a2b running"), sorts with the agents and offers no approve command,
 and the footer says which agent is working on it. Once it exits, the row
 goes back to where the PR or change stands.
@@ -242,10 +245,11 @@ type dashboardModel struct {
 	pipelineStates  map[string]*pipeline.PRPipelineState
 	noAccessAt      map[string]time.Time // PR URL -> when last found unreadable
 	checker         integration.Checker
-	integration     map[string]integration.Result // run ID -> latest check; nil before the first check
-	integrationOn   bool                          // the integration check loop has started
-	approveTemplate string                        // dashboard.approve_command, or the deprecated submit_command
-	recentErrors    []dashboardError              // last N pipeline errors shown in TUI
+	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
+	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
+	integrationOn   bool                                         // the integration check loop has started
+	approveTemplate string                                       // dashboard.approve_command, or the deprecated submit_command
+	recentErrors    []dashboardError                             // last N pipeline errors shown in TUI
 	width           int
 	height          int
 	err             error
@@ -448,6 +452,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
+		m.changes = keepChangeViews(m.changes, msg.changes)
 		return m, integrationTickAfterCmd()
 
 	case ghStatusMsg:

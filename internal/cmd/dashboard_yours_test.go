@@ -169,10 +169,11 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 
 // TestChangeRowsGroupRuns covers how runs without a PR group by change, as
 // runs on a PR share its row: one row per repo and change ID, judged by the
-// run holding the change's active version, so earlier versions fold in and
-// a running follow-up puts the row with the agents and withholds the approve
-// command. Salvaged work counts unless a later run pushed. Runs without a
-// change ID keep a row each.
+// valley's view of the change's active version, wherever it was marked
+// ready, so earlier versions fold in and a running follow-up puts the row
+// with the agents and withholds the approve command. Salvaged work counts
+// unless a later run pushed. A change no valley lists is judged by its
+// latest push. Runs without a change ID keep a row each.
 func TestChangeRowsGroupRuns(t *testing.T) {
 	now := time.Now()
 	n := 0
@@ -198,9 +199,20 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 	}
 	chg := func(c byte) string { return strings.Repeat(string(c), 32) }
 	results := map[string]integration.Result{}
+	changes := map[integration.ChangeKey]integration.Result{}
+	// activeIs records the valley's view of a change's active version.
+	activeIs := func(changeID string, v integration.Verdict, version int, head string) {
+		changes[integration.ChangeKey{Repo: "r", ChangeID: changeID}] = integration.Result{Verdict: v, Change: &integration.Change{
+			Repo: "r", ChangeID: changeID, Handle: changeID[:4], Version: version, Head: head, Active: true}}
+	}
+	// valley records where a run's version stands; a version that isn't
+	// superseded is its change's active one.
 	valley := func(s *run.State, v integration.Verdict, version int) {
 		results[s.ID] = integration.Result{Verdict: v, Change: &integration.Change{Repo: "r", ChangeID: s.ChangeID,
 			Handle: s.ChangeID[:4], Version: version, Head: *s.PushedSHA, Active: v != integration.Superseded}}
+		if v != integration.Superseded {
+			activeIs(s.ChangeID, v, version, *s.PushedSHA)
+		}
 	}
 
 	// Two versions: the later one is active, the earlier folds in.
@@ -235,15 +247,18 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 	add("salvaged after landing", chg('r'), 30, &run.State{NeedsAttention: strPtr("agent/z")})
 	// Nothing pushed yet.
 	first := add("first run", chg('o'), 3, &run.State{TmuxPane: strPtr("%2")})
-	// A version that landed, then gave way, with the rest, to one from
-	// elsewhere.
+	// A version that landed, then gave way, with the rest, to one marked
+	// ready elsewhere and awaiting approval.
 	landedOld := pushed("landed long ago", chg('s'), 46)
 	valley(landedOld, integration.Integrated, 1)
 	results[landedOld.ID].Change.Active = false
 	valley(pushed("gave way later", chg('s'), 45), integration.Superseded, 2)
-	// Every version replaced by one from elsewhere.
+	elsewhereHead := strings.Repeat("e", 40)
+	activeIs(chg('s'), integration.Ready, 3, elsewhereHead)
+	// Every version replaced by one from elsewhere, which landed.
 	replaced := pushed("replaced", chg('p'), 50)
 	valley(replaced, integration.Superseded, 1)
+	activeIs(chg('p'), integration.Integrated, 2, strings.Repeat("f", 40))
 	// No change ID: a row each.
 	loneA := pushed("lone a", "", 10)
 	loneB := pushed("lone b", "", 11)
@@ -255,6 +270,7 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 		tmuxDeps:        testDashboardTmuxDeps(),
 		ghStatus:        map[string]*prStatus{},
 		integration:     results,
+		changes:         changes,
 		hideAfter:       defaultHideFinishedAfter,
 		approveTemplate: "valley approve {handle} --head {head}",
 	}
@@ -273,8 +289,8 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 		"first run":         {"change:r#" + chg('o'), "oooooooo", "agents", "agent:" + shortRunID(first.ID) + " running", 1, 1, ""},
 		"landed first":      {"change:r#" + chg('r'), "rrrr", "yours", "ATTN  v1@", 2, 0, ""},
 		"reactivated v1":    {"change:r#" + chg('q'), "qqqq", "yours", "APPROVE  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
-		"gave way later":    {"change:r#" + chg('s'), "ssss", "done", "SUPERSEDED  v2@", 2, 0, ""},
-		"replaced":          {"change:r#" + chg('p'), "pppp", "done", "SUPERSEDED", 1, 0, ""},
+		"gave way later":    {"change:r#" + chg('s'), "ssss", "yours", "APPROVE  v3@eeeeeee", 2, 0, "valley approve ssss --head " + elsewhereHead},
+		"replaced":          {"change:r#" + chg('p'), "pppp", "done", "INTEGRATED  v2@fffffff", 1, 0, ""},
 		"lone a":            {"run:" + loneA.ID, "agent:" + shortRunID(loneA.ID), "yours", "SUBMIT", 1, 0, ""},
 		"lone b":            {"run:" + loneB.ID, "agent:" + shortRunID(loneB.ID), "yours", "SUBMIT", 1, 0, ""},
 	}
@@ -300,8 +316,8 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 			t.Errorf("%q row should show %s and %q: %q", desc, w.id, w.label, line)
 		}
 	}
-	if strings.Count(plain, "SUPERSEDED") != 2 || strings.Contains(plain, "INTEGRATED") {
-		t.Errorf("only the changes with no active version here should read SUPERSEDED, and none INTEGRATED:\n%s", plain)
+	if strings.Contains(plain, "SUPERSEDED") || strings.Count(plain, "INTEGRATED") != 1 {
+		t.Errorf("a change reads as its active version stands: none SUPERSEDED, and only the one landed elsewhere INTEGRATED:\n%s", plain)
 	}
 }
 
@@ -854,4 +870,99 @@ func TestValleyChangeOutlivesOutageAndDeletedBranch(t *testing.T) {
 	if line := lineWith(ansi.Strip(fresh.View()), "uncr"); strings.Contains(line, "GONE") {
 		t.Errorf("a deleted branch shouldn't read GONE for a valley change: %q", line)
 	}
+}
+
+// TestChangeRowShowsValleysActiveVersion drives the dashboard with a real
+// ValleyChecker and a fake valley: a change's row shows where the valley's
+// active version stands and approves that version's head, whichever local
+// run is newest. A newer push whose ready failed doesn't take the row over;
+// the footer notes it. An active version marked ready elsewhere holds the
+// row though no local run pushed it.
+func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
+	bin := t.TempDir()
+	listing := filepath.Join(bin, "changes.json")
+	script := "#!/bin/sh\n[ \"$1\" = changes ] && exec cat '" + listing + "'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "valley"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const changeID = "nxvpkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+	sha := func(c byte) string { return strings.Repeat(string(c), 40) }
+	// pushedRun is a run on the change that pushed head ago minutes ago, as
+	// finalize records it.
+	pushedRun := func(id string, ago int, head string, valley *run.Valley) *run.State {
+		branch := "agent/" + id
+		return &run.State{ID: id, Type: "launch", Prompt: "prompt " + id, TargetRepo: strPtr("acme/widget"),
+			ChangeID: changeID, ChangeRepo: "widget", PushedBranch: &branch, PushedSHA: &head, Valley: valley,
+			CostUSD: float64Ptr(1), CreatedAt: time.Now().Add(-time.Duration(ago) * time.Minute).Format(time.RFC3339)}
+	}
+	readied := func(version int) *run.Valley {
+		return &run.Valley{Repo: "widget", Handle: "nxvp", Version: version, Title: "Add a health check"}
+	}
+	version := func(n int, head, branch string) string {
+		return fmt.Sprintf(`{"n":%d,"head":%q,"branch":%q,"title":"Add a health check v%d","landing":"not-landed"}`, n, head, branch, n)
+	}
+	writeListing := func(active int, versions ...string) {
+		data := fmt.Sprintf(`{"schema":"valley-changes/v1","host":"classic-laddie","repos":[{"repo":"widget","error":null,
+			"changes":[{"change_id":%q,"handle":"nxvp","state":"ready","active":%d,"versions":[%s]}]}]}`,
+			changeID, active, strings.Join(versions, ","))
+		if err := os.WriteFile(listing, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// show checks the states as the dashboard would and returns its one row
+	// and its screen.
+	show := func(states ...*run.State) (dashRow, string, dashboardModel) {
+		t.Helper()
+		m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
+			hideAfter: defaultHideFinishedAfter, checker: integration.NewValleyChecker(nil),
+			approveTemplate: "valley approve {handle} --head {head} # {branch}"}
+		m = send(m, tea.WindowSizeMsg{Width: 200, Height: 20})
+		m = send(m, checkIntegrationCmd(m.checker, m.states)())
+		rows := m.buildRows()
+		if len(rows) != 1 {
+			t.Fatalf("%d rows, want the change's one", len(rows))
+		}
+		return rows[0], ansi.Strip(m.View()), m
+	}
+
+	t.Run("newer push not ready", func(t *testing.T) {
+		v1 := pushedRun("20261013-0900-0001", 30, sha('1'), readied(1))
+		newer := pushedRun("20261013-0900-0002", 5, sha('2'), &run.Valley{Error: "valley ready: refused"})
+		writeListing(1, version(1, sha('1'), *v1.PushedBranch))
+		r, screen, m := show(v1, newer)
+		if r.category != catYours || r.current != v1 {
+			t.Errorf("row %s, current %v; want yours, held by v1", categoryNames[r.category], r.current)
+		}
+		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "APPROVE  v1@1111111") || strings.Contains(line, "SUBMIT") {
+			t.Errorf("the row should read v1 as the valley holds it: %q", line)
+		}
+		if _, cmd := m.approveCommand(r); cmd != "valley approve nxvp --head "+sha('1')+" # "+*v1.PushedBranch {
+			t.Errorf("approve command %q should bind v1's head and branch", cmd)
+		}
+		if !strings.Contains(screen, "approve: valley approve nxvp --head "+sha('1')) ||
+			!strings.Contains(screen, "a newer push 2222222 isn't ready") {
+			t.Errorf("the footer should offer v1's approval and note the newer push:\n%s", screen)
+		}
+	})
+
+	t.Run("active version readied elsewhere", func(t *testing.T) {
+		v1 := pushedRun("20261013-0900-0001", 30, sha('1'), readied(1))
+		v2 := pushedRun("20261013-0900-0002", 20, sha('2'), readied(2))
+		writeListing(3, version(1, sha('1'), *v1.PushedBranch), version(2, sha('2'), *v2.PushedBranch),
+			version(3, sha('3'), "agent/elsewhere"))
+		r, screen, m := show(v1, v2)
+		if r.category != catYours || r.current != nil {
+			t.Errorf("row %s, current %v; want yours, with no local run holding it", categoryNames[r.category], r.current)
+		}
+		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "APPROVE  v3@3333333") || !strings.Contains(line, "Add a health check v3") {
+			t.Errorf("the row should read v3 as the valley holds it: %q", line)
+		}
+		if _, cmd := m.approveCommand(r); cmd != "valley approve nxvp --head "+sha('3')+" # agent/elsewhere" {
+			t.Errorf("approve command %q should bind v3's head and branch", cmd)
+		}
+		if strings.Contains(screen, "SUPERSEDED") || strings.Contains(screen, "isn't ready") {
+			t.Errorf("local versions fold into the row, and both are versions the valley holds:\n%s", screen)
+		}
+	})
 }

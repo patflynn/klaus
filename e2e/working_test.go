@@ -116,7 +116,7 @@ func TestDashboardGroupsRunsByChange(t *testing.T) {
 		status, change string
 	}{
 		{ready, "working", "nxvp"},
-		{follow, "running", ready.ChangeID[:8]},
+		{follow, "running", "nxvp"},
 		{other, "awaiting-approval", "nxvpk"},
 		{draft, "draft", "drft"},
 	} {
@@ -392,6 +392,72 @@ func TestStatusJudgesPanesAsTheDashboardDoes(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestStatusNamesEveryRunOfAChangeAlike runs the real klaus status over a
+// valley change, its running follow-up, and a follow-up running on a change
+// the valley doesn't list. Every run of a change shows the same CHANGE: the
+// valley listing's handle; else, as when the valley can't be asked, the
+// handle a run of the change recorded, from finalize's ready or launch's
+// unready. A running run has no handle of its own until it pushes.
+func TestStatusNamesEveryRunOfAChangeAlike(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.installValleyStub()
+	sha := strings.Repeat("1", 40)
+	ready := h.valleyRun("20261013-0900-0001", "prompt one", "nxvp", "Add a health check", 1, sha,
+		time.Now().Add(-10*time.Minute))
+	h.writeValleyChanges(map[string]any{
+		"schema": "valley-changes/v1",
+		"host":   "classic-laddie",
+		"repos": []any{
+			map[string]any{"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil, "branches": []any{},
+				"changes": []any{change(ready, "ready", 1, version(1, sha, "Add a health check", "not-landed"))}},
+		},
+	})
+	followUp := func(id, changeID string, unready *run.Unready) *run.State {
+		pane := strings.TrimSpace(h.tmux("new-window", "-d", "-P", "-F", "#{pane_id}", "sleep 600"))
+		waitForPane(t, h, pane, "#{pane_current_command}", "sleep")
+		st := &run.State{
+			ID: id, Type: "launch", Prompt: "follow up " + id, TargetRepo: strPtrE2E("acme/widget"),
+			Branch: "agent/" + id, Worktree: "/wt", TmuxPane: &pane, ChangeID: changeID, ChangeRepo: "widget",
+			Unready: unready, CreatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339),
+		}
+		h.SeedState(st)
+		return st
+	}
+	// Launch couldn't unready it, so it recorded no handle.
+	follow := followUp("20261013-0900-0002", ready.ChangeID, &run.Unready{Error: "valley unready: refused"})
+	// Launch unreadied a change no run here pushed and the valley doesn't
+	// list.
+	other := followUp("20261013-0900-0003", "unrdkkkkkkkkkkkkkkkkkkkkkkkkkkkk", &run.Unready{Repo: "widget", Handle: "unrd"})
+
+	check := func(step string, want map[*run.State][2]string) {
+		t.Helper()
+		res := h.RunKlaus("status")
+		if res.ExitCode != 0 {
+			t.Fatalf("%s: status exited %d; stderr: %s", step, res.ExitCode, res.Stderr)
+		}
+		for st, w := range want {
+			if got := statusOf(t, res.Stdout, st.ID); got != w[0] {
+				t.Errorf("%s: %s: status %q, want %q", step, st.ID, got, w[0])
+			}
+			if got := changeColumn(t, res.Stdout, st.ID); got != w[1] {
+				t.Errorf("%s: %s: CHANGE %q, want %q", step, st.ID, got, w[1])
+			}
+		}
+	}
+	want := map[*run.State][2]string{
+		ready:  {"working", "nxvp"},
+		follow: {"running", "nxvp"},
+		other:  {"running", "unrd"},
+	}
+	check("valley listing", want)
+	// The valley goes down: the handles recorded on the changes' runs.
+	if err := os.Remove(filepath.Join(h.E2EDir, "valley.changes.json")); err != nil {
+		t.Fatal(err)
+	}
+	check("valley down", want)
 }
 
 // waitForPane waits until format, displayed for pane, reads want.

@@ -40,16 +40,17 @@ func NewValleyChecker(logger *slog.Logger) *ValleyChecker {
 	return &ValleyChecker{git: NewGitChecker(logger), logger: logger}
 }
 
-// Check returns a result for every run that Applies.
-func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) map[string]Result {
+// Check returns a result for every run that Applies, and the valley's view
+// of every change it lists.
+func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 	dir, ok := valleyDir(runs)
 	if !ok {
-		return c.judgeByGit(ctx, runs)
+		return Report{Runs: c.judgeByGit(ctx, runs)}
 	}
 	changes, err := valley.List(ctx, dir)
 	if err != nil {
 		c.logger.Debug("valley check failed; judging runs by git", "dir", dir, "err", err)
-		return c.judgeByGit(ctx, runs)
+		return Report{Runs: c.judgeByGit(ctx, runs)}
 	}
 	for _, vr := range changes.Repos {
 		if e := vr.Err(); e != "" {
@@ -68,14 +69,14 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) map[string
 	for id, r := range c.judgeByGit(ctx, rest) {
 		out[id] = r
 	}
-	return out
+	return Report{Runs: out, Changes: activeVersions(changes)}
 }
 
 // judgeByGit asks the GitChecker about runs the valley didn't place. A run
 // finalize marked ready on a valley is never Gone, only Unknown: its change
 // may still need the operator, whatever became of its branch.
 func (c *ValleyChecker) judgeByGit(ctx context.Context, runs []*run.State) map[string]Result {
-	out := c.git.Check(ctx, runs)
+	out := c.git.judge(ctx, runs)
 	for _, s := range runs {
 		if r, ok := out[s.ID]; ok && r.Verdict == Gone && RecordedChange(s) != nil {
 			out[s.ID] = Result{Verdict: Unknown}
@@ -131,7 +132,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			r := Result{
 				Verdict: verdictOf(ch, v),
 				Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
-					Version: v.N, Head: v.Head, Active: v.N == ch.Active},
+					Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active},
 			}
 			if v.N == ch.Active {
 				return r, true
@@ -142,6 +143,37 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 		}
 	}
 	return found, ok
+}
+
+// activeVersions is the valley's view of every change it lists in a repo it
+// could read and a state klaus knows: the change's active version, and what
+// the valley's record of it says. A change whose active version isn't
+// listed has none. Where a repo lists a change ID more than once (under
+// several targets), a withdrawn record gives way to another.
+func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
+	out := make(map[ChangeKey]Result)
+	for _, vr := range changes.Repos {
+		if vr.Err() != "" {
+			continue
+		}
+		for _, ch := range vr.Changes {
+			if !knownState(ch.State) {
+				continue
+			}
+			k := ChangeKey{Repo: vr.Repo, ChangeID: ch.ChangeID}
+			if prev, ok := out[k]; ok && prev.Verdict != Withdrawn {
+				continue
+			}
+			for _, v := range ch.Versions {
+				if v.N == ch.Active {
+					out[k] = Result{Verdict: verdictOf(ch, v), Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID,
+						Handle: ch.Handle, Title: v.Title, Version: v.N, Head: v.Head, Branch: v.Branch, Active: true}}
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // knownState reports whether klaus knows what a change state means.
