@@ -137,7 +137,7 @@ func repoSlug(ref string) string {
 	if ref == "" || !strings.Contains(git.CleanGitHubRef(ref), "/") {
 		return ""
 	}
-	owner, repo, _, err := git.ParseRepoRef(ref)
+	owner, repo, err := git.SplitRepoRef(ref)
 	if err != nil {
 		return ""
 	}

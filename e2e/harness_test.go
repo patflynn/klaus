@@ -213,6 +213,24 @@ func (h *Harness) ClaudeStdin() string {
 	return string(b)
 }
 
+// WorkerSystemPrompt returns the system prompt file the fake claude was given
+// with --append-system-prompt-file, failing the test if there is none.
+func (h *Harness) WorkerSystemPrompt() string {
+	h.t.Helper()
+	argv := strings.Split(h.ClaudeArgv(), "\n")
+	for i, a := range argv {
+		if a == "--append-system-prompt-file" && i+1 < len(argv) {
+			data, err := os.ReadFile(argv[i+1])
+			if err != nil {
+				h.t.Fatalf("reading system prompt file: %v", err)
+			}
+			return string(data)
+		}
+	}
+	h.t.Fatalf("claude got no --append-system-prompt-file:\n%s", h.ClaudeArgv())
+	return ""
+}
+
 // GHArgv returns the logged gh invocations (one per line), or "" if gh was
 // never called.
 func (h *Harness) GHArgv() string {
@@ -270,6 +288,20 @@ func (h *Harness) writeRepoConfig() {
 	h.git(h.RepoDir, "add", "-A")
 	h.git(h.RepoDir, "commit", "-qm", "add klaus config")
 	h.git(h.RepoDir, "push", "-q", "origin", "main")
+}
+
+// UseGitHubOrigin points the sandbox repo's origin at git@github.com:acme/widget.git,
+// so launch treats it as a GitHub repo that gets the PR workflow. An ssh stub
+// serves that URL from the local bare origin, so fetches still work offline.
+func (h *Harness) UseGitHubOrigin() {
+	h.t.Helper()
+	// git runs `ssh [opts] git@github.com "git-upload-pack 'acme/widget.git'"`;
+	// run that service against the local bare origin instead.
+	h.WriteStub("ssh", fmt.Sprintf(`#!/usr/bin/env bash
+service="${@: -1}"
+exec "${service%%%% *}" %q
+`, h.OriginDir))
+	h.git(h.RepoDir, "remote", "set-url", "origin", "git@github.com:acme/widget.git")
 }
 
 // AmendRepoConfig merges the given keys into the sandbox repo's

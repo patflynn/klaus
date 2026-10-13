@@ -56,6 +56,12 @@ on github.com. For any other origin (a plain ssh or local remote) it is told to
 push its branch and not open a PR, and to end with a report of the branch, head
 SHA, diff summary and checks run, for the operator to integrate from.
 
+An agent that opens a PR is told to request review from pr_reviewer. When
+pr_reviewer is unset, launch picks a collaborator with push access to the
+target repo, leaving out bots and the gh user the agent runs as (the PR's
+author): the repo owner if they are one, else the only one. When none is
+found, or a gh call fails, launch warns and the agent requests no review.
+
 Use --pr to push fixes to an existing PR's branch instead of creating a new
 PR. The agent will commit and push to the PR branch directly. This is also
 how you resume a budget-paused PR: relaunch against the paused PR and the
@@ -350,7 +356,15 @@ are synced back after completion. Use --local to force local execution, or
 				RepoName: repoName,
 			})
 		} else {
-			reviewer := hostCfg.PRReviewerOrDefault()
+			// Only a run that opens a GitHub PR requests a review.
+			var reviewer string
+			if !directPush {
+				var warning string
+				reviewer, warning = gh.NewReviewerResolver().Resolve(ctx, repoSlugForDir(repoRoot), hostCfg.PRReviewer)
+				if warning != "" {
+					fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
+				}
+			}
 			sysPrompt, err = config.RenderPrompt(repoRoot, config.PromptVars{
 				RunID:      id,
 				Issue:      issue,

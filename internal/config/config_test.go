@@ -817,13 +817,6 @@ func TestSandboxHostDefaultEmpty(t *testing.T) {
 	}
 }
 
-func TestPRReviewerExplicit(t *testing.T) {
-	cfg := Config{PRReviewer: "alice"}
-	if got := cfg.PRReviewerOrDefault(); got != "alice" {
-		t.Errorf("PRReviewerOrDefault() = %q, want %q", got, "alice")
-	}
-}
-
 func TestLoadPRReviewerConfig(t *testing.T) {
 	dir := t.TempDir()
 	klausDir := filepath.Join(dir, ".klaus")
