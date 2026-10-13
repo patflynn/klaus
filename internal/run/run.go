@@ -45,10 +45,22 @@ type State struct {
 	NeedsAttention   *string  `json:"needs_attention,omitempty"`   // set when finalize salvaged unfinished work (no PR, or crash); names the preserved branch
 	PushedBranch     *string  `json:"pushed_branch,omitempty"`     // set when finalize found a PR-less run's branch on origin (e.g. direct-push repos)
 	PushedSHA        *string  `json:"pushed_sha,omitempty"`        // origin's tip of PushedBranch at finalize
+	PushedSubject    string   `json:"pushed_subject,omitempty"`    // the subject of the commit at PushedSHA, when finalize had it
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
+	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
+	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
+}
+
+// Unready is what launch's `valley unready` did to the change a follow-up
+// run continues, before its agent started.
+type Unready struct {
+	Repo   string `json:"repo,omitempty"`   // the valley's name for the repo, when the change became a draft
+	Handle string `json:"handle,omitempty"` // the change's handle, when it became a draft
+	Note   string `json:"note,omitempty"`   // what the valley said when the change wasn't ready
+	Error  string `json:"error,omitempty"`  // why valley unready failed
 }
 
 // Valley is what finalize's `valley ready` recorded for a pushed run: the
@@ -76,6 +88,15 @@ func DefaultTmuxDeps() TmuxDeps {
 		PaneExists: func(paneID string) bool { return tmux.PaneExists(context.Background(), paneID) },
 		PaneIsIdle: func(paneID string) bool { return tmux.PaneIsIdle(context.Background(), paneID) },
 		PaneIsDead: func(paneID string) bool { return tmux.PaneIsDead(context.Background(), paneID) },
+	}
+}
+
+// TmuxDepsFor returns TmuxDeps that ask tc, under ctx.
+func TmuxDepsFor(ctx context.Context, tc tmux.Client) TmuxDeps {
+	return TmuxDeps{
+		PaneExists: func(paneID string) bool { return tc.PaneExists(ctx, paneID) },
+		PaneIsIdle: func(paneID string) bool { return tc.PaneIsIdle(ctx, paneID) },
+		PaneIsDead: func(paneID string) bool { return tc.PaneIsDead(ctx, paneID) },
 	}
 }
 

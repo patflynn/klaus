@@ -85,8 +85,12 @@ func NewGitChecker(logger *slog.Logger) *GitChecker {
 }
 
 // Check returns a verdict for every run that Applies. Runs are grouped by
-// clone so each repo is snapshotted once.
-func (c *GitChecker) Check(ctx context.Context, runs []*run.State) map[string]Result {
+// clone so each repo is snapshotted once. Git knows nothing of changes.
+func (c *GitChecker) Check(ctx context.Context, runs []*run.State) Report {
+	return Report{Runs: c.judge(ctx, runs)}
+}
+
+func (c *GitChecker) judge(ctx context.Context, runs []*run.State) map[string]Result {
 	verdicts := c.judgeAll(ctx, runs)
 	out := make(map[string]Result, len(verdicts))
 	for id, v := range verdicts {

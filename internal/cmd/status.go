@@ -18,9 +18,11 @@ var statusCmd = &cobra.Command{
 	Short: "Show all runs and their current state",
 	Long: `Shows all runs in the session and their current state.
 
-STATUS is one of: running, needs-attention, pr-created, merged, closed,
-no-access (GitHub won't show the PR with the current credentials), exited,
-and, for runs that finished by pushing a branch without a PR:
+STATUS is one of: running (the agent's pane is still running it, judged as
+the dashboard judges it: a dead pane, or an idle one once the run finished,
+isn't running), needs-attention, pr-created, merged, closed, no-access
+(GitHub won't show the PR with the current credentials), exited, and, for
+runs that finished by pushing a branch without a PR:
 
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
@@ -38,9 +40,24 @@ valley, where the valley's record says the change stands:
   failed
   withdrawn             the change was withdrawn
   superseded            another version of the change is the active one
+  draft                 returned to draft ('valley unready'), as launch
+                        does when a follow-up run continues the change;
+                        approve refuses it until a head is ready again.
+                        A draft reads draft even when its landing is
+                        uncertain; only landing evidence comes first
 
-A valley run shows its change's handle in place of its run ID, and its
-title as the prompt.
+A run that isn't running and isn't done shows working while another run of
+its change (the same change ID in the same repo) is running: a follow-up
+(--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
+nothing to approve yet.
+
+CHANGE names the change a run belongs to: its PR's number (#319), else its
+valley change's handle, else the first 8 characters of its change ID, so
+runs of one change share it, running or not. The handle is the valley
+listing's, else (when the valley can't be asked) the one a run of the
+change recorded when finalize marked it ready or launch returned it to
+draft. A valley run shows its change's title as the
+prompt.
 
 Integration is checked with one "valley changes --all --json" when a valley
 is involved, and otherwise against each run's clone (one ls-remote and fetch
@@ -68,10 +85,10 @@ stays awaiting-approval rather than branch-gone.`,
 
 		ghClient := gh.NewGHCLIClient("")
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "PR", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"------", "------", "-------", "----", "-----", "----", "----", "--", "--", "---------", "------", "-----", "------")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 		statuses := make([]string, len(states))
 		var pushed []*run.State
@@ -87,27 +104,34 @@ stays awaiting-approval rather than branch-gone.`,
 		// Where pushed branches stand: one valley listing for the runs a
 		// valley knows, one check per repo against each run's own clone for
 		// the rest.
-		results := integration.NewValleyChecker(nil).Check(ctx, pushed)
+		report := integration.NewValleyChecker(nil).Check(ctx, pushed)
+		handles := changeHandles(states, report.Changes)
+
+		// The changes some run is still running on: any other run of one
+		// that isn't done is working.
+		busy := make(map[integration.ChangeKey]bool)
+		for i, s := range states {
+			if k, ok := changeOf(s); ok && statuses[i] == "running" {
+				busy[k] = true
+			}
+		}
 
 		for i, s := range states {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			status := statuses[i]
-			id := s.ID
 			prompt := truncate(s.Prompt, 40)
+			var change *integration.Change
 			if status == "awaiting-integration" {
-				res := results[s.ID]
-				change := res.Change
+				res := report.Runs[s.ID]
+				change = res.Change
 				if change == nil {
 					change = integration.RecordedChange(s)
 				}
 				status = pushedStatus(res.Verdict, change != nil)
-				if change != nil {
-					id = change.Handle
-					if change.Title != "" {
-						prompt = truncate(change.Title, 40)
-					}
+				if change != nil && change.Title != "" {
+					prompt = truncate(change.Title, 40)
 				}
 			}
 			cost := formatCost(s)
@@ -146,8 +170,12 @@ stays awaiting-approval rather than branch-gone.`,
 				}
 			}
 
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-6s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				id, status, runBackendName(s), cost, issue, repo, host, formatPR(s), ci, conflicts, behind, merge, prompt)
+			if k, ok := changeOf(s); ok && busy[k] && live(status) {
+				status = "working"
+			}
+
+			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+				s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, handles), ci, conflicts, behind, merge, prompt)
 		}
 
 		return nil
@@ -169,7 +197,9 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 		return "tracking"
 	}
 
-	if s.TmuxPane != nil && tc.PaneExists(ctx, *s.TmuxPane) {
+	// Running as the dashboard decides it: a pane that exists isn't enough
+	// when its command is dead, or, once the run finalized, idle.
+	if s.IsAgentRunningWith(run.TmuxDepsFor(ctx, tc)) {
 		return "running"
 	}
 
@@ -190,6 +220,18 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	return "exited"
 }
 
+// live reports whether a status leaves something to do for a run that isn't
+// running: salvaged work, an open PR, or a pushed branch that hasn't landed,
+// gone, or been withdrawn or superseded.
+func live(status string) bool {
+	switch status {
+	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-approval",
+		"approved", "uncertain", "stale", "rejected", "failed", "draft":
+		return true
+	}
+	return false
+}
+
 // pushedStatus is the status of a run awaiting integration once an
 // integration check has looked at it; valley says a valley knows the run's
 // change. An unknown verdict (no clone, origin unreachable) keeps it
@@ -208,7 +250,8 @@ func pushedStatus(v integration.Verdict, valley bool) string {
 		}
 		return "awaiting-integration"
 	}
-	// approved, uncertain, stale, rejected, failed, withdrawn, superseded
+	// approved, uncertain, stale, rejected, failed, withdrawn, superseded,
+	// draft
 	return v.String()
 }
 
@@ -220,6 +263,62 @@ func formatCost(s *run.State) string {
 		return fmt.Sprintf("<$%s", *s.Budget)
 	}
 	return "-"
+}
+
+// changeLabel names the change a run belongs to, for the CHANGE column: its
+// PR's number (#319), else its valley change's handle (changeHandles), else
+// the first 8 characters of its change ID, as the dashboard names a
+// change's row; "-" for a run with none of them.
+func changeLabel(s *run.State, handles map[integration.ChangeKey]string) string {
+	k, _ := changeOf(s)
+	switch {
+	case s.PRURL != nil:
+		return formatPR(s)
+	case handles[k] != "":
+		return handles[k]
+	case s.ChangeID != "":
+		return s.ChangeID[:min(8, len(s.ChangeID))]
+	}
+	return "-"
+}
+
+// changeHandles names each valley change some run belongs to, so every run
+// on it, running or not, shows the same handle: the valley's listing's, which
+// is current (a handle lengthens when another change comes to share its
+// prefix); else, when the valley can't be asked or doesn't list the change,
+// the handle the latest run to record one got from finalize's ready or
+// launch's unready.
+func changeHandles(states []*run.State, listed map[integration.ChangeKey]integration.Result) map[integration.ChangeKey]string {
+	out := make(map[integration.ChangeKey]string)
+	by := make(map[integration.ChangeKey]*run.State) // the run whose record names each unlisted change
+	for _, s := range states {
+		k, ok := changeOf(s)
+		if !ok {
+			continue
+		}
+		if c := listed[k].Change; c != nil {
+			out[k] = c.Handle
+			continue
+		}
+		h := recordedHandle(s)
+		if h == "" || by[k] != nil && createdBefore(s, by[k]) {
+			continue
+		}
+		out[k], by[k] = h, s
+	}
+	return out
+}
+
+// recordedHandle is the handle a run recorded for its change: from
+// finalize's ready, else from launch's unready; "" when neither got one.
+func recordedHandle(s *run.State) string {
+	if s.Valley != nil && s.Valley.Handle != "" {
+		return s.Valley.Handle
+	}
+	if s.Unready != nil {
+		return s.Unready.Handle
+	}
+	return ""
 }
 
 func formatPR(s *run.State) string {

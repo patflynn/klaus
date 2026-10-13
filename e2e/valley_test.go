@@ -20,7 +20,10 @@ import (
 // each call ("<cwd>: <args>") to valley.argv, answers ready with
 // "widget nxvp v1 ready" or, when valley.refuse exists, refuses with its
 // contents, and answers changes with valley.changes.json or, when that is
-// absent, fails as an unreachable valley does.
+// absent, fails as an unreachable valley does. Its help lists unready only
+// when valley.has-unready exists; unready answers "widget nxvp draft" or,
+// when valley.unready-refuse exists, refuses with its contents, and creates
+// valley.unready-late if the fake agent had already started.
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
@@ -29,10 +32,16 @@ dir=%q
 case "$1" in
 help)
   printf 'usage: valley <verb> [args]\n\n  ready --change <id> --head <sha> <branch>\n  changes [--all] [--json]\n  approve <change>\n'
+  if [ -f "$dir/valley.has-unready" ]; then printf '  unready <change>\n'; fi
   ;;
 ready)
   if [ -f "$dir/valley.refuse" ]; then cat "$dir/valley.refuse" >&2; exit 1; fi
   echo "widget nxvp v1 ready"
+  ;;
+unready)
+  if [ -f "$dir/claude.started" ]; then : > "$dir/valley.unready-late"; fi
+  if [ -f "$dir/valley.unready-refuse" ]; then cat "$dir/valley.unready-refuse" >&2; exit 1; fi
+  echo "widget nxvp draft"
   ;;
 changes)
   if [ -f "$dir/valley.changes.json" ]; then cat "$dir/valley.changes.json"; exit 0; fi
@@ -45,6 +54,21 @@ changes)
   ;;
 esac
 `, h.E2EDir))
+}
+
+// joinValley commits the valley's policy to the sandbox repo's main and
+// pushes it, so the repo delivers to a valley.
+func (h *Harness) joinValley() {
+	h.t.Helper()
+	if err := os.MkdirAll(filepath.Join(h.RepoDir, "policy"), 0o755); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.RepoDir, "policy", "valley"), []byte("widget\n"), 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	h.git(h.RepoDir, "add", "policy")
+	h.git(h.RepoDir, "commit", "-qm", "join the valley")
+	h.git(h.RepoDir, "push", "-q", "origin", "main")
 }
 
 // valleyCalls returns the logged valley calls whose arguments start with
@@ -111,15 +135,7 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			h := NewHarness(t)
 			h.installValleyStub()
 			if tc.policy {
-				if err := os.MkdirAll(filepath.Join(h.RepoDir, "policy"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(h.RepoDir, "policy", "valley"), []byte("widget\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				h.git(h.RepoDir, "add", "policy")
-				h.git(h.RepoDir, "commit", "-qm", "join the valley")
-				h.git(h.RepoDir, "push", "-q", "origin", "main")
+				h.joinValley()
 			}
 			if tc.refuse != "" {
 				if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.refuse"), []byte(tc.refuse), 0o644); err != nil {
@@ -153,6 +169,10 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			}, 60*time.Second)
 			if st.PushedSHA == nil || *st.PushedSHA != head {
 				t.Fatalf("pushed SHA = %v, want %s", st.PushedSHA, head)
+			}
+			// The head's subject titles the change's row, valley or not.
+			if st.PushedSubject != "Add a health check" {
+				t.Errorf("pushed subject = %q, want the head's subject", st.PushedSubject)
 			}
 
 			var types []string
@@ -274,7 +294,9 @@ func rowOf(t *testing.T, screen, handle string) string {
 // TestDashboardShowsValleyChanges runs the real dashboard and klaus status
 // over runs a fake valley reports in every state: each valley row shows the
 // repo, the handle and the title, under its label and in its group, and the
-// footer offers the approve command bound to the head on screen.
+// footer offers the approve command bound to the head on screen. A change
+// whose active version was marked ready elsewhere reads as that version,
+// while klaus status shows the local run's own version superseded.
 func TestDashboardShowsValleyChanges(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -314,7 +336,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 	})
 
 	pane, screen := h.startDashboard(170)
-	s := screen("2 yours", "3 done", "SUPERSEDED", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
+	s := screen("3 yours", "2 done", "APPROVE  v2@6666666", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
 	for handle, want := range map[string]string{
 		"nxvp": "Add a health check",
 		"uncr": "Tune the cache",
@@ -328,7 +350,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		}
 	}
 	// Yours first (most recent first), then done.
-	labels := []string{"APPROVE  v1@1111111", "UNCERTAIN", "INTEGRATED", "SUPERSEDED", "WITHDRAWN"}
+	labels := []string{"APPROVE  v1@1111111", "UNCERTAIN", "APPROVE  v2@6666666", "INTEGRATED", "WITHDRAWN"}
 	var order []string
 	for _, line := range strings.Split(s, "\n") {
 		for _, l := range labels {
@@ -363,16 +385,16 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		{superseded, "superseded"},
 		{withdrawn, "withdrawn"},
 	} {
-		// A valley run's row leads with its handle in place of the run ID.
-		if got := statusOf(t, res.Stdout, tc.st.Valley.Handle); got != tc.status {
+		// A valley run's row keeps its run ID, names its change by handle
+		// where a PR run shows its number, and shows the change's title.
+		if got := statusOf(t, res.Stdout, tc.st.ID); got != tc.status {
 			t.Errorf("%s: status %q, want %q", tc.st.Valley.Handle, got, tc.status)
 		}
-		for _, line := range strings.Split(res.Stdout, "\n") {
-			if f := strings.Fields(line); len(f) > 7 && f[0] == tc.st.Valley.Handle &&
-				(f[7] != "-" || strings.Contains(line, tc.st.ID) || !strings.HasSuffix(line, tc.st.Valley.Title)) {
-				t.Errorf("status row should show handle %s, no PR, not the run ID, and title %q: %q",
-					tc.st.Valley.Handle, tc.st.Valley.Title, line)
-			}
+		if got := changeColumn(t, res.Stdout, tc.st.ID); got != tc.st.Valley.Handle {
+			t.Errorf("%s: CHANGE %q, want the handle %q", tc.st.ID, got, tc.st.Valley.Handle)
+		}
+		if line := statusLine(t, res.Stdout, tc.st.ID); !strings.HasSuffix(line, tc.st.Valley.Title) {
+			t.Errorf("status row should end with the title %q: %q", tc.st.Valley.Title, line)
 		}
 	}
 }

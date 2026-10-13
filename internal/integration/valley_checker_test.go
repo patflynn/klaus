@@ -12,7 +12,8 @@ import (
 )
 
 // changesFixture is a valley-changes/v1 listing with a change in every state
-// klaus reads, in two repos that share a change ID.
+// klaus reads, and one in a state it doesn't, in two repos that share a
+// change ID.
 const changesFixture = `{
   "schema": "valley-changes/v1",
   "host": "classic-laddie",
@@ -47,7 +48,17 @@ const changesFixture = `{
           "versions": [
             { "n": 1, "head": "redo-h", "landing": "not-landed" },
             { "n": 2, "head": "redo-h", "landing": "not-landed" }
-          ] }
+          ] },
+        { "change_id": "drft-id", "handle": "drft", "state": "draft", "active": 1,
+          "versions": [ { "n": 1, "head": "drft-1", "landing": "not-landed",
+            "request": { "ref": "x", "commit": "r" }, "outcome": { "decision": "rejected" } } ] },
+        { "change_id": "dunc-id", "handle": "dunc", "state": "draft", "active": 1,
+          "versions": [ { "n": 1, "head": "dunc-1", "landing": "uncertain",
+            "request": { "ref": "x", "commit": "r" } } ] },
+        { "change_id": "dlnd-id", "handle": "dlnd", "state": "draft", "active": 1,
+          "versions": [ { "n": 1, "head": "dlnd-1", "landing": "landed-recorded" } ] },
+        { "change_id": "frzn-id", "handle": "frzn", "state": "frozen", "active": 1,
+          "versions": [ { "n": 1, "head": "frzn-1", "landing": "landed" } ] }
       ] },
     { "repo": "fork", "url": "git@classic-laddie:fork.git", "error": null,
       "changes": [
@@ -96,6 +107,9 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"stale, superseded", pushed("cosmo", "stal-id", "stal-1"), Superseded, "stal", 1},
 		{"failed", pushed("cosmo", "stal-id", "stal-3"), Failed, "stal", 3},
 		{"head readied twice", pushed("cosmo", "redo-id", "redo-h"), Ready, "redo", 2},
+		{"draft, after a rejection", pushed("cosmo", "drft-id", "drft-1"), Draft, "drft", 1},
+		{"draft, landing uncertain", pushed("cosmo", "dunc-id", "dunc-1"), Draft, "dunc", 1},
+		{"draft, landed", pushed("cosmo", "dlnd-id", "dlnd-1"), Integrated, "dlnd", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := place(changes, tc.run)
@@ -103,7 +117,8 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 				t.Fatal("run not placed")
 			}
 			if got.Verdict != tc.want || got.Change.Handle != tc.handle || got.Change.Version != tc.version ||
-				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID {
+				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID ||
+				got.Change.Active != (tc.want != Superseded && tc.name != "landed, then superseded") {
 				t.Errorf("placed as %v %+v, want %v %s v%d", got.Verdict, *got.Change, tc.want, tc.handle, tc.version)
 			}
 		})
@@ -133,6 +148,8 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		// doesn't know its repo can't tell which is its.
 		{"run without a repo", pushed("", "nxvp-id", "nxvp-2")},
 		{"target repo the valley lacks", target("patflynn/other", pushed("", "nxvp-id", "nxvp-2"))},
+		// A later valley's state: git judges the run, landed or not.
+		{"change in a state klaus doesn't know", pushed("cosmo", "frzn-id", "frzn-1")},
 	} {
 		if got, ok := place(changes, tc.run); ok {
 			t.Errorf("%s: placed as %v %+v, want unplaced", tc.name, got.Verdict, *got.Change)
@@ -198,7 +215,7 @@ func TestValleyCheckerFallsBackToGit(t *testing.T) {
 	runs := []*run.State{dark, orphan, gone, plain}
 	check := func(want map[*run.State]Verdict) {
 		t.Helper()
-		got := c.Check(context.Background(), runs)
+		got := c.Check(context.Background(), runs).Runs
 		for s, v := range want {
 			if r := got[s.ID]; r.Verdict != v || r.Change != nil {
 				t.Errorf("%s: %v %+v, want %v from git", s.ID, r.Verdict, r.Change, v)

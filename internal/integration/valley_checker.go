@@ -18,7 +18,8 @@ import (
 // valley (run.State.Valley). It places a run by repo, change ID and version
 // head: the run's version is the one whose head is the run's pushed SHA, in
 // the listed repo that is the run's own. A run whose repo klaus doesn't know
-// is never placed, and neither is any run in a repo the valley couldn't read.
+// is never placed, and neither is any run in a repo the valley couldn't read
+// or whose change is in a state klaus doesn't know.
 // If valley fails or prints a schema klaus doesn't know, the check is logged
 // at debug level and every run is judged by git.
 //
@@ -39,16 +40,17 @@ func NewValleyChecker(logger *slog.Logger) *ValleyChecker {
 	return &ValleyChecker{git: NewGitChecker(logger), logger: logger}
 }
 
-// Check returns a result for every run that Applies.
-func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) map[string]Result {
+// Check returns a result for every run that Applies, and the valley's view
+// of every change it lists.
+func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 	dir, ok := valleyDir(runs)
 	if !ok {
-		return c.judgeByGit(ctx, runs)
+		return Report{Runs: c.judgeByGit(ctx, runs)}
 	}
 	changes, err := valley.List(ctx, dir)
 	if err != nil {
 		c.logger.Debug("valley check failed; judging runs by git", "dir", dir, "err", err)
-		return c.judgeByGit(ctx, runs)
+		return Report{Runs: c.judgeByGit(ctx, runs)}
 	}
 	for _, vr := range changes.Repos {
 		if e := vr.Err(); e != "" {
@@ -67,14 +69,14 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) map[string
 	for id, r := range c.judgeByGit(ctx, rest) {
 		out[id] = r
 	}
-	return out
+	return Report{Runs: out, Changes: activeVersions(changes)}
 }
 
 // judgeByGit asks the GitChecker about runs the valley didn't place. A run
 // finalize marked ready on a valley is never Gone, only Unknown: its change
 // may still need the operator, whatever became of its branch.
 func (c *ValleyChecker) judgeByGit(ctx context.Context, runs []*run.State) map[string]Result {
-	out := c.git.Check(ctx, runs)
+	out := c.git.judge(ctx, runs)
 	for _, s := range runs {
 		if r, ok := out[s.ID]; ok && r.Verdict == Gone && RecordedChange(s) != nil {
 			out[s.ID] = Result{Verdict: Unknown}
@@ -106,9 +108,10 @@ func valleyDir(runs []*run.State) (dir string, ok bool) {
 // pushed SHA. When several match, the one that is its change's active version
 // wins. ok is false when none does, when klaus doesn't know the run's repo,
 // or when the valley couldn't read that repo: records listed beside a read
-// error may be stale.
+// error may be stale. A change in a state klaus doesn't know, from a later
+// valley, places nothing.
 func place(changes *valley.Changes, s *run.State) (Result, bool) {
-	repo := valleyRepoName(s)
+	repo := RepoName(s)
 	if !Applies(s) || s.ChangeID == "" || repo == "" {
 		return Result{}, false
 	}
@@ -119,7 +122,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			continue
 		}
 		for _, ch := range vr.Changes {
-			if ch.ChangeID != s.ChangeID {
+			if ch.ChangeID != s.ChangeID || !knownState(ch.State) {
 				continue
 			}
 			v, match := versionAt(ch, *s.PushedSHA)
@@ -129,7 +132,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			r := Result{
 				Verdict: verdictOf(ch, v),
 				Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
-					Version: v.N, Head: v.Head},
+					Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active},
 			}
 			if v.N == ch.Active {
 				return r, true
@@ -142,13 +145,58 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 	return found, ok
 }
 
-// valleyRepoName is the valley's name for a run's repo, as finalize's
-// `valley ready` reported it, or else the short name of the run's target
-// repo: its last path component, without ".git". "" means unknown, and an
-// unknown repo matches none.
-func valleyRepoName(s *run.State) string {
+// activeVersions is the valley's view of every change it lists in a repo it
+// could read and a state klaus knows: the change's active version, and what
+// the valley's record of it says. A change whose active version isn't
+// listed has none. Where a repo lists a change ID more than once (under
+// several targets), a withdrawn record gives way to another.
+func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
+	out := make(map[ChangeKey]Result)
+	for _, vr := range changes.Repos {
+		if vr.Err() != "" {
+			continue
+		}
+		for _, ch := range vr.Changes {
+			if !knownState(ch.State) {
+				continue
+			}
+			k := ChangeKey{Repo: vr.Repo, ChangeID: ch.ChangeID}
+			if prev, ok := out[k]; ok && prev.Verdict != Withdrawn {
+				continue
+			}
+			for _, v := range ch.Versions {
+				if v.N == ch.Active {
+					out[k] = Result{Verdict: verdictOf(ch, v), Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID,
+						Handle: ch.Handle, Title: v.Title, Version: v.N, Head: v.Head, Branch: v.Branch, Active: true}}
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+// knownState reports whether klaus knows what a change state means.
+func knownState(state string) bool {
+	return state == valley.StateReady || state == valley.StateDraft || state == valley.StateWithdrawn
+}
+
+// RepoName is the valley's name for a run's repo, as finalize's `valley
+// ready` reported it; or else, for a run that continues another's change, the
+// repo that run had (ChangeRepo), so a follow-up names its change as the run
+// it continues does; or else as launch's `valley unready` reported it; or
+// else the short name of the run's target repo: its last path component,
+// without ".git". "" means unknown, and an unknown repo matches none. It is
+// how klaus tells which runs share a change: the same repo and change ID.
+func RepoName(s *run.State) string {
 	if s.Valley != nil && s.Valley.Repo != "" {
 		return s.Valley.Repo
+	}
+	if s.ChangeRepo != "" {
+		return s.ChangeRepo
+	}
+	if s.Unready != nil && s.Unready.Repo != "" {
+		return s.Unready.Repo
 	}
 	if s.TargetRepo == nil {
 		return ""
@@ -179,9 +227,12 @@ func versionAt(ch valley.Change, head string) (valley.Version, bool) {
 	return found, ok
 }
 
-// verdictOf reads the valley's record of version v of change ch. Landing
-// evidence comes first: a landed version is Integrated even after a later
-// version took its place.
+// verdictOf reads the valley's record of version v of change ch, whose state
+// klaus knows. Landing evidence comes first: a landed version is Integrated
+// even after a later version took its place, or its change went back to
+// draft. A draft change's active version is otherwise Draft, whatever the
+// valley is unsure of or the integrator decided on its request: its submitter
+// has it back, and there is nothing for the operator to do.
 func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	switch {
 	case v.Landing == valley.Landed || v.Landing == valley.LandedRecorded:
@@ -190,6 +241,8 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 		return Withdrawn
 	case v.N != ch.Active:
 		return Superseded
+	case ch.State == valley.StateDraft:
+		return Draft
 	case v.Landing == valley.Uncertain:
 		return Uncertain
 	case v.Outcome != nil:
@@ -202,8 +255,8 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 			return Failed
 		}
 		return Uncertain
-	case ch.State != valley.StateReady || v.Landing != valley.NotLanded:
-		// A state or landing value from a later valley.
+	case v.Landing != valley.NotLanded:
+		// A landing value from a later valley.
 		return Uncertain
 	case v.Request != nil:
 		return Approved

@@ -19,6 +19,7 @@ import (
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
+	"github.com/patflynn/klaus/internal/valley"
 	"github.com/spf13/cobra"
 )
 
@@ -85,6 +86,14 @@ commit-msg hook scoped to its worktree: 'Change-Id: <change id>' and
 'Klaus-Run: <run id>'. A --pr run keeps the change ID of the run that opened the
 PR, a --resume-from run that of the run it resumes; any other run gets a new
 one. The trailers label commits for finding and auditing; they grant nothing.
+
+A run that keeps an existing change in a repo that delivers to a valley
+returns the change to draft before its agent starts ('valley unready
+<change-id>', within 30 seconds), so it can't be approved while the agent
+replaces it; finalize marks the pushed head ready again. This happens only
+when 'valley help' lists unready. A change that wasn't ready is left as is,
+and a failure is recorded on the run and printed as a warning; neither stops
+the launch.
 
 Use --resume-from <run-id> to continue a previous run's Claude conversation in
 a fresh worktree on a new branch, paused or not — the follow-up keeps what the
@@ -491,6 +500,10 @@ are synced back after completion. Use --local to force local execution, or
 			return fmt.Errorf("installing commit-msg hook: %w", err)
 		}
 
+		// A follow-up on a valley change takes it back to draft before the
+		// agent starts, so the operator can't approve a head it is replacing.
+		unready := unreadyChange(ctx, worktree, change)
+
 		// Set up Nix dev environment if flake.nix exists
 		nix.SetupDevEnvironment(worktree)
 
@@ -625,6 +638,8 @@ are synced back after completion. Use --local to force local execution, or
 			Model:       stringPtr(model),
 			Effort:      stringPtr(effort),
 			ChangeID:    change.ID,
+			Unready:     unready,
+			ChangeRepo:  change.Repo,
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
@@ -695,6 +710,37 @@ are synced back after completion. Use --local to force local execution, or
 		launchSucceeded = true
 		return nil
 	},
+}
+
+// unreadyChange returns the change a follow-up run continues to draft on the
+// valley its repo delivers to, so approve refuses the change while the agent
+// works on it; finalize marks the pushed head ready again. It runs `valley
+// unready`, bounded by valley.UnreadyTimeout, only for an inherited change in
+// a repo whose worktree HEAD carries the valley's policy, and only when the
+// valley on PATH lists unready (valley.DetectUnready). A change that wasn't
+// ready is noted; a failure is recorded and printed as a warning. Neither
+// fails the launch. It returns nil when it didn't run valley.
+func unreadyChange(ctx context.Context, worktree string, change changeChoice) *run.Unready {
+	if !change.Inherited {
+		return nil
+	}
+	head, err := exec.CommandContext(ctx, "git", "-C", worktree, "rev-parse", "HEAD").Output()
+	if err != nil || !valley.DetectUnready(ctx, worktree, strings.TrimSpace(string(head))) {
+		return nil
+	}
+	rec := &run.Unready{}
+	switch r, err := valley.Unready(ctx, worktree, change.ID); {
+	case err != nil:
+		rec.Error = err.Error()
+		fmt.Fprintf(os.Stderr, "warning: could not return the change to draft: %s\n", rec.Error)
+	case r.Draft:
+		rec.Repo, rec.Handle = r.Repo, r.Handle
+		fmt.Printf("  valley:   %s %s is a draft until the agent pushes\n", r.Repo, r.Handle)
+	default:
+		rec.Note = r.Note
+		fmt.Printf("  valley:   the change wasn't ready: %s\n", r.Note)
+	}
+	return rec
 }
 
 // resolveResumeID preserves resumable conversations even after an error.

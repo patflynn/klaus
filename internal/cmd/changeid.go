@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/patflynn/klaus/internal/git"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -21,8 +22,10 @@ type changeIDInput struct {
 
 // changeChoice is the change ID a new run uses, and how it was found.
 type changeChoice struct {
-	ID   string
-	From string // for the launch output
+	ID        string
+	From      string // for the launch output
+	Inherited bool   // the run continues an existing change
+	Repo      string // the change's repo as the run it was inherited from names it (integration.RepoName); "" when not inherited from a run
 }
 
 // chooseChangeID picks the change ID for a new run. A run that continues
@@ -30,26 +33,30 @@ type changeChoice struct {
 // the ID of the run that opened the PR: the earliest recorded run on the PR
 // that has one, in any session, else the Change-Id on the PR's head commit
 // when it is not on the default branch. A --resume-from run takes the ID of
-// the run it resumes. Anything else, or a run whose source has none (its
+// the run it resumes. A change inherited from a run keeps that run's repo
+// too, so the new run shares its change whatever the valley or its target
+// repo calls the repo. Anything else, or a run whose source has none (its
 // state predates change IDs), gets a new ID, and From says which.
 func chooseChangeID(ctx context.Context, store run.StateStore, in changeIDInput) (changeChoice, error) {
 	var unknown string
 	if in.IsPRFix {
 		states, _ := run.ListAllSessions()
 		if s := prChangeSource(states, in.PRURL, in.PRBranch, in.TargetRepo); s != nil {
-			return changeChoice{ID: s.ChangeID, From: "inherited from run " + s.ID}, nil
+			return changeChoice{ID: s.ChangeID, From: "inherited from run " + s.ID, Inherited: true,
+				Repo: integration.RepoName(s)}, nil
 		}
 		// The PR may have been opened on another machine.
 		if ahead, err := git.CommitsAhead(ctx, in.Worktree, "origin/"+in.DefaultBranch, "HEAD"); err == nil && ahead > 0 {
 			if id, err := git.CommitChangeID(ctx, in.Worktree, "HEAD"); err == nil && run.ValidChangeID(id) {
-				return changeChoice{ID: id, From: "inherited from the PR's head commit"}, nil
+				return changeChoice{ID: id, From: "inherited from the PR's head commit", Inherited: true}, nil
 			}
 		}
 		unknown = "the PR"
 	}
 	if in.ResumeFrom != "" {
 		if prior, err := store.Load(in.ResumeFrom); err == nil && run.ValidChangeID(prior.ChangeID) {
-			return changeChoice{ID: prior.ChangeID, From: "inherited from run " + prior.ID}, nil
+			return changeChoice{ID: prior.ChangeID, From: "inherited from run " + prior.ID, Inherited: true,
+				Repo: integration.RepoName(prior)}, nil
 		}
 		if unknown == "" {
 			unknown = "run " + in.ResumeFrom

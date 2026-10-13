@@ -35,6 +35,7 @@ type integrationTickMsg struct{}
 // integrationMsg carries the results of an integration check, by run ID.
 type integrationMsg struct {
 	results map[string]integration.Result
+	changes map[integration.ChangeKey]integration.Result
 }
 
 type fsEventMsg struct{}
@@ -167,7 +168,8 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.C
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 		defer cancel()
-		return integrationMsg{results: checker.Check(ctx, pushed)}
+		rep := checker.Check(ctx, pushed)
+		return integrationMsg{results: rep.Runs, changes: rep.Changes}
 	}
 }
 
@@ -182,6 +184,23 @@ func keepValleyViews(prev, next map[string]integration.Result) map[string]integr
 		if old, ok := prev[id]; ok && old.Change != nil && r.Change == nil && !r.Verdict.Landed() {
 			old.Outdated = true
 			next[id] = old
+		}
+	}
+	return next
+}
+
+// keepChangeViews does for the valley's views of changes what keepValleyViews
+// does for runs': a change the latest check has no view of (the valley
+// couldn't be asked, or couldn't read its repo) keeps its last view, marked
+// Outdated.
+func keepChangeViews(prev, next map[integration.ChangeKey]integration.Result) map[integration.ChangeKey]integration.Result {
+	if next == nil {
+		next = make(map[integration.ChangeKey]integration.Result)
+	}
+	for k, old := range prev {
+		if _, ok := next[k]; !ok {
+			old.Outdated = true
+			next[k] = old
 		}
 	}
 	return next

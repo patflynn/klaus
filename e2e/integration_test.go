@@ -57,16 +57,29 @@ func (h *Harness) seedPushed(id, prompt, branch, sha string, created time.Time) 
 
 func strPtrE2E(s string) *string { return &s }
 
-// statusOf returns the STATUS column of runID's row in `klaus status` output.
-func statusOf(t *testing.T, out, runID string) string {
+// statusLine returns runID's row in `klaus status` output.
+func statusLine(t *testing.T, out, runID string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
-		if f := strings.Fields(line); len(f) > 1 && f[0] == runID {
-			return f[1]
+		if f := strings.Fields(line); len(f) > 7 && f[0] == runID {
+			return line
 		}
 	}
 	t.Fatalf("no row for %s in:\n%s", runID, out)
 	return ""
+}
+
+// statusOf returns the STATUS column of runID's row in `klaus status` output.
+func statusOf(t *testing.T, out, runID string) string {
+	t.Helper()
+	return strings.Fields(statusLine(t, out, runID))[1]
+}
+
+// changeColumn returns the CHANGE column of runID's row in `klaus status`
+// output: its PR's number, its valley handle, or its change ID's prefix.
+func changeColumn(t *testing.T, out, runID string) string {
+	t.Helper()
+	return strings.Fields(statusLine(t, out, runID))[7]
 }
 
 // TestStatusShowsIntegration runs the real `klaus status` over pushed runs

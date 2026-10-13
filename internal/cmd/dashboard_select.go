@@ -19,10 +19,10 @@ import (
 type rowCategory int
 
 const (
-	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a branch to submit, a PR ready to approve
+	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a draft, a branch to submit, a PR ready to approve
 	catAgents                      // an agent is running on it
 	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide
-	catDone                        // merged, closed, integrated, gone, withdrawn, superseded, no access, or an agent that exited
+	catDone                        // merged, closed, integrated, gone, withdrawn, no access, or an agent that exited
 )
 
 // categoryNames label the categories in the summary line.
@@ -44,13 +44,15 @@ func hideFinishedAfter(cfg *config.DashboardConfig) time.Duration {
 	return time.Duration(cfg.HideFinishedAfterMinutes) * time.Minute
 }
 
-// dashRow is one line of the dashboard run list: either a PR (with every
-// agent that worked on it) or a bare agent run that has no PR.
+// dashRow is one line of the dashboard run list: a PR, with every agent
+// that worked on it; a change, with every run on it that has no PR; or a
+// bare agent run with neither.
 type dashRow struct {
 	key      string // stable identity, so the selection survives reordering
 	repo     string
-	prNum    string       // "" for a bare agent
-	runs     []*run.State // agents on this PR, or the single bare agent
+	prNum    string       // "" for a change or a bare agent
+	changeID string       // the change a change row groups; "" for a PR or a bare agent
+	runs     []*run.State // agents on this PR, runs on this change (newest first), or the single bare agent
 	running  []*run.State // the subset of runs whose agent is running
 	ps       *prStatus    // GitHub status, nil until fetched or for bare agents
 	category rowCategory
@@ -59,11 +61,26 @@ type dashRow struct {
 	// attention is set when the row is the operator's because something
 	// needs attention (salvaged work, a stalled or budget-paused PR).
 	attention bool
-	// verdict is the latest integration check of a bare pushed run.
+	// pushed is set when the row shows where pushed work stands: a bare
+	// pushed run, or a change with a version, the valley's or a local push.
+	pushed bool
+	// current is the run that pushed a change row's state: the local run that
+	// pushed the active version of a change the valley lists, or, for a
+	// change it doesn't, the latest run that pushed. nil when none did, as
+	// when the active version was marked ready elsewhere.
+	current *run.State
+	// verdict is the latest integration check of a bare pushed run; for a
+	// change row, the valley's view of the change's active version, or else
+	// the check of its current run.
 	verdict integration.Verdict
-	// change is how a valley knows a bare pushed run: the latest check's
-	// view, or else what finalize recorded. nil for a branch no valley knows.
+	// change is how a valley knows a bare pushed run, or a change row's
+	// active version: the latest check's view, or else what finalize
+	// recorded. nil for a branch no valley knows.
 	change *integration.Change
+	// unplaced is the head of a change's latest local push when the valley
+	// lists the change but doesn't hold that head as a version of it, as
+	// when its ready failed. The row doesn't show it; the footer notes it.
+	unplaced string
 	// provisional marks a SUBMIT or APPROVE row with no definite integration
 	// verdict yet: it may turn out to have landed long ago.
 	provisional bool
@@ -72,9 +89,14 @@ type dashRow struct {
 	outdated bool
 }
 
-// state returns the row's first agent's run state, which carries the PR URL
-// and is the one marked by approve.
+// state returns the run that speaks for the row: a PR's first agent, which
+// carries the PR URL and is the one marked by approve; a change's current
+// run, or else its latest; or the bare agent. Where a change stands comes
+// from the row (pushed, verdict, change), not from this run.
 func (r dashRow) state() *run.State {
+	if r.current != nil {
+		return r.current
+	}
 	return r.runs[0]
 }
 
@@ -87,35 +109,72 @@ func (r dashRow) repoLabel() string {
 	return shortRepoName(r.repo)
 }
 
-// idLabel names a bare agent's row: a valley change's handle, or else
-// "agent:" and the tail of the run ID.
+// idLabel names a row without a PR: a valley change's handle, else the
+// first 8 characters of its change ID, or for a bare agent "agent:" and the
+// tail of the run ID.
 func (r dashRow) idLabel() string {
-	if r.change != nil {
+	switch {
+	case r.change != nil:
 		return r.change.Handle
+	case r.changeID != "":
+		return r.changeID[:min(8, len(r.changeID))]
 	}
 	return "agent:" + shortRunID(r.state().ID)
 }
 
-// description is what the row is about: a valley change's title, or else
-// the prompt.
+// pushedRun is the run whose push the row shows: a change's current run, or
+// a bare pushed run. nil for a row with none, as for a change whose active
+// version was marked ready elsewhere.
+func (r dashRow) pushedRun() *run.State {
+	switch {
+	case r.changeID != "":
+		return r.current
+	case r.pushed:
+		return r.runs[0]
+	}
+	return nil
+}
+
+// description is what the row is about: a valley change's title, else the
+// subject of the head its current run pushed, else the prompt.
 func (r dashRow) description() string {
 	if r.change != nil && r.change.Title != "" {
 		return r.change.Title
+	}
+	if r.current != nil && r.current.PushedSubject != "" {
+		return r.current.PushedSubject
 	}
 	return r.state().Prompt
 }
 
 // buildRows turns the run states into dashboard rows, sorted by category
 // (yours, agents, pipeline, done) and most recent first within each
-// category. Sessions are excluded; agents on the same PR share a row.
+// category. Sessions are excluded; agents on the same PR share a row, and
+// so do runs without a PR on the same change (changeOf), across repo groups.
 func (m dashboardModel) buildRows() []dashRow {
 	var rows []dashRow
+	changeIndex := make(map[integration.ChangeKey]int)
 	for _, g := range groupByRepo(m.states) {
 		prIndex := make(map[string]int)
 		for _, s := range g.Runs {
 			prNum := extractPRNumber(s)
 			if prNum == "" {
-				rows = append(rows, dashRow{key: "run:" + s.ID, repo: g.Repo, runs: []*run.State{s}})
+				k, ok := changeOf(s)
+				if !ok {
+					rows = append(rows, dashRow{key: "run:" + s.ID, repo: g.Repo, runs: []*run.State{s}})
+					continue
+				}
+				if i, ok := changeIndex[k]; ok {
+					rows[i].runs = append(rows[i].runs, s)
+					continue
+				}
+				changeIndex[k] = len(rows)
+				rows = append(rows, dashRow{
+					key:      "change:" + k.Repo + "#" + k.ChangeID,
+					repo:     g.Repo,
+					changeID: k.ChangeID,
+					runs:     []*run.State{s},
+				})
 				continue
 			}
 			if i, ok := prIndex[prNum]; ok {
@@ -133,6 +192,10 @@ func (m dashboardModel) buildRows() []dashRow {
 		}
 	}
 	for i := range rows {
+		if rows[i].changeID != "" {
+			runs := rows[i].runs
+			sort.SliceStable(runs, func(a, b int) bool { return createdBefore(runs[b], runs[a]) })
+		}
 		m.classify(&rows[i])
 	}
 	sort.SliceStable(rows, func(i, j int) bool {
@@ -149,14 +212,20 @@ func (m dashboardModel) buildRows() []dashRow {
 }
 
 // classify fills in a row's running agents, category, recency and whether
-// it may be hidden once old. Precedence: a running agent makes it the
-// agents'; then merged, closed, no access, integrated, gone, withdrawn or
-// superseded make it done; then needs attention, a pushed branch (to approve
-// or submit, or whose change the integrator turned down or the valley is
-// unsure of) or a PR ready to approve make it yours, except a change already
-// approved, which is the pipeline's like any other open PR; an exited agent
-// is done.
+// it may be hidden once old. A change row is judged by where the change
+// stands (placeChange), and salvaged work counts only from its current run
+// on: a later run that pushed continued it. Precedence: a running agent
+// makes it the agents'; then, on a change, salvaged work makes it yours;
+// then merged, closed, no access, integrated, gone, withdrawn or superseded
+// make it done; then needs attention, a pushed branch (to approve
+// or submit, a draft, or whose change the integrator turned down or the
+// valley is unsure of) or a PR ready to approve make it yours, except a
+// change already approved, which is the pipeline's like any other open PR;
+// an exited agent is done.
 func (m dashboardModel) classify(r *dashRow) {
+	if r.changeID != "" {
+		m.placeChange(r)
+	}
 	merged, attention := false, false
 	for _, s := range r.runs {
 		if m.agentRunning(s) {
@@ -165,7 +234,7 @@ func (m dashboardModel) classify(r *dashRow) {
 		if s.MergedAt != nil {
 			merged = true
 		}
-		if s.NeedsAttention != nil {
+		if s.NeedsAttention != nil && (r.current == nil || !createdBefore(s, r.current)) {
 			attention = true
 		}
 		if t := runLastActivity(s); t.After(r.lastSeen) {
@@ -182,27 +251,28 @@ func (m dashboardModel) classify(r *dashRow) {
 		merged = merged || pps.Stage == pipeline.StageMerged
 		attention = attention || pps.Stage == pipeline.StageStalled || pps.Stage == pipeline.StageBudgetPaused
 	}
-	pushed := r.prNum == "" && awaitsIntegration(r.state())
-	if pushed {
-		res := m.integration[r.state().ID]
-		r.verdict, r.change, r.outdated = res.Verdict, res.Change, res.Outdated
-		if r.change == nil {
-			r.change = integration.RecordedChange(r.state())
-		}
+	if r.prNum == "" && r.changeID == "" && awaitsIntegration(r.runs[0]) {
+		r.pushed = true
+		r.verdict, r.change, r.outdated = m.runView(r.runs[0])
 	}
 
 	switch {
 	case len(r.running) > 0:
 		r.category = catAgents
+	case r.changeID != "" && attention:
+		// Work salvaged after the change's current version is the
+		// operator's, whatever became of that version.
+		r.category = catYours
+		r.attention = true
 	case merged || closed || noAccess || r.verdict.Settled():
 		r.category = catDone
 		r.hideable = true
 	case attention:
 		r.category = catYours
 		r.attention = true
-	case pushed && r.verdict == integration.Approved:
+	case r.pushed && r.verdict == integration.Approved:
 		r.category = catPipeline
-	case pushed:
+	case r.pushed:
 		// A pushed branch waits for the operator to approve or submit it, or
 		// to look at what became of it, as far as anyone knows: Unknown (or
 		// no check yet) is provisional.
@@ -210,12 +280,87 @@ func (m dashboardModel) classify(r *dashRow) {
 		r.provisional = r.verdict == integration.Unknown
 	case r.prNum == "":
 		r.category = catDone
-		// A bare agent is hideable once its worktree has been cleaned up.
-		r.hideable = r.state().Worktree == ""
+		// A bare agent or change is hideable once its worktrees have been
+		// cleaned up.
+		r.hideable = true
+		for _, s := range r.runs {
+			r.hideable = r.hideable && s.Worktree == ""
+		}
 	case r.readyToApprove():
 		r.category = catYours
 	default:
 		r.category = catPipeline
+	}
+}
+
+// changeOf returns the change a run belongs to: its repo, by the rule the
+// ValleyChecker places runs with (integration.RepoName), and its change ID.
+// ok is false for a session or tracked PR, and for a run without a change ID
+// or a known repo: such a run shares its change with none.
+func changeOf(s *run.State) (integration.ChangeKey, bool) {
+	if s.Type == "session" || s.Type == "track" || s.ChangeID == "" {
+		return integration.ChangeKey{}, false
+	}
+	repo := integration.RepoName(s)
+	return integration.ChangeKey{Repo: repo, ChangeID: s.ChangeID}, repo != ""
+}
+
+// runView is where a pushed run stands by its latest check: the verdict, the
+// valley's view of its version (else what finalize recorded), and whether
+// that view is from an earlier check.
+func (m dashboardModel) runView(s *run.State) (integration.Verdict, *integration.Change, bool) {
+	res := m.integration[s.ID]
+	if res.Change == nil {
+		return res.Verdict, integration.RecordedChange(s), res.Outdated
+	}
+	return res.Verdict, res.Change, res.Outdated
+}
+
+// placeChange fills in where a change row stands. When the valley lists the
+// change, its view of the change's active version decides: the verdict, the
+// version, and the head to approve, wherever that version was marked ready.
+// The current run is then the local run that pushed that head, if any; a
+// later local push the valley doesn't hold as a version is only noted
+// (unplaced). When the valley doesn't list the change (a repo with no
+// valley, or an outage before the dashboard got a view), the latest run
+// that pushed holds the state, as it would on its own. runs are newest
+// first.
+func (m dashboardModel) placeChange(r *dashRow) {
+	var latest *run.State
+	for _, s := range r.runs {
+		if awaitsIntegration(s) {
+			latest = s
+			break
+		}
+	}
+	k, _ := changeOf(r.runs[0])
+	view, ok := m.changes[k]
+	if !ok || view.Change == nil {
+		if r.current = latest; latest != nil {
+			r.pushed = true
+			r.verdict, r.change, r.outdated = m.runView(latest)
+		}
+		return
+	}
+	r.pushed = true
+	r.verdict, r.change, r.outdated = view.Verdict, view.Change, view.Outdated
+	for _, s := range r.runs {
+		if awaitsIntegration(s) && *s.PushedSHA == view.Change.Head {
+			r.current = s
+			break
+		}
+	}
+	if latest != nil && latest != r.current {
+		if res, checked := m.integration[latest.ID]; checked && res.Change == nil && integration.RecordedChange(latest) == nil {
+			r.unplaced = *latest.PushedSHA
+		}
+	}
+	// A view kept through an outage gives way to git finding the active
+	// version landed, as a run's own view does (keepValleyViews).
+	if r.outdated && r.current != nil {
+		if res := m.integration[r.current.ID]; res.Change == nil && res.Verdict.Landed() {
+			r.verdict, r.outdated = res.Verdict, false
+		}
 	}
 }
 
