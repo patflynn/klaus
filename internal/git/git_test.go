@@ -389,7 +389,7 @@ func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -431,7 +431,7 @@ func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -468,7 +468,7 @@ func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 
@@ -554,7 +554,7 @@ func TestInstallCommitMsgHook_CoordinatorWorktree(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath); err != nil {
+	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
 		t.Fatalf("InstallCommitMsgHook: %v", err)
 	}
 

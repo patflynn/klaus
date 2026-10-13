@@ -47,6 +47,7 @@ type State struct {
 	PushedSHA        *string  `json:"pushed_sha,omitempty"`        // origin's tip of PushedBranch at finalize
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
+	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.
@@ -128,6 +129,34 @@ func (s *State) IsStaleWith(td TmuxDeps) bool {
 		return false
 	}
 	return time.Since(created) > StaleGracePeriod
+}
+
+// GenChangeID generates a change ID in jj's form: 16 random bytes in jj's
+// "reverse hex", where the hex digits 0-9a-f are written z-k. The result is 32
+// characters drawn from k to z, comparable as-is with a jj change-id header.
+func GenChangeID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating random bytes: %w", err)
+	}
+	id := make([]byte, 0, 2*len(b))
+	for _, c := range b {
+		id = append(id, 'z'-c>>4, 'z'-c&0x0f)
+	}
+	return string(id), nil
+}
+
+// ValidChangeID reports whether id has the form GenChangeID produces.
+func ValidChangeID(id string) bool {
+	if len(id) != 32 {
+		return false
+	}
+	for _, c := range []byte(id) {
+		if c < 'k' || c > 'z' {
+			return false
+		}
+	}
+	return true
 }
 
 // GenID generates a run ID in the format YYYYMMDD-HHMM-XXXXXXXX where the suffix is 8 hex chars.

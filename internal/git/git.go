@@ -567,11 +567,42 @@ func PushDataRef(ctx context.Context, repoDir, dataRef string) error {
 	return err
 }
 
-// commitMsgHookScript is a git commit-msg hook that strips Co-Authored-By
-// trailers referencing Claude or Anthropic, and removes AI attribution lines
-// from commit messages. Legitimate human co-author lines are preserved.
+// Provenance names the run that makes a worktree's commits and the change
+// they belong to. Its trailers label commits for finding and auditing; they
+// grant nothing.
+type Provenance struct {
+	RunID    string // Klaus-Run trailer; empty for none
+	ChangeID string // Change-Id trailer; empty for none
+}
+
+// Trailers returns the provenance trailer lines for the fields that are set,
+// Change-Id first, or "" when neither is.
+func (p Provenance) Trailers() string {
+	var lines []string
+	if p.ChangeID != "" {
+		lines = append(lines, "Change-Id: "+p.ChangeID)
+	}
+	if p.RunID != "" {
+		lines = append(lines, "Klaus-Run: "+p.RunID)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hookConfigName is the file beside klaus's commit-msg hook that holds the
+// hook's data, in git config format: the trailer values and the path of the
+// hook it chains to. The script reads it with git config and never has a
+// value spliced into its code.
+const hookConfigName = "klaus.config"
+
+// commitMsgHookScript is klaus's commit-msg hook. It strips Co-Authored-By
+// trailers referencing Claude or Anthropic and removes AI attribution lines
+// (human co-author lines are kept), adds the provenance trailers named in
+// klaus.config, then runs the commit-msg hook git would otherwise have run.
+// A Change-Id already on the message is kept; a Klaus-Run is added unless
+// that same run is already listed, so an amend by a later run lists both.
 const commitMsgHookScript = `#!/bin/sh
-# Installed by klaus — strips Claude/Anthropic attribution from commit messages.
+# Installed by klaus: strips Claude/Anthropic attribution, adds provenance
+# trailers, then runs the repository's own commit-msg hook.
 sed -i.bak \
   -e '/^Co-[Aa]uthored-[Bb]y:.*[Cc]laude/d' \
   -e '/^Co-[Aa]uthored-[Bb]y:.*[Aa]nthropic/d' \
@@ -580,37 +611,225 @@ sed -i.bak \
   -e '/🤖.*[Cc]laude/d' \
   "$1"
 rm -f "$1.bak"
+
+conf="$(dirname "$0")/` + hookConfigName + `"
+setting() { git config --file "$conf" --get "klaus.$1"; }
+
+# A message with no text aborts the commit; trailers alone must not save it.
+# Lines below a verbose commit's scissors line are the diff, not the message.
+if sed '/^. -\{24\} >8 -\{24\}$/,$d' "$1" | git stripspace --strip-comments | grep -q .; then
+  change=$(setting changeid)
+  if [ -n "$change" ]; then
+    git interpret-trailers --in-place --no-divider \
+      --if-exists doNothing --trailer "Change-Id: $change" "$1" || exit 1
+  fi
+  run=$(setting run)
+  if [ -n "$run" ]; then
+    git interpret-trailers --in-place --no-divider \
+      --if-exists addIfDifferent --trailer "Klaus-Run: $run" "$1" || exit 1
+  fi
+fi
+
+next=$(setting chainhook)
+if [ -n "$next" ] && [ -x "$next" ]; then
+  exec "$next" "$@"
+fi
 `
 
-// InstallCommitMsgHook installs a commit-msg hook in the given worktree that
-// strips Claude/Anthropic attribution from commit messages.
-func InstallCommitMsgHook(ctx context.Context, worktreeDir string) error {
-	// Find the git dir for this worktree
-	gitDir, err := runGit(ctx, worktreeDir, "rev-parse", "--git-dir")
+// InstallCommitMsgHook installs klaus's commit-msg hook in the linked worktree
+// at worktreeDir. The hook strips Claude/Anthropic attribution, adds prov's
+// trailers (none when prov is zero), and then runs the commit-msg hook the
+// repository would otherwise run. It is idempotent.
+//
+// The hook lives in the worktree's own git dir and is enabled with a
+// worktree-scoped core.hooksPath, so other worktrees and the main clone keep
+// their own hooks. That needs extensions.worktreeConfig, which this enables on
+// the repository once. A shared core.hooksPath that points into a worktree's
+// git dir, as earlier klaus versions left behind, is removed.
+func InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenance) error {
+	for _, v := range []string{prov.RunID, prov.ChangeID} {
+		if strings.ContainsAny(v, " \t\r\n") {
+			return fmt.Errorf("provenance value %q must be a single token", v)
+		}
+	}
+	gitDir, err := absGitPath(ctx, worktreeDir, "--git-dir")
 	if err != nil {
 		return fmt.Errorf("finding git dir: %w", err)
 	}
-	if !filepath.IsAbs(gitDir) {
-		gitDir = filepath.Join(worktreeDir, gitDir)
+	commonDir, err := absGitPath(ctx, worktreeDir, "--git-common-dir")
+	if err != nil {
+		return fmt.Errorf("finding common git dir: %w", err)
 	}
+	// In the main worktree the git dir's hooks/ is the repository's own.
+	if samePath(gitDir, commonDir) {
+		return fmt.Errorf("%s is not a linked worktree", worktreeDir)
+	}
+
+	if err := removeLeakedHooksPath(ctx, worktreeDir, commonDir); err != nil {
+		return err
+	}
+	chain := chainedCommitMsgHook(ctx, worktreeDir, commonDir)
 
 	hooksDir := filepath.Join(gitDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return fmt.Errorf("creating hooks dir: %w", err)
 	}
-
-	hookPath := filepath.Join(hooksDir, "commit-msg")
-	if err := os.WriteFile(hookPath, []byte(commitMsgHookScript), 0o755); err != nil {
+	conf := filepath.Join(hooksDir, hookConfigName)
+	if err := os.Remove(conf); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("replacing %s: %w", hookConfigName, err)
+	}
+	for _, kv := range [][2]string{{"run", prov.RunID}, {"changeid", prov.ChangeID}, {"chainhook", chain}} {
+		if kv[1] == "" {
+			continue
+		}
+		if _, err := runGit(ctx, worktreeDir, "config", "--file", conf, "klaus."+kv[0], kv[1]); err != nil {
+			return fmt.Errorf("writing %s: %w", hookConfigName, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "commit-msg"), []byte(commitMsgHookScript), 0o755); err != nil {
 		return fmt.Errorf("writing commit-msg hook: %w", err)
 	}
 
-	// Worktrees use the main repo's hooks by default. Point this worktree
-	// at its own hooks directory so our commit-msg hook actually runs.
-	if _, err := runGit(ctx, worktreeDir, "config", "core.hooksPath", hooksDir); err != nil {
+	if err := enableWorktreeConfig(ctx, worktreeDir); err != nil {
+		return err
+	}
+	if _, err := runGit(ctx, worktreeDir, "config", "--worktree", "core.hooksPath", hooksDir); err != nil {
 		return fmt.Errorf("setting core.hooksPath: %w", err)
 	}
-
 	return nil
+}
+
+// absGitPath runs git rev-parse with flag (--git-dir, --git-common-dir) in dir
+// and returns the path it names, made absolute.
+func absGitPath(ctx context.Context, dir, flag string) (string, error) {
+	p, err := runGit(ctx, dir, "rev-parse", flag)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	return filepath.Clean(p), nil
+}
+
+// enableWorktreeConfig turns on extensions.worktreeConfig in the shared
+// repository config, so git config --worktree has a file of its own. Git
+// honours the extension in format-0 repositories too.
+func enableWorktreeConfig(ctx context.Context, dir string) error {
+	enabled := func() bool {
+		v, err := runGit(ctx, dir, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
+		return err == nil && v == "true"
+	}
+	if enabled() {
+		return nil
+	}
+	if _, err := runGit(ctx, dir, "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
+		// A concurrent launch may hold the config lock to write the same value.
+		if enabled() {
+			return nil
+		}
+		return fmt.Errorf("enabling extensions.worktreeConfig: %w", err)
+	}
+	return nil
+}
+
+// removeLeakedHooksPath removes a shared core.hooksPath that points inside the
+// common git dir's worktrees/. Earlier klaus versions wrote one there, which
+// made every worktree of the clone run the last-set-up worktree's hooks, and
+// none at all once that worktree was cleaned up. Any other value is the
+// repository's own choice and is kept.
+func removeLeakedHooksPath(ctx context.Context, dir, commonDir string) error {
+	leaked := func() []string {
+		out, err := runGit(ctx, dir, "config", "--local", "--get-all", "core.hooksPath")
+		if err != nil {
+			return nil // unset
+		}
+		var vs []string
+		for _, v := range strings.Split(out, "\n") {
+			if inWorktreesDir(v, commonDir) {
+				vs = append(vs, v)
+			}
+		}
+		return vs
+	}
+	for _, v := range leaked() {
+		if _, err := runGit(ctx, dir, "config", "--local", "--fixed-value", "--unset-all", "core.hooksPath", v); err != nil {
+			// A concurrent launch may hold the config lock to remove it too.
+			if len(leaked()) == 0 {
+				return nil
+			}
+			return fmt.Errorf("removing shared core.hooksPath %s: %w", v, err)
+		}
+	}
+	return nil
+}
+
+// chainedCommitMsgHook returns the commit-msg hook git would run in the
+// worktree at dir without klaus's: under the core.hooksPath set outside the
+// worktree's own config, else under the common git dir's hooks/. It returns ""
+// when that path is inside a worktree's git dir: another run's klaus hook.
+func chainedCommitMsgHook(ctx context.Context, dir, commonDir string) string {
+	hooksDir := filepath.Join(commonDir, "hooks")
+	// --show-scope lists values lowest precedence first; the last one wins.
+	if out, err := runGit(ctx, dir, "config", "--show-scope", "--type=path", "--get-all", "core.hooksPath"); err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			scope, v, ok := strings.Cut(line, "\t")
+			if !ok || scope == "worktree" || scope == "command" {
+				continue
+			}
+			hooksDir = v
+		}
+	}
+	// A relative core.hooksPath is relative to the worktree root, where git
+	// runs hooks.
+	if !filepath.IsAbs(hooksDir) {
+		hooksDir = filepath.Join(dir, hooksDir)
+	}
+	if inWorktreesDir(hooksDir, commonDir) {
+		return ""
+	}
+	return filepath.Join(hooksDir, "commit-msg")
+}
+
+// inWorktreesDir reports whether the absolute path p is inside the common git
+// dir's worktrees/, where linked worktrees keep their git dirs.
+func inWorktreesDir(p, commonDir string) bool {
+	if !filepath.IsAbs(p) {
+		return false
+	}
+	roots := []string{commonDir}
+	if real, err := filepath.EvalSymlinks(commonDir); err == nil {
+		roots = append(roots, real)
+	}
+	for _, root := range roots {
+		rel, err := filepath.Rel(filepath.Join(root, "worktrees"), p)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// samePath reports whether a and b name the same directory.
+func samePath(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
+	}
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+// CommitChangeID returns the Change-Id trailer of commit rev in dir, or ""
+// when it has none.
+func CommitChangeID(ctx context.Context, dir, rev string) (string, error) {
+	out, err := runGit(ctx, dir, "log", "-1", "--format=%(trailers:key=Change-Id,valueonly,separator=%x0A)", rev)
+	if err != nil {
+		return "", err
+	}
+	first, _, _ := strings.Cut(out, "\n")
+	return strings.TrimSpace(first), nil
 }
 
 // ensureTimeout returns a context with the given default timeout applied if

@@ -365,6 +365,31 @@ There is no subcommand named `klaus resume` or `klaus finalize` — resuming hap
 - `klaus launch --pr <num> "..."` resumes a budget-paused PR (WIP commit + trajectory replay, as above).
 - `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. Prior errors produce a warning but do not prevent resume. It starts fresh if the transcript can't be located or staged (Claude), or the local thread ID is missing (Codex).
 
+## Provenance trailers
+
+Every commit an agent makes ends with two trailers:
+
+```
+Change-Id: <change id>
+Klaus-Run: <run id>
+```
+
+From any commit, `Klaus-Run` leads to the run that made it, and through the run to its prompt, log, cost and trajectory. `Change-Id` names the change the commit belongs to, in jj's change-id form: 32 characters from `k` to `z`. A tool that tracks changes can compare it with a jj `change-id` header as it is.
+
+The trailers are labels for finding and auditing commits. They grant nothing: no tool may trust a commit or skip a check because of one.
+
+klaus adds them mechanically, never through the agent's prompt. `klaus launch` installs a `commit-msg` hook in the agent's worktree. On each commit the hook strips Claude/Anthropic attribution, adds `Change-Id` unless the message already has one, adds `Klaus-Run` unless that run is already listed, and then runs the repository's own `commit-msg` hook, if it has one. A commit amended by a later run therefore keeps its `Change-Id` and lists both runs in order. The commits `_finalize` makes when it salvages unfinished work or pauses at the budget cap skip hooks, so `_finalize` adds the same trailers itself.
+
+Each run records its change ID as `change_id` in its state. A fresh launch gets a new one. A follow-up keeps the change ID of the work it continues:
+
+- `--pr <num>` uses the change ID of the run that opened the PR, found in any session on the machine. If no run on the PR has one, it uses the `Change-Id` on the PR's head commit.
+- `--resume-from <run-id>` uses the change ID of the run it resumes.
+- A budget-paused replay is a `--pr` run, so it keeps the paused PR's change ID.
+
+A follow-up to a run whose state predates change IDs gets a new one, and `klaus launch` says so in its `change:` line.
+
+The hook applies to the agent's worktree only. klaus sets `core.hooksPath` with `git config --worktree`, which needs `extensions.worktreeConfig`; klaus enables that once on the clone. Other worktrees and the main clone keep their own hooks. Earlier klaus versions set `core.hooksPath` in the clone's shared config, pointing into one worktree's git dir. When the shared value points inside `.git/worktrees/`, klaus removes it the next time it installs the hook. Any other shared value is the repository's own, so klaus keeps it and runs the hook it names. The coordinator's session worktree gets the same hook without trailers, because the coordinator is not a run that produces a change.
+
 ## Install
 
 ### Nix flake (recommended)
@@ -746,5 +771,5 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 - `tmux` (sessions run inside tmux)
 - At least one configured backend CLI: `claude`, `codex`, or `agy` (authenticated)
-- `git` (needed for agent worktrees; sessions can run without it)
+- `git` 2.30 or later (needed for agent worktrees; sessions can run without it)
 - `gh` (GitHub CLI, for PR operations)

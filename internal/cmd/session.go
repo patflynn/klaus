@@ -207,7 +207,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 				if err := gitClient.WorktreeAdd(ctx, baseRepo, worktree, branch, startPoint); err != nil {
 					return fmt.Errorf("recreating worktree: %w", err)
 				}
-				if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+				if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{}); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 				}
 			}
@@ -215,9 +215,12 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 		} else if branch != "" {
 			// Worktree already exists (resuming an existing session). Reinstall
 			// the commit-msg hook so sessions created before the hook existed
-			// (or where it was removed) still strip attribution trailers.
-			// InstallCommitMsgHook is idempotent, so this is safe to rerun.
-			if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+			// (or where it was removed) still strip attribution trailers, and
+			// ones whose hook was enabled in the shared config get it scoped to
+			// this worktree. InstallCommitMsgHook is idempotent, so this is
+			// safe to rerun. The coordinator gets no provenance trailers: it is
+			// not a run that produces a change.
+			if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 			}
 		}
@@ -288,7 +291,7 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 			}
 
-			if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
+			if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 			}
 
