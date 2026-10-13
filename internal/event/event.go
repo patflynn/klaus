@@ -43,6 +43,11 @@ const (
 	// branch on origin — the normal finish in a direct-push repo, where the
 	// operator integrates the branch by hand. It carries repo, branch and sha.
 	AgentBranchPushed = "agent:branch-pushed"
+	// AgentChangeReady signals that finalize marked a pushed branch's head
+	// ready on the valley its repo delivers to, as a version of the run's
+	// change. It follows agent:branch-pushed and carries repo, change_id,
+	// handle, version, title and head.
+	AgentChangeReady = "agent:change-ready"
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have

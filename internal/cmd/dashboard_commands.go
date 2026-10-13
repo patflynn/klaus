@@ -32,9 +32,9 @@ type ghStatusMsg struct {
 // integrationTickMsg starts an integration check of pushed runs.
 type integrationTickMsg struct{}
 
-// integrationMsg carries the verdicts of an integration check, by run ID.
+// integrationMsg carries the results of an integration check, by run ID.
 type integrationMsg struct {
-	verdicts map[string]integration.Verdict
+	results map[string]integration.Result
 }
 
 type fsEventMsg struct{}
@@ -151,7 +151,8 @@ const integrationInterval = time.Minute
 const integrationTimeout = 5 * time.Minute
 
 // checkIntegrationCmd checks, in the background, the runs that are waiting
-// for their pushed branch to be integrated.
+// for their pushed branch to be integrated. With a ValleyChecker that is at
+// most one `valley changes` for all of them.
 func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.Cmd {
 	if checker == nil {
 		return nil
@@ -166,7 +167,7 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.C
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 		defer cancel()
-		return integrationMsg{verdicts: checker.Check(ctx, pushed)}
+		return integrationMsg{results: checker.Check(ctx, pushed)}
 	}
 }
 

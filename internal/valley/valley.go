@@ -1,0 +1,234 @@
+// Package valley drives the `valley` CLI of a valley, the self-hosted
+// integration host that direct-push repos deliver to: marking a pushed head
+// ready as a version of its change, and reading the valley's view of every
+// change.
+package valley
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/patflynn/klaus/internal/git"
+)
+
+const (
+	// ReadyTimeout bounds `valley ready`.
+	ReadyTimeout = 30 * time.Second
+	// ListTimeout bounds `valley changes`.
+	ListTimeout = time.Minute
+	// helpTimeout bounds `valley help`.
+	helpTimeout = 10 * time.Second
+	// gitTimeout bounds each git command detection runs.
+	gitTimeout = 30 * time.Second
+	// maxReason caps the length of a failure's reason.
+	maxReason = 200
+)
+
+// Error is a valley command that failed: it refused (exited non-zero), timed
+// out, couldn't start, or printed something klaus can't read. Reason is
+// short enough to record on a run.
+type Error struct {
+	Verb   string
+	Reason string
+}
+
+func (e *Error) Error() string {
+	return "valley " + e.Verb + ": " + e.Reason
+}
+
+// Readied is what `valley ready` reports: the repo, the change's handle and
+// the version the head became.
+type Readied struct {
+	Repo    string
+	Handle  string
+	Version int
+}
+
+// readyLine is the line `valley ready` prints on success, e.g.
+// "cosmo nxvp v2 ready".
+var readyLine = regexp.MustCompile(`^(\S+) (\S+) v(\d+) ready$`)
+
+// Ready runs `valley ready --change <changeID> --head <head> <branch>` in dir,
+// marking head ready as a version of the change. The valley identifies the
+// pusher from git config valley.principal, which the host sets, not klaus.
+func Ready(ctx context.Context, dir, changeID, head, branch string) (Readied, error) {
+	out, err := command(ctx, dir, ReadyTimeout, "ready", "--change", changeID, "--head", head, branch)
+	if err != nil {
+		return Readied{}, err
+	}
+	return parseReady(out)
+}
+
+func parseReady(out []byte) (Readied, error) {
+	for _, line := range strings.Split(string(out), "\n") {
+		m := readyLine.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		if n, err := strconv.Atoi(m[3]); err == nil {
+			return Readied{Repo: m[1], Handle: m[2], Version: n}, nil
+		}
+	}
+	return Readied{}, &Error{Verb: "ready", Reason: "unexpected output: " + shortReason(out)}
+}
+
+// List runs `valley changes --all --json` in dir: one process for every repo
+// the valley serves.
+func List(ctx context.Context, dir string) (*Changes, error) {
+	out, err := command(ctx, dir, ListTimeout, "changes", "--all", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return Decode(out)
+}
+
+// Supported reports whether the valley on PATH has the verbs klaus uses: its
+// help lists both ready and changes. A valley from before change records
+// lacks them, and klaus treats its repos as plain direct-push repos.
+func Supported(ctx context.Context) bool {
+	if _, err := exec.LookPath("valley"); err != nil {
+		return false
+	}
+	// Some CLIs exit non-zero from help; the listing is what counts.
+	stdout, stderr, _ := execValley(ctx, "", helpTimeout, "help")
+	help := append(stdout, stderr...)
+	return hasVerb(help, "ready") && hasVerb(help, "changes")
+}
+
+// hasVerb reports whether help lists verb: a line that starts with it, after
+// at most a little indentation and an optional "usage: valley". Prose that
+// merely uses the word sits deeper in the text and doesn't count.
+func hasVerb(help []byte, verb string) bool {
+	re := regexp.MustCompile(`(?m)^[ \t]{0,4}(?:usage:[ \t]+)?(?:valley[ \t]+)?` + regexp.QuoteMeta(verb) + `\b`)
+	return re.Match(help)
+}
+
+// Detect reports whether the repo in dir delivers to a valley that klaus can
+// mark changes ready on: its origin isn't GitHub, the pushed head of branch
+// carries the valley's policy (HasPolicy), and the valley on PATH is
+// Supported. A head the repo lacks, as when a sandbox pushed it, is fetched
+// from origin first. The cheap checks come first, so a repo without the
+// policy never runs valley.
+func Detect(ctx context.Context, dir, branch, head string) bool {
+	if dir == "" || head == "" {
+		return false
+	}
+	origin, err := gitOutput(ctx, dir, "remote", "get-url", "origin")
+	if err != nil || origin == "" || git.IsGitHubRemote(origin) {
+		return false
+	}
+	if _, err := gitOutput(ctx, dir, "cat-file", "-e", head+"^{commit}"); err != nil && branch != "" {
+		_, _ = gitOutput(ctx, dir, "fetch", "--quiet", "--no-tags", "origin",
+			"+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	}
+	return HasPolicy(ctx, dir, head) && Supported(ctx)
+}
+
+// HasPolicy reports whether commit head, in the repo at dir, carries
+// policy/valley or a policy/instance/ directory. A head the repo doesn't have
+// carries neither.
+func HasPolicy(ctx context.Context, dir, head string) bool {
+	out, err := gitOutput(ctx, dir, "ls-tree", head, "--", "policy/valley", "policy/instance")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		meta, path, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		f := strings.Fields(meta) // mode, type, object
+		switch {
+		case path == "policy/valley":
+			return true
+		case path == "policy/instance" && len(f) == 3 && f[1] == "tree":
+			return true
+		}
+	}
+	return false
+}
+
+// command runs valley and returns its stdout, or an *Error.
+func command(ctx context.Context, dir string, timeout time.Duration, args ...string) ([]byte, error) {
+	stdout, stderr, err := execValley(ctx, dir, timeout, args...)
+	if err == nil {
+		return stdout, nil
+	}
+	e := &Error{Verb: args[0]}
+	var exitErr *exec.ExitError
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		e.Reason = fmt.Sprintf("timed out after %s", timeout)
+	case errors.As(err, &exitErr):
+		// A refusal: the valley's message, from stderr or else stdout.
+		e.Reason = shortReason(stderr)
+		if e.Reason == "" {
+			e.Reason = shortReason(stdout)
+		}
+		if e.Reason == "" {
+			e.Reason = err.Error()
+		}
+	default:
+		e.Reason = err.Error()
+	}
+	return nil, e
+}
+
+// execValley runs valley in dir (the current directory when empty). It never
+// prompts: stdin is empty, git's terminal prompt is off, and the command runs
+// in a new session with no controlling terminal, so ssh can't ask for a
+// passphrase on the dashboard's screen. A timeout reports
+// context.DeadlineExceeded.
+func execValley(ctx context.Context, dir string, timeout time.Duration, args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "valley", args...)
+	cmd.Dir = dir
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0") // Environ sets PWD to Dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.WaitDelay = 5 * time.Second
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err = cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return out.Bytes(), errOut.Bytes(), err
+}
+
+// shortReason joins a message's non-empty lines and caps its length.
+func shortReason(msg []byte) string {
+	var lines []string
+	for _, l := range strings.Split(string(msg), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	r := []rune(strings.Join(lines, "; "))
+	if len(r) > maxReason {
+		return string(r[:maxReason-1]) + "…"
+	}
+	return string(r)
+}
+
+// gitOutput runs git in dir and returns its trimmed stdout. Like valley, it
+// never prompts.
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}

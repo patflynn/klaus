@@ -96,13 +96,13 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 		pipelineStates: map[string]*pipeline.PRPipelineState{
 			"2": {PRNumber: "2", PRURL: *pr(2), Stage: pipeline.StageStalled},
 		},
-		integration: map[string]integration.Verdict{
-			submit.ID:        integration.Awaiting,
-			unknownCheck.ID:  integration.Unknown,
-			landedRunning.ID: integration.Integrated,
-			integrated.ID:    integration.Integrated,
-			content.ID:       integration.IntegratedContent,
-			gone.ID:          integration.Gone,
+		integration: map[string]integration.Result{
+			submit.ID:        {Verdict: integration.Awaiting},
+			unknownCheck.ID:  {Verdict: integration.Unknown},
+			landedRunning.ID: {Verdict: integration.Integrated},
+			integrated.ID:    {Verdict: integration.Integrated},
+			content.ID:       {Verdict: integration.IntegratedContent},
+			gone.ID:          {Verdict: integration.Gone},
 		},
 		hideAfter: defaultHideFinishedAfter,
 	}
@@ -234,7 +234,7 @@ func TestSubmitThenIntegratedStaysVisible(t *testing.T) {
 		return send(m, tea.WindowSizeMsg{Width: 160, Height: 20})
 	}
 	verdict := func(v integration.Verdict) integrationMsg {
-		return integrationMsg{verdicts: map[string]integration.Verdict{s.ID: v}}
+		return integrationMsg{results: map[string]integration.Result{s.ID: {Verdict: v}}}
 	}
 	shown := func(m dashboardModel) string {
 		return lineWith(ansi.Strip(m.View()), "pushed 01")
@@ -583,7 +583,7 @@ func TestSubmitCommandInFooter(t *testing.T) {
 			CreatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339)},
 	}
 	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: map[string]*prStatus{},
-		hideAfter: defaultHideFinishedAfter, submitTemplate: "cd ~/hack/{repo} && valley review {branch}"}
+		hideAfter: defaultHideFinishedAfter, approveTemplate: "cd ~/hack/{repo} && valley review {branch}"}
 	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 20})
 
 	want := "submit: cd ~/hack/cosmo && valley review " + branch
@@ -597,7 +597,7 @@ func TestSubmitCommandInFooter(t *testing.T) {
 
 	// Integrated: nothing left to submit.
 	m = press(m, "k")
-	m = send(m, integrationMsg{verdicts: map[string]integration.Verdict{states[0].ID: integration.Integrated}})
+	m = send(m, integrationMsg{results: map[string]integration.Result{states[0].ID: {Verdict: integration.Integrated}}})
 	if view := ansi.Strip(m.View()); strings.Contains(view, "submit:") {
 		t.Errorf("footer should not show a submit command once integrated:\n%s", view)
 	}

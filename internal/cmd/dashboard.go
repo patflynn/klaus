@@ -53,12 +53,16 @@ a full status re-fetch every 5 minutes by default (configurable via
 
 Runs are listed one per row, grouped by whose move it is, most recent first
 within each group:
-  yours     needs you: needs attention (ATTN), a pushed branch to submit
-            (SUBMIT), or a PR that is ready to merge and not yet approved
+  yours     needs you: needs attention (ATTN), a valley change to approve
+            (APPROVE) or to look at (STALE, REJECTED, FAILED, UNCERTAIN), a
+            pushed branch to submit (SUBMIT), or a PR that is ready to merge
+            and not yet approved
   agents    an agent is running on it
   pipeline  an open PR the pipeline is handling: CI running or failing,
-            conflicts, behind, approved and waiting to merge
-  done      merged, closed, integrated, gone, no access, or exited
+            conflicts, behind, approved and waiting to merge; or a valley
+            change that is approved and waiting on the integrator (APPROVED)
+  done      merged, closed, integrated, gone, withdrawn, superseded, no
+            access, or exited
 The line above the list counts each group (e.g. "2 yours") and shows the
 scroll position (e.g. "12–30 of 34").
 
@@ -71,15 +75,32 @@ evidence rather than proof; GONE means the branch was deleted without
 landing. A PR the agent can no longer read on GitHub shows NO ACCESS and is
 re-checked every 30 minutes.
 
+A run whose repo delivers to a valley shows as its change: the repo (always
+shown), the change's handle and its title, then the version and head (e.g.
+v2@1a2b3c4). Finalize marked the pushed head ready. Every minute, one
+"valley changes --all --json" for all such runs says where each stands:
+APPROVE (ready and waiting for you), APPROVED, INTEGRATED (landed),
+UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED (the
+integrator's decision), WITHDRAWN, or SUPERSEDED (another version of the
+change is active). If valley can't be asked, the git check above decides,
+and a change waiting on it reads APPROVE. A run whose change finalize
+couldn't mark ready shows SUBMIT and the reason.
+
 Done rows older than an hour are hidden until you press h; the line above the
 list says how many are hidden. A row the dashboard watched finish stays for
 the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
 to change the threshold, or a negative N to never hide them.
 
-Set "dashboard": {"submit_command": "cd ~/hack/{repo} && valley review {branch}"}
-to show, in the footer, the command that submits the selected SUBMIT row.
-{repo} is the short project name and {branch} the pushed branch. The command
-is for you to run on your own machine; the dashboard never runs it.
+Set "dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}
+to show, in the footer, the command that approves the selected APPROVE row
+(or submits a SUBMIT row). {repo} is the repo as the row names it, {branch}
+the pushed branch, {change} the full change ID, {handle} the change's handle
+and {head} the pushed head, so the approval binds the head you saw. A row
+with no value for a placeholder the template uses, such as {handle} on a
+branch no valley knows, shows no command. The command is for you to run on
+your own machine; the dashboard never runs it. "submit_command" is the
+deprecated name of "approve_command", read only when approve_command is
+unset.
 
 Keyboard shortcuts:
   j / k or ↑ / ↓  move the selection
@@ -187,40 +208,40 @@ func init() {
 
 // dashboardModel is the bubbletea model for the dashboard.
 type dashboardModel struct {
-	store          run.StateStore
-	ghClient       gh.Client
-	tmuxDeps       run.TmuxDeps
-	tmux           tmux.Client // for keyboard-driven actions (discuss)
-	cursor         int         // index into the displayed rows of the selected row
-	selKey         string      // dashRow.key of the selected row; survives reordering
-	offset         int         // index of the first row in the viewport
-	showAll        bool        // show old done rows that are hidden by default
-	hideAfter      time.Duration
-	runningSnap    map[string]bool      // run ID -> agent running, see agentRunning
-	seenUnfinished map[string]bool      // row keys seen before they finished
-	finishedAt     map[string]time.Time // when a watched row was first seen finished
-	states         []*run.State
-	ghStatus       map[string]*prStatus // keyed by PR URL
-	sandboxHosts   map[string]bool      // host -> reachable
-	pipelineCtrl   *pipeline.Controller
-	pipelineStates map[string]*pipeline.PRPipelineState
-	noAccessAt     map[string]time.Time // PR URL -> when last found unreadable
-	checker        integration.Checker
-	integration    map[string]integration.Verdict // run ID -> latest verdict; nil before the first check
-	integrationOn  bool                           // the integration check loop has started
-	submitTemplate string                         // dashboard.submit_command
-	recentErrors   []dashboardError               // last N pipeline errors shown in TUI
-	width          int
-	height         int
-	err            error
-	watcher        *fsnotify.Watcher
-	logFile        *os.File
-	shutdownCancel context.CancelFunc   // cancels the shared shutdown context
-	webhookCh      <-chan webhook.Event // non-nil when webhook mode is active
-	webhookAddr    string               // e.g. "127.0.0.1:9800"
-	useWebhook     bool                 // true when webhook server is running
-	pollEnabled    bool                 // true when polling is active (default or poll_fallback)
-	reconcileEvery time.Duration        // slow reconcile heartbeat interval (webhook-only mode)
+	store           run.StateStore
+	ghClient        gh.Client
+	tmuxDeps        run.TmuxDeps
+	tmux            tmux.Client // for keyboard-driven actions (discuss)
+	cursor          int         // index into the displayed rows of the selected row
+	selKey          string      // dashRow.key of the selected row; survives reordering
+	offset          int         // index of the first row in the viewport
+	showAll         bool        // show old done rows that are hidden by default
+	hideAfter       time.Duration
+	runningSnap     map[string]bool      // run ID -> agent running, see agentRunning
+	seenUnfinished  map[string]bool      // row keys seen before they finished
+	finishedAt      map[string]time.Time // when a watched row was first seen finished
+	states          []*run.State
+	ghStatus        map[string]*prStatus // keyed by PR URL
+	sandboxHosts    map[string]bool      // host -> reachable
+	pipelineCtrl    *pipeline.Controller
+	pipelineStates  map[string]*pipeline.PRPipelineState
+	noAccessAt      map[string]time.Time // PR URL -> when last found unreadable
+	checker         integration.Checker
+	integration     map[string]integration.Result // run ID -> latest check; nil before the first check
+	integrationOn   bool                          // the integration check loop has started
+	approveTemplate string                        // dashboard.approve_command, or the deprecated submit_command
+	recentErrors    []dashboardError              // last N pipeline errors shown in TUI
+	width           int
+	height          int
+	err             error
+	watcher         *fsnotify.Watcher
+	logFile         *os.File
+	shutdownCancel  context.CancelFunc   // cancels the shared shutdown context
+	webhookCh       <-chan webhook.Event // non-nil when webhook mode is active
+	webhookAddr     string               // e.g. "127.0.0.1:9800"
+	useWebhook      bool                 // true when webhook server is running
+	pollEnabled     bool                 // true when polling is active (default or poll_fallback)
+	reconcileEvery  time.Duration        // slow reconcile heartbeat interval (webhook-only mode)
 	// internalEventCh carries klaus-emitted invalidation events (e.g.
 	// PRApprovalChanged from `klaus approve`). It is symmetric to webhookCh
 	// but sourced from the local event log rather than an HTTP listener,
@@ -253,26 +274,21 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	ctrl := pipeline.New(store, eventLog, logger)
 	ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
 
-	var submitTemplate string
-	if cfg.Dashboard != nil {
-		submitTemplate = cfg.Dashboard.SubmitCommand
-	}
-
 	return dashboardModel{
-		store:          store,
-		ghClient:       ghClient,
-		tmuxDeps:       run.DefaultTmuxDeps(),
-		tmux:           tmux.NewExecClient(),
-		ghStatus:       make(map[string]*prStatus),
-		sandboxHosts:   make(map[string]bool),
-		pipelineCtrl:   ctrl,
-		pipelineStates: make(map[string]*pipeline.PRPipelineState),
-		noAccessAt:     make(map[string]time.Time),
-		checker:        integration.NewGitChecker(logger),
-		submitTemplate: submitTemplate,
-		hideAfter:      hideFinishedAfter(cfg.Dashboard),
-		logFile:        logFile,
-		eventsPath:     eventsPath,
+		store:           store,
+		ghClient:        ghClient,
+		tmuxDeps:        run.DefaultTmuxDeps(),
+		tmux:            tmux.NewExecClient(),
+		ghStatus:        make(map[string]*prStatus),
+		sandboxHosts:    make(map[string]bool),
+		pipelineCtrl:    ctrl,
+		pipelineStates:  make(map[string]*pipeline.PRPipelineState),
+		noAccessAt:      make(map[string]time.Time),
+		checker:         integration.NewValleyChecker(logger),
+		approveTemplate: cfg.Dashboard.ApproveTemplate(),
+		hideAfter:       hideFinishedAfter(cfg.Dashboard),
+		logFile:         logFile,
+		eventsPath:      eventsPath,
 	}
 }
 
@@ -416,7 +432,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, checkIntegrationCmd(m.checker, m.states)
 
 	case integrationMsg:
-		m.integration = msg.verdicts
+		m.integration = msg.results
 		return m, integrationTickAfterCmd()
 
 	case ghStatusMsg:

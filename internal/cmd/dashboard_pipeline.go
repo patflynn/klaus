@@ -63,9 +63,12 @@ func (m *dashboardModel) snapshotRunning() {
 }
 
 // agentStatusLabel returns a display label for a non-running agent. A pushed
-// branch reads SUBMIT until an integration check (v) says it landed
-// (INTEGRATED, or INTEGRATED~ for a content match) or was deleted (GONE).
-func agentStatusLabel(s *run.State, v integration.Verdict) string {
+// branch reads SUBMIT, or APPROVE when a valley knows it as a change, until
+// an integration check (v) says it landed (INTEGRATED, or INTEGRATED~ for a
+// content match) or was deleted (GONE), or the valley's record says where
+// the change stands (APPROVED, UNCERTAIN, STALE, REJECTED, FAILED,
+// WITHDRAWN, SUPERSEDED).
+func agentStatusLabel(s *run.State, v integration.Verdict, valley bool) string {
 	if s.NeedsAttention != nil {
 		return "ATTN"
 	}
@@ -80,6 +83,25 @@ func agentStatusLabel(s *run.State, v integration.Verdict) string {
 			return "INTEGRATED~"
 		case integration.Gone:
 			return "GONE"
+		case integration.Ready:
+			return "APPROVE"
+		case integration.Approved:
+			return "APPROVED"
+		case integration.Uncertain:
+			return "UNCERTAIN"
+		case integration.Stale:
+			return "STALE"
+		case integration.Rejected:
+			return "REJECTED"
+		case integration.Failed:
+			return "FAILED"
+		case integration.Withdrawn:
+			return "WITHDRAWN"
+		case integration.Superseded:
+			return "SUPERSEDED"
+		}
+		if valley {
+			return "APPROVE"
 		}
 		return "SUBMIT"
 	}
