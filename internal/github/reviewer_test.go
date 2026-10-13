@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// fakeGH answers the two gh calls the resolver makes and records every call.
-type fakeGH struct {
+// reviewerGH answers the two gh calls the resolver makes and records every call.
+type reviewerGH struct {
 	user          string
 	userErr       error
 	collaborators string // raw `gh api --paginate` output
@@ -18,7 +18,7 @@ type fakeGH struct {
 	calls         [][]string
 }
 
-func (f *fakeGH) run(_ context.Context, args ...string) ([]byte, error) {
+func (f *reviewerGH) run(_ context.Context, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, args)
 	switch {
 	case reflect.DeepEqual(args, []string{"api", "user", "-q", ".login"}):
@@ -34,7 +34,7 @@ func TestReviewerResolverResolve(t *testing.T) {
 		name         string
 		repo         string
 		configured   string
-		gh           fakeGH
+		gh           reviewerGH
 		want         string
 		wantWarning  []string // substrings; nil means no warning
 		wantNoGHCall bool
@@ -49,7 +49,7 @@ func TestReviewerResolverResolve(t *testing.T) {
 		{
 			name: "owner picked over other writers",
 			repo: "patflynn/klaus",
-			gh: fakeGH{user: "patflynn-agent", collaborators: `[
+			gh: reviewerGH{user: "patflynn-agent", collaborators: `[
 				{"login":"alice","type":"User"},
 				{"login":"patflynn-agent","type":"User"},
 				{"login":"PatFlynn","type":"User"},
@@ -60,14 +60,14 @@ func TestReviewerResolverResolve(t *testing.T) {
 			// Two pages, as --paginate prints them: arrays back to back.
 			name: "single non-author writer when owner is an org",
 			repo: "acme/widget",
-			gh: fakeGH{user: "acme-agent", collaborators: `[{"login":"acme-agent","type":"User"},{"login":"renovate","type":"Bot"}]
+			gh: reviewerGH{user: "acme-agent", collaborators: `[{"login":"acme-agent","type":"User"},{"login":"renovate","type":"Bot"}]
 [{"login":"alice","type":"User"}]`},
 			want: "alice",
 		},
 		{
 			name: "author and bots are excluded even when they own the repo",
 			repo: "acme/widget",
-			gh: fakeGH{user: "Acme", collaborators: `[
+			gh: reviewerGH{user: "Acme", collaborators: `[
 				{"login":"acme","type":"User"},
 				{"login":"acme-bot","type":"Bot"},
 				{"login":"alice","type":"User"}]`},
@@ -76,7 +76,7 @@ func TestReviewerResolverResolve(t *testing.T) {
 		{
 			name: "several candidates and no owner",
 			repo: "acme/widget",
-			gh: fakeGH{user: "acme-agent", collaborators: `[
+			gh: reviewerGH{user: "acme-agent", collaborators: `[
 				{"login":"alice","type":"User"},
 				{"login":"acme-agent","type":"User"},
 				{"login":"bob","type":"User"}]`},
@@ -85,19 +85,19 @@ func TestReviewerResolverResolve(t *testing.T) {
 		{
 			name:        "nobody but the author can approve",
 			repo:        "acme/widget",
-			gh:          fakeGH{user: "acme-agent", collaborators: `[{"login":"acme-agent","type":"User"},{"login":"ci","type":"Bot"}]`},
+			gh:          reviewerGH{user: "acme-agent", collaborators: `[{"login":"acme-agent","type":"User"},{"login":"ci","type":"Bot"}]`},
 			wantWarning: []string{"acme-agent", "pr_reviewer"},
 		},
 		{
 			name:        "gh user lookup fails",
 			repo:        "acme/widget",
-			gh:          fakeGH{userErr: errors.New("exit status 4: gh auth login\nto authenticate")},
+			gh:          reviewerGH{userErr: errors.New("exit status 4: gh auth login\nto authenticate")},
 			wantWarning: []string{"gh auth login to authenticate", "pr_reviewer"},
 		},
 		{
 			name:        "collaborators call fails",
 			repo:        "acme/widget",
-			gh:          fakeGH{user: "acme-agent", collabErr: errors.New("HTTP 403: Must have push access")},
+			gh:          reviewerGH{user: "acme-agent", collabErr: errors.New("HTTP 403: Must have push access")},
 			wantWarning: []string{"HTTP 403", "pr_reviewer"},
 		},
 		{
@@ -136,7 +136,7 @@ func TestReviewerResolverResolve(t *testing.T) {
 // check for itself: push access, direct and outside collaborators alike, every
 // page.
 func TestReviewerResolverQueriesPushCollaborators(t *testing.T) {
-	f := &fakeGH{user: "acme-agent", collaborators: `[{"login":"alice","type":"User"}]`}
+	f := &reviewerGH{user: "acme-agent", collaborators: `[{"login":"alice","type":"User"}]`}
 	r := &ReviewerResolver{Run: f.run}
 	r.Resolve(context.Background(), "acme/widget", "")
 	r.Resolve(context.Background(), "acme/gadget", "")
