@@ -2,11 +2,13 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -162,6 +164,100 @@ func TestInstallCommitMsgHook_RepairsLeakedSharedHooksPath(t *testing.T) {
 		install(t, addWorktree(t, clone, "run-a"), Provenance{RunID: testRunA})
 		if got := sharedHooksPaths(t, clone); len(got) != 1 || got[0] != own {
 			t.Errorf("shared core.hooksPath = %v, want [%s] kept", got, own)
+		}
+	})
+}
+
+// holdConfigLock takes the clone's config.lock, as a concurrent git config
+// does. After delay it writes the shared config with the git config args in
+// update applied into the lock and renames the lock into place, the way git
+// commits a config change. The returned channel reports how that went.
+func holdConfigLock(t *testing.T, clone string, delay time.Duration, update ...string) <-chan error {
+	t.Helper()
+	config := filepath.Join(clone, ".git", "config")
+	lock := config + ".lock"
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	scratch := filepath.Join(t.TempDir(), "config")
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(delay)
+		released <- func() error {
+			old, err := os.ReadFile(config)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(scratch, old, 0o644); err != nil {
+				return err
+			}
+			args := append([]string{"config", "--file", scratch}, update...)
+			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+				return fmt.Errorf("git %v: %v\n%s", args, err, out)
+			}
+			next, err := os.ReadFile(scratch)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(lock, next, 0o644); err != nil {
+				return err
+			}
+			return os.Rename(lock, config)
+		}()
+	}()
+	return released
+}
+
+// TestInstallCommitMsgHook_WaitsForConcurrentConfigWrite covers two launches
+// installing at once: the one that loses config.lock must wait for the winner
+// to put the same change in place, not fail on seeing the old config.
+func TestInstallCommitMsgHook_WaitsForConcurrentConfigWrite(t *testing.T) {
+	t.Run("enabling extensions.worktreeConfig", func(t *testing.T) {
+		clone := testClone(t)
+		wt := addWorktree(t, clone, "run-a")
+		released := holdConfigLock(t, clone, 300*time.Millisecond, "extensions.worktreeConfig", "true")
+
+		install(t, wt, Provenance{RunID: testRunA})
+		if err := <-released; err != nil {
+			t.Fatalf("releasing config.lock: %v", err)
+		}
+		commitFile(t, wt, "a.txt", "change in a")
+		if got := trailerValues(t, wt, "Klaus-Run"); len(got) != 1 || got[0] != testRunA {
+			t.Errorf("Klaus-Run = %v, want [%s]", got, testRunA)
+		}
+	})
+
+	t.Run("removing a leaked core.hooksPath", func(t *testing.T) {
+		clone := testClone(t)
+		leakedHooks := filepath.Join(clone, ".git", "worktrees", "gone", "hooks")
+		mustGit(t, clone, "config", "core.hooksPath", leakedHooks)
+		wt := addWorktree(t, clone, "run-a")
+		released := holdConfigLock(t, clone, 300*time.Millisecond, "--unset-all", "core.hooksPath")
+
+		install(t, wt, Provenance{RunID: testRunA})
+		if err := <-released; err != nil {
+			t.Fatalf("releasing config.lock: %v", err)
+		}
+		if got := sharedHooksPaths(t, clone); len(got) != 0 {
+			t.Errorf("shared core.hooksPath = %v, want the leaked value removed", got)
+		}
+	})
+
+	t.Run("a lock never released fails once the wait is over", func(t *testing.T) {
+		defer func(d time.Duration) { configLockWait = d }(configLockWait)
+		configLockWait = 200 * time.Millisecond
+		clone := testClone(t)
+		wt := addWorktree(t, clone, "run-a")
+		lock := filepath.Join(clone, ".git", "config.lock")
+		if err := os.WriteFile(lock, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		err := InstallCommitMsgHook(context.Background(), wt, Provenance{RunID: testRunA})
+		if err == nil || !strings.Contains(err.Error(), "extensions.worktreeConfig") {
+			t.Errorf("InstallCommitMsgHook with a stale config.lock = %v, want an error enabling extensions.worktreeConfig", err)
 		}
 	})
 }

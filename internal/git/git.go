@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -600,6 +601,12 @@ const hookConfigName = "klaus.config"
 // klaus.config, then runs the commit-msg hook git would otherwise have run.
 // A Change-Id already on the message is kept; a Klaus-Run is added unless
 // that same run is already listed, so an amend by a later run lists both.
+//
+// A message that is empty, or made only of lines starting with #, gets no
+// trailers. Git keeps # lines for git commit -m but strips them from a message
+// written in the editor, and a hook cannot tell which cleanup will apply.
+// Treating such a message as empty keeps an empty editor message aborting the
+// commit; stamping it would turn that abort into a commit of trailers alone.
 const commitMsgHookScript = `#!/bin/sh
 # Installed by klaus: strips Claude/Anthropic attribution, adds provenance
 # trailers, then runs the repository's own commit-msg hook.
@@ -616,7 +623,8 @@ conf="$(dirname "$0")/` + hookConfigName + `"
 setting() { git config --file "$conf" --get "klaus.$1"; }
 
 # A message with no text aborts the commit; trailers alone must not save it.
-# Lines below a verbose commit's scissors line are the diff, not the message.
+# A message made only of # lines counts as empty too, since an editor commit
+# strips them. Lines below a verbose commit's scissors line are the diff.
 if sed '/^. -\{24\} >8 -\{24\}$/,$d' "$1" | git stripspace --strip-comments | grep -q .; then
   change=$(setting changeid)
   if [ -n "$change" ]; then
@@ -720,14 +728,7 @@ func enableWorktreeConfig(ctx context.Context, dir string) error {
 		v, err := runGit(ctx, dir, "config", "--local", "--type=bool", "--get", "extensions.worktreeConfig")
 		return err == nil && v == "true"
 	}
-	if enabled() {
-		return nil
-	}
-	if _, err := runGit(ctx, dir, "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
-		// A concurrent launch may hold the config lock to write the same value.
-		if enabled() {
-			return nil
-		}
+	if err := updateSharedConfig(ctx, dir, enabled, "config", "--local", "extensions.worktreeConfig", "true"); err != nil {
 		return fmt.Errorf("enabling extensions.worktreeConfig: %w", err)
 	}
 	return nil
@@ -753,15 +754,47 @@ func removeLeakedHooksPath(ctx context.Context, dir, commonDir string) error {
 		return vs
 	}
 	for _, v := range leaked() {
-		if _, err := runGit(ctx, dir, "config", "--local", "--fixed-value", "--unset-all", "core.hooksPath", v); err != nil {
-			// A concurrent launch may hold the config lock to remove it too.
-			if len(leaked()) == 0 {
-				return nil
-			}
+		gone := func() bool { return !slices.Contains(leaked(), v) }
+		if err := updateSharedConfig(ctx, dir, gone, "config", "--local", "--fixed-value", "--unset-all", "core.hooksPath", v); err != nil {
 			return fmt.Errorf("removing shared core.hooksPath %s: %w", v, err)
 		}
 	}
 	return nil
+}
+
+// configLockWait bounds how long updateSharedConfig keeps retrying while
+// another process holds the shared config's lock.
+var configLockWait = 2 * time.Second
+
+// updateSharedConfig runs git with args in dir to change the shared config,
+// unless done reports the change is already there. git config fails at once
+// when another process holds config.lock, as a concurrent launch does while
+// it makes the same change, and that launch may not have renamed its new
+// config into place yet. So a failed write is retried with a short backoff,
+// re-checking done after each wait, and fails only once configLockWait has
+// passed.
+func updateSharedConfig(ctx context.Context, dir string, done func() bool, args ...string) error {
+	deadline := time.Now().Add(configLockWait)
+	wait := 10 * time.Millisecond
+	for {
+		if done() {
+			return nil
+		}
+		_, err := runGit(ctx, dir, args...)
+		if err == nil {
+			return nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(min(wait, remaining)):
+		}
+		wait = min(2*wait, 200*time.Millisecond)
+	}
 }
 
 // chainedCommitMsgHook returns the commit-msg hook git would run in the
