@@ -80,6 +80,12 @@ branch is agent/<run-id>. Use --branch <name> to name it exactly: the name must
 pass 'git check-ref-format --branch' and must not exist locally or on origin.
 --branch and --pr are mutually exclusive.
 
+Every commit the agent makes carries two provenance trailers, added by a
+commit-msg hook scoped to its worktree: 'Change-Id: <change id>' and
+'Klaus-Run: <run id>'. A --pr run keeps the change ID of the run that opened the
+PR, a --resume-from run that of the run it resumes; any other run gets a new
+one. The trailers label commits for finding and auditing; they grant nothing.
+
 Use --resume-from <run-id> to continue a previous run's Claude conversation in
 a fresh worktree on a new branch, paused or not — the follow-up keeps what the
 earlier agent learned instead of re-exploring the repo. Prior errors produce a
@@ -460,8 +466,29 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
-		if err := gitClient.InstallCommitMsgHook(ctx, worktree); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
+		// Normalize target repo name against the project registry so that
+		// "cosmo", "patflynn/cosmo", and full URLs all resolve to the same
+		// canonical name in the dashboard.
+		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
+
+		change, err := chooseChangeID(ctx, store, changeIDInput{
+			IsPRFix:       isPRFix,
+			PRURL:         prURL,
+			PRBranch:      branch,
+			TargetRepo:    normalizedTarget,
+			ResumeFrom:    resumeFrom,
+			Worktree:      worktree,
+			DefaultBranch: defaultBranch,
+		})
+		if err != nil {
+			return fmt.Errorf("choosing change ID: %w", err)
+		}
+		fmt.Printf("  change:   %s (%s)\n", change.ID, change.From)
+
+		// Every commit the agent makes carries the provenance trailers, so a
+		// run that cannot stamp them does not start.
+		if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{RunID: id, ChangeID: change.ID}); err != nil {
+			return fmt.Errorf("installing commit-msg hook: %w", err)
 		}
 
 		// Set up Nix dev environment if flake.nix exists
@@ -574,11 +601,6 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		logFilePtr := &logFile
 
-		// Normalize target repo name against the project registry so that
-		// "cosmo", "patflynn/cosmo", and full URLs all resolve to the same
-		// canonical name in the dashboard.
-		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
-
 		var hostPtr *string
 		if useSandbox {
 			hostPtr = &sandboxHostName
@@ -602,6 +624,7 @@ are synced back after completion. Use --local to force local execution, or
 			SessionName: &id,
 			Model:       stringPtr(model),
 			Effort:      stringPtr(effort),
+			ChangeID:    change.ID,
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom

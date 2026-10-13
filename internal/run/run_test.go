@@ -39,6 +39,38 @@ func TestGenIDUniqueness(t *testing.T) {
 	}
 }
 
+// TestGenChangeID checks jj's change-id form: 32 characters in [k-z], each
+// hex digit of 16 random bytes written z (0) down to k (f).
+func TestGenChangeID(t *testing.T) {
+	seen := map[rune]bool{}
+	ids := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		id, err := GenChangeID()
+		if err != nil {
+			t.Fatalf("GenChangeID() error: %v", err)
+		}
+		if !regexp.MustCompile(`^[k-z]{32}$`).MatchString(id) || !ValidChangeID(id) {
+			t.Fatalf("GenChangeID() = %q, want 32 characters in [k-z]", id)
+		}
+		if ids[id] {
+			t.Fatalf("GenChangeID() produced duplicate: %s", id)
+		}
+		ids[id] = true
+		for _, c := range id {
+			seen[c] = true
+		}
+	}
+	if len(seen) != 16 {
+		t.Errorf("200 IDs used %d of the 16 letters k-z", len(seen))
+	}
+
+	for _, bad := range []string{"", "zyxwvutsrqponmlk", "zyxwvutsrqponmlkzyxwvutsrqponmlj", "ZYXWVUTSRQPONMLKZYXWVUTSRQPONMLK", "zyxwvutsrqponmlkzyxwvutsrqponmlkz"} {
+		if ValidChangeID(bad) {
+			t.Errorf("ValidChangeID(%q) = true", bad)
+		}
+	}
+}
+
 func TestGitDirStoreSaveLoadRoundtrip(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := NewGitDirStore(tmpDir)

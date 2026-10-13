@@ -972,6 +972,8 @@ func assertDuration(t *testing.T, state *run.State, want int64) {
 	}
 }
 
+const salvageChangeID = "zzzzyyyyxxxxwwwwvvvvuuuuttttssss"
+
 // finalizeRealRepo runs _finalize for a run on worktree/branch with the given
 // log. gh is stubbed (empty output); git is real.
 func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent string, prURL *string) (*run.HomeDirStore, *run.State, *fakeRunner) {
@@ -993,6 +995,7 @@ func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent string, p
 	}
 	state := &run.State{
 		ID:        runID,
+		ChangeID:  salvageChangeID,
 		Prompt:    "rename the thing",
 		Branch:    branch,
 		Worktree:  worktree,
@@ -1063,6 +1066,11 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		}
 		if !strings.Contains(files, "wip: klaus finalize salvage "+state.ID) || !strings.Contains(files, "wip.txt") {
 			t.Errorf("origin tip should be the WIP commit with wip.txt, got:\n%s", files)
+		}
+		// The salvage commit skips hooks, so finalize adds the trailers itself.
+		trailers, _ := gitOut(t, origin, "log", "-1", "--format=%(trailers:only,unfold)", branch)
+		if want := "Change-Id: " + salvageChangeID + "\nKlaus-Run: " + state.ID; trailers != want {
+			t.Errorf("salvage commit trailers = %q, want %q", trailers, want)
 		}
 		if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 			t.Errorf("worktree should be removed once the branch is safe, stat err = %v", err)

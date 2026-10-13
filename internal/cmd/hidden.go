@@ -307,6 +307,7 @@ func handleBudgetPauseIfNeeded(ctx context.Context, baseDir string, state *run.S
 
 	in := draft.PauseInput{
 		RunID:      state.ID,
+		ChangeID:   state.ChangeID,
 		Worktree:   state.Worktree,
 		Branch:     state.Branch,
 		Repo:       repo,
@@ -448,7 +449,7 @@ func salvageUnfinishedWork(ctx context.Context, r draft.Runner, gc git.Client, s
 		res.reason = "session_limit"
 	}
 
-	committed, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID)
+	committed, err := draft.CommitWIP(ctx, r, wt, "wip: klaus finalize salvage "+state.ID, git.Provenance{RunID: state.ID, ChangeID: state.ChangeID})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: salvage WIP commit: %v\n", err)
 		res.dirty = true

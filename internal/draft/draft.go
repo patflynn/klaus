@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/git"
 )
 
 // Runner abstracts the shell commands (git, gh) the pause flow needs.
@@ -64,6 +65,7 @@ func (ExecRunner) GH(ctx context.Context, workdir string, args ...string) (strin
 // and surface the paused state on GitHub.
 type PauseInput struct {
 	RunID      string  // klaus run ID
+	ChangeID   string  // the run's change ID; empty when its state predates change IDs
 	Worktree   string  // path to the agent's worktree
 	Branch     string  // branch name to push
 	Repo       string  // owner/repo for gh commands; if empty, gh infers from cwd
@@ -93,7 +95,7 @@ func HandleBudgetPause(ctx context.Context, r Runner, in PauseInput) (PauseOutpu
 
 	// Step 1: commit any uncommitted changes.
 	msg := fmt.Sprintf("WIP from klaus run %s (budget paused)\n\n%s", in.RunID, summarizePrompt(in.Prompt))
-	committed, err := CommitWIP(ctx, r, in.Worktree, msg)
+	committed, err := CommitWIP(ctx, r, in.Worktree, msg, git.Provenance{RunID: in.RunID, ChangeID: in.ChangeID})
 	if err != nil {
 		return out, fmt.Errorf("committing WIP: %w", err)
 	}
@@ -173,10 +175,11 @@ func HasBudgetPausedLabel(ctx context.Context, r Runner, workdir, repo, prNumber
 
 // ── internal helpers ────────────────────────────────────────────────────
 
-// CommitWIP stages and commits every change in worktree with msg. Returns
-// false without committing when the tree is clean. Hooks are skipped so a
-// failing linter can't block salvaging work.
-func CommitWIP(ctx context.Context, r Runner, worktree, msg string) (bool, error) {
+// CommitWIP stages and commits every change in worktree with msg, followed by
+// prov's trailers. Returns false without committing when the tree is clean.
+// Hooks are skipped so a failing linter can't block salvaging work, which is
+// why the trailers klaus's commit-msg hook would add are added here.
+func CommitWIP(ctx context.Context, r Runner, worktree, msg string, prov git.Provenance) (bool, error) {
 	// git status --porcelain returns empty if clean.
 	status, err := r.Git(ctx, worktree, "status", "--porcelain")
 	if err != nil {
@@ -187,6 +190,9 @@ func CommitWIP(ctx context.Context, r Runner, worktree, msg string) (bool, error
 	}
 	if _, err := r.Git(ctx, worktree, "add", "-A"); err != nil {
 		return false, err
+	}
+	if t := prov.Trailers(); t != "" {
+		msg = strings.TrimRight(msg, "\n") + "\n\n" + t
 	}
 	if _, err := r.Git(ctx, worktree, "commit", "--no-verify", "-m", msg); err != nil {
 		return false, err
