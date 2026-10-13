@@ -310,8 +310,13 @@ func TestFollowUpOfRenamedRepoSharesItsRow(t *testing.T) {
 		t.Errorf("prior: status %q, want working", got)
 	}
 
+	// Finalize records the duration before it salvages and pushes the
+	// worktree to origin; wait for it to clean up, so the temp dirs aren't
+	// removed under that push.
 	h.ReleaseClaude()
-	h.WaitForState(st.ID, func(s *run.State) bool { return s.DurationMS != nil }, 60*time.Second)
+	h.WaitForState(st.ID, func(s *run.State) bool {
+		return s.DurationMS != nil && s.TmuxPane == nil && s.Worktree == ""
+	}, 60*time.Second)
 }
 
 // TestStatusJudgesPanesAsTheDashboardDoes runs the real klaus status while a
