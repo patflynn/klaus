@@ -1059,3 +1059,19 @@ func runGitOutput(ctx context.Context, dir string, env map[string]string, args .
 	}
 	return strings.TrimSpace(stdout.String()), nil
 }
+
+// LsRemote returns the commit ref points at in the remote repository repo (a
+// URL or a path), read with git ls-remote, or "" when repo has no such ref.
+func LsRemote(ctx context.Context, repo, ref string) (string, error) {
+	out, err := runGitNetwork(ctx, "", "ls-remote", "--", repo, ref)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		// ls-remote matches patterns by their tail; keep the exact ref.
+		if sha, name, ok := strings.Cut(line, "\t"); ok && name == ref {
+			return sha, nil
+		}
+	}
+	return "", nil
+}

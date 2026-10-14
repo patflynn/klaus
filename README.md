@@ -449,6 +449,40 @@ inputs.klaus = {
 
 Then add `klaus.packages.${system}.default` to your devShell's `buildInputs`.
 
+### Self-update from upstream
+
+A host can follow a branch of klaus without a system rebuild. Turn it on in the host config, `~/.klaus/config.json` (a repo's `.klaus/config.json` can't set it):
+
+```json
+"self_update": { "repo": "https://github.com/patflynn/klaus", "branch": "main" }
+```
+
+`repo` is any git URL; `branch` defaults to `main`. Then `klaus self-update`, typically from a timer every few minutes:
+
+1. takes a lock under `$XDG_STATE_HOME/klaus/`, so runs never overlap; a run that finds another in progress exits 0 and says so;
+2. resolves the branch's commit with `git ls-remote <repo> refs/heads/<branch>`;
+3. exits 0 when the installed klaus was built from that commit (quietly; `-v` says so), or when that commit already failed to build or test, naming the failure; a failed commit is retried when the branch moves, or with `--retry`;
+4. builds exactly that commit: `nix build --no-link --print-out-paths 'git+<repo>?ref=refs/heads/<branch>&rev=<sha>#packages.<system>.default'`;
+5. smoke-tests the build: its `klaus --version` must report the commit's short SHA, and its `klaus status` must exit 0, which shows it reads the existing run state. A failure records the commit as failed, installs nothing, and exits non-zero;
+6. installs it into the user's default nix profile in place of the profile element named `klaus`, leaving other elements alone. The system klaus stays underneath on PATH as the fallback;
+7. records the current and previous store paths and commits, the time and any failure in `$XDG_STATE_HOME/klaus/self-update.json`.
+
+Each step prints one short line, so the timer's journal reads as a history:
+
+```
+main is at 1a2b3c4 (installed: e949dba)
+building git+https://github.com/patflynn/klaus?ref=refs/heads/main&rev=1a2b3c4…#packages.x86_64-linux.default
+built /nix/store/…-klaus-0.4.1-1a2b3c4
+smoke test passed: klaus version 0.4.1-1a2b3c4; klaus status exits 0
+installed 1a2b3c4 into the nix profile, replacing e949dba
+```
+
+The trust boundary: only the configured branch installs, pinned to the commit `ls-remote` returned, and only after it builds and passes the smoke test. Nothing else, such as a PR head, installs by itself.
+
+`klaus self-update --rollback` reinstalls the previous store path; a second `--rollback` returns to the newer one. `klaus self-update --pin` leaves the current install alone until `--unpin`: runs while pinned exit 0 with a note, so a bad tip isn't reinstalled while it gets fixed. Without the pin, the next run after a rollback installs the branch's tip again.
+
+A running `klaus dashboard` restarts onto the new klaus by itself (see [`klaus dashboard`](#klaus-dashboard)). Agents already running finish on whichever klaus their pane resolved; new launches resolve `klaus` from PATH, so they use the new one at once.
+
 ### From source
 
 ```bash
@@ -505,6 +539,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus approve <pr>...` | Approve PRs for merging (operator task) |
 | `klaus merge <pr>...` | Sequentially merge PRs with conflict resolution |
 | `klaus init` | Scaffold `.klaus/` config (optional, for customization) |
+| `klaus self-update [--rollback\|--pin\|--unpin\|--retry]` | Install the tip of the configured klaus branch into the nix profile (see [Self-update from upstream](#self-update-from-upstream)) |
 
 ### `klaus launch --pr`
 
@@ -688,6 +723,8 @@ Keyboard shortcuts:
 | `o` | open the selected PR in a browser |
 | `r` | force refresh |
 | `q` | quit |
+
+The dashboard follows klaus on PATH. Every 30 seconds it resolves `klaus` on PATH, symlinks and all, and compares it with the binary it runs. When PATH names a different file that runs `--version`, as after `klaus self-update`, the footer says `klaus updated to <version>; restarting`, and once no key has been pressed for 10 seconds the dashboard shuts down as on `q`, closing its watcher, its log and its webhook server, and execs the new klaus with the same arguments and environment. The restarted dashboard rebuilds its view from the state on disk. If the exec fails, the dashboard keeps running on the old klaus, shows the error in the footer, and doesn't try that file again.
 
 When webhook mode is enabled, the data-source line shows a freshness indicator for the most recent webhook delivery (e.g. `· last event 5m`), color-coded as it ages (dim under 30m, yellow under 2h, red beyond). Note this surfaces the age of the last delivery, not delivery health — a long silence can mean a quiet repo or a broken delivery path, so it's a hint for a human to judge rather than a definitive check.
 
