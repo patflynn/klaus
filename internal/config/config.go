@@ -329,6 +329,9 @@ type PromptVars struct {
 	// agent delivers by pushing its branch for the operator to integrate,
 	// instead of opening a PR.
 	DirectPush bool
+	// Change names the change a --change run continues, by its handle or
+	// ID: Branch is the change's branch, which already holds its work.
+	Change string
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -401,6 +404,11 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 
 This repository's origin is not on GitHub. Pushing the branch is the delivery: the operator integrates it from there.
 Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
+{{- if .Change}}
+
+You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
+Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
+{{- end}}
 {{- if .Issue}}
 Reference issue #{{.Issue}} in your commit message.
 {{- end}}
@@ -531,12 +539,13 @@ klaus launch "<prompt>"                       # launch an agent
 klaus launch --prompt-file <path>             # read the prompt from a file: verbatim, any length
 klaus launch --issue <number> ...             # reference a GitHub issue
 klaus launch --pr <number> ...                # push fixes to an existing PR's branch
+klaus launch --change <ref> ...               # continue a change in a repo without PRs (run ID, change ID or valley handle)
 klaus launch --budget <usd> ...               # spend cap in USD (default from config)
 klaus launch --repo <name|owner/repo> ...     # target a registered project or another GitHub repo
 klaus launch --resume-from <run-id> ...       # continue a previous agent's Claude conversation
-klaus launch --branch <name> ...              # name the new run's branch exactly (not with --pr)
-klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold
-klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying
+klaus launch --branch <name> ...              # name the new run's branch exactly (not with --pr or --change)
+klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold (also with --change)
+klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying (also with --change)
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
 klaus launch --backend <name>               # worker CLI: claude, codex, or agy; independent of coordinator
 klaus launch --model <name> ...               # model for the selected worker backend (default from config; unset = backend default)
@@ -575,8 +584,9 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   run's Claude conversation in a fresh worktree — the new agent keeps everything
   the previous one learned and just receives the correction. Use this whenever an
   agent went the wrong way but its exploration is still worth keeping. The
-  follow-up gets its own branch and PR unless you also pass --pr. It falls back to
-  a fresh agent if the prior run crashed or its transcript can't be found.
+  follow-up gets its own branch and PR unless you also pass --pr (or, in a repo
+  without PRs, --change). It falls back to a fresh agent if the prior run crashed
+  or its transcript can't be found.
 - ` + "`klaus launch --pr <num> \"<prompt>\"`" + ` against a budget-paused PR does the
   same thing automatically via **trajectory replay**: klaus stores each run's
   conversation on ` + "`refs/klaus/data`" + ` at finalize time, and on relaunch it restores
@@ -587,6 +597,18 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   has no known session UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
   a very large transcript can cost more to replay than to re-explore). Replay is
   local-only — sandbox runs always start fresh.
+- ` + "`klaus launch --change <ref> \"<prompt>\"`" + ` is the same for a change in a repo
+  that delivers without PRs (a valley's, or any non-GitHub origin), where there is
+  no PR to name. ` + "`<ref>`" + ` is a run ID, a full change ID or a valley handle. The
+  agent works on the change's branch, keeps its change ID, and pushes fast-forward
+  to that branch; the change goes back to draft while it works, and finalize marks
+  the new head ready. It replays the conversation of the most recent run on the
+  change, by the same rules as ` + "`--pr`" + ` but without the budget-paused gate. Use it
+  for every follow-up on a change instead of telling a ` + "`--resume-from`" + ` agent to
+  check out the old branch by hand. An ambiguous handle is an error that lists the
+  candidates; name the change by its full ID or a run ID then. With
+  ` + "`--resume-from`" + `, that run's conversation is used and ` + "`--change`" + ` still picks
+  the branch and change ID.
 - ` + "`--replay`" + ` forces replay past the size threshold; ` + "`--no-replay`" + ` forces a fresh
   agent; ` + "`--replay-threshold-kb`" + ` tunes the cap for one launch. Launch prints which
   path it took on the ` + "`replay:`" + ` line.
@@ -728,9 +750,10 @@ The ` + "`klaus:budget-paused`" + ` label is automatically cleared when a follow
 There is no subcommand named ` + "`klaus resume`" + ` or ` + "`klaus finalize`" + ` — but resuming an agent's work IS supported, through flags on ` + "`klaus launch`" + `:
 
 - ` + "`--pr <num>`" + ` — resume a budget-paused PR. The draft PR plus label IS the persisted state: the branch carries the WIP commit, and the stored trajectory carries the conversation when replay is eligible.
+- ` + "`--change <ref>`" + ` — continue a change in a repo without PRs, the valley counterpart of ` + "`--pr`" + `: the branch carries the change's work, and the stored trajectory of its most recent run carries the conversation when replay is eligible.
 - ` + "`--resume-from <run-id>`" + ` — continue any prior run's Claude conversation, paused or not. This is how you correct an agent without losing what it already learned.
 
-Both cost a relaunch (new worktree, new pane). Neither costs a cold re-exploration of the repo unless the conversation is unavailable and it falls back to a fresh agent.
+Each costs a relaunch (new worktree, new pane). None costs a cold re-exploration of the repo unless the conversation is unavailable and it falls back to a fresh agent.
 
 ## Gotchas and common issues
 

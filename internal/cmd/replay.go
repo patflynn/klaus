@@ -15,14 +15,16 @@ import (
 	"github.com/patflynn/klaus/internal/run"
 )
 
-// Trajectory replay continues a budget-paused PR's prior Claude conversation
-// instead of dispatching a fresh agent that must re-explore the repo.
+// Trajectory replay continues the prior Claude conversation on a budget-paused
+// PR, or on a change continued with --change, instead of dispatching a fresh
+// agent that must re-explore the repo.
 //
 // Mechanism: klaus stores the resume-able conversation JSONL (the file
 // claude itself writes under ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl)
 // on the local clone's refs/klaus/data at sessions/<run-id>.jsonl. On 'klaus
-// launch --pr' against a paused PR, we read that blob and restore it into the
-// *new* worktree's project dir, then invoke 'claude --resume <uuid>'. claude
+// launch --pr' against a paused PR, or 'klaus launch --change', we read that
+// blob and restore it into the *new* worktree's project dir, then invoke
+// 'claude --resume <uuid>'. claude
 // re-anchors to the new cwd; the conversation picks up where it paused. The
 // ref reaches origin only when push_data_ref is set, so by default replay
 // works only on the machine whose clone ran the paused agent.
@@ -183,18 +185,20 @@ func extractConversationSessionID(data []byte) string {
 	return ""
 }
 
-// replayParams carries everything resolveBudgetPausedReplay needs.
+// replayParams carries everything resolveReplay needs.
 type replayParams struct {
-	GitClient   git.Client
-	Store       run.StateStore
-	RepoRoot    string // repo dir holding refs/klaus/data (clone dir or host repo)
-	DataRef     string
-	Worktree    string // the fresh worktree the resumed agent will run in
+	GitClient git.Client
+	Store     run.StateStore
+	RepoRoot  string // repo dir holding refs/klaus/data (clone dir or host repo)
+	DataRef   string
+	Worktree  string // the fresh worktree the resumed agent will run in
+	// The work the run continues: a PR, or, when Change is set, a change.
 	PRBranch    string
 	PRNumber    string
-	GHRepo      string // owner/repo for gh calls (may be "")
-	ForceReplay bool   // --replay: skip the size threshold and the paused gate
-	ThresholdKB int    // max trajectory size in KB (0 disables the size check)
+	GHRepo      string        // owner/repo for gh calls (may be "")
+	Change      *changeTarget // --change: the change, with its runs
+	ForceReplay bool          // --replay: skip the size threshold and the paused gate
+	ThresholdKB int           // max trajectory size in KB (0 disables the size check)
 }
 
 // replayDecision is the outcome of attempting trajectory replay.
@@ -208,37 +212,19 @@ type replayDecision struct {
 	Reason string
 }
 
-// resolveBudgetPausedReplay decides whether to continue a budget-paused PR's
-// prior Claude conversation. On success it restores the stored trajectory into
-// the new worktree's project dir and returns the session UUID to resume. On
-// any miss it returns an empty SessionUUID with a Reason, signalling the caller
-// to fall back to the fresh-agent flow.
-func resolveBudgetPausedReplay(ctx context.Context, p replayParams) replayDecision {
-	// Replay only targets budget-paused PRs unless the user forces it.
-	if !p.ForceReplay {
-		paused, err := draft.HasBudgetPausedLabel(ctx, budgetPauseRunner, p.Worktree, p.GHRepo, p.PRNumber)
-		if err != nil {
-			return replayDecision{Reason: fmt.Sprintf("could not check budget-paused label: %v", err)}
-		}
-		if !paused {
-			return replayDecision{Reason: "PR is not budget-paused"}
-		}
-	}
-
-	// Find candidate runs on this branch, newest first (List() is sorted by
-	// CreatedAt descending).
-	states, err := p.Store.List()
-	if err != nil {
-		return replayDecision{Reason: fmt.Sprintf("listing runs: %v", err)}
-	}
-	var candidates []*run.State
-	for _, s := range states {
-		if s.Branch == p.PRBranch {
-			candidates = append(candidates, s)
-		}
-	}
+// resolveReplay decides whether a run that continues a PR or a change
+// resumes the prior Claude conversation: that of the most recent run on it
+// with a stored trajectory. A PR's runs are those on its branch in this
+// session, and only a budget-paused PR replays unless the user forces it; a
+// change's are its runs in every session, and replay needs no label. On
+// success it restores the trajectory into the new worktree's project dir and
+// returns the session UUID to resume. On any miss it returns an empty
+// SessionUUID with a Reason, signalling the caller to fall back to the
+// fresh-agent flow.
+func resolveReplay(ctx context.Context, p replayParams) replayDecision {
+	candidates, reason := replayCandidates(ctx, p)
 	if len(candidates) == 0 {
-		return replayDecision{Reason: "no prior run recorded for this branch"}
+		return replayDecision{Reason: reason}
 	}
 
 	// Best-effort: pull the data ref so a blob another machine pushed (with
@@ -283,4 +269,43 @@ func resolveBudgetPausedReplay(ctx context.Context, p replayParams) replayDecisi
 	}
 
 	return replayDecision{Reason: "no stored trajectory found on the data ref (sensitive-skipped, stored on another machine, or pre-dates replay)"}
+}
+
+// replayCandidates returns the runs whose trajectory a continuing run may
+// replay, newest first, or why there are none.
+func replayCandidates(ctx context.Context, p replayParams) ([]*run.State, string) {
+	if p.Change != nil {
+		if len(p.Change.Runs) == 0 {
+			return nil, "no prior run recorded for this change"
+		}
+		return p.Change.Runs, ""
+	}
+
+	// Replay only targets budget-paused PRs unless the user forces it.
+	if !p.ForceReplay {
+		paused, err := draft.HasBudgetPausedLabel(ctx, budgetPauseRunner, p.Worktree, p.GHRepo, p.PRNumber)
+		if err != nil {
+			return nil, fmt.Sprintf("could not check budget-paused label: %v", err)
+		}
+		if !paused {
+			return nil, "PR is not budget-paused"
+		}
+	}
+
+	// Find candidate runs on this branch, newest first (List() is sorted by
+	// CreatedAt descending).
+	states, err := p.Store.List()
+	if err != nil {
+		return nil, fmt.Sprintf("listing runs: %v", err)
+	}
+	var candidates []*run.State
+	for _, s := range states {
+		if s.Branch == p.PRBranch {
+			candidates = append(candidates, s)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, "no prior run recorded for this branch"
+	}
+	return candidates, ""
 }

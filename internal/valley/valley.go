@@ -141,6 +141,16 @@ func List(ctx context.Context, dir string) (*Changes, error) {
 	return Decode(out)
 }
 
+// ListRepo runs `valley changes --json` in dir: the valley's view of the
+// repo in dir alone.
+func ListRepo(ctx context.Context, dir string) (*Changes, error) {
+	out, err := command(ctx, dir, ListTimeout, "changes", "--json")
+	if err != nil {
+		return nil, err
+	}
+	return Decode(out)
+}
+
 // changeVerbs are the verbs klaus needs to mark changes ready and read them.
 var changeVerbs = []string{"ready", "changes"}
 

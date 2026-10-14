@@ -101,7 +101,7 @@ func TestReplayRoundTripEndToEnd(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	decision := resolveBudgetPausedReplay(context.Background(), replayParams{
+	decision := resolveReplay(context.Background(), replayParams{
 		GitClient:   git.NewExecClient(),
 		Store:       store,
 		RepoRoot:    repo,
@@ -163,7 +163,7 @@ func TestReplayFallbacks(t *testing.T) {
 	}
 
 	t.Run("no prior run for branch", func(t *testing.T) {
-		d := resolveBudgetPausedReplay(context.Background(), replayParams{
+		d := resolveReplay(context.Background(), replayParams{
 			GitClient: git.NewExecClient(), Store: newStore(), RepoRoot: repo,
 			DataRef: dataRef, Worktree: worktree, PRBranch: branch, PRNumber: "1",
 			ForceReplay: true, ThresholdKB: 300,
@@ -176,7 +176,7 @@ func TestReplayFallbacks(t *testing.T) {
 	t.Run("trajectory missing from data ref", func(t *testing.T) {
 		store := newStore()
 		_ = store.Save(&run.State{ID: "20260601-1000-cccc", Branch: branch, CreatedAt: "2026-06-01T10:00:00Z"})
-		d := resolveBudgetPausedReplay(context.Background(), replayParams{
+		d := resolveReplay(context.Background(), replayParams{
 			GitClient: git.NewExecClient(), Store: store, RepoRoot: repo,
 			DataRef: dataRef, Worktree: worktree, PRBranch: branch, PRNumber: "1",
 			ForceReplay: true, ThresholdKB: 300,
@@ -202,7 +202,7 @@ func TestReplayFallbacks(t *testing.T) {
 		budgetPauseRunner = fakeLabelRunner{labels: "klaus:budget-paused\n"}
 		defer func() { budgetPauseRunner = orig }()
 
-		d := resolveBudgetPausedReplay(context.Background(), replayParams{
+		d := resolveReplay(context.Background(), replayParams{
 			GitClient: git.NewExecClient(), Store: store, RepoRoot: repo,
 			DataRef: dataRef, Worktree: worktree, PRBranch: branch, PRNumber: "1",
 			ForceReplay: false, ThresholdKB: 1,
@@ -215,7 +215,7 @@ func TestReplayFallbacks(t *testing.T) {
 		}
 
 		// --replay (ForceReplay) bypasses the size threshold.
-		d2 := resolveBudgetPausedReplay(context.Background(), replayParams{
+		d2 := resolveReplay(context.Background(), replayParams{
 			GitClient: git.NewExecClient(), Store: store, RepoRoot: repo,
 			DataRef: dataRef, Worktree: worktree, PRBranch: branch, PRNumber: "1",
 			ForceReplay: true, ThresholdKB: 1,
@@ -236,7 +236,7 @@ func TestReplayFallbacks(t *testing.T) {
 		budgetPauseRunner = fakeLabelRunner{labels: "some-other-label\n"} // not paused
 		defer func() { budgetPauseRunner = orig }()
 
-		d := resolveBudgetPausedReplay(context.Background(), replayParams{
+		d := resolveReplay(context.Background(), replayParams{
 			GitClient: git.NewExecClient(), Store: store, RepoRoot: repo,
 			DataRef: dataRef, Worktree: worktree, PRBranch: branch, PRNumber: "1",
 			ForceReplay: false, ThresholdKB: 300,

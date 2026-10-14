@@ -80,7 +80,8 @@ For Codex and agy, explicit `--budget` and `--replay` are rejected; the legacy
 agy workers use a 24-hour print timeout instead of its short CLI default.
 `--resume-from` never transfers conversations between backends or machines;
 when a compatible conversation is unavailable, the worker starts fresh. Use
-`--pr` to continue the actual branch changes. agy coordinator IDs are recovered
+`--pr` (or `--change` in a repo without PRs) to continue the actual branch
+changes. agy coordinator IDs are recovered
 from its workspace cache; missing cache metadata starts a fresh conversation
 with a warning rather than attaching to an unrelated conversation. A resumed
 agy coordinator receives a short continuation prompt instead of repeating the
@@ -305,7 +306,7 @@ The new agent sees the WIP commit and picks up from there. When the follow-up ag
 
 ### Trajectory replay
 
-By default, `klaus launch --pr` against a budget-paused PR does more than pick up the WIP commit: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus commits the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) to the local clone's `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it makes a best-effort fetch of the ref from origin, reads that blob from the local ref, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
+By default, `klaus launch --pr` against a budget-paused PR, and [`klaus launch --change`](#klaus-launch---change) on any change, does more than pick up the branch's work: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus commits the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) to the local clone's `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it makes a best-effort fetch of the ref from origin, reads that blob from the local ref, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
 
 Replay is best-effort and **falls back to a fresh agent** when any of these hold:
 
@@ -378,7 +379,7 @@ A change in a state klaus doesn't know isn't matched. A version that landed show
 
 ##### Follow-up runs on a change
 
-A run that continues a change — `--pr`, `--resume-from`, or a pipeline fix, any launch whose change ID is inherited (see [Provenance trailers](#provenance-trailers)) — pushes more commits to it. On the dashboard, the runs without a PR on one change share a row, as the runs on a PR share the PR's row (see [`klaus dashboard`](#klaus-dashboard)): while a follow-up runs, the change's row names it (`agent:<short run id> running`), sorts with the agents and never offers the approve command, and the footer says which agent is working on it (`agent:<short run id> is working on this change`). When it exits, the row goes back to where the change stands. Runs share a change when they have the same change ID in the same repo, the repo named as above (the one `valley ready` reported, else the repo of the run a follow-up continues, else the one `valley unready` reported, else the last component of the target repo); a run without a change ID shares it with none. A follow-up launched from a run takes that run's repo even when its own target repo has another name (a valley's `widget` launched as `acme/source`) and `valley unready` didn't run or failed. A run is running when its pane is running it, judged the same way by the dashboard and `klaus status`: a pane whose command exited, or a finished run's pane left idle at a shell, isn't running. `klaus status` stays per run: a run that isn't running or done shows `working` while another run of its change is running.
+A run that continues a change — `--change`, `--pr`, `--resume-from`, or a pipeline fix, any launch whose change ID is inherited (see [Provenance trailers](#provenance-trailers)) — pushes more commits to it. On the dashboard, the runs without a PR on one change share a row, as the runs on a PR share the PR's row (see [`klaus dashboard`](#klaus-dashboard)): while a follow-up runs, the change's row names it (`agent:<short run id> running`), sorts with the agents and never offers the approve command, and the footer says which agent is working on it (`agent:<short run id> is working on this change`). When it exits, the row goes back to where the change stands. Runs share a change when they have the same change ID in the same repo, the repo named as above (the one `valley ready` reported, else the repo of the run a follow-up continues, else the one `valley unready` reported, else the last component of the target repo); a run without a change ID shares it with none. A follow-up launched from a run takes that run's repo even when its own target repo has another name (a valley's `widget` launched as `acme/source`) and `valley unready` didn't run or failed. A run is running when its pane is running it, judged the same way by the dashboard and `klaus status`: a pane whose command exited, or a finished run's pane left idle at a shell, isn't running. `klaus status` stays per run: a run that isn't running or done shows `working` while another run of its change is running.
 
 In a valley's repo, launch also returns an inherited change to draft before the agent starts, so the valley's `approve` refuses it while the agent replaces it:
 
@@ -402,6 +403,7 @@ Runs that ended without a PR, left no commits beyond the default branch, and lef
 There is no subcommand named `klaus resume` or `klaus finalize` — resuming happens through flags on `klaus launch`, and `_finalize` handles the WIP commit automatically:
 
 - `klaus launch --pr <num> "..."` resumes a budget-paused PR (WIP commit + trajectory replay, as above).
+- `klaus launch --change <ref> "..."` continues a change in a repo without PRs on its own branch, replaying the conversation of its most recent run (see [`klaus launch --change`](#klaus-launch---change)).
 - `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. Prior errors produce a warning but do not prevent resume. It starts fresh if the transcript can't be located or staged (Claude), or the local thread ID is missing (Codex).
 
 ## Provenance trailers
@@ -422,6 +424,7 @@ klaus adds them mechanically, never through the agent's prompt. `klaus launch` i
 Each run records its change ID as `change_id` in its state. A fresh launch gets a new one. A follow-up keeps the change ID of the work it continues:
 
 - `--pr <num>` uses the change ID of the run that opened the PR, found in any session on the machine. If no run on the PR has one, it uses the `Change-Id` on the PR's head commit.
+- `--change <ref>` uses the change ID of the change it names, even with `--resume-from`.
 - `--resume-from <run-id>` uses the change ID of the run it resumes.
 - A budget-paused replay is a `--pr` run, so it keeps the paused PR's change ID.
 
@@ -477,6 +480,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --repo owner/repo "<prompt>"` | Launch an agent against a different GitHub repo |
 | `klaus launch --repo <project-name> "<prompt>"` | Launch an agent using a registered project |
 | `klaus launch --pr <number> "<prompt>"` | Push fixes to an existing PR's branch |
+| `klaus launch --change <ref> "<prompt>"` | Continue a change in a repo without PRs, on its branch |
 | `klaus launch --branch <name> "<prompt>"` | Name the new run's branch instead of deriving it from the brief |
 | `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
 | `klaus target owner/repo` | Set session-level default target repo |
@@ -511,9 +515,37 @@ klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 
 The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
 
+### `klaus launch --change`
+
+Continue an existing change in a repo that delivers without PRs (its origin isn't on GitHub, as in a [valley's repo](#repos-that-deliver-to-a-valley)), the way `--pr` continues a PR. Use it for every follow-up on a change, instead of telling a `--resume-from` agent to check out the old branch.
+
+```bash
+klaus launch --change nxvp "Handle the review notes"                 # a valley handle
+klaus launch --change 20261013-0900-1a2b3c4d "Fix the failing check"  # a run on the change
+klaus launch --change nxvp --no-replay "Start over on the tests"      # fresh agent, same branch
+```
+
+`<ref>` names the change, resolved in this order:
+
+1. A run ID names that run's change.
+2. A full change ID or a handle is matched against the runs recorded in any session for the target repo: a run matches when the ref is its change ID, starts its change ID (a handle is the change ID's shortest unique prefix, so a handle that has since lengthened still matches), or is the valley handle recorded on it. A run is in the target repo when its repo, named as [for the dashboard](#follow-up-runs-on-a-change), or the last component of its own target repo is the target's.
+3. When no run matches, and the repo delivers to a valley that lists `changes`, `valley changes --json` names the change: one whose ID or handle the ref is, or whose ID it starts.
+
+A ref that names more than one change is an error that lists them; name it by its full change ID or a run ID. `--change` refuses a GitHub repo (use `--pr`), and can't be combined with `--pr` or `--branch`.
+
+The worktree tracks the change's branch on origin, as `--pr` tracks the PR's: the branch of the change's active version when the valley lists one (it may have been marked ready from another machine), else the branch the change's newest run pushed. Launch fails, naming the change and its last known head, when no branch is known or the branch is gone from origin. Then:
+
+- The run keeps the change ID; launch prints `change: <id> (inherited from change <handle or id>)`.
+- In a valley's repo, launch returns the change to draft before the agent starts, as for any [follow-up run](#follow-up-runs-on-a-change).
+- The agent's conversation continues from the most recent run on the change that has a stored trajectory, by the [trajectory replay](#trajectory-replay) rules of `--pr`: `--replay`, `--no-replay`, the size threshold and the fallback to a fresh agent all apply. A change has no budget-paused label, so replay doesn't wait for one. Launch prints the `replay:` line.
+- The worker prompt tells the agent it is continuing the change, to commit on top of its branch and push fast-forward to it, and not to create a new branch, rebase or force-push. Finalize's `valley ready` then marks the new head ready as a version of the same change.
+- On the dashboard the run joins the change's row, like a fix agent on its PR's row.
+
+With `--resume-from`, that run's conversation is used instead of replay, and `--change` still picks the branch and the change ID.
+
 ### Branch names and `klaus launch --branch`
 
-Every run without `--pr` works on a new branch named `<slug>-<tail>`. The tail is the random end of the run ID (`bd92f081` for run `20261011-1843-bd92f081`), which keeps names unique and ties each branch to its run. The slug comes from the first of these that yields one:
+Every run without `--pr` or `--change` works on a new branch named `<slug>-<tail>`. The tail is the random end of the run ID (`bd92f081` for run `20261011-1843-bd92f081`), which keeps names unique and ties each branch to its run. The slug comes from the first of these that yields one:
 
 1. the `--issue` title, when it can be fetched;
 2. the brief's first `# ` heading, outside code fences;
@@ -525,7 +557,7 @@ The text loses a leading `<repo-name>:`, is lowercased, has each run of characte
 klaus launch --branch fix/healthz-timeout --prompt-file /tmp/task.md
 ```
 
-`--branch` sets the name exactly. It must pass `git check-ref-format --branch` and must not already exist locally or on origin, and it can't be combined with `--pr`, which works on the PR's branch. A `--resume-from` follow-up gets a new branch named the same way.
+`--branch` sets the name exactly. It must pass `git check-ref-format --branch` and must not already exist locally or on origin, and it can't be combined with `--pr` or `--change`, which work on the PR's or the change's branch. A `--resume-from` follow-up gets a new branch named the same way.
 
 ### `klaus launch --prompt-file`
 
