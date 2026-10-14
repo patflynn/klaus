@@ -112,7 +112,7 @@ func TestReplayReadsUnpushedDataRef(t *testing.T) {
 		return home, origin, repo, s
 	}
 	replay := func(store run.StateStore, repo, home string) replayDecision {
-		return resolveBudgetPausedReplay(context.Background(), replayParams{
+		return resolveReplay(context.Background(), replayParams{
 			GitClient:   git.NewExecClient(),
 			Store:       store,
 			RepoRoot:    repo,

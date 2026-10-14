@@ -12,11 +12,12 @@ import (
 // changeIDInput describes what a new run continues, for chooseChangeID.
 type changeIDInput struct {
 	IsPRFix       bool
-	PRURL         string  // the PR's URL, if known
-	PRBranch      string  // the PR's head branch
-	TargetRepo    *string // the run's normalized target repo, as in run.State
-	ResumeFrom    string  // --resume-from run ID
-	Worktree      string  // the new run's worktree; on the PR branch for a --pr run
+	PRURL         string        // the PR's URL, if known
+	PRBranch      string        // the PR's head branch
+	TargetRepo    *string       // the run's normalized target repo, as in run.State
+	ResumeFrom    string        // --resume-from run ID
+	Change        *changeTarget // the change a --change run continues
+	Worktree      string        // the new run's worktree; on the PR branch for a --pr run
 	DefaultBranch string
 }
 
@@ -29,15 +30,20 @@ type changeChoice struct {
 }
 
 // chooseChangeID picks the change ID for a new run. A run that continues
-// another keeps its change. A --pr run, budget-paused replays included, takes
-// the ID of the run that opened the PR: the earliest recorded run on the PR
-// that has one, in any session, else the Change-Id on the PR's head commit
-// when it is not on the default branch. A --resume-from run takes the ID of
-// the run it resumes. A change inherited from a run keeps that run's repo
-// too, so the new run shares its change whatever the valley or its target
-// repo calls the repo. Anything else, or a run whose source has none (its
-// state predates change IDs), gets a new ID, and From says which.
+// another keeps its change. A --change run takes the change it names, and
+// the repo the valley or its runs name it in, whatever --resume-from says. A
+// --pr run, budget-paused replays included, takes the ID of the run that
+// opened the PR: the earliest recorded run on the PR that has one, in any
+// session, else the Change-Id on the PR's head commit when it is not on the
+// default branch. A --resume-from run takes the ID of the run it resumes. A
+// change inherited from a run keeps that run's repo too, so the new run
+// shares its change whatever the valley or its target repo calls the repo.
+// Anything else, or a run whose source has none (its state predates change
+// IDs), gets a new ID, and From says which.
 func chooseChangeID(ctx context.Context, store run.StateStore, in changeIDInput) (changeChoice, error) {
+	if c := in.Change; c != nil {
+		return changeChoice{ID: c.ID, From: "inherited from change " + c.Name, Inherited: true, Repo: c.Repo}, nil
+	}
 	var unknown string
 	if in.IsPRFix {
 		states, _ := run.ListAllSessions()

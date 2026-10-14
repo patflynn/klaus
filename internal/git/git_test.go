@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -659,7 +660,7 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 
 	// Create a worktree tracking origin/feature-x, then make it stale
 	stalePath := filepath.Join(t.TempDir(), "stale-track")
-	if err := WorktreeAddTrack(ctx, repo, stalePath, "feature-x"); err != nil {
+	if err := WorktreeAddTrack(ctx, repo, stalePath, "feature-x", false); err != nil {
 		t.Fatalf("WorktreeAddTrack (setup): %v", err)
 	}
 	if err := os.RemoveAll(stalePath); err != nil {
@@ -668,7 +669,7 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 
 	// Retry should prune and succeed
 	newPath := filepath.Join(t.TempDir(), "new-track")
-	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-x"); err != nil {
+	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-x", false); err != nil {
 		t.Fatalf("WorktreeAddTrack should recover from stale worktree: %v", err)
 	}
 	defer WorktreeRemove(ctx, repo, newPath)
@@ -678,54 +679,148 @@ func TestWorktreeAddTrack_PrunesStaleAndRetries(t *testing.T) {
 	}
 }
 
-func TestWorktreeAddTrack_ForceRemovesLiveWorktree(t *testing.T) {
+// trackingRepo is a repo whose origin, a bare clone, has branch.
+func trackingRepo(t *testing.T, branch string) string {
+	t.Helper()
 	ctx := context.Background()
 	repo := initTestRepo(t)
-
-	// Create a local bare repo as "origin" with a feature branch
 	bareDir := filepath.Join(t.TempDir(), "bare.git")
-	cmd := exec.Command("git", "clone", "--bare", repo, bareDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := exec.Command("git", "clone", "--bare", repo, bareDir).CombinedOutput(); err != nil {
 		t.Fatalf("bare clone: %v\n%s", err, out)
 	}
 	if _, err := runGit(ctx, repo, "remote", "add", "origin", bareDir); err != nil {
-		runGit(ctx, repo, "remote", "set-url", "origin", bareDir)
+		t.Fatalf("remote add: %v", err)
 	}
-
-	// Create and push a feature branch
-	if _, err := runGit(ctx, repo, "branch", "feature-y"); err != nil {
+	if _, err := runGit(ctx, repo, "branch", branch); err != nil {
 		t.Fatalf("branch: %v", err)
 	}
-	if _, err := runGit(ctx, repo, "push", "origin", "feature-y"); err != nil {
+	if _, err := runGit(ctx, repo, "push", "-q", "-u", "origin", branch); err != nil {
 		t.Fatalf("push: %v", err)
 	}
+	return repo
+}
 
-	// Create a worktree tracking origin/feature-y (simulates a previous agent run)
+// TestWorktreeAddTrack_RemovesWorktreeOriginHasAll: a worktree left on the
+// branch that holds nothing origin lacks is removed to make way, as are
+// klaus's own settings in it.
+func TestWorktreeAddTrack_RemovesWorktreeOriginHasAll(t *testing.T) {
+	ctx := context.Background()
+	repo := trackingRepo(t, "feature-y")
 	oldPath := filepath.Join(t.TempDir(), "old-worktree")
-	if err := WorktreeAddTrack(ctx, repo, oldPath, "feature-y"); err != nil {
+	if err := WorktreeAddTrack(ctx, repo, oldPath, "feature-y", false); err != nil {
 		t.Fatalf("WorktreeAddTrack (setup): %v", err)
 	}
-
-	// Directory still exists — simulates incomplete cleanup
-	if _, err := os.Stat(oldPath); err != nil {
-		t.Fatalf("old worktree should exist: %v", err)
+	if err := os.MkdirAll(filepath.Join(oldPath, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldPath, ".claude", "settings.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	// Creating a new worktree for the same branch should auto-recover
 	newPath := filepath.Join(t.TempDir(), "new-worktree")
-	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-y"); err != nil {
-		t.Fatalf("WorktreeAddTrack should auto-remove live worktree and succeed: %v", err)
+	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-y", false); err != nil {
+		t.Fatalf("WorktreeAddTrack should remove a worktree origin has all of: %v", err)
 	}
 	defer WorktreeRemove(ctx, repo, newPath)
-
-	// Old worktree should be gone
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
 		t.Error("old worktree directory should have been removed")
 	}
-
-	// New worktree should be functional
 	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
 		t.Errorf("new worktree should contain README.md: %v", err)
+	}
+}
+
+// TestWorktreeAddTrack_RefusesToDiscardLocalWork: a worktree on the branch
+// with uncommitted changes, or a local branch with commits origin lacks,
+// is refused and left as it was, unless discard is set.
+func TestWorktreeAddTrack_RefusesToDiscardLocalWork(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name     string
+		work     func(t *testing.T, repo, wt string) // makes the work, given the old worktree
+		keepTree bool                                // the old worktree stays checked out
+		want     string
+	}{
+		{
+			name: "an untracked file", keepTree: true,
+			work: func(t *testing.T, repo, wt string) {
+				if err := os.WriteFile(filepath.Join(wt, "notes.txt"), []byte("wip\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "which has uncommitted changes",
+		},
+		{
+			name: "a modified file", keepTree: true,
+			work: func(t *testing.T, repo, wt string) {
+				if err := os.WriteFile(filepath.Join(wt, "README.md"), []byte("# changed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "which has uncommitted changes",
+		},
+		{
+			name: "an unpushed commit", keepTree: true,
+			work: func(t *testing.T, repo, wt string) {
+				if _, err := runGit(ctx, wt, "commit", "-q", "--allow-empty", "-m", "local only"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "which has 1 commit(s) not on origin/feature-z",
+		},
+		{
+			name: "an unpushed commit on a branch no worktree has",
+			work: func(t *testing.T, repo, wt string) {
+				if _, err := runGit(ctx, wt, "commit", "-q", "--allow-empty", "-m", "local only"); err != nil {
+					t.Fatal(err)
+				}
+				if err := WorktreeRemove(ctx, repo, wt); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: `local branch "feature-z" has 1 commit(s) not on origin/feature-z`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := trackingRepo(t, "feature-z")
+			oldPath := filepath.Join(t.TempDir(), "old-worktree")
+			if err := WorktreeAddTrack(ctx, repo, oldPath, "feature-z", false); err != nil {
+				t.Fatalf("WorktreeAddTrack (setup): %v", err)
+			}
+			tc.work(t, repo, oldPath)
+			tip, _ := runGit(ctx, repo, "rev-parse", "refs/heads/feature-z")
+
+			newPath := filepath.Join(t.TempDir(), "new-worktree")
+			err := WorktreeAddTrack(ctx, repo, newPath, "feature-z", false)
+			var lw *LocalWorkError
+			if !errors.As(err, &lw) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("WorktreeAddTrack = %v, want a LocalWorkError saying %q", err, tc.want)
+			}
+			if tc.keepTree && !strings.Contains(err.Error(), oldPath) {
+				t.Errorf("error should name the worktree %s: %v", oldPath, err)
+			}
+			if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+				t.Error("a refused worktree should not be created")
+			}
+			if got, _ := runGit(ctx, repo, "rev-parse", "refs/heads/feature-z"); got != tip {
+				t.Errorf("branch moved from %s to %s", tip, got)
+			}
+			if _, err := os.Stat(oldPath); tc.keepTree && err != nil {
+				t.Errorf("a refused takeover should leave the old worktree: %v", err)
+			}
+
+			if err := WorktreeAddTrack(ctx, repo, newPath, "feature-z", true); err != nil {
+				t.Fatalf("WorktreeAddTrack with discard: %v", err)
+			}
+			defer WorktreeRemove(ctx, repo, newPath)
+			if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+				t.Error("discard should remove the old worktree")
+			}
+			origin, _ := runGit(ctx, repo, "rev-parse", "refs/remotes/origin/feature-z")
+			if got, _ := runGit(ctx, newPath, "rev-parse", "HEAD"); got != origin {
+				t.Errorf("new worktree at %s, want origin's %s", got, origin)
+			}
+		})
 	}
 }
 

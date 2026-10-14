@@ -22,9 +22,11 @@ type Client interface {
 	// WorktreeRemove removes a worktree. repoDir is the main repo directory.
 	WorktreeRemove(ctx context.Context, repoDir, path string) error
 
-	// WorktreeAddTrack creates a worktree tracking an existing remote branch.
-	// If the branch is already checked out in a stale worktree, it prunes and retries once.
-	WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error
+	// WorktreeAddTrack creates a worktree tracking an existing remote branch,
+	// moving the branch from any worktree that has it checked out. Unless
+	// discard is set, it refuses with a *LocalWorkError when that worktree
+	// has uncommitted changes or the local branch has commits origin lacks.
+	WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error
 
 	// WorktreePrune removes stale worktree tracking information.
 	WorktreePrune(ctx context.Context, repoDir string) error

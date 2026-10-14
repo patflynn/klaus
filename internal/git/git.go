@@ -112,8 +112,19 @@ func WorktreeRemove(ctx context.Context, repoDir, path string) error {
 
 // WorktreeAddTrack creates a worktree tracking an existing remote branch.
 // It uses -B to force-create/reset the local branch to match origin/<branch>.
-// If the branch is already checked out in a stale worktree, it prunes and retries once.
-func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error {
+// If the branch is already checked out in another worktree, it removes that
+// worktree (or prunes it, when its directory is gone) and retries once.
+//
+// Unless discard is set, it first refuses with a *LocalWorkError to discard
+// work origin lacks: uncommitted changes in a worktree that has the branch
+// checked out, or commits on the local branch that aren't on origin/<branch>.
+// A local branch that only points at what origin has is reset freely.
+func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
+	if !discard {
+		if err := checkLocalWork(ctx, repoDir, branch); err != nil {
+			return err
+		}
+	}
 	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 	if err == nil {
 		return nil
@@ -122,6 +133,65 @@ func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error {
 		_, e := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 		return e
 	})
+}
+
+// LocalWorkError is WorktreeAddTrack's refusal to discard work that origin
+// lacks on Branch.
+type LocalWorkError struct {
+	Branch string
+	Path   string // the worktree that has Branch checked out; "" when none does
+	Work   string // what origin lacks, e.g. "uncommitted changes"
+}
+
+func (e *LocalWorkError) Error() string {
+	if e.Path == "" {
+		return fmt.Sprintf("local branch %q has %s", e.Branch, e.Work)
+	}
+	return fmt.Sprintf("branch %q is checked out in %s, which has %s", e.Branch, e.Path, e.Work)
+}
+
+// checkLocalWork returns a *LocalWorkError when branch holds work that
+// origin/<branch> lacks: uncommitted changes in the worktree that has it
+// checked out, or local commits that aren't on origin/<branch>.
+func checkLocalWork(ctx context.Context, repoDir, branch string) error {
+	wt := worktreePathForBranch(ctx, repoDir, branch)
+	if wt != "" {
+		if _, err := os.Stat(wt); err != nil {
+			wt = "" // stale: pruned before the retry
+		} else if dirty, err := hasUncommittedChanges(ctx, wt); err != nil {
+			return fmt.Errorf("checking %s for uncommitted changes: %w", wt, err)
+		} else if dirty {
+			return &LocalWorkError{Branch: branch, Path: wt, Work: "uncommitted changes"}
+		}
+	}
+	local, remote := "refs/heads/"+branch, "refs/remotes/origin/"+branch
+	if !RefExists(ctx, repoDir, local) || !RefExists(ctx, repoDir, remote) {
+		return nil
+	}
+	n, err := revListCount(ctx, repoDir, remote+".."+local)
+	if err != nil {
+		return fmt.Errorf("checking branch %q for commits not on origin: %w", branch, err)
+	}
+	if n > 0 {
+		return &LocalWorkError{Branch: branch, Path: wt, Work: fmt.Sprintf("%d commit(s) not on origin/%s", n, branch)}
+	}
+	return nil
+}
+
+// hasUncommittedChanges reports whether the worktree at dir has staged,
+// modified or untracked files, other than the .claude/settings.json launch
+// writes into every agent worktree.
+func hasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
+	out, err := runGit(ctx, dir, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line != "" && line != "?? .claude/settings.json" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // WorktreePrune removes stale worktree tracking information.

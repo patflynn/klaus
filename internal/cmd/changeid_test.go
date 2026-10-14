@@ -87,6 +87,17 @@ func TestChooseChangeID(t *testing.T) {
 		}
 	})
 
+	t.Run("--change inherits the change it names, whatever --resume-from says", func(t *testing.T) {
+		c, err := chooseChangeID(ctx, store, changeIDInput{ResumeFrom: "20261013-1400-resumed",
+			Change: &changeTarget{ID: laterChangeID, Name: "yyyy", Repo: "widget"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.ID != laterChangeID || c.From != "inherited from change yyyy" || !c.Inherited || c.Repo != "widget" {
+			t.Errorf("got %+v, want change yyyy's %s in widget", c, laterChangeID)
+		}
+	})
+
 	t.Run("continuing a run that predates change IDs generates one and says so", func(t *testing.T) {
 		c, err := chooseChangeID(ctx, store, changeIDInput{ResumeFrom: "20261013-1410-legacy"})
 		if err != nil {

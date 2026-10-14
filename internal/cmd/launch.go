@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -70,22 +72,55 @@ follow-up picks up from the WIP commit klaus left on the branch. When the
 follow-up agent's _finalize runs, the 'klaus:budget-paused' label is cleared
 automatically.
 
-A run without --pr gets a new branch named <slug>-<tail>. The tail is the
-random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug comes
-from the --issue title, else the prompt's first '# ' heading, else its first
-non-empty line: a leading '<repo-name>:' is dropped, the text is lowercased,
-each run of characters outside [a-z0-9] becomes one '-', and it is cut at a word
-boundary to at most 40 characters. A brief that opens with a descriptive
-'# title' names its branch. When no slug comes out, or git rejects the name, the
-branch is agent/<run-id>. Use --branch <name> to name it exactly: the name must
-pass 'git check-ref-format --branch' and must not exist locally or on origin.
---branch and --pr are mutually exclusive.
+Use --change <ref> to continue a change in a repo that delivers without PRs
+(origin not on GitHub), as --pr continues a PR. <ref> is a run ID, a full
+change ID or a valley handle. A run ID names that run's change. A change ID or
+handle names the change of the runs recorded in any session for the target
+repo whose change ID it is or starts, or whose recorded valley handle it is;
+when no run matches and the repo delivers to a valley that lists changes,
+'valley changes --json' is asked. A ref that names several changes is an error
+listing them. The worktree tracks the change's branch on origin: its active
+version's when the valley lists one, else the branch its newest run pushed.
+Launch fails, naming the change and its last known head, when that branch
+isn't on origin. The run keeps the change ID, returns the change to draft as
+below, continues the conversation of the change's most recent run when its
+backend can (below), and is told to push fast-forward to the same branch;
+finalize marks the new head ready. Every backend keeps the branch, the change
+ID and the provenance trailers; only the conversation differs: Claude replays
+the stored conversation, on any machine that has the data ref, Codex forks
+its own session on the same machine, and agy starts fresh.
+With --resume-from, that run's conversation is used, and --change still picks
+the branch and the change ID. When that conversation can't be resumed, the
+agent starts fresh rather than replaying another, for --pr as for --change, and
+the replay: line says so.
+
+--pr and --change refuse while a run in any session is still running on the
+branch they would work on, or on the change they continue (for --pr, the
+change of the run that opened the PR), in the target repo, naming that run.
+--force-takeover launches anyway: the new worktree replaces that run's,
+discarding its local, uncommitted work and unpushed commits. Without it,
+launch never discards work origin lacks: when the branch is checked out in a
+worktree with uncommitted changes, or the local branch has commits not on
+origin/<branch>, it refuses, naming the worktree or branch.
+
+A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
+is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
+comes from the --issue title, else the prompt's first '# ' heading, else its
+first non-empty line: a leading '<repo-name>:' is dropped, the text is
+lowercased, each run of characters outside [a-z0-9] becomes one '-', and it is
+cut at a word boundary to at most 40 characters. A brief that opens with a
+descriptive '# title' names its branch. When no slug comes out, or git rejects
+the name, the branch is agent/<run-id>. Use --branch <name> to name it exactly:
+the name must pass 'git check-ref-format --branch' and must not exist locally or
+on origin.
+--branch, --pr and --change are mutually exclusive.
 
 Every commit the agent makes carries two provenance trailers, added by a
 commit-msg hook scoped to its worktree: 'Change-Id: <change id>' and
 'Klaus-Run: <run id>'. A --pr run keeps the change ID of the run that opened the
-PR, a --resume-from run that of the run it resumes; any other run gets a new
-one. The trailers label commits for finding and auditing; they grant nothing.
+PR, a --change run that of the change it names, a --resume-from run that of the
+run it resumes; any other run gets a new one. The trailers label commits for
+finding and auditing; they grant nothing.
 
 A run that keeps an existing change in a repo that delivers to a valley
 returns the change to draft before its agent starts ('valley unready
@@ -101,16 +136,21 @@ earlier agent learned instead of re-exploring the repo. Prior errors produce a
 warning but do not prevent resume. It starts fresh if the transcript cannot be
 located or staged.
 
-For a budget-paused PR, klaus continues the previous agent's Claude
-conversation by default (trajectory replay): it restores the stored
-conversation and runs 'claude --resume', avoiding a cold re-exploration of
-the repo. The conversation is read from the local clone's data ref, which is
-pushed to origin only when push_data_ref is true, so by default replay works
-on the machine that ran the paused agent. It falls back to a fresh agent when
-the trajectory is missing, oversized, sensitive-skipped, or its session UUID
-is unknown. Use --no-replay to force a fresh agent, --replay to force replay
-(bypassing the size threshold), and --replay-threshold-kb to tune the
-per-launch size cap.
+For a budget-paused PR, and for any --change run, klaus continues the
+conversation of the most recent run on it by default (trajectory replay),
+avoiding a cold re-exploration of the repo. Only that run counts: an older
+conversation never saw the work after it. A Claude run restores a Claude
+run's stored conversation and runs 'claude --resume'; the conversation is read
+from the local clone's data ref, which is pushed to origin only when
+push_data_ref is true, so by default replay works on the machine that ran the
+earlier agent. A Codex run forks a Codex run's local session ('codex exec
+fork'), on the same machine. agy workers can't resume a conversation. The run
+starts fresh, and the replay: line names the run and says why, when that run
+used another backend, its conversation was kept off the data ref as
+potentially sensitive or is on another machine, it is over the size
+threshold, or its session is unknown. Use --no-replay to force a fresh agent,
+--replay (Claude only) to force replay (bypassing the size threshold), and
+--replay-threshold-kb to tune the per-launch size cap.
 
 Use --backend to select claude, codex, or agy independently of the coordinator.
 The saved session worker selection overrides default_agent_backend in config.
@@ -118,8 +158,9 @@ Use --model and --effort to override backends.<backend>.model / effort. Legacy
 default_agent_model / default_agent_effort apply only to Claude. Models are
 passed through verbatim; each CLI validates its own identifiers. agy accepts
 low/medium/high effort; Codex also accepts minimal/xhigh, Claude xhigh/max.
-Dollar budgets and stored trajectory replay are Claude-only. Codex can fork a
-recorded local thread with --resume-from; agy worker follow-ups start fresh.
+Dollar budgets and stored trajectory replay are Claude-only. Codex forks a
+recorded local thread with --resume-from, or on --pr and --change follow-ups
+of a Codex run; agy worker follow-ups start fresh.
 
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
@@ -145,6 +186,8 @@ are synced back after completion. Use --local to force local execution, or
 		noReplay, _ := cmd.Flags().GetBool("no-replay")
 		replayThresholdKB, _ := cmd.Flags().GetInt("replay-threshold-kb")
 		branchFlag, _ := cmd.Flags().GetString("branch")
+		changeRef, _ := cmd.Flags().GetString("change")
+		forceTakeover, _ := cmd.Flags().GetBool("force-takeover")
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
@@ -155,10 +198,16 @@ are synced back after completion. Use --local to force local execution, or
 		if replayFlag && noReplay {
 			return fmt.Errorf("--replay and --no-replay are mutually exclusive")
 		}
+		if cmd.Flags().Changed("change") && changeRef == "" {
+			return fmt.Errorf("--change needs a run ID, change ID or valley handle")
+		}
+		if err := checkContinuation(prNumber, changeRef, cmd.Flags().Changed("branch")); err != nil {
+			return err
+		}
+		if forceTakeover && prNumber == "" && changeRef == "" {
+			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr or --change")
+		}
 		if cmd.Flags().Changed("branch") {
-			if prNumber != "" {
-				return fmt.Errorf("--branch and --pr are mutually exclusive: --pr works on the PR's branch")
-			}
 			if err := git.CheckBranchName(ctx, branchFlag); err != nil {
 				return fmt.Errorf("--branch: %w", err)
 			}
@@ -312,10 +361,17 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
-		// When --pr is set, track the PR's branch instead of creating a new one
+		// Normalize target repo name against the project registry so that
+		// "cosmo", "patflynn/cosmo", and full URLs all resolve to the same
+		// canonical name in the dashboard.
+		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
+
+		// When --pr or --change is set, track the PR's or the change's
+		// branch instead of creating a new one
 		var branch string
 		var isPRFix bool
 		var prURL string
+		var onChange *changeTarget
 
 		if prNumber != "" {
 			ghRepo := resolveGHRepo(repoRef, repoRoot)
@@ -332,10 +388,29 @@ are synced back after completion. Use --local to force local execution, or
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not get PR URL for #%s: %v\n", prNumber, err)
 			}
+		} else if changeRef != "" {
+			if !isDirectPushRepo(repoRoot) {
+				return fmt.Errorf("--change continues a change in a repo that delivers without PRs, and %s's origin is on GitHub; use --pr to continue a PR", repoName)
+			}
+			states, _ := run.ListAllSessions()
+			onChange, err = resolveChange(changeRef, changeSources{
+				Runs: states,
+				Repo: targetName(normalizedTarget),
+				Valley: func() (*valley.Changes, error) {
+					if !valley.Detect(ctx, repoRoot, "", "origin/"+defaultBranch) {
+						return nil, errNoValley
+					}
+					return valley.ListRepo(ctx, repoRoot)
+				},
+			})
+			if err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
+			branch = onChange.Branch
 		} else if branchFlag != "" {
 			// A new run's branch must be new: reusing one would build on, or
 			// reset, whatever work it already holds.
-			const pickAnother = "pick a new name, or use --pr to work on an existing PR's branch"
+			const pickAnother = "pick a new name, or use --pr or --change to continue an existing PR's or change's branch"
 			if git.RefExists(ctx, repoRoot, "refs/heads/"+branchFlag) {
 				return fmt.Errorf("branch %q already exists in %s; %s", branchFlag, repoName, pickAnother)
 			}
@@ -359,6 +434,23 @@ are synced back after completion. Use --local to force local execution, or
 			branch = defaultBranchName(ctx, id, repoName, issueTitle, prompt)
 		}
 
+		// Creating the worktree resets the branch and moves it from any
+		// worktree that has it checked out, so a run still working on the
+		// branch, or on the change, keeps it unless the operator takes over.
+		if (isPRFix || onChange != nil) && !forceTakeover {
+			if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
+				if isPRFix {
+					return fmt.Errorf("--pr: %w", err)
+				}
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
+		if onChange != nil {
+			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
+
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
 		var sysPrompt string
 		directPush := !isPRFix && isDirectPushRepo(repoRoot)
@@ -380,14 +472,18 @@ are synced back after completion. Use --local to force local execution, or
 					fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 				}
 			}
-			sysPrompt, err = config.RenderPrompt(repoRoot, config.PromptVars{
+			vars := config.PromptVars{
 				RunID:      id,
 				Issue:      issue,
 				Branch:     branch,
 				RepoName:   repoName,
 				Reviewer:   reviewer,
 				DirectPush: directPush,
-			})
+			}
+			if onChange != nil {
+				vars.Change = onChange.Name
+			}
+			sysPrompt, err = config.RenderPrompt(repoRoot, vars)
 		}
 		if err != nil {
 			return fmt.Errorf("rendering prompt: %w", err)
@@ -425,24 +521,31 @@ are synced back after completion. Use --local to force local execution, or
 		// thread, both UUIDs) is only known later, so size one in; the other
 		// later change, a local fallback, never makes the command longer.
 		sizeCheck := workerOpts
-		if resumeFrom != "" || isPRFix {
+		if resumeFrom != "" || isPRFix || onChange != nil {
 			sizeCheck.ResumeID = "00000000-0000-0000-0000-000000000000"
 		}
 		if _, err := agentPaneCommand(kind, sizeCheck, promptPath, sandboxHost, worktree, logFile, finalizePrefix, id); err != nil {
 			return err
 		}
 
-		if isPRFix {
+		switch {
+		case isPRFix:
 			fmt.Printf("Launching agent %s (PR #%s fix)...\n", id, prNumber)
-		} else {
+		case onChange != nil:
+			fmt.Printf("Launching agent %s (continuing change %s)...\n", id, onChange.Name)
+		default:
 			fmt.Printf("Launching agent %s...\n", id)
 		}
 		if targetRepo != nil {
 			fmt.Printf("  target:   %s\n", *targetRepo)
 		}
-		if isPRFix {
-			// Create worktree tracking the PR branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch); err != nil {
+		if isPRFix || onChange != nil {
+			// Create worktree tracking the PR's or the change's branch
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
+				var lw *git.LocalWorkError
+				if errors.As(err, &lw) {
+					return fmt.Errorf("creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", err)
+				}
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 		} else {
@@ -475,17 +578,13 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
 		}
 
-		// Normalize target repo name against the project registry so that
-		// "cosmo", "patflynn/cosmo", and full URLs all resolve to the same
-		// canonical name in the dashboard.
-		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
-
 		change, err := chooseChangeID(ctx, store, changeIDInput{
 			IsPRFix:       isPRFix,
 			PRURL:         prURL,
 			PRBranch:      branch,
 			TargetRepo:    normalizedTarget,
 			ResumeFrom:    resumeFrom,
+			Change:        onChange,
 			Worktree:      worktree,
 			DefaultBranch: defaultBranch,
 		})
@@ -514,60 +613,65 @@ are synced back after completion. Use --local to force local execution, or
 			return err
 		}
 
-		// Stage the prior Claude transcript for the new worktree.
-		var resolvedResume string
-		if resumeFrom != "" && kind == backend.Claude {
-			if prior, err := store.Load(resumeFrom); err == nil {
-				resolvedResume = resolveResumeID(prior, kind, worktree)
-			}
-		}
-
-		// Budget-paused PR continuation (issue #261): when launching against a
-		// paused PR with no explicit --resume-from, try to continue the prior
-		// agent's Claude conversation via trajectory replay. The stored
-		// conversation is restored into this worktree's project dir and
-		// claude --resume picks up where the pause happened, avoiding a costly
-		// re-exploration of the repo. Falls back to a fresh agent on any miss.
-		// Replay restores the trajectory onto the local machine, so it only
-		// applies to local execution. When the run is destined for a sandbox
-		// host, claude runs remotely and would not find the restored file —
-		// skip replay and let it start fresh there.
+		// The conversation the worker continues. --resume-from names it: a
+		// Claude transcript staged into the new worktree, or a local Codex
+		// thread to fork. Otherwise a run that continues a budget-paused PR
+		// (issue #261), or a change (--change), continues that of the most
+		// recent run on it, when the new run's backend can (resolveReplay):
+		// a Claude conversation is restored from the data ref for claude
+		// --resume, a Codex session is forked, and agy starts fresh. Any miss
+		// starts a fresh agent. Replay restores onto the local machine, so it
+		// only applies to local execution: a run destined for a sandbox host
+		// starts fresh there. An explicit --resume-from that can't be resumed
+		// starts fresh rather than replaying another conversation.
 		intendsSandbox := sandboxHost != ""
-		var replayedFromRunID string
-		if kind == backend.Claude && resolvedResume == "" && isPRFix && prNumber != "" && !noReplay && !intendsSandbox {
-			threshold := replayThresholdKB
-			if threshold == 0 {
-				threshold = hostCfg.ReplayThresholdKB
-			}
-			decision := resolveBudgetPausedReplay(ctx, replayParams{
-				GitClient:   gitClient,
-				Store:       store,
-				RepoRoot:    repoRoot,
-				DataRef:     hostCfg.DataRef,
-				Worktree:    worktree,
-				PRBranch:    branch,
-				PRNumber:    prNumber,
-				GHRepo:      resolveGHRepo(repoRef, repoRoot),
-				ForceReplay: replayFlag,
-				ThresholdKB: threshold,
-			})
-			if decision.SessionUUID != "" {
-				resolvedResume = decision.SessionUUID
-				replayedFromRunID = decision.SourceRunID
-				fmt.Printf("  replay:   %s\n", decision.Reason)
-			} else {
-				fmt.Printf("  replay:   fresh agent (%s)\n", decision.Reason)
-			}
-		}
-
-		if kind == backend.Codex && resumeFrom != "" && !intendsSandbox {
+		var resolvedResume, replayedFromRunID string
+		if resumeFrom != "" && (kind == backend.Claude || kind == backend.Codex && !intendsSandbox) {
 			if prior, err := store.Load(resumeFrom); err == nil {
 				resolvedResume = resolveResumeID(prior, kind, worktree)
 			}
 		}
+		if (isPRFix || onChange != nil) && !intendsSandbox {
+			switch {
+			case resumeFrom != "" && resolvedResume != "":
+				fmt.Printf("  replay:   resuming conversation from run %s (--resume-from)\n", resumeFrom)
+			case resumeFrom != "":
+				fmt.Printf("  replay:   fresh agent (--resume-from %s: its conversation can't be resumed)\n", resumeFrom)
+			default:
+				threshold := replayThresholdKB
+				if threshold == 0 {
+					threshold = hostCfg.ReplayThresholdKB
+				}
+				decision := replayDecision{Reason: "--no-replay"}
+				if !noReplay {
+					decision = resolveReplay(ctx, replayParams{
+						Kind:        kind,
+						GitClient:   gitClient,
+						Store:       store,
+						RepoRoot:    repoRoot,
+						DataRef:     hostCfg.DataRef,
+						Worktree:    worktree,
+						PRBranch:    branch,
+						PRNumber:    prNumber,
+						GHRepo:      resolveGHRepo(repoRef, repoRoot),
+						Change:      onChange,
+						ForceReplay: replayFlag,
+						ThresholdKB: threshold,
+					})
+				}
+				if decision.SessionUUID != "" {
+					resolvedResume = decision.SessionUUID
+					replayedFromRunID = decision.SourceRunID
+					fmt.Printf("  replay:   %s\n", decision.Reason)
+				} else {
+					fmt.Printf("  replay:   fresh agent (%s)\n", decision.Reason)
+				}
+			}
+		}
+
 		// Build the selected backend command.
 		if kind != backend.Claude && resumeFrom != "" && resolvedResume == "" {
-			fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr\n", kind)
+			fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr or --change\n", kind)
 		}
 		workerOpts.ResumeID = resolvedResume
 
@@ -741,6 +845,35 @@ func unreadyChange(ctx context.Context, worktree string, change changeChoice) *r
 		fmt.Printf("  valley:   the change wasn't ready: %s\n", r.Note)
 	}
 	return rec
+}
+
+// checkNoLiveHolder returns an error naming the run when a live run, in any
+// session, holds the branch a --pr or --change launch is about to work on,
+// or the change it continues, in the target repo. A --pr launch's change is
+// that of the run that opened the PR (prChangeSource).
+func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string, target *string, onChange *changeTarget) error {
+	states, _ := run.ListAllSessions()
+	repos := []string{targetName(target)}
+	var changeID string
+	if onChange != nil {
+		changeID = onChange.ID
+		repos = append(repos, onChange.Repo)
+	} else if s := prChangeSource(states, prURL, branch, target); s != nil {
+		changeID = s.ChangeID
+		repos = append(repos, integration.RepoName(s))
+	}
+	td := run.TmuxDepsFor(ctx, tc)
+	s := liveHolder(states, func(s *run.State) bool { return s.IsAgentRunningWith(td) }, branch, changeID, repos...)
+	what := "change " + changeID
+	switch {
+	case s == nil:
+		return nil
+	case onChange != nil && s.ChangeID == onChange.ID:
+		what = "change " + onChange.Name
+	case s.Branch == branch:
+		what = "branch " + branch
+	}
+	return fmt.Errorf("run %s is still working on %s; wait for it to finish or stop it, or pass --force-takeover to take over, discarding that run's local, uncommitted work", s.ID, what)
 }
 
 // resolveResumeID preserves resumable conversations even after an error.
@@ -1093,9 +1226,11 @@ func init() {
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
-	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr")
-	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for a budget-paused --pr (continue the prior conversation, bypassing the size threshold)")
-	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for a budget-paused --pr; dispatch a fresh agent instead")
+	launchCmd.Flags().String("change", "", "Continue an existing change in a repo without PRs, named by run ID, change ID or valley handle: work on its branch and keep its change ID, on any backend; Claude replays the latest run's stored conversation, Codex forks its own session on the same machine, agy starts fresh; not with --pr or --branch")
+	launchCmd.Flags().Bool("force-takeover", false, "With --pr or --change, launch even while another run is still working on the branch or change, discarding that run's local, uncommitted work")
+	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr or --change")
+	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for --pr or --change (continue the prior conversation, bypassing the size threshold, and for --pr the budget-paused check)")
+	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for --pr or --change; dispatch a fresh agent instead")
 	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")
 	launchCmd.Flags().String("model", "", "Model for the selected backend (default from backends.<backend>.model; legacy default_agent_model for Claude)")
 	launchCmd.Flags().String("effort", "", "Reasoning effort for the selected backend (default from backends.<backend>.effort; valid levels depend on backend)")
