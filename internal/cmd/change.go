@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,8 +27,9 @@ type changeTarget struct {
 // changeSources is what resolveChange reads.
 type changeSources struct {
 	Runs []*run.State // every recorded run, from every session
-	// Repo is the short name of the new run's target repo (targetName); ""
-	// when unknown, and then runs in any repo count.
+	// Repo is the target repo's identity, named as integration.RepoName names
+	// a run's: the short name of the new run's target repo (targetName).
+	// Only runs it names count; "" is an error.
 	Repo string
 	// Valley lists the changes of the target repo, as `valley changes
 	// --json` does, or returns errNoValley when no valley serves it. nil
@@ -50,13 +52,17 @@ var errNoValley = errors.New("no valley serves the repo")
 //     change whose ID or handle it is, or whose ID starts with it.
 //
 // A ref that names more than one change is an error listing them. A run is
-// in the target repo when its integration.RepoName, or the short name of its
-// own target repo, is the target's short name.
+// in the target repo only when its integration.RepoName is the target's
+// identity: a run whose valley names its repo otherwise is in that other
+// repo, whatever its own target repo was called.
 //
 // The change's branch and head are its active version's when the valley
 // lists one with a branch, else those the newest run on it pushed; its name
 // is the valley's handle, else the newest recorded one, else its ID.
 func resolveChange(ref string, src changeSources) (*changeTarget, error) {
+	if src.Repo == "" {
+		return nil, errors.New("can't tell which repo the launch targets; name it with --repo")
+	}
 	var (
 		asked   bool
 		listing *valley.Changes
@@ -70,12 +76,9 @@ func resolveChange(ref string, src changeSources) (*changeTarget, error) {
 		return listing, listErr
 	}
 	inRepo := func(s *run.State) bool {
-		return s.Type != "session" && (src.Repo == "" || integration.RepoName(s) == src.Repo || targetName(s.TargetRepo) == src.Repo)
+		return s.Type != "session" && integration.RepoName(s) == src.Repo
 	}
-	where := "this repo"
-	if src.Repo != "" {
-		where = src.Repo
-	}
+	where := src.Repo
 
 	var id string
 	if s := findRun(src.Runs, ref); s != nil {
@@ -217,6 +220,25 @@ func checkContinuation(pr, change string, branchSet bool) error {
 		return fmt.Errorf("--branch and --pr are mutually exclusive: --pr works on the PR's branch")
 	case branchSet && change != "":
 		return fmt.Errorf("--branch and --change are mutually exclusive: --change works on the change's branch")
+	}
+	return nil
+}
+
+// liveHolder returns a run that running says is live and that holds what a
+// continuing launch is about to work on, in the target repo: branch, or the
+// change changeID. repos are the names the target repo goes by, compared
+// with integration.RepoName; a run no name matches is in another repo.
+func liveHolder(states []*run.State, running func(*run.State) bool, branch, changeID string, repos ...string) *run.State {
+	for _, s := range states {
+		repo := integration.RepoName(s)
+		if s.Type == "session" || repo == "" || !slices.Contains(repos, repo) {
+			continue
+		}
+		onBranch := branch != "" && s.Branch == branch
+		onChange := run.ValidChangeID(changeID) && s.ChangeID == changeID
+		if (onBranch || onChange) && running(s) {
+			return s
+		}
 	}
 	return nil
 }

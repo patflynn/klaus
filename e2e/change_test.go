@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,10 +92,13 @@ func (h *Harness) finishRun(id string) *run.State {
 // told it continues the change, and shares the change's dashboard row; it
 // pushes fast-forward to the same branch and finalize readies the new head
 // there. A --change <handle> --no-replay run resolves the handle through the
-// recorded runs, starts at the follow-up's head, and starts fresh.
+// recorded runs, starts at the follow-up's head, and starts fresh. The
+// follow-ups target the repo by the name the valley gives it, widget: the
+// sandbox's own name is its origin's path.
 func TestChangeContinuesAChange(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
+	h.RegisterProject("acme/widget", h.RepoDir)
 	h.installValleyStub()
 	h.joinValley()
 	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.has-unready"), nil, 0o644); err != nil {
@@ -113,7 +117,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 
 	// --change <run-id>.
 	h.resetClaude()
-	follow, res := h.launchRun("--change", first.ID, "tidy the health check")
+	follow, res := h.launchRun("--repo", "widget", "--change", first.ID, "tidy the health check")
 	h.WaitForClaudeStart(30 * time.Second)
 	for _, want := range []string{
 		"Launching agent " + follow.ID + " (continuing change nxvp)...",
@@ -179,7 +183,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 
 	// --change <handle> --no-replay.
 	h.resetClaude()
-	third, res := h.launchRun("--change", "nxvp", "--no-replay", "rename the endpoint")
+	third, res := h.launchRun("--repo", "widget", "--change", "nxvp", "--no-replay", "rename the endpoint")
 	h.WaitForClaudeStart(30 * time.Second)
 	for _, want := range []string{
 		"change:   " + first.ChangeID + " (inherited from change nxvp)",
@@ -291,4 +295,112 @@ func TestChangeRefErrors(t *testing.T) {
 	if entries, _ := os.ReadDir(filepath.Join(filepath.Dir(h.RepoDir), "worktrees")); len(entries) != 0 {
 		t.Errorf("refused launches should leave no worktree: %v", entries)
 	}
+}
+
+// TestContinuingYieldsToALiveRun: while a --change follow-up is still
+// running, another --change launch on the change and a --pr launch on its
+// branch refuse, naming it, and leave its uncommitted work alone;
+// --force-takeover replaces it on the branch.
+func TestContinuingYieldsToALiveRun(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.RegisterProject("acme/widget", h.RepoDir)
+	h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"` + changeSession + `"}` + "\n")
+
+	first, _ := h.launchRun("--repo", "widget", "add a health check endpoint")
+	h.WaitForClaudeStart(30 * time.Second)
+	v1 := h.pushWork(first, "health.go", "Add a health check")
+	first = h.finishRun(first.ID)
+
+	h.resetClaude()
+	live, _ := h.launchRun("--repo", "widget", "--change", first.ID, "tidy the health check")
+	h.WaitForClaudeStart(30 * time.Second)
+	notes := filepath.Join(live.Worktree, "notes.txt")
+	if err := os.WriteFile(notes, []byte("half done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// gh answers for PR #4242, whose head is the change's branch.
+	h.WriteStub("gh", fmt.Sprintf(`#!/usr/bin/env bash
+case "$*" in
+  *headRefName*) echo %q ;;
+  *"--json url"*) echo https://github.com/acme/widget/pull/4242 ;;
+esac
+exit 0
+`, first.Branch))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"--change", []string{"--change", first.ID}, "--change: run " + live.ID + " is still working on change " + first.ChangeID},
+		{"--pr", []string{"--pr", "4242"}, "--pr: run " + live.ID + " is still working on branch " + first.Branch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := h.RunKlaus(append(append([]string{"launch", "--repo", "widget"}, tc.args...), "take it over")...)
+			if res.ExitCode == 0 {
+				t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
+			}
+			for _, want := range []string{tc.want, "--force-takeover", "discarding that run's local, uncommitted work"} {
+				if !strings.Contains(res.Stderr, want) {
+					t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
+				}
+			}
+		})
+	}
+	if ids := h.RunIDs(); len(ids) != 2 {
+		t.Errorf("refused launches should record no run: %v", ids)
+	}
+	if _, err := os.Stat(notes); err != nil {
+		t.Errorf("the live run's uncommitted work should be untouched: %v", err)
+	}
+
+	h.resetClaude()
+	takeover, res := h.launchRun("--repo", "widget", "--change", first.ID, "--force-takeover", "take it over")
+	h.WaitForClaudeStart(30 * time.Second)
+	if !strings.Contains(res.Stdout, "branch:   "+first.Branch+"\n") || takeover.ChangeID != first.ChangeID {
+		t.Errorf("takeover on branch %q, change %q; want %q, %q\n%s", takeover.Branch, takeover.ChangeID, first.Branch, first.ChangeID, res.Stdout)
+	}
+	if head := h.GitOutput(takeover.Worktree, "rev-parse", "HEAD"); head != v1 {
+		t.Errorf("takeover worktree at %s, want origin's %s", head, v1)
+	}
+	if _, err := os.Stat(live.Worktree); !os.IsNotExist(err) {
+		t.Errorf("--force-takeover should replace the live run's worktree: %v", err)
+	}
+	h.finishRun(takeover.ID)
+	h.WaitForState(live.ID, func(s *run.State) bool { return s.DurationMS != nil && s.TmuxPane == nil }, 60*time.Second)
+}
+
+// TestChangeResumeFromUnresumableStartsFresh: --change A --resume-from B,
+// where B's transcript is gone, starts a fresh agent on A's branch and says
+// so, rather than replaying A's stored conversation.
+func TestChangeResumeFromUnresumableStartsFresh(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.recordConversation()
+	h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"` + changeSession + `"}` + "\n")
+
+	a, _ := h.launchRun("add a health check endpoint")
+	h.WaitForClaudeStart(30 * time.Second)
+	h.pushWork(a, "health.go", "Add a health check")
+	a = h.finishRun(a.ID)
+
+	gone := filepath.Join(h.E2EDir, "gone.jsonl")
+	b := &run.State{ID: "20261013-0900-0b0b0b0b", Type: "launch", Prompt: "an earlier attempt", TargetRepo: a.TargetRepo,
+		Branch: "agent/20261013-0900-0b0b0b0b", LogFile: &gone, CreatedAt: time.Now().Add(-time.Hour).Format(time.RFC3339)}
+	h.SeedState(b)
+
+	h.resetClaude()
+	c, res := h.launchRun("--change", a.ID, "--resume-from", b.ID, "carry on")
+	h.WaitForClaudeStart(30 * time.Second)
+	if want := "replay:   fresh agent (--resume-from " + b.ID + ": its conversation can't be resumed)"; !strings.Contains(res.Stdout, want) {
+		t.Errorf("launch output missing %q:\n%s", want, res.Stdout)
+	}
+	if argv := h.ClaudeArgv(); strings.Contains(argv, "--resume") {
+		t.Errorf("an unresumable --resume-from should start a fresh agent, not replay %s:\n%s", a.ID, argv)
+	}
+	if c.Branch != a.Branch || c.ChangeID != a.ChangeID {
+		t.Errorf("run on branch %q, change %q; want A's %q, %q", c.Branch, c.ChangeID, a.Branch, a.ChangeID)
+	}
+	h.finishRun(c.ID)
 }

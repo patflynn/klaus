@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,12 +38,14 @@ func TestResolveChange(t *testing.T) {
 		CreatedAt: "2026-10-13T09:00:00Z", Valley: &run.Valley{Repo: "gadget", Handle: "nxvp"}}, "port-0004", "4444444")
 	rstu := pushed(&run.State{ID: "20261013-0900-0005", TargetRepo: str("widget"), ChangeID: id("rstuv"),
 		CreatedAt: "2026-10-13T09:00:00Z", Valley: &run.Valley{Repo: "widget", Handle: "rstu"}}, "tune-0005", "5555555")
-	// A run from before change IDs, and one whose valley calls its repo
-	// widget while it targeted acme/source.
+	// A run from before change IDs, one whose valley calls its repo widget
+	// while it targeted acme/source, and a second widget change starting nx.
 	legacy := &run.State{ID: "20261001-0900-0006", TargetRepo: str("widget"), CreatedAt: "2026-10-01T09:00:00Z"}
 	renamed := pushed(&run.State{ID: "20261013-0900-0007", TargetRepo: str("acme/source"), ChangeID: id("wxyz"),
 		CreatedAt: "2026-10-13T09:00:00Z", Valley: &run.Valley{Repo: "widget", Handle: "wxyz"}}, "renamed-0007", "7777777")
-	runs := []*run.State{v1, v2, unpushed, gadget, rstu, legacy, renamed, {ID: "session-x", Type: "session"}}
+	nxwr := pushed(&run.State{ID: "20261013-0900-0008", TargetRepo: str("widget"), ChangeID: id("nxwr"), Prompt: "cache the health check\nfor a minute",
+		CreatedAt: "2026-10-13T09:00:00Z"}, "cache-0008", "8888888")
+	runs := []*run.State{v1, v2, unpushed, gadget, rstu, legacy, renamed, nxwr, {ID: "session-x", Type: "session"}}
 
 	listing := func(changes ...valley.Change) func() (*valley.Changes, error) {
 		return func() (*valley.Changes, error) {
@@ -87,10 +90,25 @@ func TestResolveChange(t *testing.T) {
 			runIDs: []string{rstu.ID},
 		},
 		{
-			name: "a run whose valley names its repo for its target's other name is in the target",
-			ref:  "wxyz", repo: "source",
+			name: "a run is in the repo its valley names, not its target's",
+			ref:  "wxyz", repo: "widget",
 			want:   changeTarget{ID: id("wxyz"), Name: "wxyz", Repo: "widget", Branch: "renamed-0007", Head: "7777777"},
 			runIDs: []string{renamed.ID},
+		},
+		{
+			name: "a handle doesn't name a change in its target's repo when its valley names another",
+			ref:  "wxyz", repo: "source",
+			err: []string{`no run on a change "wxyz" is recorded in source`},
+		},
+		{
+			name: "a run ID doesn't name a change in its target's repo when its valley names another",
+			ref:  renamed.ID, repo: "source",
+			err: []string{"run " + renamed.ID + " is in widget, not source"},
+		},
+		{
+			name: "an unknown target repo matches no repo",
+			ref:  v1.ID, repo: "",
+			err: []string{"can't tell which repo the launch targets"},
 		},
 		{
 			name: "the valley's active version gives the branch and handle when it lists the change",
@@ -113,9 +131,9 @@ func TestResolveChange(t *testing.T) {
 		},
 		{
 			name: "a handle naming two changes lists them",
-			ref:  "nx", repo: "",
-			err: []string{`"nx" names 2 changes in this repo`, id("nxvp") + " (nxvp), latest run " + unpushed.ID + "\n",
-				id("nxvpz") + " (nxvp), latest run " + gadget.ID + ": port the health check"},
+			ref:  "nx", repo: "widget",
+			err: []string{`"nx" names 2 changes in widget`, id("nxvp") + " (nxvp), latest run " + unpushed.ID + "\n",
+				id("nxwr") + ", latest run " + nxwr.ID + ": cache the health check"},
 		},
 		{
 			name: "a handle naming two listed changes lists them",
@@ -189,6 +207,45 @@ func TestResolveChange(t *testing.T) {
 			t.Errorf("err %v, valley asked %d times, want once", err, calls)
 		}
 	})
+}
+
+// TestLiveHolder: a continuing launch yields to a live run on its branch or
+// its change in the target repo, whatever else that run is on.
+func TestLiveHolder(t *testing.T) {
+	str := func(s string) *string { return &s }
+	change := "nxvp" + strings.Repeat("k", 28)
+	onBranch := &run.State{ID: "on-branch", TargetRepo: str("acme/widget"), Branch: "fix-0001"}
+	onChange := &run.State{ID: "on-change", TargetRepo: str("widget"), Branch: "other-0002", ChangeID: change}
+	valleyNamed := &run.State{ID: "valley-named", TargetRepo: str("acme/source"), Branch: "fix-0001", Valley: &run.Valley{Repo: "widget"}}
+	elsewhere := &run.State{ID: "elsewhere", TargetRepo: str("gadget"), Branch: "fix-0001", ChangeID: change}
+	for _, tc := range []struct {
+		name     string
+		states   []*run.State
+		live     []string
+		branch   string
+		changeID string
+		repos    []string
+		want     string
+	}{
+		{"a live run on the branch", []*run.State{onBranch}, []string{"on-branch"}, "fix-0001", "", []string{"widget"}, "on-branch"},
+		{"a run on the branch that isn't live", []*run.State{onBranch}, nil, "fix-0001", "", []string{"widget"}, ""},
+		{"a live run on the change on another branch", []*run.State{onChange}, []string{"on-change"}, "fix-0001", change, []string{"widget"}, "on-change"},
+		{"no change ID matches no change", []*run.State{onChange}, []string{"on-change"}, "fix-0001", "", []string{"widget"}, ""},
+		{"a run in the repo the change's valley names", []*run.State{valleyNamed}, []string{"valley-named"}, "fix-0001", "", []string{"source", "widget"}, "valley-named"},
+		{"a run in another repo", []*run.State{elsewhere}, []string{"elsewhere"}, "fix-0001", change, []string{"widget", ""}, ""},
+		{"a session", []*run.State{{ID: "s", Type: "session", TargetRepo: str("widget"), Branch: "fix-0001"}}, []string{"s"}, "fix-0001", "", []string{"widget"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			running := func(s *run.State) bool { return slices.Contains(tc.live, s.ID) }
+			var got string
+			if s := liveHolder(tc.states, running, tc.branch, tc.changeID, tc.repos...); s != nil {
+				got = s.ID
+			}
+			if got != tc.want {
+				t.Errorf("liveHolder = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestCheckContinuation(t *testing.T) {

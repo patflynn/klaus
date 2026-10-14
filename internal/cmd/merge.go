@@ -288,18 +288,26 @@ func rebaseAndPush(prNumber string, repo string) error {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
 	worktreePath := filepath.Join(tmpDir, "rebase")
+	var tracking bool
 	defer func() {
 		if err := gitClient.WorktreeRemove(ctx, repoRoot, worktreePath); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to remove worktree: %v\n", err)
+		}
+		// The local branch started at origin's tip and holds only this
+		// rebase; drop it, so a rebase that wasn't pushed doesn't read as
+		// work origin lacks when the next worktree tracks the branch.
+		if tracking {
+			_ = gitClient.BranchDelete(ctx, repoRoot, branch)
 		}
 		if err := os.RemoveAll(tmpDir); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to remove temp directory: %v\n", err)
 		}
 	}()
 
-	if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktreePath, branch); err != nil {
+	if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktreePath, branch, false); err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
+	tracking = true
 
 	rebaseCmd := exec.Command("git", "rebase", "origin/main")
 	rebaseCmd.Dir = worktreePath

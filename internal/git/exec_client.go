@@ -30,8 +30,8 @@ func (c *ExecClient) WorktreeRemove(ctx context.Context, repoDir, path string) e
 	return WorktreeRemove(ctx, repoDir, path)
 }
 
-func (c *ExecClient) WorktreeAddTrack(ctx context.Context, repoDir, path, branch string) error {
-	return WorktreeAddTrack(ctx, repoDir, path, branch)
+func (c *ExecClient) WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
+	return WorktreeAddTrack(ctx, repoDir, path, branch, discard)
 }
 
 func (c *ExecClient) WorktreePrune(ctx context.Context, repoDir string) error {

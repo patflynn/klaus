@@ -515,6 +515,12 @@ klaus launch --pr 42 --issue 10 "Fix the auth bug mentioned in review"
 
 The `--pr` and `--issue` flags can coexist (the agent may reference the issue in commits).
 
+#### A run still working on the branch
+
+`--pr` and `--change` refuse to launch while a run in any session is still running (judged as the dashboard judges it) on the branch they would work on, or on the change they continue, in the target repo; the error names that run. A `--pr` launch's change is that of the run that opened the PR. Wait for the run to finish, or stop it, or pass `--force-takeover` to launch anyway: the new worktree replaces the running agent's, **discarding that run's local, uncommitted work** and any commits it hasn't pushed.
+
+Without `--force-takeover`, creating the worktree never discards work origin lacks, whoever left it: when the branch is checked out in a worktree with uncommitted changes (klaus's own `.claude/settings.json` aside), or the local branch has commits that aren't on `origin/<branch>`, launch refuses and names the worktree or branch. A worktree on the branch that holds nothing origin lacks is removed to make way, and a local branch that only points at what origin has is reset to origin's tip.
+
 ### `klaus launch --change`
 
 Continue an existing change in a repo that delivers without PRs (its origin isn't on GitHub, as in a [valley's repo](#repos-that-deliver-to-a-valley)), the way `--pr` continues a PR. Use it for every follow-up on a change, instead of telling a `--resume-from` agent to check out the old branch.
@@ -528,10 +534,10 @@ klaus launch --change nxvp --no-replay "Start over on the tests"      # fresh ag
 `<ref>` names the change, resolved in this order:
 
 1. A run ID names that run's change.
-2. A full change ID or a handle is matched against the runs recorded in any session for the target repo: a run matches when the ref is its change ID, starts its change ID (a handle is the change ID's shortest unique prefix, so a handle that has since lengthened still matches), or is the valley handle recorded on it. A run is in the target repo when its repo, named as [for the dashboard](#follow-up-runs-on-a-change), or the last component of its own target repo is the target's.
+2. A full change ID or a handle is matched against the runs recorded in any session for the target repo: a run matches when the ref is its change ID, starts its change ID (a handle is the change ID's shortest unique prefix, so a handle that has since lengthened still matches), or is the valley handle recorded on it. A run is in the target repo only when its repo, named as [for the dashboard](#follow-up-runs-on-a-change), is the last component of the target repo: a run whose valley named its repo `widget` is in `widget`, not in the `acme/source` it was launched against. A launch whose target repo is unknown is an error.
 3. When no run matches, and the repo delivers to a valley that lists `changes`, `valley changes --json` names the change: one whose ID or handle the ref is, or whose ID it starts.
 
-A ref that names more than one change is an error that lists them; name it by its full change ID or a run ID. `--change` refuses a GitHub repo (use `--pr`), and can't be combined with `--pr` or `--branch`.
+A ref that names more than one change is an error that lists them; name it by its full change ID or a run ID. `--change` refuses a GitHub repo (use `--pr`), and can't be combined with `--pr` or `--branch`. Like `--pr`, it refuses while another run is still working on the change or its branch, unless you pass `--force-takeover` (see [A run still working on the branch](#a-run-still-working-on-the-branch)).
 
 The worktree tracks the change's branch on origin, as `--pr` tracks the PR's: the branch of the change's active version when the valley lists one (it may have been marked ready from another machine), else the branch the change's newest run pushed. Launch fails, naming the change and its last known head, when no branch is known or the branch is gone from origin. Then:
 
@@ -541,7 +547,7 @@ The worktree tracks the change's branch on origin, as `--pr` tracks the PR's: th
 - The worker prompt tells the agent it is continuing the change, to commit on top of its branch and push fast-forward to it, and not to create a new branch, rebase or force-push. Finalize's `valley ready` then marks the new head ready as a version of the same change.
 - On the dashboard the run joins the change's row, like a fix agent on its PR's row.
 
-With `--resume-from`, that run's conversation is used instead of replay, and `--change` still picks the branch and the change ID.
+With `--resume-from`, that run's conversation is used instead of replay, and `--change` still picks the branch and the change ID. When that conversation can't be resumed (its transcript is missing or can't be staged), the agent starts fresh rather than replaying another run's, and the `replay:` line says so: `replay: fresh agent (--resume-from <run-id>: its conversation can't be resumed)`. The same holds for `--pr`.
 
 ### Branch names and `klaus launch --branch`
 

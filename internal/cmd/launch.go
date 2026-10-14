@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +16,7 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
@@ -84,7 +86,18 @@ isn't on origin. The run keeps the change ID, returns the change to draft as
 below, replays the conversation of the change's most recent run, and is told
 to push fast-forward to the same branch; finalize marks the new head ready.
 With --resume-from, that run's conversation is used, and --change still picks
-the branch and the change ID.
+the branch and the change ID. When that conversation can't be resumed, the
+agent starts fresh rather than replaying another, for --pr as for --change, and
+the replay: line says so.
+
+--pr and --change refuse while a run in any session is still running on the
+branch they would work on, or on the change they continue (for --pr, the
+change of the run that opened the PR), in the target repo, naming that run.
+--force-takeover launches anyway: the new worktree replaces that run's,
+discarding its local, uncommitted work and unpushed commits. Without it,
+launch never discards work origin lacks: when the branch is checked out in a
+worktree with uncommitted changes, or the local branch has commits not on
+origin/<branch>, it refuses, naming the worktree or branch.
 
 A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
 is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
@@ -164,6 +177,7 @@ are synced back after completion. Use --local to force local execution, or
 		replayThresholdKB, _ := cmd.Flags().GetInt("replay-threshold-kb")
 		branchFlag, _ := cmd.Flags().GetString("branch")
 		changeRef, _ := cmd.Flags().GetString("change")
+		forceTakeover, _ := cmd.Flags().GetBool("force-takeover")
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
@@ -179,6 +193,9 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if err := checkContinuation(prNumber, changeRef, cmd.Flags().Changed("branch")); err != nil {
 			return err
+		}
+		if forceTakeover && prNumber == "" && changeRef == "" {
+			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr or --change")
 		}
 		if cmd.Flags().Changed("branch") {
 			if err := git.CheckBranchName(ctx, branchFlag); err != nil {
@@ -379,9 +396,6 @@ are synced back after completion. Use --local to force local execution, or
 			if err != nil {
 				return fmt.Errorf("--change: %w", err)
 			}
-			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
-				return fmt.Errorf("--change: %w", err)
-			}
 			branch = onChange.Branch
 		} else if branchFlag != "" {
 			// A new run's branch must be new: reusing one would build on, or
@@ -408,6 +422,23 @@ are synced back after completion. Use --local to force local execution, or
 				issueTitle = title
 			}
 			branch = defaultBranchName(ctx, id, repoName, issueTitle, prompt)
+		}
+
+		// Creating the worktree resets the branch and moves it from any
+		// worktree that has it checked out, so a run still working on the
+		// branch, or on the change, keeps it unless the operator takes over.
+		if (isPRFix || onChange != nil) && !forceTakeover {
+			if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
+				if isPRFix {
+					return fmt.Errorf("--pr: %w", err)
+				}
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
+		if onChange != nil {
+			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
 		}
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
@@ -500,7 +531,11 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if isPRFix || onChange != nil {
 			// Create worktree tracking the PR's or the change's branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch); err != nil {
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
+				var lw *git.LocalWorkError
+				if errors.As(err, &lw) {
+					return fmt.Errorf("creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", err)
+				}
 				return fmt.Errorf("creating worktree: %w", err)
 			}
 		} else {
@@ -585,10 +620,19 @@ are synced back after completion. Use --local to force local execution, or
 		// any miss. Replay restores the trajectory onto the local machine, so
 		// it only applies to local execution. When the run is destined for a
 		// sandbox host, claude runs remotely and would not find the restored
-		// file — skip replay and let it start fresh there.
+		// file — skip replay and let it start fresh there. An explicit
+		// --resume-from picks the conversation: one that can't be resumed
+		// starts fresh rather than replaying another.
 		intendsSandbox := sandboxHost != ""
 		var replayedFromRunID string
-		if kind == backend.Claude && resolvedResume == "" && (isPRFix || onChange != nil) && !intendsSandbox {
+		if kind == backend.Claude && resumeFrom != "" && (isPRFix || onChange != nil) && !intendsSandbox {
+			if resolvedResume != "" {
+				fmt.Printf("  replay:   resuming conversation from run %s (--resume-from)\n", resumeFrom)
+			} else {
+				fmt.Printf("  replay:   fresh agent (--resume-from %s: its conversation can't be resumed)\n", resumeFrom)
+			}
+		}
+		if kind == backend.Claude && resumeFrom == "" && (isPRFix || onChange != nil) && !intendsSandbox {
 			threshold := replayThresholdKB
 			if threshold == 0 {
 				threshold = hostCfg.ReplayThresholdKB
@@ -799,6 +843,35 @@ func unreadyChange(ctx context.Context, worktree string, change changeChoice) *r
 		fmt.Printf("  valley:   the change wasn't ready: %s\n", r.Note)
 	}
 	return rec
+}
+
+// checkNoLiveHolder returns an error naming the run when a live run, in any
+// session, holds the branch a --pr or --change launch is about to work on,
+// or the change it continues, in the target repo. A --pr launch's change is
+// that of the run that opened the PR (prChangeSource).
+func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string, target *string, onChange *changeTarget) error {
+	states, _ := run.ListAllSessions()
+	repos := []string{targetName(target)}
+	var changeID string
+	if onChange != nil {
+		changeID = onChange.ID
+		repos = append(repos, onChange.Repo)
+	} else if s := prChangeSource(states, prURL, branch, target); s != nil {
+		changeID = s.ChangeID
+		repos = append(repos, integration.RepoName(s))
+	}
+	td := run.TmuxDepsFor(ctx, tc)
+	s := liveHolder(states, func(s *run.State) bool { return s.IsAgentRunningWith(td) }, branch, changeID, repos...)
+	what := "change " + changeID
+	switch {
+	case s == nil:
+		return nil
+	case onChange != nil && s.ChangeID == onChange.ID:
+		what = "change " + onChange.Name
+	case s.Branch == branch:
+		what = "branch " + branch
+	}
+	return fmt.Errorf("run %s is still working on %s; wait for it to finish or stop it, or pass --force-takeover to take over, discarding that run's local, uncommitted work", s.ID, what)
 }
 
 // resolveResumeID preserves resumable conversations even after an error.
@@ -1152,6 +1225,7 @@ func init() {
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
 	launchCmd.Flags().String("change", "", "Continue an existing change in a repo without PRs, named by run ID, change ID or valley handle: work on its branch, keep its change ID and replay its latest conversation; not with --pr or --branch")
+	launchCmd.Flags().Bool("force-takeover", false, "With --pr or --change, launch even while another run is still working on the branch or change, discarding that run's local, uncommitted work")
 	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr or --change")
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for --pr or --change (continue the prior conversation, bypassing the size threshold, and for --pr the budget-paused check)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for --pr or --change; dispatch a fresh agent instead")

@@ -544,6 +544,7 @@ klaus launch --budget <usd> ...               # spend cap in USD (default from c
 klaus launch --repo <name|owner/repo> ...     # target a registered project or another GitHub repo
 klaus launch --resume-from <run-id> ...       # continue a previous agent's Claude conversation
 klaus launch --branch <name> ...              # name the new run's branch exactly (not with --pr or --change)
+klaus launch --force-takeover --pr <n> ...    # take the branch from a run still working on it, discarding its uncommitted work (also with --change)
 klaus launch --replay --pr <n> ...            # force trajectory replay, bypassing the size threshold (also with --change)
 klaus launch --no-replay --pr <n> ...         # dispatch a fresh agent instead of replaying (also with --change)
 klaus launch --replay-threshold-kb <kb> ...   # per-launch replay size cap (0 = config default)
@@ -608,7 +609,11 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   check out the old branch by hand. An ambiguous handle is an error that lists the
   candidates; name the change by its full ID or a run ID then. With
   ` + "`--resume-from`" + `, that run's conversation is used and ` + "`--change`" + ` still picks
-  the branch and change ID.
+  the branch and change ID; if it can't be resumed, the agent starts fresh.
+- ` + "`--pr`" + ` and ` + "`--change`" + ` refuse while a run is still working on the branch or the
+  change, naming it. Wait for it, or stop it; ` + "`--force-takeover`" + ` launches anyway and
+  discards that run's local, uncommitted work. Launch also refuses to discard
+  uncommitted changes or unpushed commits left on the branch's worktree.
 - ` + "`--replay`" + ` forces replay past the size threshold; ` + "`--no-replay`" + ` forces a fresh
   agent; ` + "`--replay-threshold-kb`" + ` tunes the cap for one launch. Launch prints which
   path it took on the ` + "`replay:`" + ` line.
