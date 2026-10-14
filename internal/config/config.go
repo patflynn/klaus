@@ -34,6 +34,9 @@ type Config struct {
 	PRReviewer         string             `json:"pr_reviewer,omitempty"`
 	Webhook            *WebhookConfig     `json:"webhook,omitempty"`
 	Dashboard          *DashboardConfig   `json:"dashboard,omitempty"`
+	// SelfUpdate turns on klaus self-update. It is read only from the host
+	// config, ~/.klaus/config.json, never from a repo's .klaus/config.json.
+	SelfUpdate *SelfUpdateConfig `json:"self_update,omitempty"`
 	// ReplayThresholdKB caps the stored Claude trajectory size (in KB) that
 	// 'klaus launch --pr' will restore for claude --resume when continuing a
 	// budget-paused PR. Trajectories above this fall back to a fresh agent
@@ -155,6 +158,22 @@ func (d *DashboardConfig) ApproveTemplate() string {
 		return d.ApproveCommand
 	}
 	return d.SubmitCommand
+}
+
+// SelfUpdateConfig names where klaus self-update installs klaus from: the
+// tip of Branch in the git repository Repo: an https://, ssh://, git:// or
+// file:// URL, an absolute path, or user@host:path.
+type SelfUpdateConfig struct {
+	Repo   string `json:"repo"`
+	Branch string `json:"branch,omitempty"` // default main
+}
+
+// BranchName returns the configured branch, main when unset.
+func (s *SelfUpdateConfig) BranchName() string {
+	if s.Branch == "" {
+		return "main"
+	}
+	return s.Branch
 }
 
 // PreReviewConfig configures the pre-PR review checks.
@@ -685,6 +704,11 @@ Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` 
 - ` + "`klaus track <pr-ref> [...] [--repo <repo>]`" + ` — add existing PRs to the dashboard for pipeline monitoring; a pr-ref is a number, a PR URL, or owner/repo#number
 - ` + "`klaus untrack <pr-number> [...]`" + ` — stop tracking PRs
 - ` + "`klaus dashboard`" + ` — open live dashboard
+- ` + "`klaus self-update`" + ` — install the tip of the configured klaus branch into the nix profile (` + "`--rollback`, `--pin`, `--unpin`, `--retry`, `-v`" + `)
+
+## Self-update
+
+When the host config (` + "`~/.klaus/config.json`" + `, never a repo's config) has ` + "`\"self_update\": {\"repo\": \"<git URL>\", \"branch\": \"main\"}`" + `, a timer runs ` + "`klaus self-update`" + `: it resolves the branch with ` + "`git ls-remote`" + `, builds exactly that commit with nix, smoke-tests it (` + "`klaus --version`" + ` reports the commit, ` + "`klaus status`" + ` exits 0), and installs it into the user's nix profile in place of the element named klaus. Only the configured branch installs, pinned to the commit ls-remote returned, and only after it builds and passes the smoke test; PR heads never install by themselves. A commit that fails is skipped until the branch moves or ` + "`--retry`" + `. ` + "`--rollback`" + ` reinstalls the previous build (again to return), and ` + "`--pin`" + ` stops the timer from installing until ` + "`--unpin`" + `. State is in ` + "`$XDG_STATE_HOME/klaus/self-update.json`" + `. The dashboard restarts onto a new klaus on PATH once its keyboard is quiet, and new launches use it at once; running agents finish on the klaus their pane resolved.
 
 ## How the pipeline works
 

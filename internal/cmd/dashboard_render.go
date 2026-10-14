@@ -41,6 +41,7 @@ const (
 	chromeSummary                   // run counts, scroll position, hidden count
 	chromeBlank                     // spacing
 	chromeError                     // a recent pipeline error
+	chromeNotice                    // a new klaus to restart onto, or why that failed
 	chromeFooter                    // agent count and key help
 )
 
@@ -62,7 +63,7 @@ func dropRank(k chromeKind) int {
 		return 5
 	case chromeError:
 		return 4
-	case chromeFooter:
+	case chromeFooter, chromeNotice:
 		return 3
 	case chromeHeader:
 		return 2
@@ -87,6 +88,9 @@ func (m dashboardModel) fitLayout(nRows int) ([]chromeItem, int) {
 	)
 	for i := range m.recentErrors {
 		items = append(items, chromeItem{kind: chromeError, idx: i})
+	}
+	if m.binNotice != "" {
+		items = append(items, chromeItem{kind: chromeNotice})
 	}
 	items = append(items, chromeItem{kind: chromeFooter})
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -120,6 +121,14 @@ machine; the dashboard never runs it. "submit_command" is the
 deprecated name of "approve_command", read only when approve_command is
 unset.
 
+Every 30 seconds the dashboard resolves klaus on PATH, symlinks and all.
+When it names a different file than the running binary, and that file runs
+--version, as after klaus self-update, the footer says "klaus updated to
+<version>; restarting". Once no key has been pressed for 10 seconds, the
+dashboard shuts down as on q, releasing its webhook port, and execs the new
+klaus with the same arguments and environment. If the exec fails, it keeps
+running on the old klaus, shows the error, and leaves that file alone.
+
 Keyboard shortcuts:
   j / k or ↑ / ↓  move the selection
   PgUp / PgDn     move a page
@@ -131,9 +140,31 @@ Keyboard shortcuts:
   r               force refresh
   q               quit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		bin := newBinCheck()
+		var notice string
+		for {
+			next, err := runDashboard(cmd, bin, notice)
+			if next == nil {
+				return err
+			}
+			// The dashboard has shut down and released its port: become the
+			// new klaus, with the same arguments and environment.
+			err = syscall.Exec(next.path, os.Args, os.Environ())
+			// Still here: keep running on this klaus, and leave that file be.
+			bin.failed[next.path] = true
+			notice = fmt.Sprintf("klaus updated to %s, but restarting onto it failed: %v", next.version, err)
+		}
+	},
+}
+
+// runDashboard runs the dashboard until it quits. It returns the klaus to
+// restart onto when it quit for that, once everything is shut down. notice,
+// if set, starts in the footer as an error.
+func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateMsg, error) {
+	{
 		store, err := sessionStore()
 		if err != nil {
-			return fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
+			return nil, fmt.Errorf("KLAUS_SESSION_ID not set; run inside a klaus session")
 		}
 
 		// Load config once — used for both the dashboard model and webhook setup.
@@ -149,6 +180,8 @@ Keyboard shortcuts:
 		ghClient := gh.NewGHCLIClient("")
 		model := newDashboardModel(store, cfg, ghClient)
 		model.shutdownCancel = cancel
+		model.bin = bin
+		model.binNotice, model.binNoticeErr = notice, notice != ""
 
 		// Tail the session event log so klaus-internal commands (e.g.
 		// `klaus approve`) can wake the dashboard FSM without waiting for
@@ -175,7 +208,8 @@ Keyboard shortcuts:
 			webhookSrv = webhook.NewServer(port, cfg.Webhook.Path, ch)
 
 			if err := webhookSrv.Listen(); err != nil {
-				return fmt.Errorf("webhook server: %w", err)
+				cancel()
+				return nil, fmt.Errorf("webhook server: %w", err)
 			}
 
 			model.webhookCh = ch
@@ -198,12 +232,16 @@ Keyboard shortcuts:
 		cancel()
 
 		// BubbleTea has exited — centralize cleanup of watcher and log file.
+		var restart *binUpdateMsg
 		if m, ok := finalModel.(dashboardModel); ok {
 			if m.watcher != nil {
 				m.watcher.Close()
 			}
 			if m.logFile != nil {
 				m.logFile.Close()
+			}
+			if m.restarting && err == nil {
+				restart = m.restart
 			}
 		}
 
@@ -216,8 +254,8 @@ Keyboard shortcuts:
 			}
 		}
 
-		return err
-	},
+		return restart, err
+	}
 }
 
 func init() {
@@ -273,6 +311,16 @@ type dashboardModel struct {
 	// the footer freshness indicator; the existing 30s tick re-renders the view
 	// so the displayed age advances without a dedicated timer.
 	lastWebhookAt time.Time
+	// bin watches klaus on PATH; restart is the new klaus it found, which
+	// the dashboard restarts onto once the keyboard is quiet (lastKeyAt).
+	// restarting means it quit to do so. binNotice is the footer's line
+	// about it, an error if binNoticeErr.
+	bin          *binCheck
+	restart      *binUpdateMsg
+	restarting   bool
+	lastKeyAt    time.Time
+	binNotice    string
+	binNoticeErr bool
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
@@ -350,6 +398,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		m.lastKeyAt = time.Now()
 		switch msg.String() {
 		case "q", "ctrl+c":
 			// Cancel the shared context to signal all subsystems to stop.
@@ -633,6 +682,9 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			checkSandboxCmd(m.states),
 			tickAfterCmd(),
 		}
+		if m.bin != nil && m.restart == nil {
+			cmds = append(cmds, checkBinCmd(m.bin))
+		}
 		if m.pollEnabled {
 			cmds = append(cmds, m.fetchGHStatusCmd(m.states))
 		}
@@ -641,6 +693,21 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case *fsnotify.Watcher:
 		m.watcher = msg
 		return m, watchFSCmd(msg)
+
+	case binUpdateMsg:
+		if m.restart != nil {
+			break
+		}
+		m.restart = &msg
+		m.binNotice, m.binNoticeErr = "klaus updated to "+msg.version+"; restarting", false
+		// Show the notice for a moment before restarting.
+		return m, restartWaitCmd()
+
+	case restartWaitMsg:
+		return m.restartWhenIdle(time.Now())
+
+	case restartTargetMsg:
+		return m.restartOnto(msg.target, time.Now())
 
 	case errHintMsg:
 		m.noteError(msg.msg)
@@ -685,6 +752,12 @@ func (m dashboardModel) View() string {
 			e := m.recentErrors[c.idx]
 			line := fmt.Sprintf("  %s ✗ %s", e.Time.Format("15:04"), e.Message)
 			return dimRedStyle.Render(truncateLine(line, max(width-1, 1)))
+		case chromeNotice:
+			style := yellowStyle
+			if m.binNoticeErr {
+				style = dimRedStyle
+			}
+			return style.Render(truncateLine("  "+m.binNotice, max(width-1, 1)))
 		case chromeFooter:
 			return m.renderFooter(v, width)
 		}
