@@ -23,6 +23,8 @@ type binCheck struct {
 	running string          // the running binary, symlinks resolved
 	path    func() string   // the PATH to search
 	failed  map[string]bool // files an exec failed for: never tried again
+	// version runs a klaus with --version; nil runs it for real.
+	version func(path string) (string, error)
 }
 
 func newBinCheck() *binCheck {
@@ -74,21 +76,40 @@ type restartWaitMsg struct{}
 type restartTargetMsg struct{ target *binUpdateMsg }
 
 // probeBin returns the new klaus on PATH if it runs --version, else nil.
+// The probe can take seconds, so PATH is resolved again after it: if it no
+// longer names the probed file, as when a rollback ran meanwhile, there is
+// nothing to restart onto, and the next check starts over.
 func probeBin(b *binCheck) *binUpdateMsg {
 	p, ok := b.candidate()
 	if !ok {
 		return nil
 	}
+	version := b.version
+	if version == nil {
+		version = runVersion
+	}
+	v, err := version(p)
+	if err != nil {
+		return nil // not runnable (yet): the next check looks again
+	}
+	if now, ok := b.candidate(); !ok || now != p {
+		return nil
+	}
+	return &binUpdateMsg{path: p, version: v}
+}
+
+// runVersion runs a klaus with --version and returns its version.
+func runVersion(path string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out bytes.Buffer
-	c := exec.CommandContext(ctx, p, "--version")
+	c := exec.CommandContext(ctx, path, "--version")
 	c.Stdout = &out
 	if err := c.Run(); err != nil {
-		return nil // not runnable (yet): the next check looks again
+		return "", err
 	}
 	v, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n")
-	return &binUpdateMsg{path: p, version: strings.TrimPrefix(v, "klaus version ")}
+	return strings.TrimPrefix(v, "klaus version "), nil
 }
 
 // checkBinCmd looks for a new klaus on PATH and, if it runs --version,

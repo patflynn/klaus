@@ -175,6 +175,34 @@ func TestDashboardRestartRechecksPath(t *testing.T) {
 	})
 }
 
+// TestDashboardRestartPathChangesDuringProbe: a rollback while --version
+// runs on the new klaus means the dashboard execs nothing; the pending
+// restart is dropped, and a periodic check reports nothing.
+func TestDashboardRestartPathChangesDuringProbe(t *testing.T) {
+	f := newProfileFixture(t)
+	running, newStore := f.build("old", "0.4.1-1111111"), f.build("new", "0.4.1-2222222")
+	b := f.check(running)
+	rollBackDuringProbe := func(path string) (string, error) {
+		f.link(running)
+		return "0.4.1-2222222", nil
+	}
+
+	f.link(newStore)
+	b.version = rollBackDuringProbe
+	if msg := checkBinCmd(b)(); msg != nil {
+		t.Errorf("periodic check reported %+v; PATH named the running klaus again after the probe", msg)
+	}
+
+	f.link(newStore)
+	b.version = nil
+	m := pendingRestart(t, b, newStore, "0.4.1-2222222")
+	b.version = rollBackDuringProbe
+	m, quit := quietRestart(t, m)
+	if quit || m.restarting || m.restart != nil || m.binNotice != "" {
+		t.Fatalf("quit=%v restarting=%v restart=%+v notice=%q; want the restart dropped", quit, m.restarting, m.restart, m.binNotice)
+	}
+}
+
 func isQuit(cmd tea.Cmd) bool {
 	if cmd == nil {
 		return false

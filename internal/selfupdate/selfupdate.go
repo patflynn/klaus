@@ -21,7 +21,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
@@ -94,8 +93,7 @@ var scpLike = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-
 // Validate checks the repo and branch before any of them reach git or nix.
 // The repo must be an https://, ssh://, git:// or file:// URL, an absolute
 // path, or scp-like user@host:path: no other git transport (ext::, fd::)
-// and nothing nix would read as flake-ref syntax (?, #) or decode (%), or
-// that whitespace would split.
+// and only characters nix's flake-ref parser leaves as they are (urlSafe).
 func Validate(repo, branch string) error {
 	if err := validRepo(repo); err != nil {
 		return fmt.Errorf("self_update.repo %q is not a repo self-update accepts: %v; use an https://, ssh://, git:// or file:// URL, an absolute path, or user@host:path", repo, err)
@@ -112,16 +110,14 @@ func validRepo(repo string) error {
 		return errors.New("it is empty")
 	case strings.HasPrefix(repo, "-"):
 		return errors.New("it starts with -")
-	case strings.ContainsAny(repo, "?#"):
-		return errors.New("it has ? or #, which nix reads as flake-ref syntax")
-	case strings.Contains(repo, "%"):
-		return errors.New("it has %, which nix decodes and git may not")
-	case strings.IndexFunc(repo, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
-		return errors.New("it has whitespace or a control character")
 	}
 	if scheme, _, ok := strings.Cut(repo, "://"); ok {
 		u, err := url.Parse(repo)
 		if err != nil {
+			return err
+		}
+		// An IPv6 host's brackets pass through nix unchanged.
+		if err := urlSafe(strings.Replace(repo, u.Host, strings.NewReplacer("[", "", "]", "").Replace(u.Host), 1)); err != nil {
 			return err
 		}
 		switch scheme {
@@ -138,6 +134,9 @@ func validRepo(repo string) error {
 		}
 		return nil
 	}
+	if err := urlSafe(repo); err != nil {
+		return err
+	}
 	switch {
 	case filepath.IsAbs(repo):
 		return nil
@@ -147,6 +146,22 @@ func validRepo(repo string) error {
 		return nil
 	}
 	return errors.New("it is not a URL, an absolute path or user@host:path")
+}
+
+// urlSafe refuses any character outside [A-Za-z0-9._~/:@-]: nix's flake-ref
+// parser keeps exactly these as they are (checked against Nix 2.34 with
+// builtins.parseFlakeRef and flakeRefToString), and re-encodes or rejects
+// the rest (+ becomes %2B), so with them git ls-remote and nix build could
+// name different URLs. ? and # it would read as flake-ref syntax.
+func urlSafe(s string) error {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', strings.ContainsRune("._~/:@-", r):
+		default:
+			return fmt.Errorf("it has %q; only letters, digits and ._~/:@- are allowed, which nix leaves as they are", r)
+		}
+	}
+	return nil
 }
 
 // Update installs the branch's tip unless it is installed already, failed

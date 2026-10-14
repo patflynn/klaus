@@ -23,7 +23,8 @@ the host config, ~/.klaus/config.json, has a self_update block (a repo's
 repo is an https://, ssh://, git:// or file:// URL, an absolute path, or
 user@host:path, read as ssh://user@host/path (write user@host:~/path for
 a path in your home on a plain server). Any other transport (ext::, fd::)
-and any repo with ?, #, % or whitespace is refused; git ls-remote and nix
+and any character outside [A-Za-z0-9._~/:@-], which nix's flake-ref parser
+would re-encode, is refused; git ls-remote and nix
 read the repo by the same URL, and the git that self-update runs, directly or
 through nix, is limited to those transports (GIT_ALLOW_PROTOCOL). branch
 defaults to main. Each run:
