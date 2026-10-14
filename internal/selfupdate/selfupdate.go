@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
@@ -82,15 +84,69 @@ func StatePath(dir string) string { return filepath.Join(dir, "self-update.json"
 
 var safeBranch = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
+// gitEnv restricts every git self-update starts, directly or through nix,
+// to the transports Validate accepts, and keeps it from prompting.
+var gitEnv = []string{"GIT_ALLOW_PROTOCOL=https:ssh:git:file", "GIT_TERMINAL_PROMPT=0"}
+
+// scpLike is user@host:path, git's shorthand for an ssh URL.
+var scpLike = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9.-]*:.`)
+
 // Validate checks the repo and branch before any of them reach git or nix.
+// The repo must be an https://, ssh://, git:// or file:// URL, an absolute
+// path, or scp-like user@host:path: no other git transport (ext::, fd::)
+// and nothing nix would read as flake-ref syntax (?, #) or decode (%), or
+// that whitespace would split.
 func Validate(repo, branch string) error {
-	if repo == "" || strings.HasPrefix(repo, "-") {
-		return fmt.Errorf("self_update.repo %q is not a git URL", repo)
+	if err := validRepo(repo); err != nil {
+		return fmt.Errorf("self_update.repo %q is not a repo self-update accepts: %v; use an https://, ssh://, git:// or file:// URL, an absolute path, or user@host:path", repo, err)
 	}
 	if !safeBranch.MatchString(branch) || strings.HasPrefix(branch, "-") || strings.Contains(branch, "..") {
 		return fmt.Errorf("self_update.branch %q is not a branch name self-update accepts ([A-Za-z0-9._/-])", branch)
 	}
 	return nil
+}
+
+func validRepo(repo string) error {
+	switch {
+	case repo == "":
+		return errors.New("it is empty")
+	case strings.HasPrefix(repo, "-"):
+		return errors.New("it starts with -")
+	case strings.ContainsAny(repo, "?#"):
+		return errors.New("it has ? or #, which nix reads as flake-ref syntax")
+	case strings.Contains(repo, "%"):
+		return errors.New("it has %, which nix decodes and git may not")
+	case strings.IndexFunc(repo, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0:
+		return errors.New("it has whitespace or a control character")
+	}
+	if scheme, _, ok := strings.Cut(repo, "://"); ok {
+		u, err := url.Parse(repo)
+		if err != nil {
+			return err
+		}
+		switch scheme {
+		case "https", "ssh", "git":
+			if u.Hostname() == "" || strings.HasPrefix(u.Hostname(), "-") {
+				return errors.New("it names no host")
+			}
+		case "file":
+			if u.Host != "" || !strings.HasPrefix(u.Path, "/") {
+				return errors.New("a file:// URL must be file:///<absolute path>")
+			}
+		default:
+			return fmt.Errorf("transport %s:// is not allowed", scheme)
+		}
+		return nil
+	}
+	switch {
+	case filepath.IsAbs(repo):
+		return nil
+	case strings.Contains(repo, "::"):
+		return errors.New("transport-style <transport>::<address> is not allowed")
+	case scpLike.MatchString(repo):
+		return nil
+	}
+	return errors.New("it is not a URL, an absolute path or user@host:path")
 }
 
 // Update installs the branch's tip unless it is installed already, failed
@@ -119,7 +175,7 @@ func (u *Updater) Update(ctx context.Context, retry bool) error {
 	}
 
 	ref := "refs/heads/" + u.Branch
-	sha, err := git.LsRemote(ctx, u.Repo, ref)
+	sha, err := git.LsRemote(ctx, RepoURL(u.Repo), ref, gitEnv...)
 	if err != nil {
 		return fmt.Errorf("resolving %s: %w", u.Branch, err)
 	}
@@ -157,7 +213,9 @@ func (u *Updater) Update(ctx context.Context, retry bool) error {
 	if err != nil {
 		return err
 	}
-	st.Previous = u.replaced(st, old)
+	if old != "" || st.Current == nil || st.Current.Commit != sha {
+		st.Previous = u.replaced(st, old)
+	} // else reinstalling a klaus removed by hand keeps the rollback target
 	st.Current = &Install{Commit: sha, StorePath: out, At: u.clock()}
 	st.Failed = nil
 	if err := u.save(st); err != nil {
@@ -265,7 +323,7 @@ func (u *Updater) installedLabel(st State) string {
 func (u *Updater) build(ctx context.Context, sha string) (string, error) {
 	ref := FlakeRef(u.Repo, u.Branch, sha)
 	u.say("building %s", ref)
-	paths, err := nix.Build(ctx, ref)
+	paths, err := nix.Build(ctx, ref, gitEnv...)
 	if err != nil {
 		return "", err
 	}
@@ -328,7 +386,8 @@ func (u *Updater) replace(ctx context.Context, storePath string) (string, error)
 func (u *Updater) replaced(st State, old string) *Install {
 	switch {
 	case old == "":
-		return nil
+		// Removed from the profile by hand: still the one to roll back to.
+		return st.Current
 	case st.Current != nil && st.Current.StorePath == old:
 		return st.Current
 	default:
@@ -337,24 +396,27 @@ func (u *Updater) replaced(st State, old string) *Install {
 	}
 }
 
-// FlakeRef names the flake's default package at exactly sha on branch.
-func FlakeRef(repo, branch, sha string) string {
-	u := repo
+// RepoURL is the one URL self-update reads repo by, for git ls-remote and
+// for nix alike, so both read the same repository. A path becomes a
+// file:// URL, and user@host:path becomes ssh://user@host/path: a relative
+// path counts from the server's root, as forges read it, so a path in your
+// home on a plain server is written user@host:~/path. repo must have passed
+// Validate, so it needs no escaping: it has no %, ?, # or whitespace.
+func RepoURL(repo string) string {
 	switch {
-	case strings.Contains(u, "://"):
-	case filepath.IsAbs(u):
-		u = "file://" + u
-	default:
-		// scp-like user@host:path
-		if host, path, ok := strings.Cut(u, ":"); ok && !strings.Contains(host, "/") {
-			u = "ssh://" + host + "/" + strings.TrimPrefix(path, "/")
-		}
+	case strings.Contains(repo, "://"):
+		return repo
+	case filepath.IsAbs(repo):
+		return "file://" + repo
 	}
-	sep := "?"
-	if strings.Contains(u, "?") {
-		sep = "&"
-	}
-	return fmt.Sprintf("git+%s%sref=refs/heads/%s&rev=%s#packages.%s.default", u, sep, branch, sha, nix.System())
+	host, path, _ := strings.Cut(repo, ":")
+	return "ssh://" + host + "/" + strings.TrimPrefix(path, "/")
+}
+
+// FlakeRef names the flake's default package at exactly sha on branch of
+// repo, read by RepoURL.
+func FlakeRef(repo, branch, sha string) string {
+	return fmt.Sprintf("git+%s?ref=refs/heads/%s&rev=%s#packages.%s.default", RepoURL(repo), branch, sha, nix.System())
 }
 
 var errBusy = errors.New("another self-update is in progress")

@@ -20,7 +20,13 @@ the host config, ~/.klaus/config.json, has a self_update block (a repo's
 
   "self_update": {"repo": "https://github.com/patflynn/klaus", "branch": "main"}
 
-repo is any git URL; branch defaults to main. Each run:
+repo is an https://, ssh://, git:// or file:// URL, an absolute path, or
+user@host:path, read as ssh://user@host/path (write user@host:~/path for
+a path in your home on a plain server). Any other transport (ext::, fd::)
+and any repo with ?, #, % or whitespace is refused; git ls-remote and nix
+read the repo by the same URL, and the git that self-update runs, directly or
+through nix, is limited to those transports (GIT_ALLOW_PROTOCOL). branch
+defaults to main. Each run:
   1. takes a lock under $XDG_STATE_HOME/klaus, so runs never overlap: a run
      that finds another in progress exits 0 and says so;
   2. resolves the branch's commit with git ls-remote;

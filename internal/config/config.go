@@ -161,7 +161,8 @@ func (d *DashboardConfig) ApproveTemplate() string {
 }
 
 // SelfUpdateConfig names where klaus self-update installs klaus from: the
-// tip of Branch in the git repository Repo (any git URL, or a path).
+// tip of Branch in the git repository Repo: an https://, ssh://, git:// or
+// file:// URL, an absolute path, or user@host:path.
 type SelfUpdateConfig struct {
 	Repo   string `json:"repo"`
 	Branch string `json:"branch,omitempty"` // default main

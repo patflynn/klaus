@@ -68,24 +68,37 @@ type binUpdateMsg struct {
 // restartWaitMsg re-checks whether the dashboard is idle enough to restart.
 type restartWaitMsg struct{}
 
+// restartTargetMsg is what klaus on PATH names just before a restart: the
+// new klaus to exec, or nil when there is none any more, as when a rollback
+// put back the running binary.
+type restartTargetMsg struct{ target *binUpdateMsg }
+
+// probeBin returns the new klaus on PATH if it runs --version, else nil.
+func probeBin(b *binCheck) *binUpdateMsg {
+	p, ok := b.candidate()
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	c := exec.CommandContext(ctx, p, "--version")
+	c.Stdout = &out
+	if err := c.Run(); err != nil {
+		return nil // not runnable (yet): the next check looks again
+	}
+	v, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n")
+	return &binUpdateMsg{path: p, version: strings.TrimPrefix(v, "klaus version ")}
+}
+
 // checkBinCmd looks for a new klaus on PATH and, if it runs --version,
 // reports it.
 func checkBinCmd(b *binCheck) tea.Cmd {
 	return func() tea.Msg {
-		p, ok := b.candidate()
-		if !ok {
-			return nil
+		if next := probeBin(b); next != nil {
+			return *next
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		var out bytes.Buffer
-		c := exec.CommandContext(ctx, p, "--version")
-		c.Stdout = &out
-		if err := c.Run(); err != nil {
-			return nil // not runnable (yet): the next check looks again
-		}
-		v, _, _ := strings.Cut(strings.TrimSpace(out.String()), "\n")
-		return binUpdateMsg{path: p, version: strings.TrimPrefix(v, "klaus version ")}
+		return nil
 	}
 }
 
@@ -93,11 +106,28 @@ func restartWaitCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return restartWaitMsg{} })
 }
 
-// restartWhenIdle quits so the dashboard can exec the new klaus, unless a
-// key was pressed in the last restartQuiet; then it waits and asks again.
+// restartWhenIdle waits while a key was pressed in the last restartQuiet.
+// Once the keyboard is quiet, it resolves klaus on PATH again, since the
+// profile may have changed while it waited.
 func (m dashboardModel) restartWhenIdle(now time.Time) (dashboardModel, tea.Cmd) {
 	if now.Sub(m.lastKeyAt) < restartQuiet {
 		return m, restartWaitCmd()
+	}
+	b := m.bin
+	return m, func() tea.Msg { return restartTargetMsg{target: probeBin(b)} }
+}
+
+// restartOnto quits so the dashboard can exec target, the klaus PATH names
+// now. With no target, the pending restart and its notice are dropped.
+func (m dashboardModel) restartOnto(target *binUpdateMsg, now time.Time) (dashboardModel, tea.Cmd) {
+	if target == nil {
+		m.restart, m.binNotice, m.binNoticeErr = nil, "", false
+		return m, nil
+	}
+	m.restart = target
+	m.binNotice, m.binNoticeErr = "klaus updated to "+target.version+"; restarting", false
+	if now.Sub(m.lastKeyAt) < restartQuiet {
+		return m, restartWaitCmd() // a key came in meanwhile
 	}
 	m.restarting = true
 	return m, tea.Quit

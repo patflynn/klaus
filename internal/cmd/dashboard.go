@@ -706,6 +706,9 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case restartWaitMsg:
 		return m.restartWhenIdle(time.Now())
 
+	case restartTargetMsg:
+		return m.restartOnto(msg.target, time.Now())
+
 	case errHintMsg:
 		m.noteError(msg.msg)
 

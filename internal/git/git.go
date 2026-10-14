@@ -1062,12 +1062,21 @@ func runGitOutput(ctx context.Context, dir string, env map[string]string, args .
 
 // LsRemote returns the commit ref points at in the remote repository repo (a
 // URL or a path), read with git ls-remote, or "" when repo has no such ref.
-func LsRemote(ctx context.Context, repo, ref string) (string, error) {
-	out, err := runGitNetwork(ctx, "", "ls-remote", "--", repo, ref)
-	if err != nil {
-		return "", err
+// env is added to git's environment, e.g. to restrict GIT_ALLOW_PROTOCOL.
+func LsRemote(ctx context.Context, repo, ref string, env ...string) (string, error) {
+	ctx, cancel := ensureTimeout(ctx, networkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--", repo, ref)
+	cmd.Env = append(os.Environ(), env...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("git ls-remote timed out after %s", networkTimeout)
+		}
+		return "", fmt.Errorf("git ls-remote: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	for _, line := range strings.Split(out, "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
 		// ls-remote matches patterns by their tail; keep the exact ref.
 		if sha, name, ok := strings.Cut(line, "\t"); ok && name == ref {
 			return sha, nil

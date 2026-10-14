@@ -457,7 +457,7 @@ A host can follow a branch of klaus without a system rebuild. Turn it on in the 
 "self_update": { "repo": "https://github.com/patflynn/klaus", "branch": "main" }
 ```
 
-`repo` is any git URL; `branch` defaults to `main`. Then `klaus self-update`, typically from a timer every few minutes:
+`repo` is an `https://`, `ssh://`, `git://` or `file://` URL, an absolute path, or scp-like `user@host:path`, which is read as `ssh://user@host/path` (write `user@host:~/path` for a path in your home on a plain server). Any other transport (`ext::`, `fd::`) and any repo with `?`, `#`, `%` or whitespace is refused, and `git ls-remote` and nix read the repo by the same URL, so the source nix builds is exactly the one `ls-remote` read, and every git self-update runs, directly or through nix, has `GIT_ALLOW_PROTOCOL=https:ssh:git:file`. `branch` defaults to `main`. Then `klaus self-update`, typically from a timer every few minutes:
 
 1. takes a lock under `$XDG_STATE_HOME/klaus/`, so runs never overlap; a run that finds another in progress exits 0 and says so;
 2. resolves the branch's commit with `git ls-remote <repo> refs/heads/<branch>`;

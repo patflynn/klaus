@@ -143,6 +143,35 @@ func TestSelfUpdateRefusesWithoutConfig(t *testing.T) {
 	}
 }
 
+// TestSelfUpdateRefusesExtRepo: an ext:: repo, whose command git would run
+// here since git config allows the transport, is refused and runs nothing.
+func TestSelfUpdateRefusesExtRepo(t *testing.T) {
+	t.Parallel()
+	e := newSelfUpdateEnv(t)
+	marker := filepath.Join(e.E2EDir, "pwned")
+	e.WriteStub("pwn", fmt.Sprintf("#!/bin/sh\ntouch %q\n", marker))
+	f, err := os.OpenFile(filepath.Join(e.Home, ".gitconfig"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprint(f, "[protocol \"ext\"]\n\tallow = always\n")
+	f.Close()
+
+	for _, repo := range []string{"ext::pwn", "ext::sh -c pwn"} {
+		e.writeHostConfig(map[string]any{"self_update": map[string]any{"repo": repo}})
+		res := e.selfUpdate(1)
+		if !strings.Contains(res.Stderr, fmt.Sprintf("self_update.repo %q is not a repo self-update accepts", repo)) {
+			t.Errorf("repo %q: want a refusal naming it, got:\n%s", repo, res.Stderr)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("repo %q: the ext:: command ran", repo)
+		}
+	}
+	if e.builds() != 0 {
+		t.Error("built from a refused repo")
+	}
+}
+
 // TestSelfUpdateInstallsMovesAndRollsBack: install the tip, stay put while
 // it is installed, install the next tip when main moves, and roll back and
 // forward again.
@@ -181,17 +210,6 @@ func TestSelfUpdateInstallsMovesAndRollsBack(t *testing.T) {
 		t.Fatalf("%d builds, want 1: up-to-date runs must not build", n)
 	}
 
-	// A klaus removed from the profile by hand is reinstalled.
-	if err := os.WriteFile(e.profile, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if res := e.selfUpdate(0); !strings.Contains(res.Stdout, "the nix profile's klaus is no longer "+first[:7]+"; reinstalling it") {
-		t.Errorf("run after the profile lost klaus:\n%s", res.Stdout)
-	}
-	if got := e.profileKlaus(); got != e.out(first) {
-		t.Fatalf("profile klaus = %q, want it reinstalled: %q", got, e.out(first))
-	}
-
 	second := e.advance("second")
 	res = e.selfUpdate(0)
 	if !strings.Contains(res.Stdout, "installed "+second[:7]+" into the nix profile, replacing "+first[:7]) {
@@ -205,8 +223,23 @@ func TestSelfUpdateInstallsMovesAndRollsBack(t *testing.T) {
 		st.Previous == nil || st.Previous.Commit != first || st.Previous.StorePath != e.out(first) {
 		t.Fatalf("state after the branch moved: current %+v previous %+v", st.Current, st.Previous)
 	}
-	if log := e.profileLog(); log != "add "+e.out(first)+"\nadd "+e.out(first)+"\nremove klaus\nadd "+e.out(second)+"\n" {
+	if log := e.profileLog(); log != "add "+e.out(first)+"\nremove klaus\nadd "+e.out(second)+"\n" {
 		t.Errorf("profile operations:\n%s", log)
+	}
+
+	// A klaus removed from the profile by hand is reinstalled, and the
+	// rollback target stays.
+	if err := os.WriteFile(e.profile, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := e.selfUpdate(0); !strings.Contains(res.Stdout, "the nix profile's klaus is no longer "+second[:7]+"; reinstalling it") {
+		t.Errorf("run after the profile lost klaus:\n%s", res.Stdout)
+	}
+	if got := e.profileKlaus(); got != e.out(second) {
+		t.Fatalf("profile klaus = %q, want it reinstalled: %q", got, e.out(second))
+	}
+	if st := e.state(); st.Current.Commit != second || st.Previous == nil || st.Previous.Commit != first {
+		t.Fatalf("state after the reinstall: current %+v previous %+v; want the rollback target kept", st.Current, st.Previous)
 	}
 
 	res = e.selfUpdate(0, "--rollback")

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -18,9 +19,10 @@ const (
 )
 
 // Build builds installable without a result link and returns its output
-// store paths.
-func Build(ctx context.Context, installable string) ([]string, error) {
-	out, err := runNix(ctx, buildTimeout, "build", "--no-link", "--print-out-paths", installable)
+// store paths. env is added to nix's environment, and so to the git that
+// fetches a git+ flake.
+func Build(ctx context.Context, installable string, env ...string) ([]string, error) {
+	out, err := runNixEnv(ctx, buildTimeout, env, "build", "--no-link", "--print-out-paths", installable)
 	if err != nil {
 		return nil, err
 	}
@@ -83,9 +85,16 @@ func System() string {
 // runNix runs nix and returns its trimmed stdout. An error carries nix's
 // error line.
 func runNix(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
+	return runNixEnv(ctx, timeout, nil, args...)
+}
+
+func runNixEnv(ctx context.Context, timeout time.Duration, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "nix", args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
