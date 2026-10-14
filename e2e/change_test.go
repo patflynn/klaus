@@ -28,9 +28,11 @@ printf '{"type":"user","sessionId":"`+changeSession+`","cwd":"%s","message":{"ro
 cat "$dir/claude.output.jsonl"`, 1))
 }
 
-// resetClaude readies the fake claude for another launch: it blocks until
-// released again, and its record of the last run is gone.
-func (h *Harness) resetClaude() {
+// resetWorker readies the fake worker for another launch, whatever its
+// backend: the claude, codex and agy stubs are all claudeStubScript, sharing
+// its files, so each blocks until released again and the record of the last
+// run is gone.
+func (h *Harness) resetWorker() {
 	for _, f := range []string{"claude.release", "claude.started", "claude.argv"} {
 		os.Remove(filepath.Join(h.E2EDir, f))
 	}
@@ -74,7 +76,7 @@ func (h *Harness) pushWork(st *run.State, file, subject string) string {
 	return h.GitOutput(st.Worktree, "rev-parse", "HEAD")
 }
 
-// finishRun lets the fake claude end and waits for finalize to clean up, so
+// finishRun lets the fake worker end and waits for finalize to clean up, so
 // the test's temp dirs aren't removed under its push.
 func (h *Harness) finishRun(id string) *run.State {
 	h.t.Helper()
@@ -116,7 +118,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 	}
 
 	// --change <run-id>.
-	h.resetClaude()
+	h.resetWorker()
 	follow, res := h.launchRun("--repo", "widget", "--change", first.ID, "tidy the health check")
 	h.WaitForClaudeStart(30 * time.Second)
 	for _, want := range []string{
@@ -182,7 +184,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 	}
 
 	// --change <handle> --no-replay.
-	h.resetClaude()
+	h.resetWorker()
 	third, res := h.launchRun("--repo", "widget", "--change", "nxvp", "--no-replay", "rename the endpoint")
 	h.WaitForClaudeStart(30 * time.Second)
 	for _, want := range []string{
@@ -312,7 +314,7 @@ func TestContinuingYieldsToALiveRun(t *testing.T) {
 	v1 := h.pushWork(first, "health.go", "Add a health check")
 	first = h.finishRun(first.ID)
 
-	h.resetClaude()
+	h.resetWorker()
 	live, _ := h.launchRun("--repo", "widget", "--change", first.ID, "tidy the health check")
 	h.WaitForClaudeStart(30 * time.Second)
 	notes := filepath.Join(live.Worktree, "notes.txt")
@@ -355,7 +357,7 @@ exit 0
 		t.Errorf("the live run's uncommitted work should be untouched: %v", err)
 	}
 
-	h.resetClaude()
+	h.resetWorker()
 	takeover, res := h.launchRun("--repo", "widget", "--change", first.ID, "--force-takeover", "take it over")
 	h.WaitForClaudeStart(30 * time.Second)
 	if !strings.Contains(res.Stdout, "branch:   "+first.Branch+"\n") || takeover.ChangeID != first.ChangeID {
@@ -390,7 +392,7 @@ func TestChangeResumeFromUnresumableStartsFresh(t *testing.T) {
 		Branch: "agent/20261013-0900-0b0b0b0b", LogFile: &gone, CreatedAt: time.Now().Add(-time.Hour).Format(time.RFC3339)}
 	h.SeedState(b)
 
-	h.resetClaude()
+	h.resetWorker()
 	c, res := h.launchRun("--change", a.ID, "--resume-from", b.ID, "carry on")
 	h.WaitForClaudeStart(30 * time.Second)
 	if want := "replay:   fresh agent (--resume-from " + b.ID + ": its conversation can't be resumed)"; !strings.Contains(res.Stdout, want) {

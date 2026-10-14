@@ -594,8 +594,9 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   that transcript into the new worktree and resumes it. The data ref stays in the
   local clone unless ` + "`push_data_ref`" + ` is true, so replay works on the machine
   that ran the paused agent; replaying on another machine needs the push. It
-  falls back to a fresh agent when the trajectory is missing, sensitive-skipped,
-  has no known session UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
+  replays only the most recent run on the PR, and falls back to a fresh agent
+  when that run used another backend, or its trajectory is missing,
+  sensitive-skipped, has no known session UUID, or exceeds the size threshold (default 300KB, config ` + "`replay_threshold_kb`" + `;
   a very large transcript can cost more to replay than to re-explore). Replay is
   local-only — sandbox runs always start fresh.
 - ` + "`klaus launch --change <ref> \"<prompt>\"`" + ` is the same for a change in a repo
@@ -603,8 +604,12 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   no PR to name. ` + "`<ref>`" + ` is a run ID, a full change ID or a valley handle. The
   agent works on the change's branch, keeps its change ID, and pushes fast-forward
   to that branch; the change goes back to draft while it works, and finalize marks
-  the new head ready. It replays the conversation of the most recent run on the
-  change, by the same rules as ` + "`--pr`" + ` but without the budget-paused gate. Use it
+  the new head ready. It continues the conversation of the change's most recent
+  run, by the same rules as ` + "`--pr`" + ` but without the budget-paused gate, when the
+  worker's backend can: Claude replays the stored conversation, on any machine
+  that has the data ref; Codex forks its own session on the same machine; agy
+  starts fresh. Every backend keeps the branch, the change ID and the commit
+  trailers, so ` + "`--change`" + ` works whichever backend you or the worker run. Use it
   for every follow-up on a change instead of telling a ` + "`--resume-from`" + ` agent to
   check out the old branch by hand. An ambiguous handle is an error that lists the
   candidates; name the change by its full ID or a run ID then. With

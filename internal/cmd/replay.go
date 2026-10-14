@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/draft"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
@@ -32,6 +33,10 @@ import (
 // IMPORTANT: this is NOT the stream-json log at logs/<run-id>.jsonl —
 // claude --resume rejects that format ("No conversation found"). The two
 // are different schemas; see findResumeConversation.
+//
+// Only Claude conversations are stored there. A Codex run continues a Codex
+// run by forking its session, which lives in that machine's Codex state
+// ('codex exec fork <thread>'); agy workers can't resume a conversation.
 
 // encodeProjectPath converts an absolute working directory into the directory
 // segment Claude Code uses under ~/.claude/projects. Claude replaces both '/'
@@ -187,6 +192,7 @@ func extractConversationSessionID(data []byte) string {
 
 // replayParams carries everything resolveReplay needs.
 type replayParams struct {
+	Kind      backend.Kind // the new run's worker backend; "" means Claude
 	GitClient git.Client
 	Store     run.StateStore
 	RepoRoot  string // repo dir holding refs/klaus/data (clone dir or host repo)
@@ -203,28 +209,57 @@ type replayParams struct {
 
 // replayDecision is the outcome of attempting trajectory replay.
 type replayDecision struct {
-	// SessionUUID is non-empty when the caller should run claude --resume
-	// against it; empty means fall back to the fresh-agent flow.
+	// SessionUUID is non-empty when the caller should resume it: a Claude
+	// session for claude --resume, or a Codex thread for codex exec fork.
+	// Empty means fall back to the fresh-agent flow.
 	SessionUUID string
-	// SourceRunID is the run whose trajectory was restored (for logging).
+	// SourceRunID is the run whose conversation is continued (for logging).
 	SourceRunID string
 	// Reason explains the decision (always set, for user-facing logging).
 	Reason string
 }
 
 // resolveReplay decides whether a run that continues a PR or a change
-// resumes the prior Claude conversation: that of the most recent run on it
-// with a stored trajectory. A PR's runs are those on its branch in this
-// session, and only a budget-paused PR replays unless the user forces it; a
-// change's are its runs in every session, and replay needs no label. On
-// success it restores the trajectory into the new worktree's project dir and
-// returns the session UUID to resume. On any miss it returns an empty
-// SessionUUID with a Reason, signalling the caller to fall back to the
-// fresh-agent flow.
+// resumes the conversation of the most recent run on it, and how. A PR's
+// runs are those on its branch in this session, and only a budget-paused PR
+// replays unless the user forces it; a change's are its runs in every
+// session, and replay needs no label. Only the newest run counts: an older
+// conversation never saw the work that came after it, so when the newest
+// run's can't be resumed the run starts fresh.
+//
+// A Claude run resumes a Claude run's conversation stored on the data ref,
+// restored into the new worktree's project dir; a Codex run forks a Codex
+// run's local session; agy can't resume. Any other case returns an empty
+// SessionUUID with a Reason naming the run, signalling the caller to fall
+// back to the fresh-agent flow.
 func resolveReplay(ctx context.Context, p replayParams) replayDecision {
+	kind := p.Kind
+	if kind == "" {
+		kind = backend.Claude
+	}
+	if kind == backend.Agy {
+		return replayDecision{Reason: "agy workers can't resume a conversation"}
+	}
 	candidates, reason := replayCandidates(ctx, p)
 	if len(candidates) == 0 {
 		return replayDecision{Reason: reason}
+	}
+	s := candidates[0]
+	from := s.Backend
+	if from == "" {
+		from = string(backend.Claude)
+	}
+	latest := fmt.Sprintf("the latest run, %s (%s),", s.ID, from)
+	if from != string(kind) {
+		return replayDecision{Reason: fmt.Sprintf("%s ran on another backend; a %s worker can't resume its conversation", latest, kind)}
+	}
+
+	if kind == backend.Codex {
+		thread := resolveResumeID(s, kind, p.Worktree)
+		if thread == "" {
+			return replayDecision{Reason: latest + " has no local Codex session to fork (it ran on a sandbox host, or recorded none)"}
+		}
+		return replayDecision{SessionUUID: thread, SourceRunID: s.ID, Reason: fmt.Sprintf("forking Codex session %s from run %s", thread, s.ID)}
 	}
 
 	// Best-effort: pull the data ref so a blob another machine pushed (with
@@ -233,42 +268,34 @@ func resolveReplay(ctx context.Context, p replayParams) replayDecision {
 	// non-forced fetch refuses to rewind. The read below uses the local ref.
 	_ = p.GitClient.FetchDataRef(ctx, p.RepoRoot, p.DataRef)
 
-	// Use the most recent candidate that actually has a stored trajectory.
-	for _, s := range candidates {
-		treePath := "sessions/" + s.ID + ".jsonl"
-		blob, err := p.GitClient.ReadDataRefFile(ctx, p.RepoRoot, p.DataRef, treePath)
-		if err != nil {
-			// Sensitive-skipped, stored on another machine, or pre-dates this feature.
-			continue
-		}
-
-		if !p.ForceReplay && p.ThresholdKB > 0 && len(blob) > p.ThresholdKB*1024 {
-			return replayDecision{Reason: fmt.Sprintf("trajectory for %s is %dKB, over the %dKB threshold (use --replay to force)", s.ID, len(blob)/1024, p.ThresholdKB)}
-		}
-
-		uuid := extractConversationSessionID(blob)
-		if !validSessionUUID(uuid) {
-			return replayDecision{Reason: fmt.Sprintf("stored trajectory for %s has no usable session UUID", s.ID)}
-		}
-
-		dest := claudeConversationPath(p.Worktree, uuid)
-		if dest == "" {
-			return replayDecision{Reason: "could not resolve Claude projects dir"}
-		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return replayDecision{Reason: fmt.Sprintf("creating project dir: %v", err)}
-		}
-		if err := os.WriteFile(dest, blob, 0o600); err != nil {
-			return replayDecision{Reason: fmt.Sprintf("restoring trajectory: %v", err)}
-		}
-		return replayDecision{
-			SessionUUID: uuid,
-			SourceRunID: s.ID,
-			Reason:      fmt.Sprintf("resuming conversation from run %s (%dKB)", s.ID, len(blob)/1024),
-		}
+	blob, err := p.GitClient.ReadDataRefFile(ctx, p.RepoRoot, p.DataRef, "sessions/"+s.ID+".jsonl")
+	if err != nil {
+		return replayDecision{Reason: latest + " has no stored conversation: it was kept off the data ref as potentially sensitive, or is on another machine"}
+	}
+	if !p.ForceReplay && p.ThresholdKB > 0 && len(blob) > p.ThresholdKB*1024 {
+		return replayDecision{Reason: fmt.Sprintf("%s has a %dKB conversation, over the %dKB threshold (use --replay to force)", latest, len(blob)/1024, p.ThresholdKB)}
 	}
 
-	return replayDecision{Reason: "no stored trajectory found on the data ref (sensitive-skipped, stored on another machine, or pre-dates replay)"}
+	uuid := extractConversationSessionID(blob)
+	if !validSessionUUID(uuid) {
+		return replayDecision{Reason: latest + " has a stored conversation with no usable session UUID"}
+	}
+
+	dest := claudeConversationPath(p.Worktree, uuid)
+	if dest == "" {
+		return replayDecision{Reason: "could not resolve Claude projects dir"}
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return replayDecision{Reason: fmt.Sprintf("creating project dir: %v", err)}
+	}
+	if err := os.WriteFile(dest, blob, 0o600); err != nil {
+		return replayDecision{Reason: fmt.Sprintf("restoring trajectory: %v", err)}
+	}
+	return replayDecision{
+		SessionUUID: uuid,
+		SourceRunID: s.ID,
+		Reason:      fmt.Sprintf("resuming conversation from run %s (%dKB)", s.ID, len(blob)/1024),
+	}
 }
 
 // replayCandidates returns the runs whose trajectory a continuing run may

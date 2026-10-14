@@ -73,6 +73,7 @@ to switch to a different coordinator backend.
 | Worker `--resume-from` | Fork with staged transcript | Fork a recorded local Codex thread on the same machine | Fresh conversation, with a warning |
 | Dollar budget / budget pause | Yes | Unavailable | Unavailable |
 | Stored trajectory replay (`--replay`) | Yes | Unavailable | Unavailable |
+| `--pr` / `--change` follow-up conversation | Replays the latest run's stored conversation, on any machine with the data ref | Forks the latest run's Codex session on the same machine | Fresh conversation |
 | Shared coordinator memory | Claude memory directory | CLI's own memory behavior | CLI's own memory behavior |
 
 For Codex and agy, explicit `--budget` and `--replay` are rejected; the legacy
@@ -308,8 +309,9 @@ The new agent sees the WIP commit and picks up from there. When the follow-up ag
 
 By default, `klaus launch --pr` against a budget-paused PR, and [`klaus launch --change`](#klaus-launch---change) on any change, does more than pick up the branch's work: it **continues the previous agent's Claude conversation** instead of starting one cold. At finalize time klaus commits the resume-able conversation trajectory (the JSONL `claude` itself writes under `~/.claude/projects/…`) to the local clone's `refs/klaus/data` at `sessions/<run-id>.jsonl`. On resume it makes a best-effort fetch of the ref from origin, reads that blob from the local ref, restores it into the new worktree's project dir, and invokes `claude --resume <uuid>`. The conversation continues from the exact point of pause — no re-grepping or re-orienting — which is faster and cheaper than a fresh agent.
 
-Replay is best-effort and **falls back to a fresh agent** when any of these hold:
+Only the most recent run on the PR (or the change) is replayed: an older conversation never saw the work that came after it, so when the most recent run's conversation can't be resumed, the agent starts fresh rather than resuming an older one. Replay is best-effort and **falls back to a fresh agent** when any of these hold; the `replay:` line names the run and the reason:
 
+- The most recent run used another backend: a Claude worker can't resume a Codex conversation, or the reverse. A Codex worker continuing a Codex run forks that run's session (`codex exec fork <thread>`) instead of replaying a stored trajectory; that works on the machine that ran it, not on a sandbox host. agy workers can't resume a conversation and always start fresh.
 - The trajectory was never stored (skipped because `klaus` detected potentially sensitive content), or the PR pre-dates this feature.
 - The paused agent ran on another machine. The data ref stays in the clone that ran the agent unless [`push_data_ref`](#configuration) is true there, so replaying on a different machine needs that push.
 - The trajectory is larger than the size threshold (default 300KB; replaying a very large trajectory can cost more than re-exploration). Configure with `replay_threshold_kb` in `~/.klaus/config.json` or `--replay-threshold-kb`.
@@ -543,7 +545,8 @@ The worktree tracks the change's branch on origin, as `--pr` tracks the PR's: th
 
 - The run keeps the change ID; launch prints `change: <id> (inherited from change <handle or id>)`.
 - In a valley's repo, launch returns the change to draft before the agent starts, as for any [follow-up run](#follow-up-runs-on-a-change).
-- The agent's conversation continues from the most recent run on the change that has a stored trajectory, by the [trajectory replay](#trajectory-replay) rules of `--pr`: `--replay`, `--no-replay`, the size threshold and the fallback to a fresh agent all apply. A change has no budget-paused label, so replay doesn't wait for one. Launch prints the `replay:` line.
+- The agent's conversation continues from the change's most recent run, by the [trajectory replay](#trajectory-replay) rules of `--pr`: `--replay`, `--no-replay`, the size threshold and the fallback to a fresh agent all apply. A change has no budget-paused label, so replay doesn't wait for one. Launch prints the `replay:` line.
+- `--change` works with every worker backend, and from a coordinator of any backend. Every backend keeps the change's branch, its change ID and the `Change-Id`/`Klaus-Run` trailers, and finalize marks its pushed head ready. Only the conversation differs: Claude replays the stored conversation, on any machine that has the data ref; Codex continues its own session on the same machine; agy starts fresh.
 - The worker prompt tells the agent it is continuing the change, to commit on top of its branch and push fast-forward to it, and not to create a new branch, rebase or force-push. Finalize's `valley ready` then marks the new head ready as a version of the same change.
 - On the dashboard the run joins the change's row, like a fix agent on its PR's row.
 
