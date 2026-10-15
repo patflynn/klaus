@@ -18,7 +18,7 @@ import (
 // without an approve command. The same change ID in another repo is another
 // row, a draft change with no running run reads DRAFT, and a run without a
 // change ID keeps its own row. Once the follow-up exits, the change's row is
-// the operator's again, reading APPROVE with its command.
+// the operator's again, reading READY with its command.
 func TestDashboardGroupsRunsByChange(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -73,8 +73,8 @@ func TestDashboardGroupsRunsByChange(t *testing.T) {
 	if n := strings.Count(s, "tidy the health check") + strings.Count(s, "agent:0003  "); n != 0 {
 		t.Errorf("the follow-up should have no row of its own:\n%s", s)
 	}
-	if row := rowOf(t, s, "nxvpk"); !strings.HasPrefix(strings.TrimPrefix(row, "> "), "gadget") || !strings.Contains(row, "APPROVE  v1@2222222") {
-		t.Errorf("the same change ID in another repo should be its own row, reading APPROVE: %q", row)
+	if row := rowOf(t, s, "nxvpk"); !strings.HasPrefix(strings.TrimPrefix(row, "> "), "gadget") || !strings.Contains(row, "READY  v1@2222222") {
+		t.Errorf("the same change ID in another repo should be its own row, reading READY: %q", row)
 	}
 	if row := rowOf(t, s, "drft"); !strings.Contains(row, "DRAFT  v1@4444444") {
 		t.Errorf("a draft change with no running run should read DRAFT: %q", row)
@@ -135,8 +135,8 @@ func TestDashboardGroupsRunsByChange(t *testing.T) {
 	follow.TmuxPane, follow.CostUSD, follow.DurationMS = nil, &cost, &dur
 	h.SeedState(follow)
 	s = screen("4 yours", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
-	if row := rowOf(t, s, "nxvp"); !strings.HasPrefix(row, "> ") || !strings.Contains(row, "APPROVE  v1@1111111") {
-		t.Errorf("after the follow-up exits the change's row should be selected and read APPROVE: %q\n%s", row, s)
+	if row := rowOf(t, s, "nxvp"); !strings.HasPrefix(row, "> ") || !strings.Contains(row, "READY  v1@1111111") {
+		t.Errorf("after the follow-up exits the change's row should be selected and read READY: %q\n%s", row, s)
 	}
 	if strings.Contains(s, " running") || strings.Contains(s, "tidy the health check") {
 		t.Errorf("nothing should be running, and the follow-up should still have no row:\n%s", s)
@@ -299,7 +299,7 @@ func TestFollowUpOfRenamedRepoSharesItsRow(t *testing.T) {
 	_, screen := h.startDashboard(170)
 	running := "agent:" + st.ID[len(st.ID)-4:] + " running"
 	s := screen("1 agents", running)
-	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "APPROVE  "+running+"  v1@1111111") {
+	if row := rowOf(t, s, "nxvp"); !strings.Contains(row, "READY  "+running+"  v1@1111111") {
 		t.Errorf("the follow-up should run on the change's row: %q\n%s", row, s)
 	}
 	if strings.Contains(s, "tidy the health check") {

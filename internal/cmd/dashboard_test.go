@@ -334,9 +334,9 @@ func TestAgentStatusLabel(t *testing.T) {
 		{"pushed, landed by ancestry", pushed, "INTEGRATED"},
 		{"pushed, landed by content", pushed, "INTEGRATED~"},
 		{"pushed, branch deleted", pushed, "GONE"},
-		{"valley, not yet checked", pushed, "APPROVE"},
-		{"valley, check fell back to git", pushed, "APPROVE"},
-		{"valley, ready", pushed, "APPROVE"},
+		{"valley, not yet checked", pushed, "READY"},
+		{"valley, check fell back to git", pushed, "READY"},
+		{"valley, ready", pushed, "READY"},
 		{"valley, landed", pushed, "INTEGRATED"},
 		{"valley, superseded", pushed, "SUPERSEDED"},
 	}
