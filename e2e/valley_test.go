@@ -336,7 +336,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 	})
 
 	pane, screen := h.startDashboard(170)
-	s := screen("3 yours", "2 done", "APPROVE  v2@6666666", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
+	s := screen("3 yours", "2 done", "READY  v2@6666666", "approve: cd ~/hack/widget && valley approve nxvp --head "+sha('1'))
 	for handle, want := range map[string]string{
 		"nxvp": "Add a health check",
 		"uncr": "Tune the cache",
@@ -350,7 +350,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		}
 	}
 	// Yours first (most recent first), then done.
-	labels := []string{"APPROVE  v1@1111111", "UNCERTAIN", "APPROVE  v2@6666666", "INTEGRATED", "WITHDRAWN"}
+	labels := []string{"READY  v1@1111111", "UNCERTAIN", "READY  v2@6666666", "INTEGRATED", "WITHDRAWN"}
 	var order []string
 	for _, line := range strings.Split(s, "\n") {
 		for _, l := range labels {
@@ -427,8 +427,8 @@ func TestDashboardValleyFailureFallsBackToGit(t *testing.T) {
 	if row := rowOf(t, s, "lndd"); !strings.Contains(row, "Fix the build") || !strings.Contains(row, "INTEGRATED") {
 		t.Errorf("landed change should show INTEGRATED from git: %q", row)
 	}
-	if row := rowOf(t, s, "wait"); !strings.Contains(row, "APPROVE  v2@"+waitingSHA[:7]) {
-		t.Errorf("waiting change should still read APPROVE: %q", row)
+	if row := rowOf(t, s, "wait"); !strings.Contains(row, "READY  v2@"+waitingSHA[:7]) {
+		t.Errorf("waiting change should still read READY: %q", row)
 	}
 	var refusedRow string
 	for _, line := range strings.Split(s, "\n") {

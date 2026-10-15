@@ -281,15 +281,15 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 		approve                  string
 	}
 	wants := map[string]want{
-		"active v2":         {"change:r#" + chg('k'), "kkkk", "yours", "APPROVE  v2@", 2, 0, "valley approve kkkk --head " + *active.PushedSHA},
-		"readied v1":        {"change:r#" + chg('l'), "llll", "agents", "APPROVE  agent:" + shortRunID(follow.ID) + " running  v1@", 2, 1, ""},
+		"active v2":         {"change:r#" + chg('k'), "kkkk", "yours", "READY  v2@", 2, 0, "valley approve kkkk --head " + *active.PushedSHA},
+		"readied v1":        {"change:r#" + chg('l'), "llll", "agents", "READY  agent:" + shortRunID(follow.ID) + " running  v1@", 2, 1, ""},
 		"Port it elsewhere": {"change:other#" + chg('l'), "llllllll", "yours", "SUBMIT", 1, 0, ""},
-		"continuing push":   {"change:r#" + chg('m'), "mmmm", "yours", "APPROVE  v1@", 2, 0, "valley approve mmmm --head " + *continuing.PushedSHA},
+		"continuing push":   {"change:r#" + chg('m'), "mmmm", "yours", "READY  v1@", 2, 0, "valley approve mmmm --head " + *continuing.PushedSHA},
 		"pushed first":      {"change:r#" + chg('n'), "nnnn", "yours", "ATTN  v1@", 2, 0, ""},
 		"first run":         {"change:r#" + chg('o'), "oooooooo", "agents", "agent:" + shortRunID(first.ID) + " running", 1, 1, ""},
 		"landed first":      {"change:r#" + chg('r'), "rrrr", "yours", "ATTN  v1@", 2, 0, ""},
-		"reactivated v1":    {"change:r#" + chg('q'), "qqqq", "yours", "APPROVE  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
-		"gave way later":    {"change:r#" + chg('s'), "ssss", "yours", "APPROVE  v3@eeeeeee", 2, 0, "valley approve ssss --head " + elsewhereHead},
+		"reactivated v1":    {"change:r#" + chg('q'), "qqqq", "yours", "READY  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
+		"gave way later":    {"change:r#" + chg('s'), "ssss", "yours", "READY  v3@eeeeeee", 2, 0, "valley approve ssss --head " + elsewhereHead},
 		"replaced":          {"change:r#" + chg('p'), "pppp", "done", "INTEGRATED  v2@fffffff", 1, 0, ""},
 		"lone a":            {"run:" + loneA.ID, "agent:" + shortRunID(loneA.ID), "yours", "SUBMIT", 1, 0, ""},
 		"lone b":            {"run:" + loneB.ID, "agent:" + shortRunID(loneB.ID), "yours", "SUBMIT", 1, 0, ""},
@@ -866,7 +866,7 @@ func TestValleyChangeOutlivesOutageAndDeletedBranch(t *testing.T) {
 
 	// Without the valley's earlier view, git alone can't settle it either.
 	fresh := check(newModel())
-	expect(fresh, "first check in the outage, branch deleted", "APPROVE")
+	expect(fresh, "first check in the outage, branch deleted", "READY")
 	if line := lineWith(ansi.Strip(fresh.View()), "uncr"); strings.Contains(line, "GONE") {
 		t.Errorf("a deleted branch shouldn't read GONE for a valley change: %q", line)
 	}
@@ -934,7 +934,7 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 		if r.category != catYours || r.current != v1 {
 			t.Errorf("row %s, current %v; want yours, held by v1", categoryNames[r.category], r.current)
 		}
-		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "APPROVE  v1@1111111") || strings.Contains(line, "SUBMIT") {
+		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "READY  v1@1111111") || strings.Contains(line, "SUBMIT") {
 			t.Errorf("the row should read v1 as the valley holds it: %q", line)
 		}
 		if _, cmd := m.approveCommand(r); cmd != "valley approve nxvp --head "+sha('1')+" # "+*v1.PushedBranch {
@@ -955,7 +955,7 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 		if r.category != catYours || r.current != nil {
 			t.Errorf("row %s, current %v; want yours, with no local run holding it", categoryNames[r.category], r.current)
 		}
-		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "APPROVE  v3@3333333") || !strings.Contains(line, "Add a health check v3") {
+		if line := lineWith(screen, "nxvp"); !strings.Contains(line, "READY  v3@3333333") || !strings.Contains(line, "Add a health check v3") {
 			t.Errorf("the row should read v3 as the valley holds it: %q", line)
 		}
 		if _, cmd := m.approveCommand(r); cmd != "valley approve nxvp --head "+sha('3')+" # agent/elsewhere" {

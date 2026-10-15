@@ -132,7 +132,7 @@ type DashboardConfig struct {
 	// negative value never hides them.
 	HideFinishedAfterMinutes int `json:"hide_finished_after_minutes,omitempty"`
 	// ApproveCommand is a template for the command that approves the
-	// selected change, shown in the footer when an APPROVE (or SUBMIT) row
+	// selected change, shown in the footer when a READY (or SUBMIT) row
 	// is selected, e.g.
 	// "cd ~/hack/{repo} && valley approve {handle} --head {head}". {repo} is
 	// the repo as the row names it, {branch} the pushed branch, {change} the

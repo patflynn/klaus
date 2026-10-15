@@ -57,7 +57,7 @@ the runs without a PR on one change (the same change ID in the same repo)
 share the change's row; a run with neither has a row of its own. Rows are
 grouped by whose move it is, most recent first within each group:
   yours     needs you: needs attention (ATTN), a valley change to approve
-            (APPROVE) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
+            (READY) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
             DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready
             to merge and not yet approved
   agents    an agent is running on it: a fix agent on a PR, a follow-up
@@ -83,13 +83,13 @@ A run whose repo delivers to a valley shows as its change: the repo (always
 shown), the change's handle and its title, then the version and head (e.g.
 v2@1a2b3c4). Finalize marked the pushed head ready. Every minute, one
 "valley changes --all --json" for all such runs says where each stands:
-APPROVE (ready and waiting for you), APPROVED, INTEGRATED (landed),
+READY (ready and waiting for you), APPROVED, INTEGRATED (landed),
 UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED (the
 integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as launch
 does when a follow-up run continues the change, and no run of it is
 running). If valley
 can't be asked, the git check above decides, and a change waiting on it
-reads APPROVE. A run whose change finalize couldn't mark ready shows SUBMIT
+reads READY. A run whose change finalize couldn't mark ready shows SUBMIT
 and the reason.
 
 A change's row is built like a PR's. It shows the valley's handle, else the
@@ -110,7 +110,7 @@ the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
 to change the threshold, or a negative N to never hide them.
 
 Set "dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}
-to show, in the footer, the command that approves the selected APPROVE row
+to show, in the footer, the command that approves the selected READY row
 (or submits a SUBMIT row). {repo} is the repo as the row names it, {branch}
 the pushed branch, {change} the full change ID, {handle} the change's handle
 and {head} the pushed head, so the approval binds the head you saw. A row

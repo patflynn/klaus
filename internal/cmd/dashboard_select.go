@@ -81,7 +81,7 @@ type dashRow struct {
 	// lists the change but doesn't hold that head as a version of it, as
 	// when its ready failed. The row doesn't show it; the footer notes it.
 	unplaced string
-	// provisional marks a SUBMIT or APPROVE row with no definite integration
+	// provisional marks a SUBMIT or READY row with no definite integration
 	// verdict yet: it may turn out to have landed long ago.
 	provisional bool
 	// outdated marks a verdict and change kept from an earlier check because

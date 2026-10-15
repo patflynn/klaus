@@ -30,8 +30,8 @@ usage: valley <verb> [args]
 
   pending          list branches on origin not merged into origin/main
   review <branch>  page through the branch's log and diff vs origin/main;
-                   approving runs every owed check and
-                   changes nothing owed
+                   approving runs every required check and
+                   changes nothing required
   approve <change> file an integration request
 `
 

@@ -521,7 +521,7 @@ func runningNote(r dashRow) string {
 	return strings.Join(names, ", ") + " are working on this " + what
 }
 
-// approveCommand expands dashboard.approve_command for an APPROVE row (verb
+// approveCommand expands dashboard.approve_command for a READY row (verb
 // "approve") or a SUBMIT row (verb "submit"). {repo} is the repo as the row
 // names it, {branch} the pushed branch, {change} the full change ID,
 // {handle} the valley's handle and {head} the pushed head, the one the
@@ -536,7 +536,7 @@ func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
 		return "", ""
 	}
 	switch r.statusLabel() {
-	case "APPROVE":
+	case "READY":
 		verb = "approve"
 	case "SUBMIT":
 		verb = "submit"
