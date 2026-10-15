@@ -220,3 +220,40 @@ func TestPushLogPushesOnlyWhenAsked(t *testing.T) {
 		t.Error("push-log --push must fail when the push fails")
 	}
 }
+
+// TestSyncScansAgainstOwnRemote: a valley repo's origin is a private-IP
+// scp-style remote. A log naming that origin is stored on the data ref; a log
+// naming any other private address is kept off it.
+func TestSyncScansAgainstOwnRemote(t *testing.T) {
+	for _, tc := range []struct {
+		name, log string
+		stored    bool
+	}{
+		{"own origin", `{"type":"assistant","text":"To 10.100.0.1:the-valley.git"}`, true},
+		{"other address", `{"type":"assistant","text":"To 10.100.0.2:the-valley.git"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			_, repo, _, _ := setupBareRemote(t)
+			runGitCmd(t, repo, "remote", "set-url", "origin", "git@10.100.0.1:the-valley.git")
+			store := run.NewHomeDirStoreFromPath(filepath.Join(t.TempDir(), "session"))
+			if err := store.EnsureDirs(); err != nil {
+				t.Fatal(err)
+			}
+			st := finishedClaudeRun(t, store, home, "20261015-1000-aaaa", "6623bdcf-1dce-4da0-86b3-a46743d208e8")
+			if err := os.WriteFile(*st.LogFile, []byte(tc.log+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			syncRunToDataRef(context.Background(), repo, store, git.NewExecClient(), testDataRef, false, st)
+			files, err := gitOut(t, repo, "ls-tree", "-r", "--name-only", testDataRef)
+			if err != nil {
+				t.Fatalf("ls-tree: %v %s", err, files)
+			}
+			if got := strings.Contains(files, "logs/"+st.ID+".jsonl"); got != tc.stored {
+				t.Errorf("log stored = %v, want %v; files:\n%s", got, tc.stored, files)
+			}
+		})
+	}
+}

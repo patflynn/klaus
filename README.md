@@ -883,7 +883,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 - **Worktrees** isolate each agent — they can't step on each other or your working tree
 - **tmux panes** manage each agent's process lifecycle. They live in a detached `klaus-agents-<session-id>` session owned by the tmux server, so they cost you no screen space and agents survive the coordinator exiting (`agent_display: "pane"` splits your window instead)
 - **JSONL logs** are saved for replay and post-run analysis
-- **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting
+- **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting (the run repo's own remote hosts are exempt; a log that cannot be scanned in full is kept off the data ref)
 - **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts are committed to the local clone's data ref
 - **Data ref** (`refs/klaus/data`) stores run metadata without polluting your branch list. It is pushed to origin only when `push_data_ref` is true
 
