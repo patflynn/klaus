@@ -964,12 +964,16 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 		"runs/" + state.ID + ".json": stateFile,
 	}
 
+	// The run's own remotes are already in the clone's config, so a log that
+	// names them discloses nothing new.
+	allowedHosts := remoteHosts(ctx, root)
+
 	// Check log sensitivity before including. The scan applies even when the
 	// ref stays local: a later push publishes the ref's whole history.
 	if state.LogFile != nil {
 		logF, err := os.Open(*state.LogFile)
 		if err == nil {
-			findings := scan.CheckSensitivity(logF)
+			findings := scan.CheckSensitivityAllowing(logF, allowedHosts)
 			logF.Close()
 
 			if len(findings) == 0 {
@@ -990,7 +994,7 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 	// it lets 'klaus launch --pr' continue a budget-paused conversation.
 	if convPath := findResumeConversation(state); convPath != "" {
 		if cf, err := os.Open(convPath); err == nil {
-			findings := scan.CheckSensitivity(cf)
+			findings := scan.CheckSensitivityAllowing(cf, allowedHosts)
 			cf.Close()
 			if len(findings) == 0 {
 				files["sessions/"+state.ID+".jsonl"] = convPath
@@ -1009,6 +1013,26 @@ func syncRunToDataRef(ctx context.Context, root string, store run.StateStore, gi
 		// Best-effort: a missing remote or a rejected push must not fail finalize.
 		_ = gitClient.PushDataRef(ctx, root, dataRef)
 	}
+}
+
+// remoteHosts returns the hosts of dir's git remotes (git remote -v), or nil
+// when they can't be read.
+func remoteHosts(ctx context.Context, dir string) []string {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "remote", "-v").Output()
+	if err != nil {
+		return nil
+	}
+	var hosts []string
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		if h := scan.RemoteHost(f[1]); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	return hosts
 }
 
 func init() {

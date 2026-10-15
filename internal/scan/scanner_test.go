@@ -1,6 +1,7 @@
 package scan
 
 import (
+	"io"
 	"strings"
 	"testing"
 )
@@ -152,4 +153,63 @@ func hasCategory(findings []Finding, category string) bool {
 		}
 	}
 	return false
+}
+
+func TestRemoteHost(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@10.100.0.1:the-valley.git":       "10.100.0.1",
+		"10.100.0.1:repo.git":                 "10.100.0.1",
+		"ssh://git@10.100.0.1/repo.git":       "10.100.0.1",
+		"ssh://git@10.100.0.1:2222/repo.git":  "10.100.0.1",
+		"https://user:pw@192.168.1.5/o/r.git": "192.168.1.5",
+		"git@github.com:acme/widget.git":      "github.com",
+		"/tmp/origin.git":                     "",
+		"./rel:thing":                         "",
+	} {
+		if got := RemoteHost(in); got != want {
+			t.Errorf("RemoteHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAllowedHostIsExactMatch(t *testing.T) {
+	allow := []string{"10.100.0.1"}
+	flags := func(s string) bool {
+		return len(CheckSensitivityAllowing(strings.NewReader(s), allow)) > 0
+	}
+	if flags("To 10.100.0.1:the-valley.git") {
+		t.Error("own remote flagged")
+	}
+	if !flags("To 10.100.0.2:the-valley.git") {
+		t.Error("other private IP not flagged")
+	}
+	if !flags("10.100.0.1 and also 10.100.0.2 here") {
+		t.Error("other private IP on the same line not flagged")
+	}
+	if !flags("To 10.100.0.11:x.git") {
+		t.Error("10.100.0.11 treated as 10.100.0.1")
+	}
+	if !flags("To 10.100.0.1:x.git\npassword: hunter2") {
+		t.Error("other patterns must still flag")
+	}
+}
+
+func TestLongLineFailsClosed(t *testing.T) {
+	in := strings.Repeat("a", 2<<20) + "\npassword = hunter2\n"
+	if len(CheckSensitivity(strings.NewReader(in))) == 0 {
+		t.Error("secret after a >1MiB line not flagged")
+	}
+	if len(CheckSensitivity(strings.NewReader(strings.Repeat("a", 2<<20)))) != 0 {
+		t.Error("a long clean line should scan clean")
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+func TestReadErrorFailsClosed(t *testing.T) {
+	if len(CheckSensitivity(errReader{})) == 0 {
+		t.Error("read error reported clean")
+	}
 }
