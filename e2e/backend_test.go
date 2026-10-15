@@ -18,6 +18,8 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/failure=%t", kind, failed), func(t *testing.T) {
 				t.Parallel()
 				h := NewHarness(t)
+				// A PR run, so finalize takes the PR URL the worker reports.
+				h.UseGitHubOrigin()
 				output := `{"type":"thread.started","thread_id":"codex-thread"}
 {"type":"item.completed","item":{"type":"agent_message","text":"https://github.com/acme/widget/pull/42"}}
 {"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`

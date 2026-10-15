@@ -66,11 +66,14 @@ JSONL log. The stub emits stream-json containing:
 
 - an `assistant` event whose text holds a PR URL matching
   `https?://github\.com/[^\s"<>\]]+/pull/\d+` (placeholder slugs such as
-  `owner/repo` are rejected; the sandbox's local-path origin is not a GitHub
-  URL, so any other slug is accepted), and
+  `owner/repo` are rejected), and
 - a `result` event with `total_cost_usd`, `duration_ms`, and `session_id`.
 
 `_finalize` turns those into the run's `CostUSD`, `DurationMS`, and `PRURL`.
+It records the PR URL only for a run that delivers by PR: the sandbox's
+local-path origin is not a GitHub URL, so its runs deliver by pushing their
+branch and take no PR from the log. A test that wants a PR run calls
+`UseGitHubOrigin` before launching.
 The stub also **blocks until released** (`Harness.ReleaseClaude`) so a test can
 deterministically observe the live pane (title, existence, argv) before
 `_finalize` tears it down. Override the emitted JSONL with

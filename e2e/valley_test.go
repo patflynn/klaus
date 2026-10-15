@@ -21,7 +21,7 @@ import (
 // "widget nxvp v1 ready" or, when valley.refuse exists, refuses with its
 // contents, and answers changes with valley.changes.json or, when that is
 // absent, fails as an unreachable valley does. Its help lists unready only
-// when valley.has-unready exists; unready answers "widget nxvp draft" or,
+// when valley.has-unready exists; unready answers "widget nxvp v1 draft" or,
 // when valley.unready-refuse exists, refuses with its contents, and creates
 // valley.unready-late if the fake agent had already started.
 func (h *Harness) installValleyStub() {
@@ -41,7 +41,7 @@ ready)
 unready)
   if [ -f "$dir/claude.started" ]; then : > "$dir/valley.unready-late"; fi
   if [ -f "$dir/valley.unready-refuse" ]; then cat "$dir/valley.unready-refuse" >&2; exit 1; fi
-  echo "widget nxvp draft"
+  echo "widget nxvp v1 draft"
   ;;
 changes)
   if [ -f "$dir/valley.changes.json" ]; then cat "$dir/valley.changes.json"; exit 0; fi
@@ -119,7 +119,9 @@ func (h *Harness) runEvents(runID string) []event.Event {
 // pushes its branch, and lets the real finalize run against a fake valley:
 // in a repo that carries the valley's policy it marks the head ready and
 // records the version; in a plain direct-push repo it never runs valley; and
-// a refusal is recorded without failing finalize.
+// a refusal is recorded without failing finalize. The agent's log names a
+// GitHub PR, as a test fixture would, and none of these runs takes it for
+// theirs: their repos deliver by push.
 func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -142,7 +144,10 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"11111111-2222-4333-8444-555555555555"}` + "\n")
+			const fixturePR = "https://github.com/acme/widget/pull/7"
+			h.WriteDefaultClaudeOutput(`{"type":"user","message":{"content":[{"type":"tool_result","content":"--- FAIL: want ` + fixturePR + `"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The knot links ` + fixturePR + `; fixing the test."}]}}
+{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"11111111-2222-4333-8444-555555555555"}` + "\n")
 
 			res := h.RunKlaus("launch", "add a health check endpoint")
 			if res.ExitCode != 0 {
@@ -167,6 +172,15 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 			st = h.WaitForState(id, func(s *run.State) bool {
 				return s.DurationMS != nil && s.TmuxPane == nil && s.Worktree == ""
 			}, 60*time.Second)
+			if st.Delivery != run.DeliveryPush {
+				t.Errorf("delivery = %q, want %q", st.Delivery, run.DeliveryPush)
+			}
+			if st.PRURL != nil {
+				t.Errorf("PR URL = %q, want none from a run that delivers by push", *st.PRURL)
+			}
+			if st.PushedBranch == nil || *st.PushedBranch != st.Branch {
+				t.Errorf("pushed branch = %v, want %s", st.PushedBranch, st.Branch)
+			}
 			if st.PushedSHA == nil || *st.PushedSHA != head {
 				t.Fatalf("pushed SHA = %v, want %s", st.PushedSHA, head)
 			}
@@ -210,6 +224,11 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 					"version": float64(1), "title": "Add a health check", "head": head}
 				if fmt.Sprint(ready) != fmt.Sprint(wantData) {
 					t.Errorf("agent:change-ready data = %v, want %v", ready, wantData)
+				}
+			}
+			for _, typ := range types {
+				if typ == event.AgentPRCreated {
+					t.Errorf("a run that delivers by push must not emit %s: events %v", typ, types)
 				}
 			}
 			// Finalize always completes, and the branch is reported pushed before

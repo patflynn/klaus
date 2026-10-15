@@ -130,8 +130,9 @@ func (h *Harness) installDefaultStubs() {
 }
 
 // defaultClaudeOutput is the stream-json the fake agent emits. It contains a PR
-// URL (matched by hidden.go's prURLExtractRegex) and a result event carrying
-// cost/duration/session_id so _finalize can populate run state.
+// URL (matched by hidden.go's prURLExtractRegex), which _finalize records for
+// a run whose origin is on GitHub (UseGitHubOrigin), and a result event
+// carrying cost/duration/session_id so _finalize can populate run state.
 const defaultClaudeOutput = `{"type":"system","subtype":"init","model":"claude-e2e"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"Opened PR: https://github.com/acme/widget/pull/4242"}]}}
 {"type":"result","subtype":"success","total_cost_usd":0.1234,"duration_ms":4242,"session_id":"11111111-2222-4333-8444-555555555555"}

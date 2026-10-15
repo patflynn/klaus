@@ -95,8 +95,9 @@ type Unreadied struct {
 }
 
 // draftLine is the line `valley unready` prints on success, e.g.
-// "cosmo nxvp draft".
-var draftLine = regexp.MustCompile(`^(\S+) (\S+) draft$`)
+// "cosmo nxvp v1 draft", naming the version that was ready. A valley that
+// names no version prints "cosmo nxvp draft".
+var draftLine = regexp.MustCompile(`^(\S+) (\S+)(?: v\d+)? draft$`)
 
 // notReady matches a message that only says the change wasn't ready to
 // begin with, which leaves it as unready asked.

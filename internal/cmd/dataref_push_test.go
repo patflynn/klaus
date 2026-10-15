@@ -14,7 +14,9 @@ import (
 const testDataRef = "refs/klaus/data"
 
 // finalizePRLog is a clean run that opened a PR, so _finalize takes the
-// normal path (no salvage) through the data-ref sync.
+// normal path (no salvage) through the data-ref sync. Its runs record PR
+// delivery, as launch does for a repo on GitHub, since the bare origin's path
+// isn't a GitHub URL.
 const finalizePRLog = `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/acme/widget/pull/9"}]}}
 {"type":"result","subtype":"success","total_cost_usd":1,"duration_ms":1000}
 `
@@ -26,7 +28,7 @@ func TestFinalizeKeepsDataRefLocalByDefault(t *testing.T) {
 	origin, repo, worktree, branch := setupBareRemote(t)
 	commitAndPush(t, worktree, branch)
 
-	_, state, _ := finalizeRealRepo(t, repo, worktree, branch, finalizePRLog, nil)
+	_, state, _ := finalizeRealRepo(t, repo, worktree, branch, finalizePRLog, run.DeliveryPR)
 
 	files, err := gitOut(t, repo, "ls-tree", "-r", "--name-only", testDataRef)
 	if err != nil {
@@ -53,7 +55,7 @@ func TestFinalizePushesDataRefWhenEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	finalizeRealRepo(t, repo, worktree, branch, finalizePRLog, nil)
+	finalizeRealRepo(t, repo, worktree, branch, finalizePRLog, run.DeliveryPR)
 
 	local, err := gitOut(t, repo, "rev-parse", testDataRef)
 	if err != nil {
