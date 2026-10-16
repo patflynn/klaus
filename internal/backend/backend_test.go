@@ -79,30 +79,42 @@ func TestWorkerPromptTransport(t *testing.T) {
 	}
 }
 
-// Claude sessions that can commit or open PRs must run with attribution off;
-// the setting is Claude-only, so other backends' argv must not carry it.
+// Claude sessions that can commit or open PRs must run with attribution off,
+// whether --settings loads the inline settings or the coordinator's status
+// line file: Claude takes one --settings, so the file must carry attribution
+// too. A worker always gets the inline settings. The setting is Claude-only,
+// so other backends' argv must not carry it.
 func TestClaudeAttributionDisabled(t *testing.T) {
-	var settings struct {
-		Attribution struct {
-			Commit, PR *string
-			SessionURL *bool `json:"sessionUrl"`
+	for _, s := range []string{ClaudeSettings, ClaudeSettingsWithStatusLine("widget")} {
+		var settings struct {
+			Attribution struct {
+				Commit, PR *string
+				SessionURL *bool `json:"sessionUrl"`
+			}
+		}
+		if err := json.Unmarshal([]byte(s), &settings); err != nil {
+			t.Fatal(err)
+		}
+		if a := settings.Attribution; a.Commit == nil || *a.Commit != "" || a.PR == nil || *a.PR != "" || a.SessionURL == nil || *a.SessionURL {
+			t.Fatalf("attribution not disabled: %s", s)
 		}
 	}
-	if err := json.Unmarshal([]byte(ClaudeSettings), &settings); err != nil {
-		t.Fatal(err)
-	}
-	if a := settings.Attribution; a.Commit == nil || *a.Commit != "" || a.PR == nil || *a.PR != "" || a.SessionURL == nil || *a.SessionURL {
-		t.Fatalf("attribution not disabled: %s", ClaudeSettings)
-	}
 	for _, k := range []Kind{Claude, Codex, Agy} {
-		for _, resume := range []string{"", "prior-session"} {
-			o := Options{SystemPrompt: "system", Prompt: "prompt", RunID: "run", Budget: "5", ResumeID: resume, Continue: resume != ""}
-			worker, _ := k.Worker(o)
-			for name, argv := range map[string][]string{"worker": worker, "coordinator": k.Coordinator(o)} {
-				joined := strings.Join(argv, "\n")
-				has := strings.Contains(joined, "--settings\n"+ClaudeSettings)
-				if has != (k == Claude) || (k != Claude && strings.Contains(joined, "--settings")) {
-					t.Errorf("%s %s resume=%q: --settings present = %v: %q", k, name, resume, has, argv)
+		for _, file := range []string{"", "/state/run.settings.json"} {
+			for _, resume := range []string{"", "prior-session"} {
+				o := Options{SystemPrompt: "system", Prompt: "prompt", RunID: "run", Budget: "5", ResumeID: resume, Continue: resume != "", SettingsFile: file}
+				coordinator := ClaudeSettings
+				if file != "" {
+					coordinator = file
+				}
+				worker, _ := k.Worker(o)
+				for name, argv := range map[string][]string{"worker": worker, "coordinator": k.Coordinator(o)} {
+					want := map[string]string{"worker": ClaudeSettings, "coordinator": coordinator}[name]
+					joined := strings.Join(argv, "\n")
+					has := strings.Contains(joined, "--settings\n"+want+"\n")
+					if has != (k == Claude) || strings.Count(joined, "--settings") != map[bool]int{true: 1}[k == Claude] {
+						t.Errorf("%s %s file=%q resume=%q: --settings %s present = %v: %q", k, name, file, resume, want, has, argv)
+					}
 				}
 			}
 		}

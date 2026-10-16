@@ -81,8 +81,9 @@ type StateStore interface {
 	EnsureDirs() error
 }
 
-// PromptDir holds the prompt files workers read on stdin, beside the store's
-// logs/. They are kept after the run as the audit copy of each brief.
+// PromptDir holds the prompt files workers read on stdin, and the settings
+// file a Claude coordinator loads with --settings, beside the store's logs/.
+// The prompts are kept after the run as the audit copy of each brief.
 func PromptDir(s StateStore) string {
 	return filepath.Join(filepath.Dir(s.LogDir()), "prompts")
 }

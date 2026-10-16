@@ -556,7 +556,7 @@ The `--pr` and `--issue` flags can coexist (the agent may reference the issue in
 
 `--pr` and `--change` refuse to launch while a run in any session is still running (judged as the dashboard judges it) on the branch they would work on, or on the change they continue, in the target repo; the error names that run. A `--pr` launch's change is that of the run that opened the PR. Wait for the run to finish, or stop it, or pass `--force-takeover` to launch anyway: the new worktree replaces the running agent's, **discarding that run's local, uncommitted work** and any commits it hasn't pushed.
 
-Without `--force-takeover`, creating the worktree never discards work origin lacks, whoever left it: when the branch is checked out in a worktree with uncommitted changes (klaus's own `.claude/settings.json` aside), or the local branch has commits that aren't on `origin/<branch>`, launch refuses and names the worktree or branch. A worktree on the branch that holds nothing origin lacks is removed to make way, and a local branch that only points at what origin has is reset to origin's tip.
+Without `--force-takeover`, creating the worktree never discards work origin lacks, whoever left it: when the branch is checked out in a worktree with uncommitted changes, or the local branch has commits that aren't on `origin/<branch>`, launch refuses and names the worktree or branch. A worktree on the branch that holds nothing origin lacks is removed to make way, and a local branch that only points at what origin has is reset to origin's tip.
 
 ### `klaus launch --change`
 

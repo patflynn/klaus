@@ -575,10 +575,6 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Printf("  delivery: push branch, no PR (origin is not on GitHub)\n")
 		}
 
-		if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
-		}
-
 		change, err := chooseChangeID(ctx, store, changeIDInput{
 			IsPRFix:       isPRFix,
 			PRURL:         prURL,

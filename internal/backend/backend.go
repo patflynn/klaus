@@ -51,11 +51,41 @@ func (k Kind) ValidateEffort(s string) error {
 // commit-msg hook and the agent brief enforce the same rule.
 const ClaudeSettings = `{"attribution":{"commit":"","pr":"","sessionUrl":false}}`
 
+// ClaudeSettingsWithStatusLine is ClaudeSettings plus a status line showing
+// repoName and the branch checked out where the coordinator runs. klaus
+// writes it to a file in the session's state that Options.SettingsFile
+// names, never into the worktree, where git would see it. A repository's own
+// .claude/settings.json still loads beneath it, untouched. Workers get no
+// status line: claude -p, piped into _format-stream, never renders one.
+func ClaudeSettingsWithStatusLine(repoName string) string {
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(ClaudeSettings), &settings); err != nil {
+		panic(err)
+	}
+	settings["statusLine"] = map[string]any{
+		"type": "command",
+		"command": fmt.Sprintf(
+			`input=$(cat); cwd=$(echo "$input" | jq -r '.workspace.current_dir'); branch=$(git -C "$cwd" --no-optional-locks branch --show-current 2>/dev/null); if [ -n "$branch" ]; then echo "%s ($branch)"; else echo "%s"; fi`,
+			repoName, repoName,
+		),
+	}
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return string(out) + "\n"
+}
+
 type Options struct {
 	SystemPrompt, Prompt, RunID, ResumeID, Model, Effort, Budget string
 	// SystemPromptFile replaces SystemPrompt for Claude workers; other backends have no file flag.
 	SystemPromptFile string
-	Continue         bool
+	// SettingsFile replaces the inline ClaudeSettings for a Claude coordinator
+	// with a file holding ClaudeSettingsWithStatusLine. Claude takes one
+	// --settings, so the file carries ClaudeSettings too. Workers always get
+	// the inline settings; other backends have no settings flag.
+	SettingsFile string
+	Continue     bool
 }
 
 // Worker returns argv, without shell interpolation. When promptOnStdin is set
@@ -101,7 +131,11 @@ func (k Kind) Coordinator(o Options) []string {
 	var a []string
 	switch k {
 	case Claude:
-		a = []string{"claude", "--dangerously-skip-permissions", "-n", o.RunID, "--settings", ClaudeSettings, "--append-system-prompt", o.SystemPrompt}
+		settings := ClaudeSettings
+		if o.SettingsFile != "" {
+			settings = o.SettingsFile
+		}
+		a = []string{"claude", "--dangerously-skip-permissions", "-n", o.RunID, "--settings", settings, "--append-system-prompt", o.SystemPrompt}
 		if o.Continue {
 			if o.ResumeID != "" {
 				a = append(a, "--resume", o.ResumeID)

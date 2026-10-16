@@ -179,19 +179,13 @@ func checkLocalWork(ctx context.Context, repoDir, branch string) error {
 }
 
 // hasUncommittedChanges reports whether the worktree at dir has staged,
-// modified or untracked files, other than the .claude/settings.json launch
-// writes into every agent worktree.
+// modified or untracked files.
 func hasUncommittedChanges(ctx context.Context, dir string) (bool, error) {
 	out, err := runGit(ctx, dir, "status", "--porcelain", "--untracked-files=all")
 	if err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if line != "" && line != "?? .claude/settings.json" {
-			return true, nil
-		}
-	}
-	return false, nil
+	return strings.TrimSpace(out) != "", nil
 }
 
 // WorktreePrune removes stale worktree tracking information.

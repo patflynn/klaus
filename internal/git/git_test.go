@@ -701,20 +701,13 @@ func trackingRepo(t *testing.T, branch string) string {
 }
 
 // TestWorktreeAddTrack_RemovesWorktreeOriginHasAll: a worktree left on the
-// branch that holds nothing origin lacks is removed to make way, as are
-// klaus's own settings in it.
+// branch that holds nothing origin lacks is removed to make way.
 func TestWorktreeAddTrack_RemovesWorktreeOriginHasAll(t *testing.T) {
 	ctx := context.Background()
 	repo := trackingRepo(t, "feature-y")
 	oldPath := filepath.Join(t.TempDir(), "old-worktree")
 	if err := WorktreeAddTrack(ctx, repo, oldPath, "feature-y", false); err != nil {
 		t.Fatalf("WorktreeAddTrack (setup): %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(oldPath, ".claude"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(oldPath, ".claude", "settings.json"), []byte("{}\n"), 0o644); err != nil {
-		t.Fatal(err)
 	}
 
 	newPath := filepath.Join(t.TempDir(), "new-worktree")
