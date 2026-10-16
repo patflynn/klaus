@@ -25,9 +25,13 @@ import (
 //	(d) after the agent completes, _finalize populates cost/duration/PR URL from
 //	    the stub's emitted stream-json, and
 //	(e) the worktree is removed and the pane is killed.
+//
+// The origin is on GitHub (UseGitHubOrigin), so the run delivers by PR and
+// takes the PR URL its log names.
 func TestLaunchLifecycle(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
+	h.UseGitHubOrigin()
 
 	const prompt = "add a health check endpoint"
 	res := h.RunKlaus("launch", prompt)
@@ -110,6 +114,9 @@ func TestLaunchLifecycle(t *testing.T) {
 	}
 	if final.DurationMS == nil || *final.DurationMS != 4242 {
 		t.Errorf("DurationMS = %v, want 4242", final.DurationMS)
+	}
+	if final.Delivery != run.DeliveryPR {
+		t.Errorf("Delivery = %q, want %q", final.Delivery, run.DeliveryPR)
 	}
 	if final.PRURL == nil || *final.PRURL != "https://github.com/acme/widget/pull/4242" {
 		t.Errorf("PRURL = %v, want the PR URL from the stub log", final.PRURL)
@@ -406,11 +413,11 @@ func TestLaunchSizeGuard(t *testing.T) {
 }
 
 // TestLaunchDeliveryFollowsOrigin: launch reads the repo's origin to pick the
-// worker's delivery. The harness origin is a local bare repo, like a valley
-// remote with no GitHub PRs, so the agent is told to push its branch and
-// report; a github.com origin keeps the PR workflow. The GitHub case serves
-// the github.com URL from the same bare repo (UseGitHubOrigin), so launch's
-// real fetch works offline.
+// worker's delivery, and records it on the run. The harness origin is a local
+// bare repo, like a valley remote with no GitHub PRs, so the agent is told to
+// push its branch and report; a github.com origin keeps the PR workflow. The
+// GitHub case serves the github.com URL from the same bare repo
+// (UseGitHubOrigin), so launch's real fetch works offline.
 func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -460,7 +467,15 @@ func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
 			}
 
 			h.ReleaseClaude()
-			h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+			st := h.WaitForState(h.RunIDs()[0], func(s *run.State) bool { return s.TmuxPane == nil && s.Worktree == "" }, 30*time.Second)
+			// Launch records the delivery, which finalize then honours.
+			want := run.DeliveryPush
+			if tc.github {
+				want = run.DeliveryPR
+			}
+			if st.Delivery != want {
+				t.Errorf("recorded delivery = %q, want %q", st.Delivery, want)
+			}
 		})
 	}
 }

@@ -52,7 +52,14 @@ type State struct {
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
 	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
 	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
+	Delivery         string   `json:"delivery,omitempty"`          // how launch told the agent to deliver: DeliveryPR or DeliveryPush; empty in state that predates it
 }
+
+// How a run delivers its work, as launch decides it from the run's repo.
+const (
+	DeliveryPR   = "pr"   // the agent opens a GitHub PR, or continues one (--pr)
+	DeliveryPush = "push" // the agent pushes its branch; the repo takes no PRs
+)
 
 // Unready is what launch's `valley unready` did to the change a follow-up
 // run continues, before its agent started.

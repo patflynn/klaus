@@ -93,3 +93,28 @@ func TestParseReady(t *testing.T) {
 		t.Error("parseReady should refuse output without a ready line")
 	}
 }
+
+// TestParseUnready: valley unready's draft line, with the version that was
+// ready or without one, and its notes that the change wasn't ready.
+func TestParseUnready(t *testing.T) {
+	for _, tc := range []struct {
+		out  string
+		want Unreadied
+	}{
+		{"the-valley vqmw v1 draft\n", Unreadied{Repo: "the-valley", Handle: "vqmw", Draft: true}},
+		{"note: fetching origin\ncosmo nxvp v12 draft\n", Unreadied{Repo: "cosmo", Handle: "nxvp", Draft: true}},
+		{"cosmo nxvp draft\n", Unreadied{Repo: "cosmo", Handle: "nxvp", Draft: true}},
+		{"nxvp is already a draft\n", Unreadied{Note: "nxvp is already a draft"}},
+		{"valley: change nxvp is not ready\n", Unreadied{Note: "valley: change nxvp is not ready"}},
+		{"valley: no change record for nxvp-id\n", Unreadied{Note: "valley: no change record for nxvp-id"}},
+	} {
+		if got, err := parseUnready([]byte(tc.out)); err != nil || got != tc.want {
+			t.Errorf("parseUnready(%q) = %+v, %v; want %+v", tc.out, got, err, tc.want)
+		}
+	}
+	for _, out := range []string{"cosmo nxvp v2 ready\n", "cosmo nxvp vx draft\n", "ok\n", ""} {
+		if got, err := parseUnready([]byte(out)); err == nil {
+			t.Errorf("parseUnready(%q) = %+v; want an error", out, got)
+		}
+	}
+}

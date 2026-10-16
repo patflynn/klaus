@@ -453,7 +453,8 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
 		var sysPrompt string
-		directPush := !isPRFix && isDirectPushRepo(repoRoot)
+		delivery := runDelivery(isPRFix, repoRoot)
+		directPush := delivery == run.DeliveryPush
 		if isPRFix {
 			sysPrompt, err = config.RenderPRFixPrompt(repoRoot, config.PromptVars{
 				RunID:    id,
@@ -744,6 +745,7 @@ are synced back after completion. Use --local to force local execution, or
 			ChangeID:    change.ID,
 			Unready:     unready,
 			ChangeRepo:  change.Repo,
+			Delivery:    delivery,
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
@@ -1096,6 +1098,18 @@ func resolveRepoTarget(repoFlag, sessionTarget string, reg *project.Registry) (r
 // repoRoot, so they are decided the same way.
 func isDirectPushRepo(repoRoot string) bool {
 	return !git.IsGitHubRemote(gitRemoteURL(repoRoot))
+}
+
+// runDelivery decides how a run on repoRoot delivers its work: a run that
+// continues a PR (--pr) delivers to that PR, and any other run pushes its
+// branch when repoRoot is a direct-push repo, or else opens a PR. Launch
+// records it on the run; finalize decides state that predates the record
+// the same way.
+func runDelivery(isPRFix bool, repoRoot string) string {
+	if !isPRFix && isDirectPushRepo(repoRoot) {
+		return run.DeliveryPush
+	}
+	return run.DeliveryPR
 }
 
 // resolveGHRepo returns an owner/repo string suitable for --repo flags on gh CLI calls.

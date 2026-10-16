@@ -671,6 +671,41 @@ not valid json at all
 		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/77")
 	})
 
+	// A run that delivers by pushing its branch takes no PR URL from its log,
+	// as launch recorded or, in state that predates the record, as its origin
+	// decides; a run that delivers by PR takes its own.
+	t.Run("delivery decides whether the log's PR URL is the run's", func(t *testing.T) {
+		const prURL = "https://github.com/patflynn/klaus/pull/7"
+		logContent := `{"type":"user","message":{"content":[{"type":"tool_result","content":"fixture: ` + prURL + `\n"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The knot links ` + prURL + `"}]}}
+{"type":"result","subtype":"success","total_cost_usd":1.0,"duration_ms":5000}
+`
+		githubClone := repoWithOrigin(t, "https://github.com/patflynn/klaus.git")
+		valleyClone := repoWithOrigin(t, "git@10.100.0.1:the-valley.git")
+		for _, tc := range []struct {
+			name, delivery, clone string
+			wantPR                bool
+		}{
+			{name: "recorded push", delivery: run.DeliveryPush, clone: githubClone},
+			{name: "unrecorded, origin not on GitHub", clone: valleyClone},
+			{name: "recorded PR", delivery: run.DeliveryPR, clone: githubClone, wantPR: true},
+			{name: "unrecorded, origin on GitHub", clone: githubClone, wantPR: true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				state, store := setupFinalizeTest(t, logContent)
+				state.Delivery, state.CloneDir = tc.delivery, &tc.clone
+				if _, err := finalizeFromLog(store, state); err != nil {
+					t.Fatal(err)
+				}
+				if tc.wantPR {
+					assertPRURL(t, state, prURL)
+				} else if state.PRURL != nil {
+					t.Errorf("PRURL = %q, want none for a run that delivers by push", *state.PRURL)
+				}
+			})
+		}
+	})
+
 	t.Run("rejects placeholder PR URL in assistant text", func(t *testing.T) {
 		logContent := `{"type":"system","subtype":"init","model":"claude-sonnet-4-5-20250929"}
 {"type":"assistant","message":{"content":[{"type":"text","text":"You can create a PR like https://github.com/owner/repo/pull/123 for review."}]}}
@@ -975,8 +1010,9 @@ func assertDuration(t *testing.T, state *run.State, want int64) {
 const salvageChangeID = "zzzzyyyyxxxxwwwwvvvvuuuuttttssss"
 
 // finalizeRealRepo runs _finalize for a run on worktree/branch with the given
-// log. gh is stubbed (empty output); git is real.
-func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent string, prURL *string) (*run.HomeDirStore, *run.State, *fakeRunner) {
+// log and the delivery launch recorded ("" for state that predates it). gh is
+// stubbed (empty output); git is real.
+func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent, delivery string) (*run.HomeDirStore, *run.State, *fakeRunner) {
 	t.Helper()
 	sessionID := "20260918-1205-salvage-session"
 	t.Setenv("HOME", t.TempDir())
@@ -1002,7 +1038,7 @@ func finalizeRealRepo(t *testing.T, repo, worktree, branch, logContent string, p
 		CreatedAt: "2026-09-18T12:05:00Z",
 		LogFile:   &logFile,
 		CloneDir:  &repo,
-		PRURL:     prURL,
+		Delivery:  delivery,
 	}
 	if err := store.Save(state); err != nil {
 		t.Fatalf("saving state: %v", err)
@@ -1055,7 +1091,7 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 	t.Run("commits, pushes, and keeps the branch", func(t *testing.T) {
 		origin, repo, worktree, branch := setupBareRemote(t)
 
-		store, state, r := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, nil)
+		store, state, r := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, "")
 
 		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
 			t.Errorf("local branch deleted: %v", err)
@@ -1105,7 +1141,7 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		origin, repo, worktree, branch := setupBareRemote(t)
 		runGitCmd(t, repo, "remote", "set-url", "origin", origin+"-gone")
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, "")
 
 		files, err := gitOut(t, repo, "show", "--name-only", "--format=%s", "refs/heads/"+branch)
 		if err != nil {
@@ -1129,7 +1165,7 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		evts := runEvents(t, store.BaseDir(), state.ID)
 		if na := evts[event.AgentNeedsAttention]; na == nil || na["pushed"] != true || na["reason"] != "no_pr" {
@@ -1149,7 +1185,7 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		commitAndPush(t, worktree, branch)
 		runGitCmd(t, origin, "branch", "-D", branch) // no fetch: origin/<branch> is stale
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		local, _ := gitOut(t, repo, "rev-parse", "refs/heads/"+branch)
 		if remote, err := gitOut(t, origin, "rev-parse", "--verify", "refs/heads/"+branch); err != nil || remote != local {
@@ -1166,7 +1202,7 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		commitAndPush(t, worktree, branch)
 		runGitCmd(t, repo, "remote", "set-url", "origin", origin+"-gone")
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err != nil {
 			t.Errorf("local branch deleted: %v", err)
@@ -1193,7 +1229,9 @@ func TestFinalizeWithPRDeletesBranch(t *testing.T) {
 	prLog := `{"type":"assistant","message":{"content":[{"type":"text","text":"Opened https://github.com/acme/widget/pull/9"}]}}
 {"type":"result","subtype":"success","total_cost_usd":1,"duration_ms":1000}
 `
-	store, state, _ := finalizeRealRepo(t, repo, worktree, branch, prLog, nil)
+	// The bare remote's path isn't a GitHub URL; launch recorded a PR run,
+	// as it does for a repo on GitHub.
+	store, state, _ := finalizeRealRepo(t, repo, worktree, branch, prLog, run.DeliveryPR)
 
 	if _, err := gitOut(t, repo, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
 		t.Error("local branch should be deleted after a PR run")
@@ -1232,7 +1270,7 @@ func TestFinalizeDirectPush(t *testing.T) {
 			t.Fatalf("branch missing on origin: %v", err)
 		}
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		if state.PushedBranch == nil || *state.PushedBranch != branch || state.PushedSHA == nil || *state.PushedSHA != head {
 			t.Errorf("recorded push = %q@%q, want %s@%s", strOrNil(state.PushedBranch), strOrNil(state.PushedSHA), branch, head)
@@ -1270,6 +1308,37 @@ func TestFinalizeDirectPush(t *testing.T) {
 		}
 	})
 
+	// A GitHub PR URL the agent came across, as a test fixture, doesn't make
+	// a direct-push run a PR run, whether launch recorded the delivery or the
+	// state predates the record.
+	for name, delivery := range map[string]string{"recorded": run.DeliveryPush, "unrecorded": ""} {
+		t.Run("a PR URL in the log is not the run's, delivery "+name, func(t *testing.T) {
+			_, repo, worktree, branch := setupBareRemote(t)
+			commitAndPush(t, worktree, branch)
+			const fixturePR = "https://github.com/acme/widget/pull/7"
+			fixtureLog := `{"type":"user","message":{"content":[{"type":"tool_result","content":"--- FAIL: want ` + fixturePR + `"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The knot links ` + fixturePR + `; fixing the test."}]}}
+` + cleanLog
+
+			store, state, _ := finalizeRealRepo(t, repo, worktree, branch, fixtureLog, delivery)
+
+			if state.PRURL != nil {
+				t.Errorf("PRURL = %q, want none", *state.PRURL)
+			}
+			if state.PushedBranch == nil || *state.PushedBranch != branch || state.NeedsAttention != nil {
+				t.Errorf("pushed branch = %q, needs attention = %q; want %s pushed and nothing to salvage",
+					strOrNil(state.PushedBranch), strOrNil(state.NeedsAttention), branch)
+			}
+			evts := runEvents(t, store.BaseDir(), state.ID)
+			if _, ok := evts[event.AgentPRCreated]; ok {
+				t.Error("unexpected agent:pr-created")
+			}
+			if _, ok := evts[event.AgentBranchPushed]; !ok {
+				t.Errorf("expected agent:branch-pushed, got %v", evts)
+			}
+		})
+	}
+
 	t.Run("failed WIP commit keeps the worktree", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root can read the unreadable file, so git add succeeds")
@@ -1281,7 +1350,7 @@ func TestFinalizeDirectPush(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		if _, err := os.Stat(unreadable); err != nil {
 			t.Errorf("uncommitted file lost: %v", err)
@@ -1301,7 +1370,7 @@ func TestFinalizeDirectPush(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, nil)
+		store, state, _ := finalizeRealRepo(t, repo, worktree, branch, cleanLog, "")
 
 		evts := runEvents(t, store.BaseDir(), state.ID)
 		if _, ok := evts[event.AgentBranchPushed]; ok {

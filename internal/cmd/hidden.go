@@ -806,11 +806,15 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 		}
 	}
 
-	if existingPRURL != "" {
+	switch {
+	case existingPRURL != "":
 		state.PRURL = &existingPRURL
-	} else if exactPRURL != "" {
+	case deliversByPush(state):
+		// A run that delivers by pushing its branch has no PR: any PR URL in
+		// its log is one the agent came across, such as a test fixture.
+	case exactPRURL != "":
 		state.PRURL = &exactPRURL
-	} else if assistantPRURL != "" {
+	case assistantPRURL != "":
 		state.PRURL = &assistantPRURL
 	}
 
@@ -864,11 +868,22 @@ func prURLTargetSlug(state *run.State) string {
 	return repoSlugForDir(dir)
 }
 
+// deliversByPush reports whether state's run delivers by pushing its branch,
+// with no PR, as launch recorded it. State that predates the record is
+// decided from the run's checkout, as launch decides (runDelivery).
+func deliversByPush(state *run.State) bool {
+	delivery := state.Delivery
+	if delivery == "" {
+		delivery = runDelivery(state.Type == "pr-fix", runRepoDir(state))
+	}
+	return delivery == run.DeliveryPush
+}
+
 // isAllowedPRURL reports whether candidateURL may be recorded as a run's PR.
 // Literal placeholder slugs (owner/repo and friends) are always rejected. When
 // target (see prURLTargetSlug) is known the URL must belong to that repo; when
-// it is unknown any other URL is accepted, so runs whose origin is not a
-// GitHub URL still record their PR.
+// it is unknown any other URL is accepted. A run whose origin is not a GitHub
+// URL delivers by push and records no PR from its log at all (deliversByPush).
 func isAllowedPRURL(target, candidateURL string) bool {
 	slug := github.OwnerRepoFromPRURL(candidateURL)
 	if slug == "" {
