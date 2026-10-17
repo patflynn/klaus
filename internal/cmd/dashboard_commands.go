@@ -329,7 +329,9 @@ func reconcileTickAfterCmd(interval time.Duration) tea.Cmd {
 	})
 }
 
-func startWatcherCmd(store run.StateStore) tea.Cmd {
+// startWatcherCmd watches the run state directory and, when jobsDir is set,
+// the job records.
+func startWatcherCmd(store run.StateStore, jobsDir string) tea.Cmd {
 	return func() tea.Msg {
 		stateDir := store.StateDir()
 		// Ensure the directory exists before watching
@@ -343,11 +345,20 @@ func startWatcherCmd(store run.StateStore) tea.Cmd {
 			w.Close()
 			return errMsg{err: fmt.Errorf("watching state dir: %w", err)}
 		}
+		if jobsDir != "" {
+			os.MkdirAll(jobsDir, 0o700)
+			if err := w.Add(jobsDir); err != nil {
+				w.Close()
+				return errMsg{err: fmt.Errorf("watching jobs dir: %w", err)}
+			}
+		}
 		return w
 	}
 }
 
-func watchFSCmd(w *fsnotify.Watcher) tea.Cmd {
+// watchFSCmd waits for a record to change: a job's in jobsDir (jobsFSMsg),
+// else a run's (fsEventMsg).
+func watchFSCmd(w *fsnotify.Watcher, jobsDir string) tea.Cmd {
 	return func() tea.Msg {
 		for {
 			select {
@@ -355,9 +366,13 @@ func watchFSCmd(w *fsnotify.Watcher) tea.Cmd {
 				if !ok {
 					return nil
 				}
-				if filepath.Ext(event.Name) == ".json" {
-					return fsEventMsg{}
+				if filepath.Ext(event.Name) != ".json" {
+					continue
 				}
+				if jobsDir != "" && filepath.Dir(event.Name) == filepath.Clean(jobsDir) {
+					return jobsFSMsg{}
+				}
+				return fsEventMsg{}
 			case _, ok := <-w.Errors:
 				if !ok {
 					return nil

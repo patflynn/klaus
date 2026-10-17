@@ -163,17 +163,42 @@ func (s Store) FinishTurn(name string, turn *Turn, result Result, turnErr error)
 	return writeAtomic(path, append(bytes.Clone(turn.prior), append(data, '\n')...))
 }
 
+// Turn returns turn number of thread name from its log.
+func (s Store) Turn(name string, number int) (*Turn, error) {
+	path, err := s.path(name, ".log")
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		var turn Turn
+		if json.Unmarshal(line, &turn) == nil && turn.Number == number {
+			return &turn, nil
+		}
+	}
+	return nil, fmt.Errorf("thread %q has no turn %d", name, number)
+}
+
 func (s Store) SaveRaw(name string, number int, result Result) (string, error) {
 	path, err := s.path(name, fmt.Sprintf(".%d.raw", number))
 	if err != nil {
 		return "", err
 	}
-	raw := "### stdout\n" + result.Answer + "\n### stderr\n" + result.Stderr
-	if result.DiagnosticLog != "" {
-		raw += "\n### diagnostic-log\n" + result.DiagnosticLog
-	}
-	err = writeAtomic(path, []byte(raw))
+	err = writeAtomic(path, []byte(result.Raw()))
 	return path, err
+}
+
+// Raw is everything the backend wrote, as kept for a failed call: stdout,
+// stderr and any diagnostic log, each under a heading.
+func (r Result) Raw() string {
+	raw := "### stdout\n" + r.Answer + "\n### stderr\n" + r.Stderr
+	if r.DiagnosticLog != "" {
+		raw += "\n### diagnostic-log\n" + r.DiagnosticLog
+	}
+	return raw
 }
 
 func writeAtomic(path string, data []byte) error {

@@ -3,11 +3,14 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
+	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -64,122 +67,152 @@ is involved, and otherwise against each run's clone (one ls-remote and fetch
 per repo). If the valley can't be asked, its runs are checked against their
 clones. If the check can't complete, the run stays awaiting-integration (or
 awaiting-approval). A deleted branch alone never settles a valley change: it
-stays awaiting-approval rather than branch-gone.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx := cmd.Context()
-		tmuxClient := tmux.NewExecClient()
+stays awaiting-approval rather than branch-gone.
 
+After the runs, a jobs table lists the session's consults and reviews (see
+klaus jobs): every one running, and those that finished in the last 3 hours,
+with how long each has run or took. It is left out when there are none.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		store, err := sessionStore()
 		if err != nil {
 			return err
 		}
-		states, err := store.List()
-		if err != nil {
+		if err := printRuns(cmd.Context(), store); err != nil {
 			return err
 		}
-
-		if len(states) == 0 {
-			fmt.Println("No runs found.")
-			return nil
-		}
-
-		ghClient := gh.NewGHCLIClient("")
-
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
-
-		statuses := make([]string, len(states))
-		var pushed []*run.State
-		for i, s := range states {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			statuses[i] = determineStatus(ctx, s, tmuxClient)
-			if statuses[i] == "awaiting-integration" {
-				pushed = append(pushed, s)
-			}
-		}
-		// Where pushed branches stand: one valley listing for the runs a
-		// valley knows, one check per repo against each run's own clone for
-		// the rest.
-		report := integration.NewValleyChecker(nil).Check(ctx, pushed)
-		handles := changeHandles(states, report.Changes)
-
-		// The changes some run is still running on: any other run of one
-		// that isn't done is working.
-		busy := make(map[integration.ChangeKey]bool)
-		for i, s := range states {
-			if k, ok := changeOf(s); ok && statuses[i] == "running" {
-				busy[k] = true
-			}
-		}
-
-		for i, s := range states {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			status := statuses[i]
-			prompt := truncate(s.Prompt, 40)
-			var change *integration.Change
-			if status == "awaiting-integration" {
-				res := report.Runs[s.ID]
-				change = res.Change
-				if change == nil {
-					change = integration.RecordedChange(s)
-				}
-				status = pushedStatus(res.Verdict, change != nil)
-				if change != nil && change.Title != "" {
-					prompt = truncate(change.Title, 40)
-				}
-			}
-			cost := formatCost(s)
-			issue := "-"
-			if s.Issue != nil {
-				issue = *s.Issue
-			}
-			repo := "-"
-			if s.TargetRepo != nil {
-				repo = truncate(*s.TargetRepo, 20)
-			}
-			host := "-"
-			if s.Host != nil {
-				host = *s.Host
-			}
-			ci, conflicts, behind, merge := "-", "-", "-", "-"
-			if prRef := extractPRRef(s); prRef != "" {
-				prState := ghClient.GetState(ctx, prRef)
-				switch prState {
-				case "MERGED":
-					status = "merged"
-					merge = "merged"
-				case "CLOSED":
-					status = "closed"
-				case gh.StateNoAccess:
-					// GitHub won't show this PR to us: nothing else to ask.
-					status = "no-access"
-				default:
-					ci = ghClient.GetCI(ctx, prRef)
-					conflicts = ghClient.GetConflicts(ctx, prRef)
-					behindBy := ghClient.GetCommitsBehind(ctx, prRef)
-					if behindBy > 0 {
-						behind = fmt.Sprintf("%d", behindBy)
-					}
-					merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef), behindBy)
-				}
-			}
-
-			if k, ok := changeOf(s); ok && busy[k] && live(status) {
-				status = "working"
-			}
-
-			fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-				s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, handles), ci, conflicts, behind, merge, prompt)
-		}
-
+		printRecentJobs(os.Stdout, store, time.Now())
 		return nil
 	},
+}
+
+// printRecentJobs prints, after a blank line, the jobs table of the
+// session's running jobs and those that finished within recentJobs; nothing
+// when there are none.
+func printRecentJobs(w io.Writer, store run.StateStore, now time.Time) {
+	hds, ok := store.(*run.HomeDirStore)
+	if !ok {
+		return
+	}
+	list, err := jobs.NewStore(hds.BaseDir()).List()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading jobs: %v\n", err)
+		return
+	}
+	if list = jobs.Recent(list, now, recentJobs); len(list) > 0 {
+		fmt.Fprintln(w)
+		printJobsTable(w, list, now)
+	}
+}
+
+// printRuns prints the runs table, or says there are no runs.
+func printRuns(ctx context.Context, store run.StateStore) error {
+	tmuxClient := tmux.NewExecClient()
+	states, err := store.List()
+	if err != nil {
+		return err
+	}
+
+	if len(states) == 0 {
+		fmt.Println("No runs found.")
+		return nil
+	}
+
+	ghClient := gh.NewGHCLIClient("")
+
+	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
+
+	statuses := make([]string, len(states))
+	var pushed []*run.State
+	for i, s := range states {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		statuses[i] = determineStatus(ctx, s, tmuxClient)
+		if statuses[i] == "awaiting-integration" {
+			pushed = append(pushed, s)
+		}
+	}
+	// Where pushed branches stand: one valley listing for the runs a
+	// valley knows, one check per repo against each run's own clone for
+	// the rest.
+	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
+	handles := changeHandles(states, report.Changes)
+
+	// The changes some run is still running on: any other run of one
+	// that isn't done is working.
+	busy := make(map[integration.ChangeKey]bool)
+	for i, s := range states {
+		if k, ok := changeOf(s); ok && statuses[i] == "running" {
+			busy[k] = true
+		}
+	}
+
+	for i, s := range states {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		status := statuses[i]
+		prompt := truncate(s.Prompt, 40)
+		var change *integration.Change
+		if status == "awaiting-integration" {
+			res := report.Runs[s.ID]
+			change = res.Change
+			if change == nil {
+				change = integration.RecordedChange(s)
+			}
+			status = pushedStatus(res.Verdict, change != nil)
+			if change != nil && change.Title != "" {
+				prompt = truncate(change.Title, 40)
+			}
+		}
+		cost := formatCost(s)
+		issue := "-"
+		if s.Issue != nil {
+			issue = *s.Issue
+		}
+		repo := "-"
+		if s.TargetRepo != nil {
+			repo = truncate(*s.TargetRepo, 20)
+		}
+		host := "-"
+		if s.Host != nil {
+			host = *s.Host
+		}
+		ci, conflicts, behind, merge := "-", "-", "-", "-"
+		if prRef := extractPRRef(s); prRef != "" {
+			prState := ghClient.GetState(ctx, prRef)
+			switch prState {
+			case "MERGED":
+				status = "merged"
+				merge = "merged"
+			case "CLOSED":
+				status = "closed"
+			case gh.StateNoAccess:
+				// GitHub won't show this PR to us: nothing else to ask.
+				status = "no-access"
+			default:
+				ci = ghClient.GetCI(ctx, prRef)
+				conflicts = ghClient.GetConflicts(ctx, prRef)
+				behindBy := ghClient.GetCommitsBehind(ctx, prRef)
+				if behindBy > 0 {
+					behind = fmt.Sprintf("%d", behindBy)
+				}
+				merge = computeMergeStatus(ci, conflicts, ghClient.GetReviewDecision(ctx, prRef), behindBy)
+			}
+		}
+
+		if k, ok := changeOf(s); ok && busy[k] && live(status) {
+			status = "working"
+		}
+
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, handles), ci, conflicts, behind, merge, prompt)
+	}
+
+	return nil
 }
 
 func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {

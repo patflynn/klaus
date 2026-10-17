@@ -19,6 +19,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/consult"
 	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
@@ -46,7 +47,11 @@ Panel answers are buffered to keep each response together. Each backend has a
 "timed out" while other members finish.
 
 Inside a Klaus session each backend call emits consult:started and
-consult:completed events (see klaus watch) sharing a consult-... run ID.`,
+consult:completed events (see klaus watch) sharing a consult-... run ID, and
+leaves a job record under that ID (see klaus jobs): klaus status and the
+dashboard list it while it runs and after it ends. A one-shot consult's
+answer is saved beside the record, and a thread's stays in its log; either
+way 'klaus jobs show <id> --answer' prints it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: runConsult,
 	}
@@ -78,10 +83,12 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	list, _ := cmd.Flags().GetBool("list")
 	name := str("thread")
 	var store consult.Store
+	var jobStore jobs.Store
 	baseDir := ""
 	if s, err := sessionStore(); err == nil {
 		baseDir = s.(*run.HomeDirStore).BaseDir()
 		store = consult.NewStore(baseDir)
+		jobStore = jobs.NewStore(baseDir)
 	} else if list || name != "" {
 		return err
 	}
@@ -247,10 +254,17 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		}
 		threads = append(threads, t)
 	}
+	panelID := ""
+	if panel {
+		panelID = eventID("panel")
+	}
 	ask := func(t *consult.Thread, out, errOut io.Writer) (askErr error) {
 		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 		start := time.Now()
+		var job *jobs.Job
+		var turn *consult.Turn
+		var result consult.Result
 		if baseDir != "" {
 			consultID, data := consultEventID(), map[string]interface{}{"backend": t.Backend, "model": t.Model, "effort": t.Effort, "role": t.Role, "thread": name, "dir": t.Dir, "panel": panel, "prompt": excerpt}
 			if str("repo") != "" {
@@ -259,33 +273,32 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			if str("prompt-file") != "" {
 				data["prompt_file"] = str("prompt-file")
 			}
+			job = &jobs.Job{ID: consultID, Kind: jobs.KindConsult, Panel: panelID, Thread: name, Role: t.Role,
+				Backend: string(t.Backend), Model: t.Model, Effort: t.Effort, Dir: t.Dir, Repo: str("repo"), Prompt: excerpt}
+			warnJob(errOut, job, jobStore.Start(job))
 			emitEvent(baseDir, consultID, event.ConsultStarted, data)
 			// SIGINT/SIGTERM cancel cmd.Context() rather than killing the
 			// process, so every start gets a completion except on SIGKILL.
 			defer func() {
+				status, errText := jobOutcome(askErr, cmd.Context().Err() != nil,
+					errors.Is(callCtx.Err(), context.DeadlineExceeded), "timeout after "+timeout.String())
 				done := make(map[string]interface{}, len(data)+3)
 				for k, v := range data {
 					done[k] = v
 				}
 				done["duration_ms"] = time.Since(start).Milliseconds()
 				done["success"] = askErr == nil
-				switch {
-				case askErr == nil:
-				case cmd.Context().Err() != nil:
-					done["error"] = "interrupted"
-				case errors.Is(callCtx.Err(), context.DeadlineExceeded):
-					done["error"] = "timeout after " + timeout.String()
-				default:
-					done["error"] = truncateLine(strings.SplitN(askErr.Error(), "\n", 2)[0], 200)
+				if errText != "" {
+					done["error"] = errText
 				}
 				emitEvent(baseDir, consultID, event.ConsultCompleted, done)
+				finishConsultJob(jobStore, job, turn, result, status, errText, errOut)
 			}()
 		}
 		id := ""
 		if name != "" && t.Backend == backend.Claude && t.BackendSessionID == "" {
 			id = genUUIDv4()
 		}
-		var turn *consult.Turn
 		if name != "" {
 			revision, _ := exec.CommandContext(callCtx, "git", "-C", t.Dir, "rev-parse", "--short", "HEAD").Output()
 			var err error
@@ -293,8 +306,12 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return err
 			}
+			if job != nil {
+				job.Turn = turn.Number
+				warnJob(errOut, job, jobStore.Save(job))
+			}
 		}
-		result, askErr := consult.Ask(callCtx, t, prompt, name != "", id, out, errOut)
+		result, askErr = consult.Ask(callCtx, t, prompt, name != "", id, out, errOut)
 		if name != "" {
 			if askErr != nil {
 				path, err := store.SaveRaw(name, turn.Number, result)
@@ -355,14 +372,44 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	return errors.Join(errs...)
 }
 
-// consultEventID identifies one backend call in events.jsonl, using the run ID
-// format with a consult- prefix so it never collides with an agent run.
-func consultEventID() string {
+// consultEventID identifies one backend call in events.jsonl and its job
+// record, using the run ID format with a consult- prefix so it never
+// collides with an agent run.
+func consultEventID() string { return eventID("consult") }
+
+// eventID is a run ID with a prefix, such as consult-, review- or panel-.
+func eventID(prefix string) string {
 	id, err := run.GenID()
 	if err != nil {
 		id = time.Now().Format("20060102-1504")
 	}
-	return "consult-" + id
+	return prefix + "-" + id
+}
+
+// finishConsultJob records how a consult call ended, and where its answer
+// is: a threaded consult's turn already keeps it, and its raw output on
+// failure; a one-shot consult's answer, or on failure everything the backend
+// wrote, goes in a file beside the record.
+func finishConsultJob(store jobs.Store, job *jobs.Job, turn *consult.Turn, result consult.Result, status jobs.Status, errText string, warn io.Writer) {
+	switch {
+	case turn != nil:
+		job.RawOutput = turn.RawOutput
+	case job.Thread != "":
+		// The thread never began its turn: there is no output.
+	case status == jobs.Succeeded:
+		path, err := store.WriteFile(job.ID, ".answer", []byte(result.Answer))
+		warnJob(warn, job, err)
+		if err == nil {
+			job.AnswerFile = path
+		}
+	case result.Answer != "" || result.Stderr != "":
+		path, err := store.WriteFile(job.ID, ".raw", []byte(result.Raw()))
+		warnJob(warn, job, err)
+		if err == nil {
+			job.RawOutput = path
+		}
+	}
+	warnJob(warn, job, store.Finish(job, status, errText))
 }
 
 // promptExcerpt is the first non-blank line of the question, capped at 120

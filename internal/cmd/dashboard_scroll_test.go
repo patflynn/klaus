@@ -114,6 +114,12 @@ func press(m dashboardModel, keys ...string) dashboardModel {
 			msg = tea.KeyMsg{Type: tea.KeyPgUp}
 		case "pgdown":
 			msg = tea.KeyMsg{Type: tea.KeyPgDown}
+		case "tab":
+			msg = tea.KeyMsg{Type: tea.KeyTab}
+		case "enter":
+			msg = tea.KeyMsg{Type: tea.KeyEnter}
+		case "esc":
+			msg = tea.KeyMsg{Type: tea.KeyEsc}
 		default:
 			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 		}

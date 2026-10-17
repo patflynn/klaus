@@ -42,6 +42,8 @@ const (
 	chromeBlank                     // spacing
 	chromeError                     // a recent pipeline error
 	chromeNotice                    // a new klaus to restart onto, or why that failed
+	chromeJobs                      // the jobs section's header line
+	chromeJob                       // a consult or review in the jobs section
 	chromeFooter                    // agent count and key help
 )
 
@@ -50,16 +52,19 @@ const (
 type chromeItem struct {
 	kind chromeKind
 	top  bool
-	idx  int // index into recentErrors for chromeError
+	idx  int // index into recentErrors for chromeError, or into the jobs for chromeJob
 }
 
 // dropRank orders chrome lines for removal on short panes: the highest rank
 // goes first. The summary line, which carries the scroll position, goes last.
+// The jobs section goes before the errors, and its header after its lines.
 func dropRank(k chromeKind) int {
 	switch k {
 	case chromeBlank:
-		return 6
+		return 7
 	case chromeSource, chromeSandbox:
+		return 6
+	case chromeJobs, chromeJob:
 		return 5
 	case chromeError:
 		return 4
@@ -72,11 +77,11 @@ func dropRank(k chromeKind) int {
 	}
 }
 
-// fitLayout picks the chrome lines to draw and the number of run rows that
-// fit in the pane. On a short pane it drops chrome, least useful first, until
-// a few rows fit, so rows are dropped last. An unknown height (0) shows
-// everything.
-func (m dashboardModel) fitLayout(nRows int) ([]chromeItem, int) {
+// fitLayout picks the chrome lines to draw, the jobs section's among them,
+// and the number of run rows that fit in the pane. On a short pane it drops
+// chrome, least useful first, until a few rows fit, so rows are dropped
+// last. An unknown height (0) shows everything.
+func (m dashboardModel) fitLayout(nRows, nJobs int) ([]chromeItem, int) {
 	items := []chromeItem{{kind: chromeHeader, top: true}, {kind: chromeSource, top: true}}
 	if len(m.sandboxHosts) > 0 {
 		items = append(items, chromeItem{kind: chromeSandbox, top: true})
@@ -86,6 +91,12 @@ func (m dashboardModel) fitLayout(nRows int) ([]chromeItem, int) {
 		chromeItem{kind: chromeBlank, top: true},
 		chromeItem{kind: chromeBlank},
 	)
+	if nJobs > 0 {
+		items = append(items, chromeItem{kind: chromeJobs})
+		for i := 0; i < nJobs; i++ {
+			items = append(items, chromeItem{kind: chromeJob, idx: i})
+		}
+	}
 	for i := range m.recentErrors {
 		items = append(items, chromeItem{kind: chromeError, idx: i})
 	}
@@ -452,11 +463,15 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 	if m.showAll {
 		showKey = "h hide old"
 	}
+	jobsKey := ""
+	if v.jobsShown > 0 {
+		jobsKey = " · tab jobs"
+	}
 	variants := []string{
-		fmt.Sprintf("  %d/%d agents running | j/k move · pgup/pgdn page · g/G top/bottom · %s · a approve · d discuss · o open | r refresh · q quit",
-			running, total, showKey),
-		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open · r refresh · q quit", showKey),
-		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open · q quit", showKey),
+		fmt.Sprintf("  %d/%d agents running | j/k move · pgup/pgdn page · g/G top/bottom · %s · a approve · d discuss · o open%s | r refresh · q quit",
+			running, total, showKey, jobsKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open%s · r refresh · q quit", showKey, jobsKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open%s · q quit", showKey, jobsKey),
 	}
 	style := func(f string) string { return dimStyle.Render(f) }
 	// The notes on the selected row, each part in its style, go before the
