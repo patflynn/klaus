@@ -287,10 +287,6 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 			fmt.Printf("  worktree: %s\n", worktree)
 			fmt.Printf("  branch:   %s\n", branch)
 
-			if err := prepareBackendWorktree(kind, worktree, repoName); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not write .claude/settings.json: %v\n", err)
-			}
-
 			if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not install commit-msg hook: %v\n", err)
 			}
@@ -400,6 +396,16 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 
 	opts := backend.Options{SystemPrompt: sessionPrompt, RunID: id, Continue: resuming}
+	// A coordinator with a worktree gets a status line naming its repo, from
+	// a file in the session's state, rewritten on every start or resume.
+	if kind == backend.Claude && branch != "" {
+		path := claudeSettingsPath(store, id)
+		if err := writeClaudeSettings(path, repoName); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write the coordinator's status line settings: %v\n", err)
+		} else {
+			opts.SettingsFile = path
+		}
+	}
 	if kind == backend.Claude {
 		if state.ClaudeSessionID != nil {
 			opts.ResumeID = *state.ClaudeSessionID

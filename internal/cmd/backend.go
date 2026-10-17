@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
@@ -29,12 +30,19 @@ func resolveAgentBackend(cmd *cobra.Command, cfg config.Config) (backend.Kind, e
 	return backend.Parse(name)
 }
 
-func prepareBackendWorktree(k backend.Kind, dir, repo string) error {
-	if k == backend.Claude {
-		return config.WriteClaudeSettings(dir, repo)
-	}
-	return nil
+// claudeSettingsPath is the file a Claude coordinator loads with --settings
+// (backend.Options.SettingsFile), in the session's prompts directory. It is
+// never in the worktree, where git would see it.
+func claudeSettingsPath(store run.StateStore, id string) string {
+	return filepath.Join(run.PromptDir(store), id+".settings.json")
 }
+
+// writeClaudeSettings writes the settings that give a Claude coordinator a
+// status line naming repo to path.
+func writeClaudeSettings(path, repo string) error {
+	return run.WritePromptFile(path, backend.ClaudeSettingsWithStatusLine(repo))
+}
+
 func trustBackendWorktree(k backend.Kind, dir string) error {
 	if k == backend.Claude {
 		return config.PreTrustWorktree(dir)
