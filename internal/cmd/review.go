@@ -2,15 +2,22 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/github"
+	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/review"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
@@ -42,6 +49,11 @@ Accepts PR numbers, full GitHub PR URLs, or owner/repo#number references. For a
 bare number the repo is --repo, else the repo of the klaus run that opened the
 PR, else the session target, else the current checkout.
 
+Inside a Klaus session (or the most recent one outside a pane) the review
+emits review:started and review:completed events (see klaus watch) and
+leaves a job record with its findings: klaus status, klaus jobs and the
+dashboard list it, and 'klaus jobs show <id>' prints it.
+
 Examples:
   klaus review 303
   klaus review 303 --repo patflynn/klaus --backend codex
@@ -62,6 +74,10 @@ Examples:
 		if ctx == nil {
 			ctx = context.Background()
 		}
+		// SIGINT/SIGTERM cancel the review rather than killing klaus, so its
+		// job record and completion event say it was interrupted.
+		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stop()
 		var states []*run.State
 		store, err := sessionStore() // best effort: no session → author claude
 		if err == nil {
@@ -111,10 +127,12 @@ Examples:
 
 		out := cmd.OutOrStdout()
 		fmt.Fprintf(out, "Cross-model review of %s#%s (author: %s; reviewer: %s %s)\n", ownerRepo, prNumber, author, reviewer, modelLabel(model))
+		finish := startReviewJob(store, ownerRepo, prNumber, author, reviewer, model, post, cmd.ErrOrStderr())
 		result, err := review.RunPRReview(ctx, ownerRepo, prNumber, review.PROptions{
 			Backend: reviewer, Model: model, Post: post, MaxRounds: cfg.CrossReviewMaxRounds(),
 			LockDir: reviewLockDir(store),
 		})
+		finish(result, err, ctx.Err() != nil)
 		if result != nil {
 			printPRReview(out, result)
 		}
@@ -128,6 +146,48 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// startReviewJob records a review starting, in its session's job store and
+// as a review:started event, and returns the function that records how it
+// ended. Outside a session it records nothing.
+func startReviewJob(store run.StateStore, ownerRepo, prNumber string, author, reviewer backend.Kind, model string, post bool, warn io.Writer) func(result *review.ReviewResult, err error, interrupted bool) {
+	hds, ok := store.(*run.HomeDirStore)
+	if !ok {
+		return func(*review.ReviewResult, error, bool) {}
+	}
+	baseDir, jobStore := hds.BaseDir(), jobs.NewStore(hds.BaseDir())
+	job := &jobs.Job{ID: eventID("review"), Kind: jobs.KindReview, Backend: string(reviewer), Model: model,
+		Repo: ownerRepo, PR: ownerRepo + "#" + prNumber}
+	data := map[string]interface{}{"backend": reviewer, "model": model, "repo": ownerRepo, "pr_number": prNumber, "author": author, "post": post}
+	warnJob(warn, job, jobStore.Start(job))
+	emitEvent(baseDir, job.ID, event.ReviewStarted, data)
+	start := time.Now()
+	return func(result *review.ReviewResult, err error, interrupted bool) {
+		timeoutMsg := ""
+		if err != nil {
+			timeoutMsg = errorLine(err)
+		}
+		status, errText := jobOutcome(err, interrupted, errors.Is(err, context.DeadlineExceeded), timeoutMsg)
+		done := make(map[string]interface{}, len(data)+5)
+		for k, v := range data {
+			done[k] = v
+		}
+		done["duration_ms"] = time.Since(start).Milliseconds()
+		done["success"] = err == nil
+		if errText != "" {
+			done["error"] = errText
+		}
+		if result != nil {
+			job.Review = &jobs.Review{Verdict: result.Verdict, Summary: result.Summary, Findings: result.Findings, ReviewURL: result.ReviewURL}
+			done["findings"] = len(result.Findings)
+			if result.ReviewURL != "" {
+				done["review_url"] = result.ReviewURL
+			}
+		}
+		emitEvent(baseDir, job.ID, event.ReviewCompleted, done)
+		warnJob(warn, job, jobStore.Finish(job, status, errText))
+	}
 }
 
 // reviewLockDir: <session>/locks, else ~/.klaus/locks when no session exists.

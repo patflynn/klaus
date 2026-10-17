@@ -28,6 +28,8 @@ import (
 var defaultWatchFilter = []string{
 	event.ConsultStarted,      // live
 	event.ConsultCompleted,    // live
+	event.ReviewStarted,       // live
+	event.ReviewCompleted,     // live
 	event.AgentPRCreated,      // live
 	event.AgentBranchPushed,   // live
 	event.AgentChangeReady,    // live
@@ -47,6 +49,8 @@ var defaultWatchFilter = []string{
 var knownEventTypes = []eventTypeInfo{
 	{event.ConsultStarted, "live", "A read-only model consultation started"},
 	{event.ConsultCompleted, "live", "A read-only model consultation finished (success, failure, timeout or interrupt)"},
+	{event.ReviewStarted, "live", "A cross-model PR review (klaus review) started"},
+	{event.ReviewCompleted, "live", "A cross-model PR review finished (success, failure, timeout or interrupt)"},
 	{event.AgentStarted, "live", "An agent run started"},
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
@@ -85,7 +89,8 @@ filter selects events the coordinator typically wants to react to:
 
   agent:pr-created, agent:branch-pushed, agent:needs-attention,
   agent:error, pr:approved, pr:merged, pipeline:stalled,
-  consult:started, consult:completed, ci:failed, ci:passed, pr:comment
+  consult:started, consult:completed, review:started, review:completed,
+  ci:failed, ci:passed, pr:comment
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -430,6 +435,26 @@ func eventSummary(evt event.Event) string {
 			return truncateLine(head+": "+get("prompt"), 160)
 		}
 		status := "ok"
+		if get("success") != "true" {
+			status = "failed"
+			if e := get("error"); e != "" {
+				status += ": " + e
+			}
+		}
+		return truncateLine(fmt.Sprintf("%s (%sms) %s", head, get("duration_ms"), status), 160)
+	case event.ReviewStarted, event.ReviewCompleted:
+		head := get("backend")
+		if m := get("model"); m != "" {
+			head += "/" + m
+		}
+		head += " " + get("repo") + "#" + prNum
+		if get("post") == "true" {
+			head += " post"
+		}
+		if evt.Type == event.ReviewStarted {
+			return head
+		}
+		status := "ok: " + get("findings") + " findings"
 		if get("success") != "true" {
 			status = "failed"
 			if e := get("error"); e != "" {

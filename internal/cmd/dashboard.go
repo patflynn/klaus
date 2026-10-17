@@ -21,6 +21,7 @@ import (
 	"github.com/patflynn/klaus/internal/git"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
+	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -104,6 +105,16 @@ over: the footer notes it ("a newer push 1a2b3c4 isn't ready"). While an agent r
 and the footer says which agent is working on it. Once it exits, the row
 goes back to where the PR or change stands.
 
+Below the run rows, a jobs section lists the session's consults and reviews,
+as klaus status does: every running job, with how long it has run, and those
+that finished in the last 3 hours, with how long they took and how they
+ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or DIED when the job's klaus
+was killed without recording its end). It follows the job records as they
+change. Press tab to select a job: the footer says how it stands, with its
+error and where its raw output was saved, and enter opens its record and
+answer, as 'klaus jobs show' prints them; esc goes back. On a short pane the
+jobs lines go before any run row does.
+
 Done rows older than an hour are hidden until you press h; the line above the
 list says how many are hidden. A row the dashboard watched finish stays for
 the full hour. Set "dashboard": {"hide_finished_after_minutes": N} in config
@@ -137,6 +148,8 @@ Keyboard shortcuts:
   a               approve the selected PR
   d               discuss the selected PR with the coordinator
   o               open the selected PR in a browser
+  tab             select a job / back to the runs
+  enter           read the selected job's answer (esc to go back)
   r               force refresh
   q               quit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -288,6 +301,12 @@ type dashboardModel struct {
 	integrationOn   bool                                         // the integration check loop has started
 	approveTemplate string                                       // dashboard.approve_command, or the deprecated submit_command
 	recentErrors    []dashboardError                             // last N pipeline errors shown in TUI
+	jobsDir         string                                       // the session's job records; "" outside a session
+	jobs            []*jobs.Job                                  // every job record, newest first
+	jobFocus        bool                                         // a job is selected rather than a run
+	jobCursor       int                                          // index into the shown jobs of the selected job
+	jobSel          string                                       // ID of the selected job; survives reordering
+	detail          *jobDetail                                   // the job shown in place of the list, if any
 	width           int
 	height          int
 	err             error
@@ -327,10 +346,11 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
-	var eventsPath string
+	var eventsPath, jobsDir string
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
 		eventsPath = eventLog.Path()
+		jobsDir = jobs.NewStore(hds.BaseDir()).Dir
 		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 			logWriter = f
@@ -356,13 +376,15 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		hideAfter:       hideFinishedAfter(cfg.Dashboard),
 		logFile:         logFile,
 		eventsPath:      eventsPath,
+		jobsDir:         jobsDir,
 	}
 }
 
 func (m dashboardModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		loadStatesCmd(m.store),
-		startWatcherCmd(m.store),
+		loadJobsCmd(m.jobsDir),
+		startWatcherCmd(m.store, m.jobsDir),
 		tickCmd(), // always tick once on startup for initial fetch
 	}
 	if m.webhookCh != nil {
@@ -389,7 +411,7 @@ func (m dashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statesLoadedMsg, ghStatusMsg, tickMsg, integrationMsg:
 		dm.snapshotRunning()
 		dm.syncView(time.Now())
-	case tea.KeyMsg, tea.WindowSizeMsg:
+	case tea.KeyMsg, tea.WindowSizeMsg, jobsLoadedMsg:
 		dm.syncView(time.Now())
 	}
 	return dm, cmd
@@ -399,7 +421,16 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		m.lastKeyAt = time.Now()
-		switch msg.String() {
+		key := msg.String()
+		if m.detail != nil && key != "ctrl+c" {
+			return m.detailKey(key), nil
+		}
+		if m.jobFocus {
+			if next, ok := m.jobKey(key, m.lastKeyAt); ok {
+				return next, nil
+			}
+		}
+		switch key {
 		case "q", "ctrl+c":
 			// Cancel the shared context to signal all subsystems to stop.
 			if m.shutdownCancel != nil {
@@ -409,8 +440,13 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, tea.Batch(
 				loadStatesCmd(m.store),
+				loadJobsCmd(m.jobsDir),
 				m.fetchGHStatusCmd(m.states),
 			)
+		case "tab":
+			// Select the top job: running ones come first.
+			m.jobFocus = m.resolve(m.lastKeyAt).jobsShown > 0
+			m.jobCursor, m.jobSel = 0, ""
 		case "up", "k":
 			m.moveSelection(-1, 0)
 		case "down", "j":
@@ -571,7 +607,14 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadStatesCmd(m.store)
 
 	case fsEventMsg:
-		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher))
+		return m, tea.Batch(loadStatesCmd(m.store), watchFSCmd(m.watcher, m.jobsDir))
+
+	case jobsFSMsg:
+		return m, tea.Batch(loadJobsCmd(m.jobsDir), watchFSCmd(m.watcher, m.jobsDir))
+
+	case jobsLoadedMsg:
+		m.jobs = msg.jobs
+		m.refreshJobDetail(time.Now())
 
 	case sandboxStatusMsg:
 		for k, v := range msg.hosts {
@@ -680,6 +723,8 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		cmds := []tea.Cmd{
 			checkSandboxCmd(m.states),
+			// Reloading the jobs judges again which running ones died.
+			loadJobsCmd(m.jobsDir),
 			tickAfterCmd(),
 		}
 		if m.bin != nil && m.restart == nil {
@@ -692,7 +737,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case *fsnotify.Watcher:
 		m.watcher = msg
-		return m, watchFSCmd(msg)
+		return m, watchFSCmd(msg, m.jobsDir)
 
 	case binUpdateMsg:
 		if m.restart != nil {
@@ -728,11 +773,14 @@ func (m dashboardModel) View() string {
 	}
 
 	now := time.Now()
-	v := m.resolve(now)
 	width := m.width
 	if width <= 0 {
 		width = defaultDashboardWidth
 	}
+	if m.detail != nil {
+		return m.renderJobDetail(width)
+	}
+	v := m.resolve(now)
 
 	chrome := func(c chromeItem) string {
 		switch c.kind {
@@ -758,7 +806,14 @@ func (m dashboardModel) View() string {
 				style = dimRedStyle
 			}
 			return style.Render(truncateLine("  "+m.binNotice, max(width-1, 1)))
+		case chromeJobs:
+			return renderJobsHeader(v)
+		case chromeJob:
+			return renderJobLine(v.jobs[c.idx], v.jobFocus && c.idx == v.jobCursor, now)
 		case chromeFooter:
+			if v.jobFocus {
+				return renderJobsFooter(v, width)
+			}
 			return m.renderFooter(v, width)
 		}
 		return ""
@@ -779,7 +834,7 @@ func (m dashboardModel) View() string {
 	}
 	lay := newRowLayout(v.all, width)
 	for i := v.offset; i < v.offset+v.bodyH && i < len(v.rows); i++ {
-		lines = append(lines, m.renderRow(v.rows[i], i == v.cursor, lay, now))
+		lines = append(lines, m.renderRow(v.rows[i], i == v.cursor && !v.jobFocus, lay, now))
 	}
 	for _, c := range v.chrome {
 		if !c.top {

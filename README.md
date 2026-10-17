@@ -145,6 +145,13 @@ the PR head hasn't moved, so stale findings are never posted after a push. A per
 session directory makes a second concurrent `--post` in the same session fail
 immediately.
 
+Inside a Klaus session, `klaus review` emits `review:started` and
+`review:completed` (with `backend`, `model`, `repo`, `pr_number`, `author`,
+`post`, and at the end `duration_ms`, `success`, `findings`, `review_url` or
+`error`), and leaves a job record like a consult's with its verdict, findings
+and summary (see [Consulting other models](#consulting-other-models)). SIGINT
+and SIGTERM end it as `interrupted`.
+
 The coordinator prompt describes `klaus watch`. Claude can attach its Monitor
 tool; other backends use their own background tools or `klaus status` and
 `klaus logs`. Klaus does not emulate Claude's Monitor tool.
@@ -225,6 +232,33 @@ contains model output. SIGINT and SIGTERM still produce the completion, so
 every start has a matching completion unless the process is killed with
 SIGKILL. Consults outside a session emit nothing.
 
+Each backend call also leaves a job record in
+`~/.klaus/sessions/<session-id>/jobs/<run_id>.json`, written when it starts and
+again when it ends, so you can see what is running and how it ended: `klaus
+status` and the dashboard list every running job and those that finished in the
+last 3 hours, and `klaus jobs` lists them on their own (`--all` for every record
+kept). A record holds `kind` (`consult` or `review`), `thread` and `turn`,
+`role`, `backend`, `model`, `effort`, `dir` or `repo` (a review's `pr`), the
+`prompt` excerpt, `started_at` and `finished_at`, the klaus `pid` (with its
+start time from `/proc/<pid>/stat` on Linux, so a reused PID isn't mistaken
+for it), and `status`: `running`, `succeeded`, `failed`, `timed out` or
+`interrupted`, with a short `error`. A record still `running` whose process is
+gone, as after SIGKILL, reads as `died`. Panel members share a `panel` ID.
+
+`klaus jobs show <id>` prints a record and its answer, and `--answer` only the
+answer, so a background consult needs no redirect of its own: a thread's answer
+is read from its log, a one-shot consult's from `<run_id>.answer` beside the
+record, and a failed one-shot consult keeps what its backend wrote in
+`<run_id>.raw`. `<id>` can be a panel ID (every member is shown) or a unique
+ending of a job ID, such as the four characters the dashboard shows. Records of
+jobs that finished more than 7 days ago are removed when a new job starts.
+
+```bash
+klaus consult --thread design "Draft the migration plan" &   # runs in the background
+klaus jobs                                                    # what's running, what ended
+klaus jobs show 1a2b --answer                                 # read it when it's done
+```
+
 ## What happens when you run `klaus`
 
 1. **In a repo:** a fresh git worktree is created from `origin/main`. **Anywhere else:** a scratch workspace under `~/.klaus/sessions/`
@@ -268,7 +302,7 @@ You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors) and consult events (`consult:started`, `consult:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
+Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
 
 ```bash
 klaus watch                          # default filter, follow new events
@@ -520,7 +554,9 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --branch <name> "<prompt>"` | Name the new run's branch instead of deriving it from the brief |
 | `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
 | `klaus target owner/repo` | Set session-level default target repo |
-| `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns) |
+| `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns), then running and recent consults and reviews |
+| `klaus jobs [--all]` | List running and recent consults and reviews |
+| `klaus jobs show <id> [--answer]` | Print a consult's or review's record and its answer |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id> [--push]` | Store a log held back for sensitivity on the data ref (`--push` also pushes the ref to origin) |
@@ -674,6 +710,8 @@ The targeting priority for `klaus launch` is:
 
 ### `klaus status` columns
 
+After the runs, `klaus status` lists the session's jobs (see [Consulting other models](#consulting-other-models)): every one running and those that finished in the last 3 hours, with their ID, kind, thread or PR, backend/model, status, how long they have run or took, and prompt. The table is left out when there are none.
+
 The status dashboard shows these columns for each run:
 
 | Column | Values | Meaning |
@@ -708,7 +746,9 @@ Done rows older than an hour are hidden by default; the position line says how m
 
 Set `"dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}` and the footer shows the expanded command (`approve: …`) whenever a `READY` row is selected, and `submit: …` for a `SUBMIT` row. `{repo}` is the repo as the row names it (the valley's name for a valley change, else the short project name), `{branch}` the pushed branch, `{change}` the full change ID, `{handle}` the change's handle and `{head}` the pushed head, so the approval binds the head you saw. Each value is shell-quoted unless it is only letters, digits and `._/-`, so a branch name can't inject commands; don't put quotes around placeholders in the template. A row with no value for a placeholder the template uses, such as `{handle}` on a branch no valley knows, shows no command, and neither does a `DRAFT` row or one with an agent running on it. It's there to copy and run on your own machine; the dashboard never runs it. `submit_command` is the deprecated name of `approve_command` and is read only when `approve_command` is unset.
 
-On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status and help lines are dropped, before any rows are.
+Below the run rows, a jobs section lists the session's consults and reviews, as `klaus status` does: every running job (`RUNNING`, with how long it has run), and those that finished in the last 3 hours (`SUCCEEDED`, `FAILED`, `TIMED OUT`, `INTERRUPTED`, or `DIED` when the job's klaus was killed without recording its end). Jobs don't join the change and PR rows. The section follows the job records through the same file watcher as the runs, and re-reads them every 30 seconds, which also notices a job that died. Press `tab` to select a job: the footer says how it stands, with its error and where its raw output was saved, and `enter` opens its record and answer as `klaus jobs show` prints them, in place of the list (`j`/`k` scroll, `esc` goes back).
+
+On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status, job and help lines are dropped, before any rows are.
 
 Keyboard shortcuts:
 
@@ -721,6 +761,8 @@ Keyboard shortcuts:
 | `a` | approve the selected PR |
 | `d` | discuss the selected PR with the coordinator (pre-fills `WRT PR#<num>:` in the session pane and switches focus there) |
 | `o` | open the selected PR in a browser |
+| `tab` | select a job in the jobs section / go back to the runs |
+| `enter` | read the selected job's record and answer (`esc` goes back) |
 | `r` | force refresh |
 | `q` | quit |
 

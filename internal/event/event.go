@@ -14,6 +14,8 @@ type Event struct {
 const (
 	ConsultStarted      = "consult:started"
 	ConsultCompleted    = "consult:completed"
+	ReviewStarted       = "review:started"
+	ReviewCompleted     = "review:completed"
 	AgentStarted        = "agent:started"
 	AgentCompleted      = "agent:completed"
 	AgentPRCreated      = "agent:pr-created"

@@ -10,6 +10,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
+	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/run"
 )
@@ -476,6 +477,13 @@ type dashView struct {
 	bodyH  int // rows that fit in the viewport
 	cursor int // index into rows of the selected row
 	offset int // index into rows of the first row in the viewport
+	// jobs are the jobs section's jobs; the first jobsShown fit the pane.
+	// jobFocus says one of those is selected, jobs[jobCursor], rather than
+	// a row.
+	jobs      []*jobs.Job
+	jobsShown int
+	jobCursor int
+	jobFocus  bool
 }
 
 // resolve builds the rows, fits the layout to the pane and resolves the
@@ -493,7 +501,21 @@ func (m dashboardModel) resolveRows(all []dashRow, now time.Time) dashView {
 		}
 		v.rows = append(v.rows, r)
 	}
-	v.chrome, v.bodyH = m.fitLayout(len(v.rows))
+	v.jobs = m.recentJobList(now)
+	v.chrome, v.bodyH = m.fitLayout(len(v.rows), len(v.jobs))
+	for _, c := range v.chrome {
+		if c.kind == chromeJob {
+			v.jobsShown++
+		}
+	}
+	v.jobCursor = clampCursor(m.jobCursor, v.jobsShown)
+	for i := 0; i < v.jobsShown; i++ {
+		if v.jobs[i].ID == m.jobSel {
+			v.jobCursor = i
+			break
+		}
+	}
+	v.jobFocus = m.jobFocus && v.jobsShown > 0
 
 	v.cursor = clampCursor(m.cursor, len(v.rows))
 	for i, r := range v.rows {
@@ -515,6 +537,11 @@ func (m *dashboardModel) syncView(now time.Time) {
 	m.noteFinished(all, now)
 	v := m.resolveRows(all, now)
 	m.setSelection(v, v.cursor, v.offset)
+	// The selected job likewise, while one is.
+	m.jobFocus, m.jobCursor, m.jobSel = v.jobFocus, v.jobCursor, ""
+	if v.jobsShown > 0 {
+		m.jobSel = v.jobs[v.jobCursor].ID
+	}
 }
 
 // setSelection selects rows[cursor] and scrolls from offset just enough to

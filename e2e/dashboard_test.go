@@ -4,6 +4,9 @@ package e2e
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -99,4 +102,59 @@ func TestDashboardScrollsLongRunList(t *testing.T) {
 	if sel := selected(s); !strings.Contains(sel, "#110") {
 		t.Errorf("after resize #110 should still be selected and visible, got %q:\n%s", sel, s)
 	}
+}
+
+// TestDashboardShowsRunningConsult runs a real consult beside the real
+// dashboard: its job shows as RUNNING while the backend works and as
+// SUCCEEDED once it answers, and tab then enter reads the answer.
+func TestDashboardShowsRunningConsult(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	// The dashboard shows nothing until it has a run.
+	h.SeedState(&run.State{ID: "20261017-1200-a001", Type: "launch", Prompt: "seeded run",
+		CreatedAt: time.Now().Add(-time.Minute).Format(time.RFC3339)})
+	release := filepath.Join(h.E2EDir, "release-codex")
+	h.WriteStub("codex", "#!/bin/sh\ncat >/dev/null\nwhile [ ! -e "+release+" ]; do sleep 0.1; done\necho the e2e answer\n")
+
+	pane := strings.TrimSpace(h.tmux("new-session", "-d", "-s", "dash", "-x", "120", "-y", "24", "-c", h.RepoDir,
+		"-P", "-F", "#{pane_id}", "env KLAUS_SESSION_ID="+h.SessionID+" klaus dashboard"))
+	screen := func(want ...string) string {
+		t.Helper()
+		var last string
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+			last = h.tmux("capture-pane", "-p", "-t", pane)
+			ok := true
+			for _, w := range want {
+				ok = ok && strings.Contains(last, w)
+			}
+			if ok {
+				return last
+			}
+		}
+		t.Fatalf("dashboard screen never showed %q; last screen:\n%s", want, last)
+		return ""
+	}
+	screen("seeded run")
+
+	consult := exec.Command(klausBinary, "consult", "--backend", "codex", "--timeout", "1m", "What is the e2e answer?")
+	consult.Dir = h.RepoDir
+	consult.Env = h.env()
+	if err := consult.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = consult.Process.Kill(); _ = consult.Wait() })
+	screen("jobs · 1 running", "consult:", "RUNNING", "What is the e2e answer?")
+
+	if err := os.WriteFile(release, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := consult.Wait(); err != nil {
+		t.Fatalf("consult: %v", err)
+	}
+	screen("jobs · 1 finished", "SUCCEEDED")
+
+	h.tmux("send-keys", "-t", pane, "Tab")
+	screen("succeeded | enter read")
+	h.tmux("send-keys", "-t", pane, "Enter")
+	screen("status:     succeeded", "the e2e answer", "esc back")
 }
