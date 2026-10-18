@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"fmt"
+	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/run"
 	"os"
 	"path/filepath"
@@ -55,9 +56,9 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 				if strings.Contains(argv, "--max-budget-usd") || !strings.Contains(argv, "test-model") {
 					t.Fatalf("bad args: %s", argv)
 				}
-				// Codex reads the prompt on stdin; agy --print only takes an argument.
-				if got := map[string]string{"codex": h.ClaudeStdin(), "agy": argv}[kind]; !strings.Contains(got, "task 'quoted' $(false)") {
-					t.Fatalf("prompt not delivered: argv %q stdin %q", argv, h.ClaudeStdin())
+				// Both read the prompt on stdin.
+				if !strings.Contains(h.ClaudeStdin(), "task 'quoted' $(false)") || strings.Contains(argv, "task 'quoted'") {
+					t.Fatalf("prompt not delivered on stdin alone: argv %q stdin %q", argv, h.ClaudeStdin())
 				}
 				releaseBackendWorkers(t, h)
 				st := h.WaitForState(ids[0], func(s *run.State) bool { return s.DurationMS != nil }, 15*time.Second)
@@ -82,6 +83,31 @@ func TestBackendWorkerLifecycle(t *testing.T) {
 			})
 		}
 	}
+}
+
+// A brief far over tmux's command limit reaches an agy worker whole, on stdin
+// after the system prompt, which agy has no flag for.
+func TestAgyWorkerReadsLongPrompt(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.WriteStub("agy", h.claudeStubScript())
+	prompt := "a brief with 'quotes', $(false) and #{pane_id}\n" + strings.Repeat("a line of a long brief\n", 40*1024/23) + "the brief's last line\n"
+	promptFile := filepath.Join(h.E2EDir, "brief.md")
+	if err := os.WriteFile(promptFile, []byte(prompt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := h.RunKlaus("launch", "--backend", "agy", "--prompt-file", promptFile)
+	if res.ExitCode != 0 {
+		t.Fatalf("launch: %s%s", res.Stdout, res.Stderr)
+	}
+	h.WaitForClaudeStart(15 * time.Second)
+	if stdin := h.ClaudeStdin(); !strings.HasSuffix(stdin, config.WorkerRules+"\n\n"+prompt) {
+		t.Fatalf("agy got %d bytes on stdin, not the system prompt and the %d-byte brief", len(stdin), len(prompt))
+	}
+	if argv := h.ClaudeArgv(); strings.Contains(argv, "a line of a long brief") || strings.Contains(argv, "\n--print\n") {
+		t.Fatalf("brief in agy's argv: %.300s", argv)
+	}
+	releaseBackendWorkers(t, h)
 }
 
 func TestCoordinatorBackendSelection(t *testing.T) {

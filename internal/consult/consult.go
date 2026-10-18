@@ -50,16 +50,10 @@ func Ask(ctx context.Context, t *Thread, prompt string, threaded bool, sessionID
 		return Result{}, err
 	}
 	system := SystemPrompt(t.Role) + fmt.Sprintf("\n\nInspect the repository at %q. Resolve referenced code paths against that directory.", t.Dir)
-	agyPrompt, agyAgent, diagnosticLog := prompt, "", ""
+	agyAgent, diagnosticLog := "", ""
 	if t.Backend == backend.Agy {
-		context := ""
-		if len(system)+len(prompt) > 120*1024 {
-			context = system + "\n\n" + prompt
-			system = ""
-			agyPrompt = "Answer the consultation request included in your system instructions."
-		}
 		var cleanup func()
-		agyAgent, cleanup, err = backend.PrepareAgyReadOnly(context)
+		agyAgent, cleanup, err = backend.PrepareAgyReadOnly()
 		if err != nil {
 			return Result{}, err
 		}
@@ -74,7 +68,7 @@ func Ask(ctx context.Context, t *Thread, prompt string, threaded bool, sessionID
 			defer os.Remove(diagnosticLog)
 		}
 	}
-	argv, err := backend.OneShot(t.Backend, backend.OneShotOptions{Prompt: agyPrompt, SystemPrompt: system, Model: t.Model, Effort: t.Effort, ResumeID: t.BackendSessionID, SessionID: sessionID, Threaded: threaded, AgyAgent: agyAgent, DiagnosticLog: diagnosticLog})
+	argv, err := backend.OneShot(t.Backend, backend.OneShotOptions{SystemPrompt: system, Model: t.Model, Effort: t.Effort, ResumeID: t.BackendSessionID, SessionID: sessionID, Threaded: threaded, AgyAgent: agyAgent, DiagnosticLog: diagnosticLog})
 	if err != nil {
 		return Result{}, err
 	}
@@ -89,9 +83,7 @@ func Ask(ctx context.Context, t *Thread, prompt string, threaded bool, sessionID
 	}
 	cmd.WaitDelay = time.Second
 	cmd.Dir = t.Dir
-	if t.Backend != backend.Agy {
-		cmd.Stdin = strings.NewReader(prompt)
-	}
+	cmd.Stdin = strings.NewReader(t.Backend.Stdin(system, prompt))
 	var stdout, stderr bytes.Buffer
 	var outputMu sync.Mutex
 	cmd.Stdout = io.MultiWriter(&stdout, lockedWriter{&outputMu, out})

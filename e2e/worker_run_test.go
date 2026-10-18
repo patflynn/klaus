@@ -36,6 +36,10 @@ func TestWorkerPromptCarriesRunContract(t *testing.T) {
 
 			argv := strings.Split(h.ClaudeArgv(), "\n")
 			var system string
+			if kind == "agy" {
+				// agy has no system prompt flag: it reads it on stdin, ahead of the brief.
+				system = strings.TrimSuffix(h.ClaudeStdin(), "\n\nsmall task")
+			}
 			for i, a := range argv {
 				switch {
 				case kind == "claude" && a == "--append-system-prompt-file" && i+1 < len(argv):
@@ -48,9 +52,6 @@ func TestWorkerPromptCarriesRunContract(t *testing.T) {
 					if err := json.Unmarshal([]byte(strings.TrimPrefix(a, "developer_instructions=")), &system); err != nil {
 						t.Fatal(err)
 					}
-				case kind == "agy" && a == "--print" && i+1 < len(argv):
-					// argv is recorded one line per entry; the prompt spans the rest.
-					system = strings.Join(argv[i+1:], "\n")
 				}
 			}
 			if !strings.Contains(system, "House rules for ") || !strings.Contains(system, config.WorkerRules) {

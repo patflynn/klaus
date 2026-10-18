@@ -103,26 +103,46 @@ func TestThreadStore(t *testing.T) {
 func TestInlineFiles(t *testing.T) {
 	dir := t.TempDir()
 	a, b := filepath.Join(dir, "plan"), filepath.Join(dir, "diff")
-	if err := os.WriteFile(a, []byte("plan contents"), 0600); err != nil {
+	if err := os.WriteFile(a, []byte("plan contents\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(b, []byte("diff contents"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got, err := InlineFiles("question", []string{a, b})
-	if err != nil || got != "question\n\n### "+a+"\nplan contents\n\n### "+b+"\ndiff contents" {
-		t.Fatalf("inline: %q, %v", got, err)
+	files, err := ReadFiles([]string{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []backend.Kind{backend.Claude, backend.Codex} {
+		if got := InlineFiles(kind, "question", files); got != "question\n\n### "+a+"\nplan contents\n\n\n### "+b+"\ndiff contents" {
+			t.Fatalf("%s inline: %q", kind, got)
+		}
+	}
+	// agy is told each file is there whole, and its END line stands alone
+	// even after a file with no final newline.
+	got := InlineFiles(backend.Agy, "question", files)
+	for _, want := range []string{
+		"question\n\n2 files are attached below, each in full",
+		"\n\n===== BEGIN ATTACHED FILE 1 of 2: " + a + " =====\nplan contents\n===== END ATTACHED FILE 1 of 2: " + a + " =====",
+		"\n\n===== BEGIN ATTACHED FILE 2 of 2: " + b + " =====\ndiff contents\n===== END ATTACHED FILE 2 of 2: " + b + " =====",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("agy inline lacks %q:\n%s", want, got)
+		}
+	}
+	if got := InlineFiles(backend.Agy, "question", nil); got != "question" {
+		t.Fatalf("agy without files: %q", got)
 	}
 	if err := os.WriteFile(a, make([]byte, MaxFileBytes), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InlineFiles("q", []string{a}); err != nil {
+	if _, err := ReadFiles([]string{a}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := InlineFiles("q", []string{a, b}); err == nil || !strings.Contains(err.Error(), "200KB") {
+	if _, err := ReadFiles([]string{a, b}); err == nil || !strings.Contains(err.Error(), "200KB total: "+b) {
 		t.Fatalf("total cap: %v", err)
 	}
-	if _, err := InlineFiles("q", []string{filepath.Join(dir, "absent")}); err == nil {
+	if _, err := ReadFiles([]string{filepath.Join(dir, "absent")}); err == nil {
 		t.Fatal("missing file accepted")
 	}
 }

@@ -110,29 +110,27 @@ func runReviewer(ctx context.Context, kind backend.Kind, model, systemPrompt, us
 	if kind == backend.Agy {
 		var cleanup func()
 		var err error
-		agyAgent, cleanup, err = backend.PrepareAgyReadOnly("")
+		agyAgent, cleanup, err = backend.PrepareAgyReadOnly()
 		if err != nil {
 			return "", err
 		}
 		defer cleanup()
 	}
 	argv, err := backend.OneShot(kind, backend.OneShotOptions{
-		Prompt: userPrompt, SystemPrompt: systemPrompt, Model: model,
+		SystemPrompt: systemPrompt, Model: model,
 		LastMessage: lastMessage, AgyAgent: agyAgent,
 	})
 	if err != nil {
 		return "", err
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	stdin := userPrompt
+	stdin := kind.Stdin(systemPrompt, userPrompt)
 	if kind == backend.Codex {
 		stdin = systemPrompt + "\n\n" + userPrompt
 	}
 
 	cmd.Dir = dir
-	if kind != backend.Agy {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

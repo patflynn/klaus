@@ -50,11 +50,11 @@ substitution, so code spans in a shell-quoted prompt are silently mangled before
 klaus ever sees them. File contents are used verbatim.
 
 Either way klaus saves the prompt to prompts/<run-id>.md in the session
-directory, kept as the record of the brief, and claude and codex workers read it
-on stdin, so a prompt of any length fits. agy has no stdin mode and takes it as
-an argument. If what still goes on the tmux command line (agy's prompt, or the
-worker system prompt for codex, agy and sandbox runs) exceeds tmux's limit,
-launch fails before creating a worktree.
+directory, kept as the record of the brief, and every worker reads it on stdin,
+so a prompt of any length fits. agy, which has no system prompt flag, reads the
+system prompt ahead of it, from prompts/<run-id>.input.md. If what still goes
+on the tmux command line (the worker system prompt for codex and sandbox claude
+runs) exceeds tmux's limit, launch fails before creating a worktree.
 
 Use --repo to launch an agent against a different repository. If the name
 matches a registered project (no owner/ prefix), the project's local path is
@@ -500,6 +500,12 @@ are synced back after completion. Use --local to force local execution, or
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 		promptPath := filepath.Join(run.PromptDir(store), id+".md")
 		sysPromptPath := filepath.Join(run.PromptDir(store), id+".system.md")
+		// The worker reads its input on stdin. agy's, with the system prompt
+		// ahead of the brief, gets a file of its own.
+		inputPath := promptPath
+		if kind.Stdin(sysPrompt, prompt) != prompt {
+			inputPath = filepath.Join(run.PromptDir(store), id+".input.md")
+		}
 		tmuxDir := workerTmuxDir(store, id)
 		workerOpts := backend.Options{
 			SystemPrompt: sysPrompt, SystemPromptFile: sysPromptPath, Budget: budget, Prompt: prompt,
@@ -537,7 +543,7 @@ are synced back after completion. Use --local to force local execution, or
 			hosts = append(hosts, "")
 		}
 		for _, host := range hosts {
-			if _, err := agentPaneCommand(kind, sizeCheck, promptPath, host, worktree, logFile, finalizePrefix, id, tmuxDir); err != nil {
+			if _, err := agentPaneCommand(kind, sizeCheck, inputPath, host, worktree, logFile, finalizePrefix, id, tmuxDir); err != nil {
 				return err
 			}
 		}
@@ -623,6 +629,11 @@ are synced back after completion. Use --local to force local execution, or
 		if err := run.WritePromptFile(sysPromptPath, sysPrompt); err != nil {
 			return err
 		}
+		if inputPath != promptPath {
+			if err := run.WritePromptFile(inputPath, kind.Stdin(sysPrompt, prompt)); err != nil {
+				return err
+			}
+		}
 
 		// The conversation the worker continues. --resume-from names it: a
 		// Claude transcript staged into the new worktree, or a local Codex
@@ -698,7 +709,7 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
-		paneCmd, err := agentPaneCommand(kind, workerOpts, promptPath, sandboxHostName, worktree, logFile, finalizePrefix, id, tmuxDir)
+		paneCmd, err := agentPaneCommand(kind, workerOpts, inputPath, sandboxHostName, worktree, logFile, finalizePrefix, id, tmuxDir)
 		if err != nil {
 			return err
 		}
@@ -950,40 +961,37 @@ func resolvePrompt(args []string, promptFile string) (string, error) {
 const maxPaneCommandBytes = 12000
 
 // agentPaneCommand builds a worker's pane command; sandboxHost "" runs locally.
-// The prompt reaches the backend on stdin from promptFile unless the backend
-// only takes it in argv (agy), so its length never counts against tmux's limit.
-// A local worker runs under workerEnv(tmuxDir), out of reach of the pane's tmux
-// server; a sandbox worker runs on another host, which has no way to it.
-func agentPaneCommand(kind backend.Kind, o backend.Options, promptFile, sandboxHost, worktree, logFile, finalizePrefix, id, tmuxDir string) (string, error) {
+// The backend reads inputFile, which holds kind.Stdin(o.SystemPrompt,
+// o.Prompt), on stdin, so the prompt's length never counts against tmux's
+// limit. A local worker runs under workerEnv(tmuxDir), out of reach of the
+// pane's tmux server; a sandbox worker runs on another host, which has no way
+// to it.
+func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHost, worktree, logFile, finalizePrefix, id, tmuxDir string) (string, error) {
 	if sandboxHost != "" {
 		// The remote side cannot read local files; only stdin crosses ssh.
 		o.SystemPromptFile = ""
 	}
-	args, promptOnStdin := kind.Worker(o)
-	if !promptOnStdin {
-		promptFile = ""
-	}
+	args := kind.Worker(o)
 	// Propagate worker identity to nested klaus commands such as _pre-review.
 	agentCmd := "KLAUS_BACKEND=" + string(kind) + " " + backend.ShellCommand(args)
 	const selfBin = "klaus" // assumes klaus is in PATH
 	var paneCmd string
 	if sandboxHost != "" {
-		paneCmd = buildSandboxPaneCommand(sandboxHost, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
+		paneCmd = buildSandboxPaneCommand(sandboxHost, worktree, agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
 	} else {
 		if tmuxDir == "" {
 			// An empty TMUX_TMPDIR is tmux's default, likely the shared server's.
 			return "", fmt.Errorf("no private tmux directory for the %s worker", kind)
 		}
-		paneCmd = buildPaneCommand(worktree, workerEnv(tmuxDir)+agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
+		paneCmd = buildPaneCommand(worktree, workerEnv(tmuxDir)+agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
 	}
 	if len(paneCmd) <= maxPaneCommandBytes {
 		return paneCmd, nil
 	}
 	msg := fmt.Sprintf("agent pane command is %d bytes, over the %d-byte limit for a tmux command", len(paneCmd), maxPaneCommandBytes)
-	if !promptOnStdin && len(o.Prompt) > len(o.SystemPrompt) {
-		return "", fmt.Errorf("%s: the prompt is %d bytes and %s takes it as an argument; shorten it or use another backend", msg, len(o.Prompt), kind)
-	}
-	if kind != backend.Claude || o.SystemPromptFile == "" {
+	// Codex, and Claude without its file flag, take the system prompt in
+	// argv; agy reads it on stdin with the prompt.
+	if kind == backend.Codex || kind == backend.Claude && o.SystemPromptFile == "" {
 		where, fix := string(kind), "shorten .klaus/prompt.md (.klaus/pr-fix-prompt.md for --pr)"
 		if kind == backend.Claude {
 			where, fix = "sandbox", fix+", or use --local, where claude reads it from a file"

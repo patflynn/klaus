@@ -38,13 +38,15 @@ Use --thread NAME for a persistent conversation in the current Klaus session
 and directory are retained; conflicting overrides are rejected. --list shows
 these threads. One-shot questions also work without a Klaus session.
 
---file inlines attachments (200KB total); attachment and prompt-file paths are
-relative to the invoking directory. --dir selects the partner's workspace;
---repo selects a registered local project. --panel queries all installed model
-families other than the caller concurrently and groups their answers by backend.
-Panel answers are buffered to keep each response together. Each backend has a
-10-minute deadline; use --timeout to change it. Timed-out members report
-"timed out" while other members finish.
+--file inlines attachments (200KB total), each under a header with its path,
+so the partner needn't open them; for agy, which can't open a path outside its
+workspace, each sits between BEGIN and END lines. Attachment and prompt-file
+paths are relative to the invoking directory. --dir selects the partner's
+workspace; --repo selects a registered local project. --panel queries all
+installed model families other than the caller concurrently and groups their
+answers by backend. Panel answers are buffered to keep each response together.
+Each backend has a 10-minute deadline; use --timeout to change it. Timed-out
+members report "timed out" while other members finish.
 
 Inside a Klaus session each backend call emits consult:started and
 consult:completed events (see klaus watch) sharing a consult-... run ID, and
@@ -121,16 +123,16 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	if timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	prompt, err := resolvePrompt(args, str("prompt-file"))
+	question, err := resolvePrompt(args, str("prompt-file"))
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(prompt) == "" {
+	if strings.TrimSpace(question) == "" {
 		return fmt.Errorf("question must not be empty")
 	}
-	excerpt := promptExcerpt(prompt)
-	files, _ := cmd.Flags().GetStringArray("file")
-	prompt, err = consult.InlineFiles(prompt, files)
+	excerpt := promptExcerpt(question)
+	paths, _ := cmd.Flags().GetStringArray("file")
+	files, err := consult.ReadFiles(paths)
 	if err != nil {
 		return err
 	}
@@ -259,6 +261,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		panelID = eventID("panel")
 	}
 	ask := func(t *consult.Thread, out, errOut io.Writer) (askErr error) {
+		prompt := consult.InlineFiles(t.Backend, question, files)
 		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 		start := time.Now()

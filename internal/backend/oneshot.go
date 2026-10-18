@@ -3,11 +3,12 @@ package backend
 import "fmt"
 
 type OneShotOptions struct {
-	Prompt, SystemPrompt, Model, Effort, ResumeID, SessionID, LastMessage, AgyAgent, DiagnosticLog string
-	Threaded                                                                                       bool
+	SystemPrompt, Model, Effort, ResumeID, SessionID, LastMessage, AgyAgent, DiagnosticLog string
+	Threaded                                                                               bool
 }
 
-// OneShot emits text; Claude/Codex read stdin, agy takes a prompt argument.
+// OneShot emits text. The prompt is never in argv: every backend reads
+// k.Stdin(o.SystemPrompt, prompt) on stdin, so a long one meets no argv limit.
 func OneShot(k Kind, o OneShotOptions) ([]string, error) {
 	var a []string
 	switch k {
@@ -51,9 +52,6 @@ func OneShot(k Kind, o OneShotOptions) ([]string, error) {
 		return nil, fmt.Errorf("unsupported one-shot backend %q", k)
 	}
 	a = k.modelArgs(a, Options{Model: o.Model, Effort: o.Effort})
-	if k == Agy {
-		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt), nil
-	}
 	if k == Codex {
 		return append(a, "-"), nil
 	}

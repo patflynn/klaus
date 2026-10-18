@@ -187,13 +187,17 @@ MCP servers from `$CODEX_HOME/config.toml`; authentication still uses
 hooks, and subagents are explicitly disabled. Claude uses safe mode (no custom
 hooks/plugins) and exposes only Read/Grep/Glob; agy
 uses plan mode and a temporary primary-agent definition exposing only file reads
-and search. The agy definition is removed after the call; large prompts travel
-in that definition to avoid the OS argument-size limit.
+and search. The agy definition is removed after the call. Every backend reads
+the question on stdin, so no prompt meets the OS argument-size limit.
 
 Roles are `partner`, `critic`, `reviewer`, or your own system-prompt text.
 `--dir` selects a workspace (default: cwd); `--repo` resolves a registered local
 project. Repeat `--file` to inline attachments, up to 200KB total, or supply the
 question via `--prompt-file`. File paths resolve from the invoking directory.
+Each attachment goes in the prompt under a header with its path, so the partner
+needn't open it. Headless agy can't read a path outside its workspace, and a
+denied read ends its turn with no answer, so for agy each file sits between
+BEGIN and END lines, behind a note that it is there in full.
 
 Keep a `--thread NAME` per topic. Threads retain their backend, model, effort,
 role, and workspace; incompatible overrides are rejected. Metadata and readable
@@ -650,7 +654,7 @@ klaus launch --prompt-file /tmp/task.md --issue 42 --budget 10
 
 Prefer this for long or technical prompts. A prompt passed as a shell argument goes through the shell first — in zsh, backticks inside a double-quoted string are command substitution, so code spans are deleted or replaced by command output before klaus sees them, and the agent gets a briefing with holes exactly where the detail was.
 
-A prompt can be any length. However it is given, klaus writes it to `~/.klaus/sessions/<session>/prompts/<run-id>.md` (kept after the run as the record of the brief) and claude and codex workers read it from there on stdin, so it never goes on the tmux command line, which tmux caps at about 16KB. A local claude worker also reads its system prompt from `prompts/<run-id>.system.md`. What still goes inline (agy's prompt, which `agy --print` only takes as an argument, and the worker system prompt for codex, agy and sandbox runs) is checked up front: if the pane command would exceed 12000 bytes, launch fails before creating a worktree and names the part that is too large.
+A prompt can be any length. However it is given, klaus writes it to `~/.klaus/sessions/<session>/prompts/<run-id>.md` (kept after the run as the record of the brief) and every worker reads it on stdin, so it never goes on the tmux command line, which tmux caps at about 16KB. A local claude worker also reads its system prompt from `prompts/<run-id>.system.md`. agy has no system prompt flag, so an agy worker reads the system prompt and the brief together on stdin, from `prompts/<run-id>.input.md`. What still goes inline (the worker system prompt for codex and for sandbox claude runs) is checked up front: if the pane command would exceed 12000 bytes, launch fails before creating a worktree and names the part that is too large.
 
 The positional prompt and `--prompt-file` are mutually exclusive: passing both, or neither, is an error. Everything downstream — the stored prompt in run state, `--issue`/`--pr` composition, budget handling — behaves identically either way.
 
@@ -917,8 +921,8 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 ## Under the hood
 
-- **Agents run headless** — `claude -p` and `codex exec` read the prompt on stdin from its file, `agy --print`
-  takes it in argv, so there is no way to type at a running agent. Correcting one mid-run means relaunching with
+- **Agents run headless** — `claude -p`, `codex exec` and agy's print mode read the prompt on stdin from its
+  file, so there is no way to type at a running agent. Correcting one mid-run means relaunching with
   `klaus launch --resume-from <run-id>`; see [docs/AGENT_MESSAGING.md](docs/AGENT_MESSAGING.md)
   for why in-place messaging isn't offered and what it would take. The run ends when the agent's turn ends, so every worker prompt
   tells the agent to run long builds and tests in the foreground and never end its turn with background work still running

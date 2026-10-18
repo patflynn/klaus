@@ -88,10 +88,11 @@ type Options struct {
 	Continue     bool
 }
 
-// Worker returns argv, without shell interpolation. When promptOnStdin is set
-// the prompt is not in argv and the caller must feed it on stdin, which keeps
-// long briefs out of the tmux command. Dollar budgets are a Claude capability.
-func (k Kind) Worker(o Options) (args []string, promptOnStdin bool) {
+// Worker returns argv, without shell interpolation. The prompt is never in
+// argv: the caller feeds the worker k.Stdin(o.SystemPrompt, o.Prompt) on
+// stdin, which keeps long briefs out of the tmux command. Dollar budgets are
+// a Claude capability.
+func (k Kind) Worker(o Options) []string {
 	var a []string
 	switch k {
 	case Claude:
@@ -115,16 +116,23 @@ func (k Kind) Worker(o Options) (args []string, promptOnStdin bool) {
 		a = []string{"agy", "--add-dir", ".", "--output-format", "stream-json", "--dangerously-skip-permissions", "--print-timeout", "24h"}
 	}
 	a = k.modelArgs(a, o)
-	switch k {
-	case Agy:
-		// agy --print has no stdin mode: "-" is taken as the literal prompt.
-		return append(a, "--print", o.SystemPrompt+"\n\n"+o.Prompt), false
-	case Codex:
+	if k == Codex {
 		// "-" reads stdin; exec fork needs it spelled out.
-		return append(a, "-"), true
+		return append(a, "-")
 	}
-	// claude -p reads stdin when no prompt argument is given.
-	return a, true
+	// claude -p reads stdin when no prompt argument is given. agy, given no
+	// --print, runs print mode on the prompt it reads from a stdin that isn't
+	// a terminal; --print "-" would be taken as the literal prompt.
+	return a
+}
+
+// Stdin is what a worker or a one-shot call reads on stdin: the prompt, with
+// the system prompt ahead of it for agy, which has no flag for one.
+func (k Kind) Stdin(systemPrompt, prompt string) string {
+	if k == Agy {
+		return systemPrompt + "\n\n" + prompt
+	}
+	return prompt
 }
 
 func (k Kind) Coordinator(o Options) []string {

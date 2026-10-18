@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,4 +177,65 @@ fi
 		t.Fatal("zero deadline accepted")
 	}
 
+}
+
+// Headless agy can't open a path outside its workspace, so each --file
+// reaches it whole on stdin, with the question, under a header naming its
+// path. Runs the real binary against a stand-in agy that records its input;
+// the attachments total more than the 128KB a single exec argument may hold.
+func TestConsultAgyGetsAttachedFiles(t *testing.T) {
+	bin := klausBinary(t)
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside, record := t.TempDir(), t.TempDir()
+	plan, review := filepath.Join(outside, "plan.md"), filepath.Join(outside, "review.md")
+	planText := "# The plan\n" + strings.Repeat("a step of the plan\n", 150*1024/19)
+	reviewText := "The review ends without a newline"
+	for path, text := range map[string]string{plan: planText, review: reviewText} {
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	argvFile, stdinFile := filepath.Join(record, "argv"), filepath.Join(record, "stdin")
+	e := newConsultEnv(t, bin, "")
+	e.stub(t, "agy", fmt.Sprintf("printf '%%s\\n' \"$@\" > %s\ncat > %s\necho the answer\n", shellQuote(argvFile), shellQuote(stdinFile)))
+
+	out, err := e.run(t, "--backend", "agy", "--dir", workspace, "--file", plan, "--file", review, "Does the review hold?")
+	if err != nil || !strings.Contains(out, "the answer") {
+		t.Fatalf("consult: %s, %v", out, err)
+	}
+	stdin, err := os.ReadFile(stdinFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("Inspect the repository at %q.", workspace),
+		"\n\nDoes the review hold?\n\n2 files are attached below, each in full",
+		"===== BEGIN ATTACHED FILE 1 of 2: " + plan + " =====\n" + planText + "===== END ATTACHED FILE 1 of 2: " + plan + " =====",
+		"===== BEGIN ATTACHED FILE 2 of 2: " + review + " =====\n" + reviewText + "\n===== END ATTACHED FILE 2 of 2: " + review + " =====",
+	} {
+		if !strings.Contains(string(stdin), want) {
+			t.Errorf("agy's stdin lacks %.200q", want)
+		}
+	}
+	argv, _ := os.ReadFile(argvFile)
+	if strings.Contains(string(argv), "a step of the plan") || strings.Contains(string(argv), reviewText) || strings.Contains(string(argv), "\n--print\n") {
+		t.Errorf("attachments in agy's argv: %.300s", argv)
+	}
+
+	// Past the total, the consult is refused and agy never runs.
+	extra := filepath.Join(outside, "extra.md")
+	if err := os.WriteFile(extra, bytes.Repeat([]byte("x"), 60*1024), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(stdinFile)
+	out, err = e.run(t, "--backend", "agy", "--dir", workspace, "--file", plan, "--file", extra, "Does the review hold?")
+	if err == nil || !strings.Contains(out, "--file attachments exceed the 200KB total: "+extra) {
+		t.Fatalf("over the total: %s, %v", out, err)
+	}
+	if _, err := os.Stat(stdinFile); !os.IsNotExist(err) {
+		t.Fatal("agy ran for a refused consult")
+	}
 }
