@@ -28,7 +28,7 @@ or `~/.klaus`:
 
 | Concern   | How it's isolated |
 |-----------|-------------------|
-| tmux      | A private server on a per-test unix socket (`tmux -S <tmpdir>/tmux.sock`). klaus' own tmux calls are aimed at it via the `$TMUX` env var; the test's control queries use `tmux -S <sock>`. Killed in `t.Cleanup`. |
+| tmux      | A private server on a per-test unix socket (`tmux -S <tmpdir>/tmux.sock`). klaus' own tmux calls are aimed at it via the `$TMUX` env var; the test's control queries use `tmux -S <sock>`. Its panes get a per-test `TMUX_TMPDIR` and no `KLAUS_TMUX_SOCKET`, so a process that drops `$TMUX` still can't find a real server. Killed in `t.Cleanup`. |
 | state     | `HOME` is a per-test temp dir, so all `~/.klaus/sessions/...` state lands under it. |
 | externals | A per-test bin dir is prepended to `PATH` and holds the klaus binary plus fake `claude`/`gh` stubs. **git and tmux stay real.** |
 | git       | A sandbox repo with a **bare local `origin`**, so worktrees, branches, and pushes work with no network. |
@@ -50,6 +50,23 @@ Unit tests in `internal/cmd` therefore use `isolatedTmux(t)`: an in-memory
 `TestUnitTestsNeverUseRealTmux` fails the build if a test in that package
 reaches for the exec-backed client instead. The e2e suite is where real tmux
 belongs, and it gets a private server per test.
+
+As a backstop, every package whose code can reach the real tmux client
+(`internal/cmd`, `internal/run`, `internal/pipeline`, `internal/tmux`) runs its
+tests through `tmuxtest.Main`, which starts them as launch starts a worker:
+no `$TMUX`, `$TMUX_PANE` or `KLAUS_TMUX_SOCKET`, and a `TMUX_TMPDIR` of their
+own. A test that wants a server starts one with `tmux -S <its temp dir>/…`.
+
+### Workers can't reach the server either
+
+`TestWorkerCannotKillTheSharedServer` launches a worker of each backend that
+runs `tmux kill-server`, `TMUX_TMPDIR=<dir> tmux kill-server` and `tmux ls`,
+and checks that the harness's server and its first session survive, that the
+worker saw no `$TMUX` and its run's own `TMUX_TMPDIR`, that `klaus status` in
+the worker still found its pane through `KLAUS_TMUX_SOCKET`, and that the run
+finalized. The fake worker only runs tmux where every `TMUX_TMPDIR` it uses
+exists: tmux falls back to `/tmp` for a missing one, where your own server
+may be.
 
 ### The one tmux subtlety
 

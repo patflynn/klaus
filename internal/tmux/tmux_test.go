@@ -162,14 +162,14 @@ func TestInSessionOutsideTmux(t *testing.T) {
 	_ = InSession()
 }
 
-// Issue #308: a pane command over tmux's imsg limit fails with "command too
-// long". The error must lead with that, not with kilobytes of echoed command.
-// Runs the real tmux against a throwaway server; $TMUX aims runTmux at it.
-func TestRunTmuxErrorLeadsWithStderr(t *testing.T) {
+// privateServer starts a throwaway tmux server holding session, on a socket
+// in the test's temp dir, and returns the socket and a $TMUX naming it.
+func privateServer(t *testing.T, session string) (sock, tmuxEnv string) {
+	t.Helper()
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not on PATH")
 	}
-	sock := filepath.Join(t.TempDir(), "sock")
+	sock = filepath.Join(t.TempDir(), "sock")
 	ctl := func(args ...string) string {
 		t.Helper()
 		out, err := exec.Command("tmux", append([]string{"-S", sock, "-f", "/dev/null"}, args...)...).CombinedOutput()
@@ -178,9 +178,44 @@ func TestRunTmuxErrorLeadsWithStderr(t *testing.T) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	ctl("new-session", "-d", "-s", "main", "sleep 300")
+	ctl("new-session", "-d", "-s", session, "sleep 300")
 	t.Cleanup(func() { _ = exec.Command("tmux", "-S", sock, "kill-server").Run() })
-	t.Setenv("TMUX", sock+","+ctl("display-message", "-p", "#{pid}")+",0")
+	return sock, sock + "," + ctl("display-message", "-p", "#{pid}") + ",0"
+}
+
+// A worker runs with no $TMUX and the shared server's socket in SocketEnv, and
+// klaus's own calls there reach that server. In a pane $TMUX wins, so a
+// process in a test's private server never trades it for a socket it
+// inherited.
+func TestCallsReachTheServerTheyAreGiven(t *testing.T) {
+	ctx := context.Background()
+	shared, _ := privateServer(t, "shared")
+	private, privateEnv := privateServer(t, "private")
+
+	t.Setenv("TMUX", "")
+	t.Setenv(SocketEnv, shared)
+	if got := SocketPath(); got != shared {
+		t.Errorf("SocketPath() = %q without $TMUX, want %s's %q", got, SocketEnv, shared)
+	}
+	if !SessionExists(ctx, "shared") {
+		t.Errorf("without $TMUX, a call did not reach the server in %s", SocketEnv)
+	}
+
+	t.Setenv("TMUX", privateEnv)
+	if got := SocketPath(); got != private {
+		t.Errorf("SocketPath() = %q in a pane, want $TMUX's %q", got, private)
+	}
+	if !SessionExists(ctx, "private") || SessionExists(ctx, "shared") {
+		t.Errorf("in a pane, a call left $TMUX's server for the one in %s", SocketEnv)
+	}
+}
+
+// Issue #308: a pane command over tmux's imsg limit fails with "command too
+// long". The error must lead with that, not with kilobytes of echoed command.
+// Runs the real tmux against a throwaway server; $TMUX aims runTmux at it.
+func TestRunTmuxErrorLeadsWithStderr(t *testing.T) {
+	_, tmuxEnv := privateServer(t, "main")
+	t.Setenv("TMUX", tmuxEnv)
 
 	_, err := NewDetachedWindow(context.Background(), "klaus-agents-test", "run", t.TempDir(), "true "+strings.Repeat("x", 20000))
 	if err == nil {

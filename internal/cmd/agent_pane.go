@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/patflynn/klaus/internal/config"
@@ -28,6 +29,29 @@ func agentsSessionName() string {
 	}
 	// tmux treats "." and ":" as target separators.
 	return "klaus-agents-" + strings.NewReplacer(".", "-", ":", "-").Replace(id)
+}
+
+// workerTmuxDir is the TMUX_TMPDIR a run's worker gets: the run's own, beside
+// the store's logs/, where no server runs until the worker starts one.
+func workerTmuxDir(store run.StateStore, runID string) string {
+	return filepath.Join(filepath.Dir(store.LogDir()), "tmux", runID)
+}
+
+// workerEnv starts a local worker cut off from the tmux server its pane runs
+// in. In a pane $TMUX names that server and overrides TMUX_TMPDIR, so a
+// worker's `TMUX_TMPDIR=<test dir> tmux kill-server` once killed the shared
+// server: the operator's session, the coordinator and every agent's pane. The
+// worker gets no $TMUX or $TMUX_PANE, and tmuxDir as TMUX_TMPDIR, so a bare
+// tmux there finds no server. klaus commands the worker runs (_pre-review,
+// status, logs) reach the shared server through tmux.SocketEnv instead.
+// _finalize, budget pause included, runs after the worker in the pane's own
+// shell and keeps the pane's $TMUX.
+func workerEnv(tmuxDir string) string {
+	env := "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=" + shellQuote(tmuxDir)
+	if sock := tmux.SocketPath(); sock != "" {
+		env += " " + tmux.SocketEnv + "=" + shellQuote(sock)
+	}
+	return env + " "
 }
 
 // startAgentPane creates the tmux pane an agent runs in and applies the
