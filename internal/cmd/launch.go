@@ -37,6 +37,12 @@ and 'klaus logs'. Because the tmux server owns that session, agents keep running
 if the coordinator exits. Set agent_display to "pane" in .klaus/config.json to
 split the current window instead.
 
+A local worker runs without $TMUX or $TMUX_PANE, with TMUX_TMPDIR set to its
+run's own empty directory (tmux/<run-id> in the session directory), so a tmux
+command it runs, 'tmux kill-server' included, can't reach the server the
+agents' panes and your session live on. klaus commands it runs still reach
+that server through KLAUS_TMUX_SOCKET.
+
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
 technical prompts: in zsh a backtick inside a double-quoted argument is command
@@ -494,6 +500,7 @@ are synced back after completion. Use --local to force local execution, or
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 		promptPath := filepath.Join(run.PromptDir(store), id+".md")
 		sysPromptPath := filepath.Join(run.PromptDir(store), id+".system.md")
+		tmuxDir := workerTmuxDir(store, id)
 		workerOpts := backend.Options{
 			SystemPrompt: sysPrompt, SystemPromptFile: sysPromptPath, Budget: budget, Prompt: prompt,
 			RunID: id, Model: model, Effort: effort,
@@ -519,14 +526,20 @@ are synced back after completion. Use --local to force local execution, or
 			sandboxHost = ""
 		}
 		// Fail before a worktree exists. A resume ID (Claude session or Codex
-		// thread, both UUIDs) is only known later, so size one in; the other
-		// later change, a local fallback, never makes the command longer.
+		// thread, both UUIDs) is only known later, so size one in; a sandbox
+		// run can still fall back to local, so the local command must fit too.
 		sizeCheck := workerOpts
 		if resumeFrom != "" || isPRFix || onChange != nil {
 			sizeCheck.ResumeID = "00000000-0000-0000-0000-000000000000"
 		}
-		if _, err := agentPaneCommand(kind, sizeCheck, promptPath, sandboxHost, worktree, logFile, finalizePrefix, id); err != nil {
-			return err
+		hosts := []string{sandboxHost}
+		if sandboxHost != "" {
+			hosts = append(hosts, "")
+		}
+		for _, host := range hosts {
+			if _, err := agentPaneCommand(kind, sizeCheck, promptPath, host, worktree, logFile, finalizePrefix, id, tmuxDir); err != nil {
+				return err
+			}
 		}
 
 		switch {
@@ -566,6 +579,7 @@ are synced back after completion. Use --local to force local execution, or
 				}
 				os.Remove(promptPath)
 				os.Remove(sysPromptPath)
+				os.Remove(tmuxDir)
 			}
 		}()
 
@@ -684,9 +698,16 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
-		paneCmd, err := agentPaneCommand(kind, workerOpts, promptPath, sandboxHostName, worktree, logFile, finalizePrefix, id)
+		paneCmd, err := agentPaneCommand(kind, workerOpts, promptPath, sandboxHostName, worktree, logFile, finalizePrefix, id, tmuxDir)
 		if err != nil {
 			return err
+		}
+		if !useSandbox {
+			// Owner-only, like the prompts: it will hold any tmux socket the
+			// worker opens.
+			if err := os.MkdirAll(tmuxDir, 0o700); err != nil {
+				return fmt.Errorf("creating the worker's tmux directory: %w", err)
+			}
 		}
 
 		// Launch the agent's tmux pane. Detached by default (its own window in
@@ -931,7 +952,9 @@ const maxPaneCommandBytes = 12000
 // agentPaneCommand builds a worker's pane command; sandboxHost "" runs locally.
 // The prompt reaches the backend on stdin from promptFile unless the backend
 // only takes it in argv (agy), so its length never counts against tmux's limit.
-func agentPaneCommand(kind backend.Kind, o backend.Options, promptFile, sandboxHost, worktree, logFile, finalizePrefix, id string) (string, error) {
+// A local worker runs under workerEnv(tmuxDir), out of reach of the pane's tmux
+// server; a sandbox worker runs on another host, which has no way to it.
+func agentPaneCommand(kind backend.Kind, o backend.Options, promptFile, sandboxHost, worktree, logFile, finalizePrefix, id, tmuxDir string) (string, error) {
 	if sandboxHost != "" {
 		// The remote side cannot read local files; only stdin crosses ssh.
 		o.SystemPromptFile = ""
@@ -947,7 +970,11 @@ func agentPaneCommand(kind backend.Kind, o backend.Options, promptFile, sandboxH
 	if sandboxHost != "" {
 		paneCmd = buildSandboxPaneCommand(sandboxHost, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
 	} else {
-		paneCmd = buildPaneCommand(worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
+		if tmuxDir == "" {
+			// An empty TMUX_TMPDIR is tmux's default, likely the shared server's.
+			return "", fmt.Errorf("no private tmux directory for the %s worker", kind)
+		}
+		paneCmd = buildPaneCommand(worktree, workerEnv(tmuxDir)+agentCmd, promptFile, logFile, selfBin, finalizePrefix, id)
 	}
 	if len(paneCmd) <= maxPaneCommandBytes {
 		return paneCmd, nil

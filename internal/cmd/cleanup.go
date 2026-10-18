@@ -95,7 +95,7 @@ func defaultIsRunActive(state *run.State, tc tmux.Client) bool {
 		}
 	}
 
-	if state.IsAgentRunning() {
+	if state.IsAgentRunningWith(run.TmuxDepsFor(ctx, tc)) {
 		return true
 	}
 

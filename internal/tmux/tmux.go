@@ -15,9 +15,38 @@ import (
 // to the tmux server and should complete almost instantly.
 const defaultTimeout = 5 * time.Second
 
+// SocketEnv holds the shared server's socket path for a process klaus starts
+// with $TMUX removed: a worker, and everything it runs. klaus's own tmux calls
+// there reach the server with -S; tmux itself never reads it, so a worker's
+// bare `tmux kill-server` misses the server every agent's pane is on.
+const SocketEnv = "KLAUS_TMUX_SOCKET"
+
 // InSession returns true if we're currently inside a tmux session.
 func InSession() bool {
 	return os.Getenv("TMUX") != ""
+}
+
+// SocketPath is the socket of the server klaus's tmux calls reach: the one
+// $TMUX names, cut at the first comma as tmux reads it, or else the one in
+// SocketEnv. "" means tmux's default.
+func SocketPath() string {
+	if t := os.Getenv("TMUX"); t != "" {
+		path, _, _ := strings.Cut(t, ",")
+		return path
+	}
+	return os.Getenv(SocketEnv)
+}
+
+// serverArgs aims a tmux call at SocketPath. $TMUX wins: a process in a pane
+// belongs to that pane's server (a test's private one, say), whatever
+// SocketEnv it inherited, and tmux finds that server on its own.
+func serverArgs() []string {
+	if os.Getenv("TMUX") == "" {
+		if sock := os.Getenv(SocketEnv); sock != "" {
+			return []string{"-S", sock}
+		}
+	}
+	return nil
 }
 
 // SplitWindow creates a new tmux pane by splitting vertically.
@@ -276,7 +305,7 @@ func runTmux(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := ensureTimeout(ctx)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, "tmux", append(serverArgs(), args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

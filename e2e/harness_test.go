@@ -341,10 +341,16 @@ func (h *Harness) startTmuxServer() {
 	// A wrapper shell that forces a deterministic PATH/HOME and refuses to
 	// source the user's profile. tmux runs pane commands via the default-shell;
 	// without this, a login shell would reset PATH and our stubs/binary would
-	// not be found.
+	// not be found. It also keeps every pane off the real tmux server: a
+	// process that drops $TMUX finds only this test's TMUX_TMPDIR, and no
+	// KLAUS_TMUX_SOCKET inherited from a klaus worker running the suite.
 	h.shellWrap = filepath.Join(filepath.Dir(h.BinDir), "shellwrap")
-	wrap := fmt.Sprintf("#!/bin/sh\nexport HOME=%q\nexport PATH=%q\nexec %q --noprofile --norc \"$@\"\n",
-		h.Home, h.BinDir+":"+os.Getenv("PATH"), mustBash(h.t))
+	tmuxTmp := filepath.Join(filepath.Dir(h.BinDir), "tmuxtmp")
+	if err := os.Mkdir(tmuxTmp, 0o700); err != nil {
+		h.t.Fatalf("mkdir %s: %v", tmuxTmp, err)
+	}
+	wrap := fmt.Sprintf("#!/bin/sh\nexport HOME=%q\nexport PATH=%q\nexport TMUX_TMPDIR=%q\nunset KLAUS_TMUX_SOCKET\nexec %q --noprofile --norc \"$@\"\n",
+		h.Home, h.BinDir+":"+os.Getenv("PATH"), tmuxTmp, mustBash(h.t))
 	if err := os.WriteFile(h.shellWrap, []byte(wrap), 0o755); err != nil {
 		h.t.Fatalf("writing shell wrapper: %v", err)
 	}
