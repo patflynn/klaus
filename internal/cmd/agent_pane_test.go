@@ -81,6 +81,51 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	}
 }
 
+// A 40KB brief, over three times tmux's command limit, reaches an agy worker
+// whole on stdin, after the system prompt, locally and across the ssh hop.
+// Runs the real pane command with stand-in binaries; nothing here runs tmux.
+func TestAgyWorkerReadsLongBriefOnStdin(t *testing.T) {
+	dir := t.TempDir()
+	received := filepath.Join(dir, "agy.stdin")
+	for name, script := range map[string]string{
+		"agy":   "#!/bin/sh\ncat > " + shellQuote(received) + "\n",
+		"ssh":   "#!/bin/sh\nshift\nexec sh -c \"$1\"\n",
+		"rsync": "#!/bin/sh\nexit 0\n",
+		"klaus": "#!/bin/sh\nif [ \"$1\" = _format-stream ]; then cat; fi\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv(sessionIDEnv, "")
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.Mkdir(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	brief := "a brief with 'quotes' and $(exit 17)\n" + strings.Repeat("a line of a long brief\n", 40*1024/23)
+	o := backend.Options{SystemPrompt: "the system prompt", Prompt: brief, RunID: "r"}
+	inputFile := filepath.Join(dir, "prompts", "r.input.md")
+	if err := run.WritePromptFile(inputFile, backend.Agy.Stdin(o.SystemPrompt, o.Prompt)); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"", "sandbox-0"} {
+		t.Run("host="+host, func(t *testing.T) {
+			os.Remove(received)
+			command, err := agentPaneCommand(backend.Agy, o, inputFile, host, worktree, filepath.Join(dir, "log.jsonl"), "", "r", filepath.Join(dir, "tmux"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("sh", "-c", command).CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if got, _ := os.ReadFile(received); string(got) != "the system prompt\n\n"+brief {
+				t.Fatalf("agy read %d bytes on stdin, want the system prompt and the %d-byte brief", len(got), len(brief))
+			}
+		})
+	}
+}
+
 func TestAgentsSessionName(t *testing.T) {
 	t.Run("uses KLAUS_SESSION_ID", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "session-20260907-1241-c0da2e6d")

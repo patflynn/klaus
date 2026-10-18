@@ -183,13 +183,10 @@ func runNew(cmd *cobra.Command, args []string) error {
 	// Build claude command
 	sysPrompt := config.WithWorkerRules("You are scaffolding a new project. Follow all instructions carefully. Push directly to main when done.")
 	promptPath := filepath.Join(run.PromptDir(store), id+".md")
-	if err := run.WritePromptFile(promptPath, prompt); err != nil {
+	if err := run.WritePromptFile(promptPath, kind.Stdin(sysPrompt, prompt)); err != nil {
 		return err
 	}
-	workerArgs, promptOnStdin := kind.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id, Model: defaults.Model, Effort: defaults.Effort})
-	if !promptOnStdin {
-		promptPath = ""
-	}
+	workerArgs := kind.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: id, Model: defaults.Model, Effort: defaults.Effort})
 	claudeCmd := backend.ShellCommand(workerArgs) + stdinFrom(promptPath)
 
 	// Build pane command — no finalize prefix (new repo, no state ref setup)

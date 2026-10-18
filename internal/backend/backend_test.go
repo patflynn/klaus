@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -21,7 +22,7 @@ func TestWorkerShellBoundary(t *testing.T) {
 				t.Fatal(err)
 			}
 			o := Options{SystemPrompt: "instructions\nwith 'quotes'", Prompt: "do not execute $(exit 8) `exit 9`\n--help", Model: "model'quoted", Effort: "high", Budget: "5", RunID: "run"}
-			args, _ := k.Worker(o)
+			args := k.Worker(o)
 			args[0] = stub
 			out, err := exec.Command("sh", "-c", ShellCommand(args)).Output()
 			if err != nil {
@@ -41,20 +42,24 @@ func TestWorkerShellBoundary(t *testing.T) {
 	}
 }
 
-// Claude and Codex take the prompt on stdin so a brief of any length stays out
-// of the tmux command; agy --print has no stdin mode, so it keeps the argument.
+// Every backend takes the prompt on stdin so a brief of any length stays out
+// of the tmux command. agy has no system prompt flag, so it reads that there too.
 func TestWorkerPromptTransport(t *testing.T) {
 	const prompt, system, sysFile = "the whole brief", "system text", "/prompts/run.system.md"
 	for _, k := range []Kind{Claude, Codex, Agy} {
 		for _, resume := range []string{"", "prior-session"} {
 			t.Run(string(k)+"/resume="+resume, func(t *testing.T) {
-				args, promptOnStdin := k.Worker(Options{Prompt: prompt, SystemPrompt: system, SystemPromptFile: sysFile, ResumeID: resume, RunID: "run", Budget: "5"})
+				args := k.Worker(Options{Prompt: prompt, SystemPrompt: system, SystemPromptFile: sysFile, ResumeID: resume, RunID: "run", Budget: "5"})
 				joined := strings.Join(args, "\n")
-				if promptOnStdin != (k != Agy) {
-					t.Fatalf("promptOnStdin = %v", promptOnStdin)
+				if strings.Contains(joined, prompt) {
+					t.Fatalf("prompt in argv: %q", args)
 				}
-				if promptOnStdin == strings.Contains(joined, prompt) {
-					t.Fatalf("prompt in argv = %v with promptOnStdin = %v: %q", !promptOnStdin, promptOnStdin, args)
+				stdin, want := k.Stdin(system, prompt), prompt
+				if k == Agy {
+					want = system + "\n\n" + prompt
+				}
+				if stdin != want {
+					t.Fatalf("stdin = %q, want %q", stdin, want)
 				}
 				switch k {
 				case Claude:
@@ -66,14 +71,15 @@ func TestWorkerPromptTransport(t *testing.T) {
 						t.Fatalf("codex must read stdin and keep inline instructions: %q", args)
 					}
 				case Agy:
-					if !strings.Contains(joined, "--print\n"+system+"\n\n"+prompt) {
-						t.Fatalf("agy prompt missing: %q", args)
+					// --print would take the next argument as the prompt.
+					if slices.Contains(args, "--print") || strings.Contains(joined, system) {
+						t.Fatalf("agy must read both prompts on stdin: %q", args)
 					}
 				}
 			})
 		}
 	}
-	args, _ := Claude.Worker(Options{SystemPrompt: system})
+	args := Claude.Worker(Options{SystemPrompt: system})
 	if !strings.Contains(strings.Join(args, "\n"), "--append-system-prompt\n"+system) {
 		t.Fatalf("inline system prompt dropped without a file: %q", args)
 	}
@@ -107,7 +113,7 @@ func TestClaudeAttributionDisabled(t *testing.T) {
 				if file != "" {
 					coordinator = file
 				}
-				worker, _ := k.Worker(o)
+				worker := k.Worker(o)
 				for name, argv := range map[string][]string{"worker": worker, "coordinator": k.Coordinator(o)} {
 					want := map[string]string{"worker": ClaudeSettings, "coordinator": coordinator}[name]
 					joined := strings.Join(argv, "\n")
@@ -174,7 +180,7 @@ func TestOneShot(t *testing.T) {
 	for _, kind := range []Kind{Claude, Codex, Agy} {
 		for _, mode := range []string{"one-shot", "new-thread", "resume"} {
 			t.Run(string(kind)+"/"+mode, func(t *testing.T) {
-				opts := OneShotOptions{AgyAgent: "read-only-agent", Prompt: "question", SystemPrompt: "system", Model: "model", Effort: "high", Threaded: mode != "one-shot"}
+				opts := OneShotOptions{AgyAgent: "read-only-agent", SystemPrompt: "system", Model: "model", Effort: "high", Threaded: mode != "one-shot"}
 				if mode == "new-thread" {
 					opts.SessionID = "new-id"
 				}
@@ -229,7 +235,10 @@ func TestOneShot(t *testing.T) {
 						t.Fatal("prompt must come from stdin")
 					}
 				case Agy:
-					require("--agent\nread-only-agent", "--mode\nplan", "--sandbox", "--output-format\ntext", "--print\nsystem\n\nquestion", "--effort\nhigh")
+					require("--agent\nread-only-agent", "--mode\nplan", "--sandbox", "--output-format\ntext", "--effort\nhigh")
+					if slices.Contains(argv, "--print") || strings.Contains(joined, "system") {
+						t.Fatalf("agy must read both prompts on stdin: %q", argv)
+					}
 					if mode == "resume" {
 						require("--conversation\nprior-id")
 					}

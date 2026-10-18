@@ -8,7 +8,7 @@ import (
 )
 
 // PrepareAgyReadOnly limits the primary agent to file-reading tools.
-func PrepareAgyReadOnly(prompt string) (string, func(), error) {
+func PrepareAgyReadOnly() (string, func(), error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", nil, err
@@ -33,8 +33,7 @@ mainAgent: true
 subagent: false
 ---
 You are a read-only thinking partner. You may only read files and answer questions.
-%s
-`, name, prompt)
+`, name)
 	if _, err := f.WriteString(body); err != nil {
 		f.Close()
 		cleanup()

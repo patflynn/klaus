@@ -461,7 +461,7 @@ func TestAgentPaneCommandKeepsPromptOut(t *testing.T) {
 	t.Setenv(sessionIDEnv, "")
 	prompt := "it's `whoami` $(touch /tmp/pwned) ${HOME} #{pane_id} \"quoted\"\n" + strings.Repeat("x", 40000)
 	const promptPath = "/home/u/.klaus/sessions/s/prompts/20260918-1440-abcd.md"
-	for _, kind := range []backend.Kind{backend.Claude, backend.Codex} {
+	for _, kind := range []backend.Kind{backend.Claude, backend.Codex, backend.Agy} {
 		for _, host := range []string{"", "sandbox-0"} {
 			t.Run(string(kind)+"/host="+host, func(t *testing.T) {
 				o := backend.Options{SystemPrompt: "sys", SystemPromptFile: "/p/20260918-1440-abcd.system.md", Prompt: prompt, RunID: "20260918-1440-abcd", Budget: "5"}
@@ -496,7 +496,8 @@ func TestAgentPaneCommandSizeGuard(t *testing.T) {
 		{name: "claude reads a big system prompt from its file", kind: backend.Claude, o: backend.Options{SystemPrompt: big, SystemPromptFile: "/p/s.md", Prompt: big}},
 		{name: "sandbox claude inlines the system prompt", kind: backend.Claude, host: "sandbox-0", o: backend.Options{SystemPrompt: big, SystemPromptFile: "/p/s.md"}, want: "the worker system prompt is 12000 bytes and goes inline for sandbox runs; shorten .klaus/prompt.md (.klaus/pr-fix-prompt.md for --pr), or use --local"},
 		{name: "codex inlines the system prompt", kind: backend.Codex, o: backend.Options{SystemPrompt: big, Prompt: big}, want: "the worker system prompt is 12000 bytes and goes inline for codex runs"},
-		{name: "agy inlines the prompt", kind: backend.Agy, o: backend.Options{SystemPrompt: "sys", Prompt: big}, want: "the prompt is 12000 bytes and agy takes it as an argument"},
+		{name: "agy reads both prompts on stdin", kind: backend.Agy, o: backend.Options{SystemPrompt: big, Prompt: big}},
+		{name: "sandbox agy reads both prompts on stdin", kind: backend.Agy, host: "sandbox-0", o: backend.Options{SystemPrompt: big, Prompt: big}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd, err := agentPaneCommand(tc.kind, tc.o, "/p/prompt.md", tc.host, "/wt", "/logs/x.jsonl", "", "id", "/tmux/id")
@@ -747,7 +748,7 @@ func TestResolveResumeID(t *testing.T) {
 					}
 				}
 			}
-			args, _ := tc.kind.Worker(backend.Options{ResumeID: got})
+			args := tc.kind.Worker(backend.Options{ResumeID: got})
 			command := backend.ShellCommand(args)
 			if strings.Contains(command, sessionID) != (want != "") {
 				t.Errorf("unexpected resume command: %s", command)
@@ -950,7 +951,7 @@ func TestResolvePrompt(t *testing.T) {
 // These compatibility helpers delegate the Claude contract to the backend package.
 func validateEffort(effort string) error { return backend.Claude.ValidateEffort(effort) }
 func buildClaudeCommand(sysPrompt, budget, prompt, runID, resumeID, model, effort string) string {
-	args, _ := backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort})
+	args := backend.Claude.Worker(backend.Options{SystemPrompt: sysPrompt, Budget: budget, Prompt: prompt, RunID: runID, ResumeID: resumeID, Model: model, Effort: effort})
 	return backend.ShellCommand(args)
 }
 
