@@ -72,6 +72,18 @@ type Change struct {
 	// Includes names the changes whose active head is a strict ancestor of
 	// this one's active head, nearest only.
 	Includes []string `json:"includes"`
+	// Knots are the knots in the repo's plan graph that link the change
+	// (valley:<repo>/<change ID>), active first; a valley from before plan
+	// graphs lists none.
+	Knots []ChangeKnot `json:"knots"`
+}
+
+// ChangeKnot is a knot that links a change.
+type ChangeKnot struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Status string `json:"status"`
+	Title  string `json:"title"`
 }
 
 // Version is one head marked ready as a version of a change.

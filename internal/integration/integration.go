@@ -130,6 +130,12 @@ type Change struct {
 	// Active is set when the run's version is its change's active one. A
 	// landed version reads Integrated even after another became active.
 	Active bool
+	// LandedCommit is the commit the version landed as, when the valley
+	// says it landed: its landed_commit, else its head.
+	LandedCommit string
+	// Knots are the IDs of the knots in the repo's plan graph that link the
+	// change, as the valley lists them.
+	Knots []string
 }
 
 // ChangeKey identifies a change across runs and in a valley's listing: the

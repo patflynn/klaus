@@ -31,6 +31,13 @@ func TestFormatPaneTitle(t *testing.T) {
 			want:   "#23 fix the failing tests in pkg/auth",
 		},
 		{
+			name:   "a knot is named as given, without #",
+			id:     "20260306-1720-176a",
+			issue:  "the-valley:oc-897917f",
+			prompt: "work the knot",
+			want:   "the-valley:oc-897917f work the knot",
+		},
+		{
 			name:   "no issue uses short id prefix",
 			id:     "20260306-1720-176a",
 			issue:  "",

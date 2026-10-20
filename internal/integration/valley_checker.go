@@ -129,11 +129,7 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 			if !match {
 				continue
 			}
-			r := Result{
-				Verdict: verdictOf(ch, v),
-				Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
-					Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active},
-			}
+			r := Result{Verdict: verdictOf(ch, v), Change: changeAt(vr.Repo, ch, v)}
 			if v.N == ch.Active {
 				return r, true
 			}
@@ -166,14 +162,29 @@ func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
 			}
 			for _, v := range ch.Versions {
 				if v.N == ch.Active {
-					out[k] = Result{Verdict: verdictOf(ch, v), Change: &Change{Repo: vr.Repo, ChangeID: ch.ChangeID,
-						Handle: ch.Handle, Title: v.Title, Version: v.N, Head: v.Head, Branch: v.Branch, Active: true}}
+					out[k] = Result{Verdict: verdictOf(ch, v), Change: changeAt(vr.Repo, ch, v)}
 					break
 				}
 			}
 		}
 	}
 	return out
+}
+
+// changeAt is how the valley knows version v of change ch in repo.
+func changeAt(repo string, ch valley.Change, v valley.Version) *Change {
+	c := &Change{Repo: repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
+		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active}
+	if v.Landing == valley.Landed || v.Landing == valley.LandedRecorded {
+		c.LandedCommit = v.Head
+		if v.LandedCommit != nil && *v.LandedCommit != "" {
+			c.LandedCommit = *v.LandedCommit
+		}
+	}
+	for _, k := range ch.Knots {
+		c.Knots = append(c.Knots, k.ID)
+	}
+	return c
 }
 
 // knownState reports whether klaus knows what a change state means.

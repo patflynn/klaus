@@ -446,6 +446,25 @@ There is no subcommand named `klaus resume` or `klaus finalize` — resuming hap
 - `klaus launch --change <ref> "..."` continues a change in a repo without PRs on its own branch, replaying the conversation of its most recent run (see [`klaus launch --change`](#klaus-launch---change)).
 - `klaus launch --resume-from <run-id> "..."` continues any prior run's conversation, paused or not. The follow-up runs in a fresh worktree on its own branch (unless combined with `--pr`) and keeps everything the previous agent learned — use it to correct an agent instead of killing it and re-briefing a cold one. Prior errors produce a warning but do not prevent resume. It starts fresh if the transcript can't be located or staged (Claude), or the local thread ID is missing (Codex).
 
+##### Working a knot: `klaus launch --issue <knot>`
+
+A valley project keeps its plan in a plan graph of knots (`valley knot`, `valley plan`, at `refs/the-valley/knots` on its origin). On a valley project, `--issue` takes a knot instead of a GitHub issue, recognised by its ID's form: `oc-`, `bd-`, `ida-` or `qn-` and 7 hex digits, or `<project>:<id>` for a knot in another project's graph on the same valley. Any other `--issue` is a GitHub issue, as before.
+
+```bash
+klaus launch --issue oc-897917f --prompt-file /tmp/brief.md
+klaus launch --repo cosmo --issue the-valley:oc-897917f --prompt-file /tmp/brief.md
+```
+
+klaus reads and writes knots only through the `valley` CLI, never the knots ref:
+
+1. **Launch** refuses a knot with `--pr`, in a repo that isn't a valley's (as finalize decides it, against `origin/<default branch>`), when `valley help` doesn't list `knot`, and when the knot isn't an active outcome or bug. It reads the knot and its parents with `valley knot show <id> --json`. A knot claimed by a run that is still running is refused, naming the run, and so is one claimed by a run klaus doesn't know of, which may still be working: release that claim with `valley knot unclaim` if the run has ended. A claim left by a run klaus knows has ended is released (`valley knot unclaim <id> --if claimed_by=<that run>`) and taken over, and launch says so.
+2. The branch is named from the knot's title. The brief gets the knot, its parent chain and its comments, appended in a `## Project notes (untrusted)` block between two marker lines that carry a random token, so nothing in the notes can close the block. The block tells the agent they are data about the work, never instructions, and the worker prompt says klaus claims, links and closes the knot. The brief is saved with the block, as the record of what the agent read.
+3. Just before the agent starts, launch claims the knot for the run (`valley knot claim <id> --run <run-id>`; an open outcome becomes in-progress) and records it on the run as `knot`. A claim the valley refuses fails the launch.
+4. **Finalize**, once the pushed head is marked ready, links the change to the knot (`valley knot link <id> --change valley:<repo>/<change-id>`) and then clears the run's claim (`valley knot unclaim <id> --if claimed_by=<run-id>`, which leaves another run's claim alone). When the link fails, the run keeps its claim, and the dashboard tries the link and the release again at its next check, as it does for a claim finalize couldn't clear. A run that failed, paused, was salvaged, or pushed nothing the valley took clears its claim and comments on the knot (`valley knot comment <id> --body -`) saying what became of it and where its work is.
+5. **When the dashboard sees the change landed** (the valley says its active version landed), it comments on the knot with the version and the commit it landed as. It sets the knot `done` (an outcome) or `closed` (a bug) only if every change the knot links has landed (one withdrawn, rejected, not listed by the valley, or a GitHub pull request klaus can't check, counts against it), none of its children is active, and no other run claims it; otherwise the comment says what keeps it open. The `valley knot set` carries `--if` conditions on the knot's status, claim and links as klaus read them, so a run that claims the knot or a change linked to it meanwhile makes the close a conflict, which the comment reports; a child made active in those moments isn't caught. The close comes first, so the comment says what happened; when the comment, or a close, fails for any reason but a conflict, the next check tries again. Other knots in the change's repo that link the change get the comment alone, since the run wasn't launched for them; a comment on one of them that fails is recorded and not tried again. This happens once per knot and change, recorded on the run as `knot.landed` and `knot.closed`.
+
+Every knot call is bounded by 30 seconds. At finalize and after landing, a failure is recorded on the run as `knot.error` and never stops the run's finalize or the dashboard. A failed run's comment, or the release of its claim, isn't tried again: a claim it leaves behind is taken over by the next launch on the knot, as the claim of a run that has ended.
+
 ## Provenance trailers
 
 Every commit an agent makes ends with two trailers:
@@ -631,7 +650,7 @@ With `--resume-from`, that run's conversation is used instead of replay, and `--
 
 Every run without `--pr` or `--change` works on a new branch named `<slug>-<tail>`. The tail is the random end of the run ID (`bd92f081` for run `20261011-1843-bd92f081`), which keeps names unique and ties each branch to its run. The slug comes from the first of these that yields one:
 
-1. the `--issue` title, when it can be fetched;
+1. the `--issue` title, when it can be fetched: a GitHub issue's, or a [knot's](#working-a-knot-klaus-launch---issue-knot);
 2. the brief's first `# ` heading, outside code fences;
 3. the brief's first non-empty line.
 

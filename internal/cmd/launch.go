@@ -65,6 +65,27 @@ on github.com. For any other origin (a plain ssh or local remote) it is told to
 push its branch and not open a PR, and to end with a report of the branch, head
 SHA, diff summary and checks run, for the operator to integrate from.
 
+On a valley project, --issue takes a knot from the project's plan graph
+instead of a GitHub issue: its ID (oc-, bd-, ida- or qn- and 7 hex digits),
+or <project>:<id> for a knot in another project's graph on the same valley.
+The repo must deliver to a valley, as finalize decides it, whose 'valley help'
+lists knot; klaus reads and writes knots only through 'valley knot'. Launch
+reads the knot, which must be an active outcome or bug, names the branch from
+its title, and appends the knot, its parent chain and its comments to the
+brief in a delimited "Project notes (untrusted)" block, as data the agent is
+told never to take as instructions. Just before the agent starts it claims the
+knot for the run ('valley knot claim <id> --run <run-id>'). A knot claimed by
+a run that is still running, or by a run klaus doesn't know, is refused; the
+claim of a run klaus knows has ended is released and taken over. At finalize,
+a run whose pushed head the valley took links its change to the knot ('valley
+knot link <id> --change valley:<repo>/<change-id>'); a run that failed,
+paused or pushed nothing the valley took comments on the knot instead. Either
+way the run's claim is cleared. Once the dashboard sees the change landed, it
+comments on the knot with the landed commit, and sets it done (an outcome) or
+closed (a bug) only if every change it links has landed, none of its children
+is active and no other run claims it. Other knots that link the change get
+the comment alone. A knot can't be combined with --pr.
+
 An agent that opens a PR is told to request review from pr_reviewer. When
 pr_reviewer is unset, launch picks a collaborator with push access to the
 target repo, leaving out bots and the gh user the agent runs as (the PR's
@@ -111,7 +132,7 @@ origin/<branch>, it refuses, naming the worktree or branch.
 
 A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
 is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
-comes from the --issue title, else the prompt's first '# ' heading, else its
+comes from the --issue title (a GitHub issue's or a knot's), else the prompt's first '# ' heading, else its
 first non-empty line: a leading '<repo-name>:' is dropped, the text is
 lowercased, each run of characters outside [a-z0-9] becomes one '-', and it is
 cut at a word boundary to at most 40 characters. A brief that opens with a
@@ -209,6 +230,10 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if err := checkContinuation(prNumber, changeRef, cmd.Flags().Changed("branch")); err != nil {
 			return err
+		}
+		knotRef, isKnot := valley.ParseKnotRef(issue)
+		if isKnot && prNumber != "" {
+			return fmt.Errorf("--issue %s names a valley knot, and --pr continues a GitHub PR; a knot is worked in a valley project", issue)
 		}
 		if forceTakeover && prNumber == "" && changeRef == "" {
 			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr or --change")
@@ -372,6 +397,15 @@ are synced back after completion. Use --local to force local execution, or
 		// canonical name in the dashboard.
 		normalizedTarget := normalizeTargetRepo(targetRepo, hostRoot)
 
+		// A knot is read, and its claim checked, before anything is created.
+		var knot *knotWork
+		if isKnot {
+			knot, err = prepareKnot(ctx, tmuxClient, repoRoot, repoName, "origin/"+defaultBranch, knotRef)
+			if err != nil {
+				return fmt.Errorf("--issue: %w", err)
+			}
+		}
+
 		// When --pr or --change is set, track the PR's or the change's
 		// branch instead of creating a new one
 		var branch string
@@ -430,7 +464,9 @@ are synced back after completion. Use --local to force local execution, or
 			branch = branchFlag
 		} else {
 			var issueTitle string
-			if issue != "" {
+			if knot != nil {
+				issueTitle = knot.Knot.Title
+			} else if issue != "" {
 				title, err := gh.NewGHCLIClient(resolveGHRepo(repoRef, repoRoot)).GetIssueTitle(ctx, issue)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not fetch the title of issue %s for the branch name: %v\n", issue, err)
@@ -455,6 +491,12 @@ are synced back after completion. Use --local to force local execution, or
 			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
 				return fmt.Errorf("--change: %w", err)
 			}
+		}
+
+		// The brief carries the knot as project notes, data rather than
+		// instructions.
+		if knot != nil {
+			prompt += knot.notes()
 		}
 
 		// Build system prompt (from target repo's .klaus/prompt.md if it exists)
@@ -486,6 +528,9 @@ are synced back after completion. Use --local to force local execution, or
 				RepoName:   repoName,
 				Reviewer:   reviewer,
 				DirectPush: directPush,
+			}
+			if knot != nil {
+				vars.Issue, vars.Knot = "", knotRef.String()
 			}
 			if onChange != nil {
 				vars.Change = onChange.Name
@@ -577,8 +622,12 @@ are synced back after completion. Use --local to force local execution, or
 		// Clean up the worktree if the launch fails after this point.
 		// This prevents stale worktrees from blocking future dispatch retries.
 		var launchSucceeded bool
+		var knotRec *run.Knot // the knot's record once launch claimed it
 		defer func() {
 			if !launchSucceeded {
+				if knotRec != nil {
+					releaseKnot(context.Background(), repoRoot, knotRec, id)
+				}
 				fmt.Fprintf(os.Stderr, "cleaning up worktree after failed launch: %s\n", worktree)
 				if rmErr := gitClient.WorktreeRemove(context.Background(), repoRoot, worktree); rmErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to remove worktree %s: %v\n", worktree, rmErr)
@@ -721,6 +770,14 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
+		// The knot is the run's before its agent starts.
+		if knot != nil {
+			if err := knot.claim(ctx, repoRoot, id); err != nil {
+				return fmt.Errorf("--issue: claiming %s: %w", knotRef, err)
+			}
+			knotRec = knot.record()
+		}
+
 		// Launch the agent's tmux pane. Detached by default (its own window in
 		// the agents session); splitFrom is non-empty only when agent_display
 		// is "pane" and the coordinator's window was split.
@@ -774,6 +831,7 @@ are synced back after completion. Use --local to force local execution, or
 			Unready:     unready,
 			ChangeRepo:  change.Repo,
 			Delivery:    delivery,
+			Knot:        knotRec,
 		}
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
@@ -1034,6 +1092,7 @@ func shellQuote(s string) string {
 
 // FormatPaneTitle builds a compact pane title for an agent.
 // Format with issue:    "#<issue> <short-desc>"
+// Format with a knot:   "<knot> <short-desc>"
 // Format without issue: "<short-id> <short-desc>"
 // Short desc is up to 40 characters of the prompt, trimmed to a word boundary.
 func FormatPaneTitle(id, issue, prompt string) string {
@@ -1043,7 +1102,9 @@ func FormatPaneTitle(id, issue, prompt string) string {
 	)
 
 	var title string
-	if issue != "" {
+	if _, ok := valley.ParseKnotRef(issue); ok {
+		title = issue
+	} else if issue != "" {
 		title = "#" + issue
 	} else {
 		title = id
@@ -1264,7 +1325,7 @@ func pinDashboardToBottom(ctx context.Context, currentPane string, store run.Sta
 func init() {
 	launchCmd.Flags().String("backend", "", "Worker backend: claude, codex, or agy (default from session/config)")
 	launchCmd.Flags().String("prompt-file", "", "Read the prompt from a file instead of the positional argument: verbatim (no shell mangling of backticks) and any length; mutually exclusive with it")
-	launchCmd.Flags().String("issue", "", "GitHub issue number to reference")
+	launchCmd.Flags().String("issue", "", "GitHub issue number to reference; on a valley project, a knot to work: oc-, bd-, ida- or qn- and 7 hex digits, or <project>:<id> (claimed for the run, linked to its change, closed once it lands)")
 	launchCmd.Flags().String("pr", "", "Push fixes to an existing PR's branch instead of creating a new PR (also the way to resume a budget-paused PR — the agent picks up from the WIP commit)")
 	launchCmd.Flags().String("budget", "", "Claude only: max spend in USD (default from config)")
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")

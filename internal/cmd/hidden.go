@@ -152,6 +152,13 @@ var finalizeCmd = &cobra.Command{
 				slog.Warn("failed to save state after valley ready", "id", state.ID, "err", err)
 			}
 		}
+		// The knot the run was launched for gets the change, or a comment
+		// on what became of the run, and loses the run's claim.
+		if finishKnot(ctx, branchDir(state), state, paused, salvage) {
+			if err := store.Save(state); err != nil {
+				slog.Warn("failed to save state after the knot's finish", "id", state.ID, "err", err)
+			}
+		}
 		syncRunToDataRef(ctx, syncRoot, store, gitClient, cfg.DataRef, cfg.PushDataRef, state)
 
 		if salvage != nil && salvage.dirty {

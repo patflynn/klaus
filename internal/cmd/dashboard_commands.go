@@ -153,8 +153,11 @@ const integrationTimeout = 5 * time.Minute
 
 // checkIntegrationCmd checks, in the background, the runs that are waiting
 // for their pushed branch to be integrated. With a ValleyChecker that is at
-// most one `valley changes` for all of them.
-func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.Cmd {
+// most one `valley changes` for all of them. Then, with a store, it settles
+// the knots of runs whose change the check found landed (settleKnots). The
+// next check starts only once this one is done, so no two settle a knot at
+// once.
+func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore) tea.Cmd {
 	if checker == nil {
 		return nil
 	}
@@ -169,6 +172,9 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State) tea.C
 		ctx, cancel := context.WithTimeout(context.Background(), integrationTimeout)
 		defer cancel()
 		rep := checker.Check(ctx, pushed)
+		if store != nil {
+			settleKnots(ctx, store, pushed, rep.Runs, rep.Changes)
+		}
 		return integrationMsg{results: rep.Runs, changes: rep.Changes}
 	}
 }
