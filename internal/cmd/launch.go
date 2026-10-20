@@ -41,7 +41,10 @@ A local worker runs without $TMUX or $TMUX_PANE, with TMUX_TMPDIR set to its
 run's own empty directory (tmux/<run-id> in the session directory), so a tmux
 command it runs, 'tmux kill-server' included, can't reach the server the
 agents' panes and your session live on. klaus commands it runs still reach
-that server through KLAUS_TMUX_SOCKET.
+that server through KLAUS_TMUX_SOCKET. It also gets KLAUS_SCRATCH, its run's
+own directory outside the worktree (scratch/<run-id> in the session
+directory) for build output and other scratch files; finalize removes it with
+the worktree. A sandbox worker gets neither.
 
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
@@ -564,7 +567,7 @@ are synced back after completion. Use --local to force local execution, or
 		if kind.Stdin(sysPrompt, prompt) != prompt {
 			inputPath = filepath.Join(run.PromptDir(store), id+".input.md")
 		}
-		tmuxDir := workerTmuxDir(store, id)
+		dirs := workerDirs{tmux: workerTmuxDir(store, id), scratch: workerScratchDir(store, id)}
 		workerOpts := backend.Options{
 			SystemPrompt: sysPrompt, SystemPromptFile: sysPromptPath, Budget: budget, Prompt: prompt,
 			RunID: id, Model: model, Effort: effort,
@@ -601,7 +604,7 @@ are synced back after completion. Use --local to force local execution, or
 			hosts = append(hosts, "")
 		}
 		for _, host := range hosts {
-			if _, err := agentPaneCommand(kind, sizeCheck, inputPath, host, worktree, logFile, finalizePrefix, id, tmuxDir); err != nil {
+			if _, err := agentPaneCommand(kind, sizeCheck, inputPath, host, worktree, logFile, finalizePrefix, id, dirs); err != nil {
 				return err
 			}
 		}
@@ -647,7 +650,8 @@ are synced back after completion. Use --local to force local execution, or
 				}
 				os.Remove(promptPath)
 				os.Remove(sysPromptPath)
-				os.Remove(tmuxDir)
+				os.Remove(dirs.tmux)
+				os.Remove(dirs.scratch)
 			}
 		}()
 
@@ -778,15 +782,18 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 
-		paneCmd, err := agentPaneCommand(kind, workerOpts, inputPath, sandboxHostName, worktree, logFile, finalizePrefix, id, tmuxDir)
+		paneCmd, err := agentPaneCommand(kind, workerOpts, inputPath, sandboxHostName, worktree, logFile, finalizePrefix, id, dirs)
 		if err != nil {
 			return err
 		}
 		if !useSandbox {
-			// Owner-only, like the prompts: it will hold any tmux socket the
-			// worker opens.
-			if err := os.MkdirAll(tmuxDir, 0o700); err != nil {
+			// Owner-only, like the prompts: the tmux directory will hold any
+			// tmux socket the worker opens.
+			if err := os.MkdirAll(dirs.tmux, 0o700); err != nil {
 				return fmt.Errorf("creating the worker's tmux directory: %w", err)
+			}
+			if err := os.MkdirAll(dirs.scratch, 0o700); err != nil {
+				return fmt.Errorf("creating the worker's scratch directory: %w", err)
 			}
 		}
 
@@ -1049,10 +1056,10 @@ const maxPaneCommandBytes = 12000
 // agentPaneCommand builds a worker's pane command; sandboxHost "" runs locally.
 // The backend reads inputFile, which holds kind.Stdin(o.SystemPrompt,
 // o.Prompt), on stdin, so the prompt's length never counts against tmux's
-// limit. A local worker runs under workerEnv(tmuxDir), out of reach of the
+// limit. A local worker runs under workerEnv(dirs), out of reach of the
 // pane's tmux server; a sandbox worker runs on another host, which has no way
-// to it.
-func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHost, worktree, logFile, finalizePrefix, id, tmuxDir string) (string, error) {
+// to it, and gets neither directory.
+func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHost, worktree, logFile, finalizePrefix, id string, dirs workerDirs) (string, error) {
 	if sandboxHost != "" {
 		// The remote side cannot read local files; only stdin crosses ssh.
 		o.SystemPromptFile = ""
@@ -1065,11 +1072,15 @@ func agentPaneCommand(kind backend.Kind, o backend.Options, inputFile, sandboxHo
 	if sandboxHost != "" {
 		paneCmd = buildSandboxPaneCommand(sandboxHost, worktree, agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
 	} else {
-		if tmuxDir == "" {
+		if dirs.tmux == "" {
 			// An empty TMUX_TMPDIR is tmux's default, likely the shared server's.
 			return "", fmt.Errorf("no private tmux directory for the %s worker", kind)
 		}
-		paneCmd = buildPaneCommand(worktree, workerEnv(tmuxDir)+agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
+		if dirs.scratch == "" {
+			// An empty KLAUS_SCRATCH puts "$KLAUS_SCRATCH/<name>" at the root.
+			return "", fmt.Errorf("no scratch directory for the %s worker", kind)
+		}
+		paneCmd = buildPaneCommand(worktree, workerEnv(dirs)+agentCmd, inputFile, logFile, selfBin, finalizePrefix, id)
 	}
 	if len(paneCmd) <= maxPaneCommandBytes {
 		return paneCmd, nil

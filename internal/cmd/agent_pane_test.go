@@ -15,9 +15,9 @@ import (
 
 // A local worker of every backend runs cut off from its pane's tmux server: no
 // $TMUX or $TMUX_PANE, a TMUX_TMPDIR of its own, and the server's socket only
-// in tmux.SocketEnv, for klaus. _finalize runs after it in the pane's shell
-// and keeps $TMUX. Runs the real pane command with stand-in binaries; nothing
-// here runs tmux.
+// in tmux.SocketEnv, for klaus. It gets its scratch directory as
+// KLAUS_SCRATCH. _finalize runs after it in the pane's shell and keeps $TMUX.
+// Runs the real pane command with stand-in binaries; nothing here runs tmux.
 func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	dir := t.TempDir()
 	sock := filepath.Join(dir, "shared.sock")
@@ -28,7 +28,7 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	t.Setenv(sessionIDEnv, "")
 
 	finalized := filepath.Join(dir, "finalize.tmux")
-	report := `printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "` + tmux.SocketEnv + `=${` + tmux.SocketEnv + `-unset}" "KLAUS_BACKEND=${KLAUS_BACKEND-unset}"`
+	report := `printf '%s\n' "TMUX=${TMUX-unset}" "TMUX_PANE=${TMUX_PANE-unset}" "TMUX_TMPDIR=${TMUX_TMPDIR-unset}" "` + tmux.SocketEnv + `=${` + tmux.SocketEnv + `-unset}" "KLAUS_BACKEND=${KLAUS_BACKEND-unset}" "` + scratchEnv + `=${` + scratchEnv + `-unset}"`
 	stubs := map[string]string{
 		"klaus": "#!/bin/sh\ncase \"$1\" in\n_format-stream) cat ;;\n_finalize) printf '%s' \"${TMUX-unset}\" > " + shellQuote(finalized) + " ;;\nesac\n",
 	}
@@ -54,8 +54,8 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	for _, kind := range kinds {
 		t.Run(string(kind), func(t *testing.T) {
 			os.Remove(finalized)
-			tmuxDir := filepath.Join(dir, "tmux dirs", string(kind))
-			command, err := agentPaneCommand(kind, o, promptPath, "", worktree, filepath.Join(dir, "log.jsonl"), "", "r", tmuxDir)
+			dirs := workerDirs{tmux: filepath.Join(dir, "tmux dirs", string(kind)), scratch: filepath.Join(dir, "scratch dirs", string(kind))}
+			command, err := agentPaneCommand(kind, o, promptPath, "", worktree, filepath.Join(dir, "log.jsonl"), "", "r", dirs)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -63,7 +63,7 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v: %s", err, out)
 			}
-			for _, want := range []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + tmuxDir, tmux.SocketEnv + "=" + sock, "KLAUS_BACKEND=" + string(kind)} {
+			for _, want := range []string{"TMUX=unset", "TMUX_PANE=unset", "TMUX_TMPDIR=" + dirs.tmux, tmux.SocketEnv + "=" + sock, "KLAUS_BACKEND=" + string(kind), scratchEnv + "=" + dirs.scratch} {
 				if !strings.Contains(string(out), want+"\n") {
 					t.Errorf("worker environment lacks %q:\n%s", want, out)
 				}
@@ -75,9 +75,12 @@ func TestWorkerRunsOutOfTmuxReach(t *testing.T) {
 	}
 
 	// No directory would leave TMUX_TMPDIR empty: tmux's default, the
-	// shared server's likely home.
-	if _, err := agentPaneCommand(backend.Claude, o, promptPath, "", worktree, "/l.jsonl", "", "r", ""); err == nil {
-		t.Error("a local worker with no tmux directory got a pane command")
+	// shared server's likely home. An empty KLAUS_SCRATCH would put
+	// "$KLAUS_SCRATCH/<name>" at the root.
+	for _, dirs := range []workerDirs{{scratch: "/scratch/r"}, {tmux: "/tmux/r"}} {
+		if _, err := agentPaneCommand(backend.Claude, o, promptPath, "", worktree, "/l.jsonl", "", "r", dirs); err == nil {
+			t.Errorf("a local worker with directories %+v got a pane command", dirs)
+		}
 	}
 }
 
@@ -112,7 +115,7 @@ func TestAgyWorkerReadsLongBriefOnStdin(t *testing.T) {
 	for _, host := range []string{"", "sandbox-0"} {
 		t.Run("host="+host, func(t *testing.T) {
 			os.Remove(received)
-			command, err := agentPaneCommand(backend.Agy, o, inputFile, host, worktree, filepath.Join(dir, "log.jsonl"), "", "r", filepath.Join(dir, "tmux"))
+			command, err := agentPaneCommand(backend.Agy, o, inputFile, host, worktree, filepath.Join(dir, "log.jsonl"), "", "r", workerDirs{tmux: filepath.Join(dir, "tmux"), scratch: filepath.Join(dir, "scratch")})
 			if err != nil {
 				t.Fatal(err)
 			}

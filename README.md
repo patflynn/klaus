@@ -463,7 +463,7 @@ Launch checks the repo as finalize does, against the commit the worktree starts 
 
 When a run finishes without a PR for any other reason (for example a Claude session-limit stop, or uncommitted changes left behind) or crashes, `_finalize` salvages the worktree instead of discarding it:
 
-1. Commits any uncommitted changes (`wip: klaus finalize salvage <id>`).
+1. Commits any uncommitted changes, including every untracked file `.gitignore` doesn't exclude (`wip: klaus finalize salvage <id>`). Build output belongs in the worker's `$KLAUS_SCRATCH` (see [Under the hood](#under-the-hood)), outside the worktree, so it never reaches this commit.
 2. Pushes the branch to `origin` (plain `git push -u`, never forced) unless `origin`'s live tip already matches. Push failures are logged; nothing is deleted. Branches of runs that already have a PR are not pushed.
 3. Keeps the local branch and removes the worktree (the worktree is kept if the WIP commit failed). Finalize never deletes a branch unless its work is on the default branch or `origin`'s live tip (checked with `ls-remote`, not cached `origin/*` refs) matches it; an unreachable remote counts as not pushed.
 4. Emits `agent:needs-attention` with `branch`, `pushed`, and `reason` (`no_pr`, `session_limit`, `background work still running (<commands>)`, or the crash reason) instead of `agent:completed`. `klaus status` shows `needs-attention`; the dashboard shows `ATTN`.
@@ -738,6 +738,8 @@ When `sandbox_host` is set in `~/.klaus/config.json`, agents run remotely via SS
 {"sandbox_host": "klaus-worker-0"}
 ```
 
+A sandbox worker gets neither the private `TMUX_TMPDIR` nor `KLAUS_SCRATCH` that a local one does: launch creates nothing on the sandbox host but the worktree's copy, which nothing removes, so its prompt tells the agent to keep scratch files in a `mktemp -d` directory there.
+
 If the sandbox is unreachable, execution falls back to local automatically. Use `--local` to force local execution, or `--host <name>` to override the configured sandbox host.
 
 ```bash
@@ -982,6 +984,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 - **Worktrees** isolate each agent — they can't step on each other or your working tree
 - **tmux panes** manage each agent's process lifecycle. They live in a detached `klaus-agents-<session-id>` session owned by the tmux server, so they cost you no screen space and agents survive the coordinator exiting (`agent_display: "pane"` splits your window instead)
 - **Workers can't drive that tmux server.** A local worker starts with `$TMUX` and `$TMUX_PANE` removed and `TMUX_TMPDIR` set to its run's own empty directory (`~/.klaus/sessions/<session>/tmux/<run-id>`, mode 0700). A `tmux` command the worker or its tools run, even `tmux kill-server`, talks to that empty location, not to the server running your session, the coordinator and every agent's pane. klaus's own commands inside the worker (`klaus _pre-review`, `klaus status`) reach the real server through `KLAUS_TMUX_SOCKET`, its socket path recorded at launch; `_finalize` runs after the worker in the pane's own shell. tmux falls back to `/tmp` when `TMUX_TMPDIR` names a directory that doesn't exist, so a worker that points it at a missing directory can still reach a server on tmux's default socket
+- **Scratch files stay out of the worktree.** A local worker gets `KLAUS_SCRATCH`, its run's own directory outside the worktree (`~/.klaus/sessions/<session>/scratch/<run-id>`, mode 0700), and every worker prompt tells the agent to put build output, test binaries and other scratch files there, for example `go build -o "$KLAUS_SCRATCH/<name>" ./<pkg>`, never in the worktree, whose uncommitted files finalize salvages into a commit. Finalize removes the directory with the worktree, as does `klaus cleanup`. A sandbox worker gets no `KLAUS_SCRATCH`, and is told to use a `mktemp -d` directory instead
 - **JSONL logs** are saved for replay and post-run analysis
 - **Sensitivity scanning** checks logs for private IPs, SSH keys, and credentials before persisting (the run repo's own remote hosts are exempt; a log that cannot be scanned in full is kept off the data ref)
 - **State storage** — session state lives in `~/.klaus/sessions/` (ephemeral, machine-local), while finalized run artifacts are committed to the local clone's data ref

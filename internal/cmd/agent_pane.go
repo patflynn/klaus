@@ -31,23 +31,40 @@ func agentsSessionName() string {
 	return "klaus-agents-" + strings.NewReplacer(".", "-", ":", "-").Replace(id)
 }
 
+// scratchEnv names a local worker's scratch directory.
+const scratchEnv = "KLAUS_SCRATCH"
+
+// workerDirs are a local worker's own directories, which launch creates.
+type workerDirs struct {
+	tmux    string // TMUX_TMPDIR (workerTmuxDir)
+	scratch string // KLAUS_SCRATCH (workerScratchDir)
+}
+
 // workerTmuxDir is the TMUX_TMPDIR a run's worker gets: the run's own, beside
 // the store's logs/, where no server runs until the worker starts one.
 func workerTmuxDir(store run.StateStore, runID string) string {
 	return filepath.Join(filepath.Dir(store.LogDir()), "tmux", runID)
 }
 
+// workerScratchDir is where a run's worker puts build output and other
+// scratch files, beside the store's logs/ and so outside the worktree, where
+// finalize would salvage them into a commit. cleanupWorktree removes it with
+// the worktree.
+func workerScratchDir(store run.StateStore, runID string) string {
+	return filepath.Join(filepath.Dir(store.LogDir()), "scratch", runID)
+}
+
 // workerEnv starts a local worker cut off from the tmux server its pane runs
-// in. In a pane $TMUX names that server and overrides TMUX_TMPDIR, so a
-// worker's `TMUX_TMPDIR=<test dir> tmux kill-server` once killed the shared
-// server: the operator's session, the coordinator and every agent's pane. The
-// worker gets no $TMUX or $TMUX_PANE, and tmuxDir as TMUX_TMPDIR, so a bare
-// tmux there finds no server. klaus commands the worker runs (_pre-review,
-// status, logs) reach the shared server through tmux.SocketEnv instead.
-// _finalize, budget pause included, runs after the worker in the pane's own
-// shell and keeps the pane's $TMUX.
-func workerEnv(tmuxDir string) string {
-	env := "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=" + shellQuote(tmuxDir)
+// in, with dirs.scratch as KLAUS_SCRATCH. In a pane $TMUX names that server
+// and overrides TMUX_TMPDIR, so a worker's `TMUX_TMPDIR=<test dir> tmux
+// kill-server` once killed the shared server: the operator's session, the
+// coordinator and every agent's pane. The worker gets no $TMUX or $TMUX_PANE,
+// and dirs.tmux as TMUX_TMPDIR, so a bare tmux there finds no server. klaus
+// commands the worker runs (_pre-review, status, logs) reach the shared
+// server through tmux.SocketEnv instead. _finalize, budget pause included,
+// runs after the worker in the pane's own shell and keeps the pane's $TMUX.
+func workerEnv(dirs workerDirs) string {
+	env := "env -u TMUX -u TMUX_PANE TMUX_TMPDIR=" + shellQuote(dirs.tmux) + " " + scratchEnv + "=" + shellQuote(dirs.scratch)
 	if sock := tmux.SocketPath(); sock != "" {
 		env += " " + tmux.SocketEnv + "=" + shellQuote(sock)
 	}
