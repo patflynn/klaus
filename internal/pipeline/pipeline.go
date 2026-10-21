@@ -95,6 +95,7 @@ type ActionDescriptor struct {
 	Repo       string
 	Prompt     string
 	ResumeFrom string
+	Reason     string   // why an agent is launched: an event.Dispatch* reason, for klaus launch --reason
 	PRNumbers  []string // for merge
 	RunStates  []*run.State // for worktree cleanup
 }
@@ -112,7 +113,7 @@ type Controller struct {
 	tmuxDeps run.TmuxDeps // tmux operations for checking pane state
 
 	// Injectable runners for testing.
-	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)
+	launchAgent     func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error)
 	mergePRs        func(ctx context.Context, repo string, prNumbers []string) error
 	updateBranch    func(ctx context.Context, repo, prNumber string) error
 	snapshotThreads func(repo, prNumber string) ([]string, error)
@@ -151,7 +152,7 @@ func (c *Controller) SetAutoMergeOnApproval(enabled bool) {
 }
 
 // SetLaunchAgent overrides the agent launcher (for testing).
-func (c *Controller) SetLaunchAgent(fn func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error)) {
+func (c *Controller) SetLaunchAgent(fn func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.launchAgent = fn
@@ -308,7 +309,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			}
 
 		case ActionLaunchAgent:
-			agentID, err := c.launchAgent(ctx, desc.PRNumber, desc.Repo, desc.Prompt, desc.ResumeFrom)
+			agentID, err := c.launchAgent(ctx, desc.PRNumber, desc.Repo, desc.Prompt, desc.ResumeFrom, desc.Reason)
 			launchResults = append(launchResults, launchResult{
 				prNumber: desc.PRNumber,
 				agentID:  agentID,
@@ -388,6 +389,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			ps.Stage = StageMerged
 			c.emitEvent(mr.prNumber, event.PRMerged, map[string]interface{}{
 				"pr_number": mr.prNumber,
+				"pr_url":    ps.PRURL,
 			})
 			actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", mr.prNumber)})
 		}
@@ -613,9 +615,18 @@ func (c *Controller) hasKlausApproval(prNumber string, runStates []*run.State) b
 	return false
 }
 
+// emitEvent emits a PR's event. The run ID is the PR number; a PR URL in
+// data adds the repo-qualified keys run events carry: repo_key (owner/repo)
+// and key (owner/repo#<pr>).
 func (c *Controller) emitEvent(prNumber, eventType string, data map[string]interface{}) {
 	if c.eventLog == nil {
 		return
+	}
+	if prURL, _ := data["pr_url"].(string); prURL != "" {
+		if repo := ghutil.OwnerRepoFromPRURL(prURL); repo != "" {
+			data["repo_key"] = repo
+			data["key"] = repo + "#" + prNumber
+		}
 	}
 	evt := event.New(prNumber, eventType, data)
 	if err := c.eventLog.Emit(evt); err != nil {
@@ -623,13 +634,16 @@ func (c *Controller) emitEvent(prNumber, eventType string, data map[string]inter
 	}
 }
 
-func (c *Controller) defaultLaunchAgent(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+func (c *Controller) defaultLaunchAgent(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 	args := []string{"launch", "--pr", prNumber}
 	if repo != "" {
 		args = append(args, "--repo", repo)
 	}
 	if resumeFrom != "" {
 		args = append(args, "--resume-from", resumeFrom)
+	}
+	if reason != "" {
+		args = append(args, "--reason", reason)
 	}
 	args = append(args, prompt)
 	cmd := exec.CommandContext(ctx, "klaus", args...)

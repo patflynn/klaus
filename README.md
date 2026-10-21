@@ -298,6 +298,8 @@ PR created → CI pending → CI passed → Approved → Merged
 - **Behind the base branch** — the branch is updated from base first, then merged once CI re-runs
 - **Merge conflicts** — a rebase agent resolves them before merging
 
+Each fix agent's run records why it was dispatched (`ci-fix`, `review-fix`, `review-comment-fix` or `conflict-fix`); see [Where agent time goes](#where-agent-time-goes).
+
 When a `pr-fix` run is already active on a PR — including coordinator-launched runs from `klaus launch --pr` — the pipeline will not auto-dispatch additional fix or rebase agents on it. This prevents races during multi-step refactors where intermediate commits may fail CI before the run completes.
 
 Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`, with failure paths back through `ci_failed` or `changes_requested`. Budget-exhausted agents land in `budget_paused` — see [Budget pause and resume](#budget-pause-and-resume) below. A PR whose merge or branch update keeps failing is retried once a minute for three attempts, then moves to `stalled` and emits a single `pipeline:stalled` event for a human to pick up.
@@ -319,6 +321,36 @@ klaus watch --list-types             # show live and reserved event types
 ```
 
 The coordinator session's system prompt automatically suggests arming a persistent Monitor on `klaus watch` at startup. The dashboard reads the same `events.jsonl` file independently — both consumers can run side by side.
+
+### Where agent time goes
+
+Every run event (`agent:*`, `phase:*`, `check:*`, and `pr:approval-changed` from `klaus approve`) carries fields that say what the run worked on and why, alongside its existing fields:
+
+| Field | Meaning |
+|---|---|
+| `repo_key` | The repo, qualified: `owner/repo` on GitHub, `valley:<name>` for a repo that delivers to a valley, else the repo's short name |
+| `change_id`, `pr_number` | The run's change, and its PR once it has one |
+| `key` | The change, qualified by `repo_key`: `owner/repo#12` once the run has a PR, else `<repo_key>@<change_id>` |
+| `dispatch_reason` | Why the run was launched (below) |
+| `head_sha` | The branch tip finalize found on `origin`, else the worktree's `HEAD` when the agent finished, else when it started |
+
+The pipeline's PR events (`pr:approved`, `pr:merged`, `agent:ci-*`, ...) carry `repo_key` and `key` when their PR URL is known; `review:*` events carry them for the reviewed PR, and `consult:*` events carry `repo_key` for the consult's workspace. Fields that aren't known are left out, and no existing field changed.
+
+The dispatch reason is `launch` for new work, `pr-follow-up` for `--pr`, `budget-resume` for `--pr` on a budget-paused PR, `change-follow-up` for `--change` and `resume` for `--resume-from`; the pipeline's fix agents are `ci-fix`, `review-fix` (changes requested), `review-comment-fix` (a trusted reviewer's comments) and `conflict-fix`. `klaus launch --reason <reason>` names any other, such as `docs-timer` for a timer's launch.
+
+Each run's phases are events too: `phase:completed` with `phase: setup` (launch's work before the agent starts: fetch, worktree, hooks, pane), then `phase:started`/`phase:completed` for `agent` (pane start to finalize; with `cost_usd` where the backend reports it) and `finalize` (up to killing the pane). Each `phase:completed` carries `started_at`, `ended_at` and `duration_ms`. A launch that fails records no run, so setup has only a completion.
+
+Checks an agent runs, where klaus can see them, are `check:started`/`check:completed` with `kind`, `command`, `source`, and at the end `duration_ms` and `success` when known: `klaus _pre-review` reports itself (`kind: pre-review`, with `lint_ms`, `review_ms`, `findings`, `blocking` and `lint_failed`), and `_format-stream` times the build, test and lint commands it sees in the agent's stream (`go test`, `go vet`, `cargo build`, `npm test`, `make <target>`, `nix flake check`, ...) from the line that calls one to the line with its result. Launch exports `KLAUS_RUN_ID` in the agent's pane so both know the run. These events are not in `klaus watch`'s default filter.
+
+`klaus report time` reads the event logs of every session (`--current` for the current one only) and sums, per repo and overall, the runs that started in the window (`--since`, default `7d`; `0` for all time) and the consults and reviews: runs by dispatch reason, time by phase, checks by kind, the time a change waited between one run ending and the next starting, the time from a PR's last run to its first approval, follow-up runs per change and their reasons, consult and review time, and cost where known. Runs are grouped into changes by change ID, else PR. `--repo` keeps one repo, named by key, valley name or short name; `--json` prints the report with durations in milliseconds.
+
+```bash
+klaus report time                      # the last week, every session
+klaus report time --since 2w --repo klaus
+klaus report time --current --json
+```
+
+Events from before these fields exist still count: a run without phase events has its agent time from `agent:started` to its last event, a run without a recorded reason counts as `unknown`, and a run that names its repo only by short name takes the qualified key other runs give that name when there is just one.
 
 ## Budget pause and resume
 
@@ -576,10 +608,12 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --change <ref> "<prompt>"` | Continue a change in a repo without PRs, on its branch |
 | `klaus launch --branch <name> "<prompt>"` | Name the new run's branch instead of deriving it from the brief |
 | `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
+| `klaus launch --reason <reason> "<prompt>"` | Say why the run is dispatched (e.g. `docs-timer`), for its events and `klaus report time` |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns), then running and recent consults and reviews |
 | `klaus jobs [--all]` | List running and recent consults and reviews |
 | `klaus jobs show <id> [--answer]` | Print a consult's or review's record and its answer |
+| `klaus report time [--since 7d] [--repo <r>] [--current] [--json]` | Where agent wall-clock time went, per repo and overall (see [Where agent time goes](#where-agent-time-goes)) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
 | `klaus push-log <id> [--push]` | Store a log held back for sensitivity on the data ref (`--push` also pushes the ref to origin) |

@@ -54,6 +54,9 @@ type State struct {
 	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
 	Delivery         string   `json:"delivery,omitempty"`          // how launch told the agent to deliver: DeliveryPR or DeliveryPush; empty in state that predates it
 	Knot             *Knot    `json:"knot,omitempty"`              // set when the run was launched to work a valley knot (--issue <knot>)
+	DispatchReason   string   `json:"dispatch_reason,omitempty"`   // why the run was launched (event.Dispatch*, or launch --reason); empty in state that predates it
+	RepoKey          string   `json:"repo_key,omitempty"`          // the repo as launch named it for events: owner/repo, valley:<name>, or the repo's short name
+	HeadSHA          string   `json:"head_sha,omitempty"`          // the worktree's HEAD when the agent started, then when it finished
 }
 
 // How a run delivers its work, as launch decides it from the run's repo.

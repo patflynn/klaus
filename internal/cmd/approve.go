@@ -137,7 +137,7 @@ func emitApprovalChanged(store run.StateStore, s *run.State) {
 	}
 	data["approved"] = true
 	log := event.NewLog(hds.BaseDir())
-	if err := log.Emit(event.New(s.ID, event.PRApprovalChanged, data)); err != nil {
+	if err := log.Emit(event.New(s.ID, event.PRApprovalChanged, withRunFields(s, data))); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to emit approval event: %v\n", err)
 	}
 }

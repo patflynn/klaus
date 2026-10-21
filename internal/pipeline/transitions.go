@@ -144,6 +144,7 @@ var transitions = []transition{
 				Repo:       status.TargetRepo,
 				Prompt:     prompt,
 				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchCIFix,
 			})
 
 			ps.Stage = StageCIFailed
@@ -245,6 +246,7 @@ var transitions = []transition{
 				Repo:       status.TargetRepo,
 				Prompt:     prompt,
 				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchConflictFix,
 			})
 			return nil, descs
 		},
@@ -399,6 +401,7 @@ var transitions = []transition{
 				Repo:       status.TargetRepo,
 				Prompt:     prompt,
 				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchReviewFix,
 			})
 			return nil, descs
 		},
@@ -504,6 +507,7 @@ var transitions = []transition{
 				Repo:       status.TargetRepo,
 				Prompt:     prompt,
 				ResumeFrom: ps.LastAgentID,
+				Reason:     event.DispatchReviewCommentFix,
 			})
 			return nil, descs
 		},

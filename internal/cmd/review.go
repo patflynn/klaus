@@ -159,7 +159,8 @@ func startReviewJob(store run.StateStore, ownerRepo, prNumber string, author, re
 	baseDir, jobStore := hds.BaseDir(), jobs.NewStore(hds.BaseDir())
 	job := &jobs.Job{ID: eventID("review"), Kind: jobs.KindReview, Backend: string(reviewer), Model: model,
 		Repo: ownerRepo, PR: ownerRepo + "#" + prNumber}
-	data := map[string]interface{}{"backend": reviewer, "model": model, "repo": ownerRepo, "pr_number": prNumber, "author": author, "post": post}
+	data := map[string]interface{}{"backend": reviewer, "model": model, "repo": ownerRepo, "pr_number": prNumber, "author": author, "post": post,
+		"repo_key": ownerRepo, "key": ownerRepo + "#" + prNumber}
 	warnJob(warn, job, jobStore.Start(job))
 	emitEvent(baseDir, job.ID, event.ReviewStarted, data)
 	start := time.Now()

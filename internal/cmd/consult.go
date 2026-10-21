@@ -276,6 +276,9 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			if str("prompt-file") != "" {
 				data["prompt_file"] = str("prompt-file")
 			}
+			if key := dirRepoKey(cmd.Context(), t.Dir); key != "" {
+				data["repo_key"] = key
+			}
 			job = &jobs.Job{ID: consultID, Kind: jobs.KindConsult, Panel: panelID, Thread: name, Role: t.Role,
 				Backend: string(t.Backend), Model: t.Model, Effort: t.Effort, Dir: t.Dir, Repo: str("repo"), Prompt: excerpt}
 			warnJob(errOut, job, jobStore.Start(job))

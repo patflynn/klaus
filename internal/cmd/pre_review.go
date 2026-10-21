@@ -5,10 +5,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/review"
+	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +19,7 @@ var preReviewCmd = &cobra.Command{
 	Use:    "_pre-review",
 	Short:  "Run pre-PR linting and peer review",
 	Hidden: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		dir, _ := cmd.Flags().GetString("dir")
 		if dir == "" {
 			var err error
@@ -35,6 +38,13 @@ var preReviewCmd = &cobra.Command{
 			fmt.Println("Pre-review is disabled in config.")
 			return nil
 		}
+
+		check := startPreReviewCheck()
+		defer func() {
+			if err != nil {
+				check.finish(false, map[string]interface{}{"error": errorLine(err)})
+			}
+		}()
 
 		fmt.Println("=== Pre-PR Review ===")
 		fmt.Println()
@@ -95,6 +105,9 @@ var preReviewCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
+		check.data["reviewer"] = string(kind)
+		check.data["lint_ms"] = time.Since(check.start).Milliseconds()
+		reviewStart := time.Now()
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
@@ -116,6 +129,14 @@ var preReviewCmd = &cobra.Command{
 			}
 		}
 
+		// os.Exit skips deferred calls, so the check ends first.
+		check.finish(!lintFailed && blockCount == 0, map[string]interface{}{
+			"review_ms":   time.Since(reviewStart).Milliseconds(),
+			"findings":    len(result.Findings),
+			"blocking":    blockCount,
+			"lint_failed": lintFailed,
+		})
+
 		if lintFailed {
 			fmt.Println("Lint failures detected — PR creation should be blocked.")
 			os.Exit(1)
@@ -133,6 +154,50 @@ var preReviewCmd = &cobra.Command{
 		fmt.Println("All checks passed.")
 		return nil
 	},
+}
+
+// preReviewCheck reports a _pre-review run as a check of the run whose pane
+// it runs in (runIDEnv): check:started when it starts, check:completed when
+// it finishes. Outside a run's pane it reports nothing.
+type preReviewCheck struct {
+	baseDir string
+	state   *run.State
+	start   time.Time
+	data    map[string]interface{}
+	done    bool
+}
+
+func startPreReviewCheck() *preReviewCheck {
+	c := &preReviewCheck{start: time.Now()}
+	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
+	if c.baseDir, c.state = paneRun(); c.state != nil {
+		emitRunEvent(c.baseDir, c.state, event.CheckStarted, c.data)
+	}
+	return c
+}
+
+// finish emits check:completed, once, with extra added to the check's data.
+// A run launch hadn't saved yet when the check started gets both events now.
+func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
+	if c.done {
+		return
+	}
+	c.done = true
+	if c.state == nil {
+		if c.baseDir, c.state = paneRun(); c.state == nil {
+			return
+		}
+		emitRunEvent(c.baseDir, c.state, event.CheckStarted, c.data)
+	}
+	end := time.Now()
+	data := map[string]interface{}{"ended_at": eventTime(end), "duration_ms": end.Sub(c.start).Milliseconds(), "success": success}
+	for k, v := range c.data {
+		data[k] = v
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	emitRunEvent(c.baseDir, c.state, event.CheckCompleted, data)
 }
 
 func modelLabel(model string) string {
