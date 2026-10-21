@@ -179,9 +179,17 @@ Key behaviors:
   PR moves to `stalled` and a single `pipeline:stalled` event is emitted with
   the reason. Losing and regaining approval resets both budgets.
 
-- **Event edges** — `pr:approved` is emitted once per approval, not once per
-  poll: a failed merge moves the PR out of `approved` and back again, which
-  would otherwise flood `klaus watch` with duplicate notifications.
+- **Event edges** — `pr:approved` and `pr:merged` are each emitted once per
+  PR, not once per poll, approval or dashboard start. The dashboard records
+  them in `pr-transitions.json` in the session directory, so a restart, a
+  reload, a failed merge that moves the PR out of `approved` and back, or a
+  dismissed and re-granted approval doesn't report them again. Dashboards on
+  one session share the file, locking `pr-transitions.json.lock` while they
+  update it, so only one of them reports each transition. A PR already
+  merged when klaus first sees it reports nothing; one klaus saw open that
+  merged while the dashboard was down reports its merge when the dashboard
+  starts. When GitHub can't be asked for a PR's state (a timeout or rate
+  limit), the pipeline leaves the PR as it was rather than taking it for open.
 
 ## 4. Review & Approval
 

@@ -346,11 +346,12 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	var eventLog *event.Log
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
-	var eventsPath, jobsDir string
+	var eventsPath, jobsDir, ledgerPath string
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
 		eventsPath = eventLog.Path()
 		jobsDir = jobs.NewStore(hds.BaseDir()).Dir
+		ledgerPath = filepath.Join(hds.BaseDir(), pipeline.LedgerFile)
 		logPath := filepath.Join(hds.BaseDir(), "dashboard.log")
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
 			logWriter = f
@@ -360,6 +361,15 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	logger := slog.New(slog.NewTextHandler(logWriter, nil))
 	ctrl := pipeline.New(store, eventLog, logger)
 	ctrl.SetAutoMergeOnApproval(cfg.AutoMergesOnApproval())
+	if ledgerPath != "" {
+		// The ledger outlives the dashboard, so a restart doesn't report a
+		// PR's approval or merge again.
+		ledger, err := pipeline.LoadLedger(ledgerPath)
+		if err != nil {
+			logger.Error("reading the PR transition ledger", "err", err)
+		}
+		ctrl.SetLedger(ledger)
+	}
 
 	return dashboardModel{
 		store:           store,

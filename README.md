@@ -308,7 +308,7 @@ You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them.
+Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them. Each PR's `pr:approved` and `pr:merged` fire once, across dashboard restarts; a PR already merged when klaus first sees it emits neither.
 
 ```bash
 klaus watch                          # default filter, follow new events
