@@ -249,15 +249,16 @@ func (m dashboardModel) buildRows() []dashRow {
 // changeStandsAlone reports whether where a change stands, apart from its
 // PR, is the operator's to act on by itself, so its runs without a PR keep
 // the change's own row rather than folding into the PR's: a valley lists
-// the change (a version to approve, or one the integrator turned down), or
-// one of those runs pushed a branch that waits for integration. runs are
-// the change's runs without a PR.
+// the change and its active version hasn't settled (a version to approve,
+// or one the integrator turned down), or one of those runs pushed a branch
+// that waits for integration, as far as its latest check knows. A push
+// that landed or is gone folds in. runs are the change's runs without a PR.
 func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
-	if view, ok := m.changes[valleyKey(runs[0])]; ok && view.Change != nil {
+	if view, ok := m.changes[valleyKey(runs[0])]; ok && view.Change != nil && !view.Verdict.Settled() {
 		return true
 	}
 	for _, s := range runs {
-		if awaitsIntegration(s) {
+		if awaitsIntegration(s) && !m.integration[s.ID].Verdict.Settled() {
 			return true
 		}
 	}

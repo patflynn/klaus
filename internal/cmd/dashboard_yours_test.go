@@ -977,7 +977,8 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 // itself. A follow-up that only resumed it, on a fresh branch, or one that
 // never finished, hands nothing off. Salvage newer than a merged PR is
 // still the operator's, and a running follow-up without a PR runs on the
-// PR's row.
+// PR's row. A push without a PR after the PR keeps its change's own row
+// while it waits for integration, and folds into the PR's once it landed.
 func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 	now := time.Now()
 	n := 0
@@ -1029,8 +1030,15 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 	// Its successor's pane is gone and it never finished.
 	e := salvaged("stopped, taken on, vanished", chg('q'), 40)
 	add("took it on and vanished", chg('q'), 20, &run.State{TookOver: []string{e.ID}, TmuxPane: strPtr("gone")})
+	// A push after the PR waits on its own row until it lands; then it
+	// folds into the PR's.
+	status[*add("opened 339", chg('r'), 60, &run.State{PRURL: pr(339)}).PRURL] = &prStatus{State: "MERGED"}
+	waiting := add("pushed after 339", chg('r'), 30, &run.State{PushedBranch: strPtr("agent/r"), PushedSHA: strPtr(strings.Repeat("b", 40))})
+	status[*add("opened 340", chg('p'), 60, &run.State{PRURL: pr(340)}).PRURL] = &prStatus{State: "MERGED"}
+	landed := add("pushed and landed after 340", chg('p'), 30, &run.State{PushedBranch: strPtr("agent/p"), PushedSHA: strPtr(strings.Repeat("c", 40))})
 
-	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: status, hideAfter: defaultHideFinishedAfter}
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: status, hideAfter: defaultHideFinishedAfter,
+		integration: map[string]integration.Result{waiting.ID: {Verdict: integration.Awaiting}, landed.ID: {Verdict: integration.Integrated}}}
 	rows := m.buildRows()
 	type want struct {
 		key, category string
@@ -1038,6 +1046,9 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		runs, running int
 	}
 	wants := map[string]want{
+		"opened 339":                   {"pr:o/r#339", "done", false, 1, 0},
+		"pushed after 339":             {"change:o/r#" + chg('r'), "yours", false, 1, 0},
+		"opened 340":                   {"pr:o/r#340", "done", false, 2, 0},
 		"opened 335":                   {"pr:o/r#335", "done", false, 2, 0},
 		"opened 334":                   {"pr:o/r#334", "pipeline", false, 2, 0},
 		"opened 336":                   {"pr:o/r#336", "yours", true, 2, 0},
