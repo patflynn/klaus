@@ -581,6 +581,7 @@ klaus launch --model <name> ...               # model for the selected worker ba
 klaus launch --effort <level> ...             # effort: agy low|medium|high; Codex also minimal|xhigh; Claude also xhigh|max (unset = backend default)
 klaus launch --local ...                      # force local execution even if a sandbox is configured
 klaus launch --host <name> ...                # override the configured sandbox host
+klaus launch --reason <reason> ...            # why the run is dispatched, for its events (default from the flags: launch, pr-follow-up, ...)
 ` + "```" + `
 
 **Always use --issue when working on a GitHub issue.** The agent needs the issue context.
@@ -720,6 +721,7 @@ Reviews are read-only second opinions, never approvals; ` + "`_pre-review`" + ` 
 - ` + "`klaus track <pr-ref> [...] [--repo <repo>]`" + ` — add existing PRs to the dashboard for pipeline monitoring; a pr-ref is a number, a PR URL, or owner/repo#number
 - ` + "`klaus untrack <pr-number> [...]`" + ` — stop tracking PRs
 - ` + "`klaus dashboard`" + ` — open live dashboard
+- ` + "`klaus report time [--since 7d] [--repo <r>] [--current] [--json]`" + ` — where agent time went, per repo: runs by phase and dispatch reason, checks, waits between runs on a change, follow-ups, consults, reviews, cost
 - ` + "`klaus self-update`" + ` — install the tip of the configured klaus branch into the nix profile (` + "`--rollback`, `--pin`, `--unpin`, `--retry`, `-v`" + `)
 
 ## Self-update

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
 )
 
 // Event represents a parsed JSONL event from Claude's stream-json output.
@@ -42,6 +43,12 @@ type ToolInput struct {
 
 // FormatStream reads JSONL from r and writes human-readable progress to w.
 func FormatStream(r io.Reader, w io.Writer) error {
+	return FormatStreamWatching(r, w, nil)
+}
+
+// FormatStreamWatching is FormatStream that also hands each line, as
+// NormalizeLine makes it, to watch when it arrives; watch may be nil.
+func FormatStreamWatching(r io.Reader, w io.Writer, watch *CheckWatcher) error {
 	scanner := bufio.NewScanner(r)
 	// Allow large lines (Claude output can be big)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -52,6 +59,9 @@ func FormatStream(r io.Reader, w io.Writer) error {
 			continue
 		}
 		FormatLine(line, w)
+		if watch != nil {
+			watch.Observe(NormalizeLine([]byte(line)), time.Now())
+		}
 	}
 	return scanner.Err()
 }

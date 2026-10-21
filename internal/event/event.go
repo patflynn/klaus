@@ -50,6 +50,53 @@ const (
 	// change. It follows agent:branch-pushed and carries repo, change_id,
 	// handle, version, title and head.
 	AgentChangeReady = "agent:change-ready"
+	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
+	// below). phase:completed carries the phase's started_at, ended_at and
+	// duration_ms, so a reader needn't pair it with its start.
+	PhaseStarted   = "phase:started"
+	PhaseCompleted = "phase:completed"
+	// CheckStarted and CheckCompleted bracket a check an agent ran where
+	// klaus can see it: `klaus _pre-review`, or a build, test or lint
+	// command in the agent's stream (Check* kinds below). check:completed
+	// carries duration_ms and, when known, success. A stream check whose
+	// command line also ran _pre-review carries includes_pre_review; a
+	// sandbox run's _pre-review check, which reached the run through the
+	// agent's stream, carries via: stream.
+	CheckStarted   = "check:started"
+	CheckCompleted = "check:completed"
+)
+
+// The phases of a run. Setup is launch's work before the agent starts (fetch,
+// worktree, hooks, pane); it has no phase:started, since a launch that fails
+// records no run. Agent is the agent's own work, from its pane starting to
+// finalize starting. Finalize is _finalize's work, up to killing the pane.
+const (
+	PhaseSetup    = "setup"
+	PhaseAgent    = "agent"
+	PhaseFinalize = "finalize"
+)
+
+// The kinds of check:started and check:completed.
+const (
+	CheckPreReview = "pre-review"
+	CheckBuild     = "build"
+	CheckTest      = "test"
+	CheckLint      = "lint"
+)
+
+// Dispatch reasons: why a run was launched, recorded on the run
+// (dispatch_reason) and on its events. `klaus launch --reason` names any
+// other, such as a timer's "docs-timer".
+const (
+	DispatchLaunch           = "launch"             // an operator or coordinator launch of new work
+	DispatchPRFollowUp       = "pr-follow-up"       // klaus launch --pr
+	DispatchChangeFollowUp   = "change-follow-up"   // klaus launch --change
+	DispatchResume           = "resume"             // klaus launch --resume-from, without --pr or --change
+	DispatchBudgetResume     = "budget-resume"      // --pr on a budget-paused PR
+	DispatchCIFix            = "ci-fix"             // the pipeline, for failing CI
+	DispatchReviewFix        = "review-fix"         // the pipeline, for changes requested
+	DispatchReviewCommentFix = "review-comment-fix" // the pipeline, for a trusted reviewer's comments
+	DispatchConflictFix      = "conflict-fix"       // the pipeline, for merge conflicts
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have

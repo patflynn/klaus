@@ -189,6 +189,14 @@ Dollar budgets and stored trajectory replay are Claude-only. Codex forks a
 recorded local thread with --resume-from, or on --pr and --change follow-ups
 of a Codex run; agy worker follow-ups start fresh.
 
+Use --reason to say why the run is dispatched, such as docs-timer for a
+timer's launch: lowercase letters, digits and hyphens. It is recorded on the
+run and its events (dispatch_reason). Without it the reason is launch,
+pr-follow-up (--pr), budget-resume (--pr on a budget-paused PR),
+change-follow-up (--change) or resume (--resume-from); the pipeline's fix
+agents pass ci-fix, review-fix, review-comment-fix or conflict-fix. 'klaus
+report time' sums runs and follow-ups by reason.
+
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
 are synced back after completion. Use --local to force local execution, or
@@ -215,6 +223,8 @@ are synced back after completion. Use --local to force local execution, or
 		branchFlag, _ := cmd.Flags().GetString("branch")
 		changeRef, _ := cmd.Flags().GetString("change")
 		forceTakeover, _ := cmd.Flags().GetBool("force-takeover")
+		reasonFlag, _ := cmd.Flags().GetString("reason")
+		setupStart := time.Now()
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
 
@@ -234,6 +244,9 @@ are synced back after completion. Use --local to force local execution, or
 		knotRef, isKnot := valley.ParseKnotRef(issue)
 		if isKnot && prNumber != "" {
 			return fmt.Errorf("--issue %s names a valley knot, and --pr continues a GitHub PR; a knot is worked in a valley project", issue)
+		}
+		if err := checkDispatchReason(reasonFlag); err != nil {
+			return err
 		}
 		if forceTakeover && prNumber == "" && changeRef == "" {
 			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr or --change")
@@ -669,6 +682,13 @@ are synced back after completion. Use --local to force local execution, or
 		// agent starts, so the operator can't approve a head it is replacing.
 		unready := unreadyChange(ctx, worktree, change)
 
+		// A --pr launch on a budget-paused PR resumes it.
+		var budgetPaused bool
+		if isPRFix {
+			paused, perr := draft.HasBudgetPausedLabel(ctx, draft.ExecRunner{}, worktree, resolveGHRepo(repoRef, repoRoot), prNumber)
+			budgetPaused = perr == nil && paused
+		}
+
 		// Set up Nix dev environment if flake.nix exists
 		nix.SetupDevEnvironment(worktree)
 
@@ -796,7 +816,8 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		// Write state
-		createdAt := time.Now().Format(time.RFC3339)
+		agentStart := time.Now()
+		createdAt := agentStart.Format(time.RFC3339)
 		issuePtr := stringPtr(issue)
 		var budgetPtr *string
 		if kind == backend.Claude {
@@ -832,7 +853,10 @@ are synced back after completion. Use --local to force local execution, or
 			ChangeRepo:  change.Repo,
 			Delivery:    delivery,
 			Knot:        knotRec,
+			HeadSHA:     gitHead(ctx, worktree),
 		}
+		state.DispatchReason = dispatchReason(reasonFlag, isPRFix, budgetPaused, onChange != nil, resumeFrom)
+		state.RepoKey = launchRepoKey(ctx, state, repoRoot)
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
 		} else if replayedFromRunID != "" {
@@ -861,21 +885,25 @@ are synced back after completion. Use --local to force local execution, or
 			if normalizedTarget != nil {
 				startedData["target_repo"] = *normalizedTarget
 			}
-			emitEvent(hds.BaseDir(), id, event.AgentStarted, startedData)
+			emitRunEvent(hds.BaseDir(), state, event.AgentStarted, startedData)
 
 			// If this is a launch against a budget-paused PR, emit
 			// agent:resumed so the coordinator (and dashboard) know the
 			// pause is being acted on.
-			if isPRFix && prNumber != "" {
-				ghRepoArg := resolveGHRepo(repoRef, repoRoot)
-				if paused, perr := draft.HasBudgetPausedLabel(ctx, draft.ExecRunner{}, worktree, ghRepoArg, prNumber); perr == nil && paused {
-					emitEvent(hds.BaseDir(), id, event.AgentResumed, map[string]interface{}{
-						"id":        id,
-						"pr_number": prNumber,
-						"pr_url":    prURL,
-					})
-				}
+			if budgetPaused && prNumber != "" {
+				emitRunEvent(hds.BaseDir(), state, event.AgentResumed, map[string]interface{}{
+					"id":        id,
+					"pr_number": prNumber,
+					"pr_url":    prURL,
+				})
 			}
+
+			// Setup ends, and the agent's work begins, as its pane starts.
+			emitRunEvent(hds.BaseDir(), state, event.PhaseCompleted, phaseData(event.PhaseSetup, setupStart, agentStart))
+			emitRunEvent(hds.BaseDir(), state, event.PhaseStarted, map[string]interface{}{
+				"phase":      event.PhaseAgent,
+				"started_at": createdAt,
+			})
 		}
 
 		fmt.Printf("  pane:     %s\n", paneID)
@@ -1073,8 +1101,9 @@ func stdinFrom(promptFile string) string {
 
 func buildPaneCommand(worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
 	return fmt.Sprintf(
-		"%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
+		"%s%scd %s && %s | tee %s | %s _format-stream; %s%s _finalize %s",
 		tmuxSessionEnvPrefix(),
+		runEnvPrefix(id),
 		shellQuote(worktree),
 		withExitEvent(agentCmd+stdinFrom(promptFile)),
 		shellQuote(logFile),
@@ -1250,13 +1279,18 @@ func syncWorktreeToSandbox(host, worktree string) error {
 func buildSandboxPaneCommand(host, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
 	// Run the agent on sandbox via SSH, pipe output locally through tee + formatter,
 	// then finalize locally and rsync results back. ssh forwards the local
-	// prompt file as the remote command's stdin.
+	// prompt file as the remote command's stdin. The remote command gets the
+	// run's ID too: the sandbox has no event log for the run, so _pre-review
+	// there reports its check in its output, which the stream brings back to
+	// _format-stream --sandbox.
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
+	remoteCmd := remoteRunEnvPrefix(id) + "cd " + shellQuote(worktree) + " && " + agentCmd
 	return fmt.Sprintf(
-		"%s%s | tee %s | %s _format-stream; %s%s _finalize %s; %s",
+		"%s%s%s | tee %s | %s _format-stream --sandbox; %s%s _finalize %s; %s",
 		tmuxSessionEnvPrefix(),
-		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote("cd "+shellQuote(worktree)+" && "+agentCmd)+stdinFrom(promptFile)),
+		runEnvPrefix(id),
+		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote(remoteCmd)+stdinFrom(promptFile)),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,
@@ -1340,5 +1374,6 @@ func init() {
 	launchCmd.Flags().Int("replay-threshold-kb", 0, "Max stored trajectory size (KB) eligible for replay; 0 uses config replay_threshold_kb (default 300)")
 	launchCmd.Flags().String("model", "", "Model for the selected backend (default from backends.<backend>.model; legacy default_agent_model for Claude)")
 	launchCmd.Flags().String("effort", "", "Reasoning effort for the selected backend (default from backends.<backend>.effort; valid levels depend on backend)")
+	launchCmd.Flags().String("reason", "", "Why this run is dispatched, recorded on the run and its events, e.g. docs-timer (default: launch, pr-follow-up, change-follow-up, budget-resume or resume, from the other flags)")
 	rootCmd.AddCommand(launchCmd)
 }

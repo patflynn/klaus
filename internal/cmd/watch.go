@@ -64,6 +64,10 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRMerged, "live", "A PR merged"},
 	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
+	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
+	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
+	{event.CheckStarted, "live", "An agent started a check klaus can see (_pre-review, or a build, test or lint command); not in the default filter"},
+	{event.CheckCompleted, "live", "An agent's check finished, with its duration; not in the default filter"},
 	{"agent:error", "reserved", "Reserved for unrecoverable agent failures (not currently emitted; use agent:needs-attention)"},
 	{"ci:failed", "reserved", "Reserved short name (currently emitted as agent:ci-failed)"},
 	{"ci:passed", "reserved", "Reserved short name (currently emitted as agent:ci-passed)"},
@@ -536,6 +540,18 @@ func eventSummary(evt event.Event) string {
 			return fmt.Sprintf("PR #%s merged", prNum)
 		}
 		return "PR merged"
+	case event.PhaseStarted:
+		return get("phase")
+	case event.PhaseCompleted:
+		return fmt.Sprintf("%s (%sms)", get("phase"), get("duration_ms"))
+	case event.CheckStarted:
+		return truncateLine(get("kind")+": "+get("command"), 160)
+	case event.CheckCompleted:
+		status := "ok"
+		if get("success") == "false" {
+			status = "failed"
+		}
+		return truncateLine(fmt.Sprintf("%s (%sms) %s: %s", get("kind"), get("duration_ms"), status, get("command")), 160)
 	case event.PipelineStalled:
 		reason := get("reason")
 		switch {

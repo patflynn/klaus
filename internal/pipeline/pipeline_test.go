@@ -45,7 +45,7 @@ func TestStateTransition_CIPendingToFailed(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var launchedPR string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPR = prNumber
 		return "agent-001", nil
 	})
@@ -77,7 +77,7 @@ func TestStateTransition_CIFailedToPassedToApproved(t *testing.T) {
 	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -126,7 +126,7 @@ func TestNoDuplicateAgentDispatch(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -155,7 +155,7 @@ func TestAgentReDispatchAfterCompletion(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-002", nil
 	})
@@ -192,7 +192,7 @@ func TestReviewCommentsDispatchAgent(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var launchedPrompt string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPrompt = prompt
 		return "agent-review", nil
 	})
@@ -249,7 +249,7 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 			c, _ := newTestController(t)
 
 			var launchedPrompt string
-			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 				launchedPrompt = prompt
 				return "agent-x", nil
 			})
@@ -323,7 +323,7 @@ func TestReviewFixPromptsInstructAgentToReplyToComments(t *testing.T) {
 
 func TestMergedPRCleanedUp(t *testing.T) {
 	c, _ := newTestController(t)
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-001", nil
 	})
 
@@ -374,7 +374,7 @@ func TestAutoMergeBlockedByConflicts(t *testing.T) {
 	})
 
 	var launchedPrompt string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPrompt = prompt
 		return "agent-rebase", nil
 	})
@@ -482,7 +482,7 @@ func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "", fmt.Errorf("worktree already exists")
 	})
@@ -552,7 +552,7 @@ func TestWorktreeCleanupBeforeDispatch(t *testing.T) {
 
 	var cleanedUpID string
 	// Override launchAgent to track that cleanup happened before launch.
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		// By the time launch is called, the stale worktree should have
 		// had cleanup attempted. We can't easily verify the cleanup command
 		// ran (it would fail since the run ID doesn't exist in store), but
@@ -589,7 +589,7 @@ func TestReviewFixLaunchRetry(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "", fmt.Errorf("worktree already exists")
 	})
@@ -613,7 +613,7 @@ func TestTrustedCommentDispatch(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var launchedPrompt string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPrompt = prompt
 		return "agent-trusted", nil
 	})
@@ -648,7 +648,7 @@ func TestNoDispatchWithoutTrustedComments(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -680,7 +680,7 @@ func TestNoDoubleDispatchOnTrustedComments(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-trusted", nil
 	})
@@ -717,7 +717,7 @@ func TestNeedsRebaseTransitionsToMergeAfterConflictsResolved(t *testing.T) {
 	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -772,7 +772,7 @@ func TestNeedsRebaseTransitionsToCIFailedIfCIFails(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -819,7 +819,7 @@ func TestNeedsRebaseNoDoubleDispatch(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-rebase", nil
 	})
@@ -851,7 +851,7 @@ func TestRebaseDispatchRetryOnFailure(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "", fmt.Errorf("worktree already exists")
 	})
@@ -915,7 +915,7 @@ func TestUnapprovedConflictsDispatchesRebase(t *testing.T) {
 
 	var launchedPrompt string
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPrompt = prompt
 		launchCount++
 		return "agent-rebase", nil
@@ -965,7 +965,7 @@ func TestRebaseCircuitBreaker(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1055,7 +1055,7 @@ func TestStalledFromCIRecoversWithConflicts(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1106,7 +1106,7 @@ func TestRebaseDispatchDoesNotConsumeCIFixBudget(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1164,7 +1164,7 @@ func TestConflictsWaitDoesNotSpamCIPassedEvent(t *testing.T) {
 	c, baseDir := newTestController(t)
 	eventLog := event.NewLog(filepath.Join(baseDir, "session"))
 
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-rebase", nil
 	})
 
@@ -1217,7 +1217,7 @@ func TestApprovedNoConflictsMerges(t *testing.T) {
 	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -1295,7 +1295,7 @@ func TestReviewThreadsResolvedAfterAgentCompletion(t *testing.T) {
 		resolvedThreads = append(resolvedThreads, threadID)
 		return nil
 	})
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-fix", nil
 	})
 
@@ -1365,7 +1365,7 @@ func TestSnapshotThreadsUsesOwnerRepoSlugFromPRURL(t *testing.T) {
 				gotRepo = repo
 				return nil, nil
 			})
-			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 				return "agent-fix", nil
 			})
 
@@ -1462,7 +1462,7 @@ func TestReviewThreadResolutionFailureDoesNotBlock(t *testing.T) {
 		}
 		return nil
 	})
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-fix", nil
 	})
 	c.SetMergePRs(func(ctx context.Context, repo string, prNumbers []string) error {
@@ -1517,7 +1517,7 @@ func TestTrustedCommentSnapshotsThreads(t *testing.T) {
 	c.SetResolveThread(func(threadID string) error {
 		return nil
 	})
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-trusted", nil
 	})
 
@@ -1555,7 +1555,7 @@ func TestNoThreadResolutionWhileAgentRunning(t *testing.T) {
 		resolveCount++
 		return nil
 	})
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-fix", nil
 	})
 
@@ -1584,7 +1584,7 @@ func TestDispatchCooldownPreventsRapidRedispatch(t *testing.T) {
 		c, _ := newTestController(t)
 
 		launchCount := 0
-		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 			launchCount++
 			return fmt.Sprintf("agent-%03d", launchCount), nil
 		})
@@ -1627,7 +1627,7 @@ func TestDispatchCooldownPreventsRapidRedispatch(t *testing.T) {
 		c, _ := newTestController(t)
 
 		launchCount := 0
-		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 			launchCount++
 			return fmt.Sprintf("agent-%03d", launchCount), nil
 		})
@@ -1673,7 +1673,7 @@ func TestDispatchCooldownPreventsRapidRedispatch(t *testing.T) {
 		c, _ := newTestController(t)
 
 		launchCount := 0
-		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+		c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 			launchCount++
 			return fmt.Sprintf("agent-%03d", launchCount), nil
 		})
@@ -1724,7 +1724,7 @@ func TestCIFixAgentResumesFromLastAgent(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var capturedResume string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		capturedResume = resumeFrom
 		return "agent-fix", nil
 	})
@@ -1753,7 +1753,7 @@ func TestReviewFixAgentResumesFromLastAgent(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var capturedResume string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		capturedResume = resumeFrom
 		return "agent-review-fix", nil
 	})
@@ -1784,7 +1784,7 @@ func TestFirstAgentDispatchHasEmptyResume(t *testing.T) {
 	c, _ := newTestController(t)
 
 	var capturedResume string
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		capturedResume = resumeFrom
 		return "agent-first", nil
 	})
@@ -1804,7 +1804,7 @@ func TestFixAgentCircuitBreaker(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1876,7 +1876,7 @@ func TestFixAgentCircuitBreakerResetOnCIPass(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1914,7 +1914,7 @@ func TestFixAgentCircuitBreakerResetOnNewPush(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -1976,7 +1976,7 @@ func TestKlausApprovalTriggersAutoMerge(t *testing.T) {
 	c.SetAutoMergeOnApproval(true)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -2031,7 +2031,7 @@ func TestChangesRequestedOverridesKlausApproval(t *testing.T) {
 	})
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-fix", nil
 	})
@@ -2104,7 +2104,7 @@ func TestKlausApprovalWithConflictsDispatchesRebase(t *testing.T) {
 
 	var launchedPrompt string
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchedPrompt = prompt
 		launchCount++
 		return "agent-rebase", nil
@@ -2194,7 +2194,7 @@ func TestCooldownRespectsLastFailedAt(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "", fmt.Errorf("worktree conflict")
 	})
@@ -2233,7 +2233,7 @@ func TestMergedStageIsTerminal(t *testing.T) {
 
 	launchCount := 0
 	mergeCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -2277,7 +2277,7 @@ func TestSessionResumeSeedsFromGitHubStatus(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-001", nil
 	})
@@ -2307,7 +2307,7 @@ func TestSessionResumeFailingCISeedsCorrectly(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-fix", nil
 	})
@@ -2341,7 +2341,7 @@ func TestCoordinatorLaunchedPRFixSuppresses(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "pipeline-agent", nil
 	})
@@ -2375,7 +2375,7 @@ func TestCoordinatorLaunchedPRFixSuppressesViaPRField(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "pipeline-agent", nil
 	})
@@ -2407,7 +2407,7 @@ func TestCoordinatorLaunchedPRFixFinishedAllowsDispatch(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "pipeline-agent", nil
 	})
@@ -2442,7 +2442,7 @@ func TestCoordinatorLaunchedNonPRFixDoesNotSuppress(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "pipeline-agent", nil
 	})
@@ -2475,7 +2475,7 @@ func TestBudgetPausedLabelDrivesStage(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-x", nil
 	})
@@ -2508,7 +2508,7 @@ func TestBudgetPausedLabelDrivesStage(t *testing.T) {
 func TestBudgetPausedTransitionsToCIFailedOnceLabelCleared(t *testing.T) {
 	c, _ := newTestController(t)
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return "agent-fix", nil
 	})
@@ -2549,7 +2549,7 @@ func TestBudgetPausedTransitionsToCIFailedOnceLabelCleared(t *testing.T) {
 
 func TestBudgetPausedEmitsEventOnTransition(t *testing.T) {
 	c, _ := newTestController(t)
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-x", nil
 	})
 
@@ -2588,7 +2588,7 @@ func TestTrustedCommentsCircuitBreaker(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -2688,7 +2688,7 @@ func TestTrustedCommentsBreakerResetsWhenAddressed(t *testing.T) {
 	c, _ := newTestController(t)
 
 	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		launchCount++
 		return fmt.Sprintf("agent-%03d", launchCount), nil
 	})
@@ -2981,7 +2981,7 @@ func TestReApprovalReEmitsAndResetsMergeBudget(t *testing.T) {
 		mergeCount++
 		return fmt.Errorf("Pull request is not mergeable")
 	})
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom string) (string, error) {
+	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
 		return "agent-001", nil
 	})
 

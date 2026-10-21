@@ -36,8 +36,83 @@ var formatStreamCmd = &cobra.Command{
 	Short:  "Format backend JSONL stream from stdin",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return stream.FormatStream(os.Stdin, os.Stdout)
+		sandbox, _ := cmd.Flags().GetBool("sandbox")
+		watch, flush := streamCheckEvents(sandbox)
+		err := stream.FormatStreamWatching(os.Stdin, os.Stdout, watch)
+		flush()
+		return err
 	},
+}
+
+// streamCheckEvents returns a watcher that emits check:started and
+// check:completed for the checks in the stream of the run whose pane this
+// is (runIDEnv), or nil outside one, and a flush for the end of the stream.
+// Those are the stream's build, test and lint commands, and the _pre-review
+// checks a sandbox run's _pre-review reports in its output (a sandbox run
+// says so with sandbox). Launch saves the run's state just after its pane
+// starts, so events wait until it is found. At the end of the stream they
+// wait up to paneRunSaveWait more, then go out under the run's ID without
+// it.
+func streamCheckEvents(sandbox bool) (*stream.CheckWatcher, func()) {
+	p := currentPaneRun()
+	if p == nil {
+		return nil, func() {}
+	}
+	type pendingEvent struct {
+		typ  string
+		data map[string]interface{}
+	}
+	var pending []pendingEvent
+	send := func() {
+		for _, e := range pending {
+			p.emit(e.typ, e.data)
+		}
+		pending = nil
+	}
+	emit := func(eventType string, data map[string]interface{}) {
+		pending = append(pending, pendingEvent{eventType, data})
+		if p.load() {
+			send()
+		}
+	}
+	flush := func() {
+		if len(pending) > 0 {
+			p.awaitState()
+			send()
+		}
+	}
+	checkData := func(c stream.Check) map[string]interface{} {
+		data := map[string]interface{}{"kind": c.Kind, "command": c.Command, "source": "stream", "started_at": eventTime(c.Start)}
+		if c.IncludesPreReview {
+			data["includes_pre_review"] = true
+		}
+		return data
+	}
+	return &stream.CheckWatcher{
+		Sandbox: sandbox,
+		OnStart: func(c stream.Check) { emit(event.CheckStarted, checkData(c)) },
+		OnEnd: func(c stream.Check, end time.Time, success *bool) {
+			data := checkData(c)
+			data["ended_at"] = eventTime(end)
+			data["duration_ms"] = end.Sub(c.Start).Milliseconds()
+			if success != nil {
+				data["success"] = *success
+			}
+			emit(event.CheckCompleted, data)
+		},
+		// A reported check arrives whole, so it starts and ends here.
+		OnReport: func(data map[string]interface{}) {
+			started := map[string]interface{}{"via": "stream"}
+			for _, k := range []string{"kind", "command", "source", "started_at"} {
+				if v, ok := data[k]; ok {
+					started[k] = v
+				}
+			}
+			emit(event.CheckStarted, started)
+			data["via"] = "stream"
+			emit(event.CheckCompleted, data)
+		},
+	}, flush
 }
 
 var finalizeCmd = &cobra.Command{
@@ -47,6 +122,7 @@ var finalizeCmd = &cobra.Command{
 	Args:   cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
+		finalizeStart := time.Now()
 
 		store, err := sessionStore()
 		if err != nil {
@@ -77,6 +153,12 @@ var finalizeCmd = &cobra.Command{
 		baseDir := ""
 		if hds, ok := store.(*run.HomeDirStore); ok {
 			baseDir = hds.BaseDir()
+		}
+		if head := gitHead(ctx, state.Worktree); head != "" {
+			state.HeadSHA = head
+		}
+		if baseDir != "" {
+			emitAgentPhase(baseDir, state, finalizeStart)
 		}
 
 		// Decide: did this run end normally, or did it exhaust its budget?
@@ -168,6 +250,11 @@ var finalizeCmd = &cobra.Command{
 			cleanupWorktree(ctx, store, gitClient, state, salvage != nil)
 		}
 
+		// Killing the pane ends this process, so the phase ends first.
+		if baseDir != "" {
+			emitRunEvent(baseDir, state, event.PhaseCompleted, phaseData(event.PhaseFinalize, finalizeStart, time.Now()))
+		}
+
 		// Kill the tmux pane — _finalize is the last command in the pipeline,
 		// so this is safe. The pane would otherwise stay open indefinitely.
 		killAgentPane(ctx, store, tmux.NewExecClient(), state)
@@ -196,11 +283,11 @@ func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult
 		if salvage.dirty {
 			data["worktree"] = state.Worktree
 		}
-		emitEvent(baseDir, state.ID, event.AgentNeedsAttention, data)
+		emitRunEvent(baseDir, state, event.AgentNeedsAttention, data)
 		return
 	}
 	if state.FailureReason != nil {
-		emitEvent(baseDir, state.ID, event.AgentNeedsAttention, map[string]interface{}{
+		emitRunEvent(baseDir, state, event.AgentNeedsAttention, map[string]interface{}{
 			"id":     state.ID,
 			"reason": *state.FailureReason,
 		})
@@ -214,16 +301,16 @@ func emitFinalizeEvents(baseDir string, state *run.State, salvage *salvageResult
 	if state.DurationMS != nil {
 		completedData["duration_ms"] = *state.DurationMS
 	}
-	emitEvent(baseDir, state.ID, event.AgentCompleted, completedData)
+	emitRunEvent(baseDir, state, event.AgentCompleted, completedData)
 
 	if state.PRURL != nil && *state.PRURL != "" {
-		emitEvent(baseDir, state.ID, event.AgentPRCreated, map[string]interface{}{
+		emitRunEvent(baseDir, state, event.AgentPRCreated, map[string]interface{}{
 			"id":        state.ID,
 			"pr_url":    *state.PRURL,
 			"pr_number": extractPRNumberFromURL(*state.PRURL),
 		})
 	} else if state.PushedBranch != nil && state.PushedSHA != nil {
-		emitEvent(baseDir, state.ID, event.AgentBranchPushed, map[string]interface{}{
+		emitRunEvent(baseDir, state, event.AgentBranchPushed, map[string]interface{}{
 			"id":     state.ID,
 			"repo":   pushedRepo(state),
 			"branch": *state.PushedBranch,
@@ -297,7 +384,7 @@ func markChangeReady(ctx context.Context, baseDir string, state *run.State) bool
 		return true
 	}
 	if baseDir != "" {
-		emitEvent(baseDir, state.ID, event.AgentChangeReady, map[string]interface{}{
+		emitRunEvent(baseDir, state, event.AgentChangeReady, map[string]interface{}{
 			"id":        state.ID,
 			"repo":      rec.Repo,
 			"change_id": state.ChangeID,
@@ -421,14 +508,14 @@ func handleBudgetPauseIfNeeded(ctx context.Context, baseDir string, state *run.S
 			"budget_usd": budgetUSD,
 			"reason":     "budget_exhausted",
 		}
-		emitEvent(baseDir, state.ID, event.AgentPaused, data)
+		emitRunEvent(baseDir, state, event.AgentPaused, data)
 
 		// If this is the first time klaus has seen the PR URL for this run
 		// (either because the agent created it on this final flush, or
 		// because we just created it), emit agent:pr-created so the
 		// pipeline starts tracking it.
 		if !hadPRURLBefore && out.PRURL != "" {
-			emitEvent(baseDir, state.ID, event.AgentPRCreated, map[string]interface{}{
+			emitRunEvent(baseDir, state, event.AgentPRCreated, map[string]interface{}{
 				"id":        state.ID,
 				"pr_url":    out.PRURL,
 				"pr_number": out.PRNumber,
@@ -494,7 +581,7 @@ func clearLabelIfResumed(ctx context.Context, baseDir string, state *run.State) 
 	if state.PRURL != nil {
 		data["pr_url"] = *state.PRURL
 	}
-	emitEvent(baseDir, state.ID, event.AgentResumed, data)
+	emitRunEvent(baseDir, state, event.AgentResumed, data)
 }
 
 // salvageResult describes unfinished work finalize preserved.
@@ -1058,6 +1145,7 @@ func remoteHosts(ctx context.Context, dir string) []string {
 }
 
 func init() {
+	formatStreamCmd.Flags().Bool("sandbox", false, "The agent runs on a sandbox host: take _pre-review's checks from its output in the stream")
 	rootCmd.AddCommand(formatStreamCmd)
 	rootCmd.AddCommand(finalizeCmd)
 }

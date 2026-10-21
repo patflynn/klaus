@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/review"
+	"github.com/patflynn/klaus/internal/stream"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +20,7 @@ var preReviewCmd = &cobra.Command{
 	Use:    "_pre-review",
 	Short:  "Run pre-PR linting and peer review",
 	Hidden: true,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		dir, _ := cmd.Flags().GetString("dir")
 		if dir == "" {
 			var err error
@@ -35,6 +39,13 @@ var preReviewCmd = &cobra.Command{
 			fmt.Println("Pre-review is disabled in config.")
 			return nil
 		}
+
+		check := startPreReviewCheck()
+		defer func() {
+			if err != nil {
+				check.finish(false, map[string]interface{}{"error": errorLine(err)})
+			}
+		}()
 
 		fmt.Println("=== Pre-PR Review ===")
 		fmt.Println()
@@ -95,6 +106,9 @@ var preReviewCmd = &cobra.Command{
 			return err
 		}
 		fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
+		check.data["reviewer"] = string(kind)
+		check.data["lint_ms"] = time.Since(check.start).Milliseconds()
+		reviewStart := time.Now()
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
@@ -116,6 +130,14 @@ var preReviewCmd = &cobra.Command{
 			}
 		}
 
+		// os.Exit skips deferred calls, so the check ends first.
+		check.finish(!lintFailed && blockCount == 0, map[string]interface{}{
+			"review_ms":   time.Since(reviewStart).Milliseconds(),
+			"findings":    len(result.Findings),
+			"blocking":    blockCount,
+			"lint_failed": lintFailed,
+		})
+
 		if lintFailed {
 			fmt.Println("Lint failures detected — PR creation should be blocked.")
 			os.Exit(1)
@@ -133,6 +155,64 @@ var preReviewCmd = &cobra.Command{
 		fmt.Println("All checks passed.")
 		return nil
 	},
+}
+
+// preReviewCheck reports a _pre-review run as a check of the run whose pane
+// it runs in (runIDEnv): check:started when it starts, check:completed when
+// it finishes. On a sandbox host (runEventsEnv) it prints check:completed in
+// its output instead, for the pane's _format-stream to record. Outside a
+// run's pane it reports nothing.
+type preReviewCheck struct {
+	run     *paneRun
+	report  io.Writer // where a sandbox run's check is printed; nil otherwise
+	start   time.Time
+	data    map[string]interface{}
+	started bool
+	done    bool
+}
+
+func startPreReviewCheck() *preReviewCheck {
+	c := &preReviewCheck{start: time.Now()}
+	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
+	if os.Getenv(runIDEnv) != "" && os.Getenv(runEventsEnv) == runEventsOutput {
+		c.report = os.Stdout
+		return c
+	}
+	c.run = currentPaneRun()
+	if c.run != nil && c.run.state != nil {
+		c.run.emit(event.CheckStarted, c.data)
+		c.started = true
+	}
+	return c
+}
+
+// finish emits check:completed, once, with extra added to the check's data.
+// A run launch hadn't saved yet when the check started gets both events now,
+// once launch saves it or, after paneRunSaveWait, under the run's ID alone.
+func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
+	if c.done || c.run == nil && c.report == nil {
+		return
+	}
+	c.done = true
+	if c.run != nil && !c.started {
+		c.run.awaitState()
+		c.run.emit(event.CheckStarted, c.data)
+	}
+	end := time.Now()
+	data := map[string]interface{}{"ended_at": eventTime(end), "duration_ms": end.Sub(c.start).Milliseconds(), "success": success}
+	for k, v := range c.data {
+		data[k] = v
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	if c.report != nil {
+		if line, err := json.Marshal(data); err == nil {
+			fmt.Fprintf(c.report, "%s%s\n", stream.ReportPrefix, line)
+		}
+		return
+	}
+	c.run.emit(event.CheckCompleted, data)
 }
 
 func modelLabel(model string) string {

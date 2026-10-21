@@ -252,8 +252,11 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 				if st.Valley == nil || *st.Valley != (run.Valley{Repo: "widget", Handle: "nxvp", Version: 1, Title: "Add a health check"}) {
 					t.Errorf("recorded valley = %+v", st.Valley)
 				}
+				// Its own fields, and the keys every run event carries: the
+				// valley's name for the repo is the one it reported.
 				wantData := map[string]any{"id": id, "repo": "widget", "change_id": st.ChangeID, "handle": "nxvp",
-					"version": float64(1), "title": "Add a health check", "head": head}
+					"version": float64(1), "title": "Add a health check", "head": head,
+					"repo_key": "valley:widget", "key": "valley:widget@" + st.ChangeID, "dispatch_reason": "launch", "head_sha": head}
 				if fmt.Sprint(ready) != fmt.Sprint(wantData) {
 					t.Errorf("agent:change-ready data = %v, want %v", ready, wantData)
 				}
@@ -264,11 +267,12 @@ func TestFinalizeMarksValleyChangeReady(t *testing.T) {
 				}
 			}
 			// Finalize always completes, and the branch is reported pushed before
-			// any valley call.
+			// any valley call; the finalize phase ends after both.
 			want := []string{event.AgentCompleted, event.AgentBranchPushed}
 			if ready != nil {
 				want = append(want, event.AgentChangeReady)
 			}
+			want = append(want, event.PhaseCompleted)
 			if len(types) < len(want) || strings.Join(types[len(types)-len(want):], ",") != strings.Join(want, ",") {
 				t.Errorf("events = %v, want them to end with %v", types, want)
 			}

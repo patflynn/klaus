@@ -420,15 +420,15 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		if !strings.Contains(cmd, "ssh 'klaus-worker-0'") {
 			t.Error("expected ssh to sandbox host, got:", cmd)
 		}
-		if !strings.Contains(cmd, shellQuote("cd "+shellQuote(worktree)+" && "+claudeCmd)) {
-			t.Error("expected cd to worktree on remote, got:", cmd)
+		if !strings.Contains(cmd, shellQuote(remoteRunEnvPrefix(id)+"cd "+shellQuote(worktree)+" && "+claudeCmd)) {
+			t.Error("expected the run's ID and cd to worktree on remote, got:", cmd)
 		}
 	})
 
 	t.Run("feeds the local prompt file to ssh's stdin", func(t *testing.T) {
 		t.Setenv(sessionIDEnv, "")
 		cmd := buildSandboxPaneCommand(host, worktree, claudeCmd, promptFile, logFile, selfBin, "", id)
-		remote := shellQuote("cd " + shellQuote(worktree) + " && " + claudeCmd)
+		remote := shellQuote(remoteRunEnvPrefix(id) + "cd " + shellQuote(worktree) + " && " + claudeCmd)
 		if !strings.Contains(cmd, "( ssh 'klaus-worker-0' "+remote+" < '"+promptFile+"'; klaus_backend_exit=$?") {
 			t.Error("expected stdin redirect on the ssh command, got:", cmd)
 		}
@@ -440,8 +440,8 @@ func TestBuildSandboxPaneCommand(t *testing.T) {
 		if !strings.Contains(cmd, "| tee") {
 			t.Error("expected tee in local pipeline, got:", cmd)
 		}
-		if !strings.Contains(cmd, "_format-stream") {
-			t.Error("expected _format-stream in local pipeline, got:", cmd)
+		if !strings.Contains(cmd, "| klaus _format-stream --sandbox;") {
+			t.Error("expected _format-stream --sandbox in local pipeline, got:", cmd)
 		}
 		if !strings.Contains(cmd, "_finalize") {
 			t.Error("expected _finalize in local pipeline, got:", cmd)
