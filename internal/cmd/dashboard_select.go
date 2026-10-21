@@ -153,7 +153,10 @@ func (r dashRow) description() string {
 
 // buildRows turns the run states into dashboard rows, sorted by category
 // (yours, agents, pipeline, done) and most recent first within each
-// category. Sessions are excluded; agents on the same PR share a row. The
+// category. Sessions are excluded; agents on the same PR share a row, a PR
+// named by the owner/repo of its URL and its number (prKey), so
+// alice/widget#7 and bob/widget#7 never share one, whatever the project
+// registry calls their repos. The
 // runs without a PR on one change (changeKeys) share a row across repo
 // groups: the row of the change's PR, the PR of the newest run on the
 // change that has one, after the PR's own agents, unless where the change
@@ -165,21 +168,22 @@ func (m dashboardModel) buildRows() []dashRow {
 	changeOf := changeKeys(m.states)
 	prOfChange := make(map[integration.ChangeKey]int)     // the row of a change's PR
 	prOwner := make(map[integration.ChangeKey]*run.State) // the newest run with a PR on each change
+	prIndex := make(map[string]int)                       // the row of each PR, by its key
 	for _, g := range groups {
-		prIndex := make(map[string]int)
 		for _, s := range g.Runs {
 			prNum := extractPRNumber(s)
 			if prNum == "" {
 				continue
 			}
-			i, ok := prIndex[prNum]
+			key := prKey(s, g.Repo, prNum)
+			i, ok := prIndex[key]
 			if ok {
 				rows[i].runs = append(rows[i].runs, s)
 			} else {
 				i = len(rows)
-				prIndex[prNum] = i
+				prIndex[key] = i
 				rows = append(rows, dashRow{
-					key:   "pr:" + g.Repo + "#" + prNum,
+					key:   key,
 					repo:  g.Repo,
 					prNum: prNum,
 					runs:  []*run.State{s},
@@ -244,6 +248,17 @@ func (m dashboardModel) buildRows() []dashRow {
 		return a.key < b.key
 	})
 	return rows
+}
+
+// prKey is the row key of the PR numbered prNum that run s has: "pr:", the
+// owner/repo of its URL, lowercased as GitHub matches them, "#" and the
+// number. A URL without an owner/repo falls back on the run's repo group.
+func prKey(s *run.State, group, prNum string) string {
+	repo := strings.ToLower(gh.OwnerRepoFromPRURL(extractPRRef(s)))
+	if repo == "" {
+		repo = group
+	}
+	return "pr:" + repo + "#" + prNum
 }
 
 // changeStandsAlone reports whether where a change stands, apart from its

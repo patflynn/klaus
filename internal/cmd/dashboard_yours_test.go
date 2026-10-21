@@ -1169,3 +1169,32 @@ func TestSameNamedReposAreDifferentChanges(t *testing.T) {
 		t.Errorf("with two owners known, a run known by its short name should join neither: %+v", k)
 	}
 }
+
+// TestSameNumberedPRsInSameNamedRepos: alice/widget#7 and bob/widget#7 are
+// two PRs, though their runs know the repo by its short name, as the
+// project registry names a registered widget: each has its own row, with
+// its own status. A run that names alice's repo in full shares alice's
+// row, whatever the registry calls it.
+func TestSameNumberedPRsInSameNamedRepos(t *testing.T) {
+	now := time.Now()
+	at := func(minutesAgo int) string {
+		return now.Add(-time.Duration(minutesAgo) * time.Minute).Format(time.RFC3339)
+	}
+	alicePR, bobPR := "https://github.com/alice/widget/pull/7", "https://github.com/bob/widget/pull/7"
+	states := []*run.State{
+		{ID: "20261021-1200-0001", Type: "launch", Prompt: "alice's PR", TargetRepo: strPtr("widget"), PRURL: &alicePR, CreatedAt: at(30), CostUSD: float64Ptr(1)},
+		{ID: "20261021-1200-0002", Type: "launch", Prompt: "bob's PR", TargetRepo: strPtr("widget"), PRURL: &bobPR, CreatedAt: at(20), CostUSD: float64Ptr(1)},
+		{ID: "20261021-1200-0003", Type: "pr-fix", Prompt: "alice's fix", TargetRepo: strPtr("alice/widget"), PRURL: &alicePR, CreatedAt: at(10), CostUSD: float64Ptr(1)},
+	}
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), hideAfter: defaultHideFinishedAfter,
+		ghStatus: map[string]*prStatus{alicePR: {State: "MERGED"}, bobPR: {State: "OPEN", CI: "pending", Conflicts: "none"}}}
+	rows := m.buildRows()
+	got := make(map[string]string)
+	for _, r := range rows {
+		got[r.key] = fmt.Sprintf("%s, %d runs", categoryNames[r.category], len(r.runs))
+	}
+	want := map[string]string{"pr:alice/widget#7": "done, 2 runs", "pr:bob/widget#7": "pipeline, 1 runs"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("rows %v, want %v", got, want)
+	}
+}
