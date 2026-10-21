@@ -23,7 +23,8 @@ import (
 // absent, fails as an unreachable valley does. Its help lists unready only
 // when valley.has-unready exists; unready answers "widget nxvp v1 draft" or,
 // when valley.unready-refuse exists, refuses with its contents, and creates
-// valley.unready-late if the fake agent had already started.
+// valley.unready-late if the fake agent had already started. Its knot verbs
+// serve the knots writeKnot wrote (see there).
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
@@ -33,6 +34,37 @@ case "$1" in
 help)
   printf 'usage: valley <verb> [args]\n\n  ready --change <id> --head <sha> <branch>\n  changes [--all] [--json]\n  approve <change>\n'
   if [ -f "$dir/valley.has-unready" ]; then printf '  unready <change>\n'; fi
+  printf '  knot <verb> [args]\n'
+  ;;
+knot)
+  id=$3
+  case "$2" in
+  show)
+    if [ -f "$dir/knot.$id.json" ]; then cat "$dir/knot.$id.json"; exit 0; fi
+    echo "valley: the graph of widget holds no knot $id" >&2
+    exit 1
+    ;;
+  claim)
+    if [ -f "$dir/claude.started" ]; then : > "$dir/knot.claim-late"; fi
+    if [ -f "$dir/knot.claim-refuse" ]; then cat "$dir/knot.claim-refuse" >&2; exit 3; fi
+    echo "knot claim $id: $5 (0000000)"
+    ;;
+  link)
+    if [ -f "$dir/knot.link-refuse" ]; then cat "$dir/knot.link-refuse" >&2; exit 1; fi
+    echo "knot link $id (0000000)"
+    ;;
+  set)
+    if [ -f "$dir/knot.$id.set-refuse" ]; then cat "$dir/knot.$id.set-refuse" >&2; exit 3; fi
+    echo "knot set $id (0000000)"
+    ;;
+  comment)
+    { printf '== %%s\n' "$id"; cat; } >> "$dir/knot.comments"
+    echo "knot comment $id (0000000)"
+    ;;
+  *)
+    echo "knot $2 $id (0000000)"
+    ;;
+  esac
   ;;
 ready)
   if [ -f "$dir/valley.refuse" ]; then cat "$dir/valley.refuse" >&2; exit 1; fi

@@ -41,7 +41,10 @@ const (
 type Error struct {
 	Verb   string
 	Reason string
-	exited bool // valley ran and exited non-zero: Reason is its own message
+	// Conflict is set when valley exited with status 3, a conflict: for a
+	// knot write, another write changed what it depends on.
+	Conflict bool
+	exited   bool // valley ran and exited non-zero: Reason is its own message
 }
 
 func (e *Error) Error() string {
@@ -169,7 +172,7 @@ func hasVerbs(ctx context.Context, verbs ...string) bool {
 		return false
 	}
 	// Some CLIs exit non-zero from help; the listing is what counts.
-	stdout, stderr, _ := execValley(ctx, "", helpTimeout, "help")
+	stdout, stderr, _ := execValley(ctx, "", helpTimeout, nil, "help")
 	help := append(stdout, stderr...)
 	for _, v := range verbs {
 		if !hasVerb(help, v) {
@@ -245,11 +248,19 @@ func HasPolicy(ctx context.Context, dir, head string) bool {
 
 // command runs valley and returns its stdout, or an *Error.
 func command(ctx context.Context, dir string, timeout time.Duration, args ...string) ([]byte, error) {
-	stdout, stderr, err := execValley(ctx, dir, timeout, args...)
+	return commandInput(ctx, dir, timeout, nil, args...)
+}
+
+// commandInput is command with stdin, for a verb that reads it.
+func commandInput(ctx context.Context, dir string, timeout time.Duration, stdin []byte, args ...string) ([]byte, error) {
+	stdout, stderr, err := execValley(ctx, dir, timeout, stdin, args...)
 	if err == nil {
 		return stdout, nil
 	}
 	e := &Error{Verb: args[0]}
+	if args[0] == "knot" && len(args) > 1 {
+		e.Verb += " " + args[1]
+	}
 	var exitErr *exec.ExitError
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -257,6 +268,7 @@ func command(ctx context.Context, dir string, timeout time.Duration, args ...str
 	case errors.As(err, &exitErr):
 		// A refusal: the valley's message, from stderr or else stdout.
 		e.exited = true
+		e.Conflict = exitErr.ExitCode() == 3
 		e.Reason = shortReason(stderr)
 		if e.Reason == "" {
 			e.Reason = shortReason(stdout)
@@ -270,12 +282,13 @@ func command(ctx context.Context, dir string, timeout time.Duration, args ...str
 	return nil, e
 }
 
-// execValley runs valley in dir (the current directory when empty). It never
-// prompts: stdin is empty, git's terminal prompt is off, and the command runs
-// in a new session with no controlling terminal, so ssh can't ask for a
-// passphrase on the dashboard's screen. A timeout reports
+// execValley runs valley in dir (the current directory when empty), with
+// stdin on its standard input. It never prompts: stdin is all valley reads,
+// git's terminal prompt is off, and the command runs in a new session with no
+// controlling terminal, so ssh can't ask for a passphrase on the dashboard's
+// screen. A timeout reports
 // context.DeadlineExceeded, and kills valley and everything it started.
-func execValley(ctx context.Context, dir string, timeout time.Duration, args ...string) (stdout, stderr []byte, err error) {
+func execValley(ctx context.Context, dir string, timeout time.Duration, stdin []byte, args ...string) (stdout, stderr []byte, err error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "valley", args...)
@@ -283,6 +296,7 @@ func execValley(ctx context.Context, dir string, timeout time.Duration, args ...
 	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0") // Environ sets PWD to Dir
 	isolate(cmd)
 	var out, errOut bytes.Buffer
+	cmd.Stdin = bytes.NewReader(stdin)
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	err = cmd.Run()
 	if err != nil && ctx.Err() != nil {

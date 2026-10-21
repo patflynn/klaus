@@ -53,6 +53,7 @@ type State struct {
 	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
 	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
 	Delivery         string   `json:"delivery,omitempty"`          // how launch told the agent to deliver: DeliveryPR or DeliveryPush; empty in state that predates it
+	Knot             *Knot    `json:"knot,omitempty"`              // set when the run was launched to work a valley knot (--issue <knot>)
 }
 
 // How a run delivers its work, as launch decides it from the run's repo.
@@ -79,6 +80,26 @@ type Valley struct {
 	Version int    `json:"version,omitempty"` // the version the pushed head became
 	Title   string `json:"title,omitempty"`   // the pushed head's subject
 	Error   string `json:"error,omitempty"`   // why valley ready failed; empty when it succeeded
+}
+
+// Knot is the knot in a valley project's plan graph that a run was launched
+// to work (--issue <knot>), and what klaus did to it: launch claims it,
+// finalize links the run's change to it, or comments when the run failed or
+// paused, and clears the claim; once the dashboard sees the change landed it
+// comments with the landed commit and may close the knot.
+type Knot struct {
+	ID       string `json:"id"`                 // e.g. oc-897917f
+	Project  string `json:"project"`            // the valley project whose plan graph holds it
+	Type     string `json:"type"`               // outcome or bug
+	Title    string `json:"title,omitempty"`    // its title at launch
+	Dir      string `json:"dir,omitempty"`      // the checkout launch ran valley in, where klaus asks about the knot after the run
+	Claimed  bool   `json:"claimed,omitempty"`  // launch claimed it for the run
+	Released bool   `json:"released,omitempty"` // finalize cleared the run's claim
+	Linked   string `json:"linked,omitempty"`   // the change finalize linked to it: valley:<repo>/<change ID>
+	Note     string `json:"note,omitempty"`     // why finalize commented instead of linking a change
+	Landed   string `json:"landed,omitempty"`   // the commit the change landed as, once klaus commented with it
+	Closed   string `json:"closed,omitempty"`   // the status klaus set after the landing: done or closed
+	Error    string `json:"error,omitempty"`    // the last knot write that failed
 }
 
 // TmuxDeps abstracts tmux pane operations so callers can inject test doubles.

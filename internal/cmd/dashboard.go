@@ -528,12 +528,12 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The first load starts the integration check loop; it then
 			// re-arms itself each time a check completes.
 			m.integrationOn = true
-			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states))
+			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store))
 		}
 		return m, cmd
 
 	case integrationTickMsg:
-		return m, checkIntegrationCmd(m.checker, m.states)
+		return m, checkIntegrationCmd(m.checker, m.states, m.store)
 
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
