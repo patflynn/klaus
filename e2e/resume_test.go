@@ -560,7 +560,8 @@ func TestResumeFromFailedSuccessorCarriesAttention(t *testing.T) {
 // head is the branch, when GitHub can't be asked, when a run of another
 // change worked on the branch, when origin's tip carries another change's
 // Change-Id, and when the run is in another owner's repo of the same name.
-// A branch that passes every check is continued.
+// A branch that passes every check is continued, though a run in another
+// owner's repo of the same name used the same branch name.
 func TestResumeFromChecksBranchOwnership(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -586,6 +587,10 @@ func TestResumeFromChecksBranchOwnership(t *testing.T) {
 	h.stubGitHubPRs(map[string]string{"agent/has-pr": "https://github.com/acme/widget/pull/77", "agent/gh-down": "down"})
 	h.SeedState(&run.State{ID: "20261021-2200-00000009", Type: "launch", Prompt: "another change", TargetRepo: strPtrE2E("acme/widget"),
 		Branch: "agent/shared", ChangeID: other, CostUSD: strPtrFloat(0.5), CreatedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339)})
+	// The same branch name in another owner's widget is no claim on ours.
+	h.SeedState(&run.State{ID: "20261021-2200-00000008", Type: "launch", Prompt: "bob's change", TargetRepo: strPtrE2E("bob/widget"),
+		RepoKey: "bob/widget", Branch: "agent/clean", ChangeID: other, CostUSD: strPtrFloat(0.5),
+		CreatedAt: time.Now().Add(-2 * time.Hour).Format(time.RFC3339)})
 	bobs := h.seedSalvaged("20261021-2200-00000005", "agent/bobs", push["agent/bobs"], strings.Repeat("o", 32))
 	bobs.TargetRepo, bobs.RepoKey = strPtrE2E("bob/widget"), "bob/widget"
 	h.SeedState(bobs)

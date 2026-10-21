@@ -233,16 +233,20 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	if repo := integration.RepoName(prior); repo != src.Repo {
 		return nil, fmt.Sprintf("run %s is in %s, not %s", prior.ID, repo, src.Repo)
 	}
-	if owner, _, _ := strings.Cut(src.Slug, "/"); owner != "" {
-		if o := repoOwner(prior); o != "" && !strings.EqualFold(o, owner) {
-			return nil, fmt.Sprintf("run %s is in %s's %s, not %s", prior.ID, o, src.Repo, src.Slug)
-		}
+	owner, _, _ := strings.Cut(src.Slug, "/")
+	if o := repoOwner(prior); owner != "" && o != "" && !strings.EqualFold(o, owner) {
+		return nil, fmt.Sprintf("run %s is in %s's %s, not %s", prior.ID, o, src.Repo, src.Slug)
+	}
+	// inRepo is whether a run is in the target repo: by name, and by
+	// GitHub owner where both are known.
+	inRepo := func(s *run.State) bool {
+		o := repoOwner(s)
+		return s.Type != "session" && integration.RepoName(s) == src.Repo && (owner == "" || o == "" || strings.EqualFold(o, owner))
 	}
 	branch, head := *prior.PushedBranch, *prior.PushedSHA
 	var pr *run.State // the newest run of the change with a PR
 	for _, s := range src.Runs {
-		if s.Type != "session" && s.ChangeID == prior.ChangeID && integration.RepoName(s) == src.Repo &&
-			s.PRURL != nil && *s.PRURL != "" && (pr == nil || createdBefore(pr, s)) {
+		if inRepo(s) && s.ChangeID == prior.ChangeID && s.PRURL != nil && *s.PRURL != "" && (pr == nil || createdBefore(pr, s)) {
 			pr = s
 		}
 	}
@@ -257,8 +261,7 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 		return nil, fmt.Sprintf("origin's %s has diverged from run %s's push %s", branch, prior.ID, shortSHA(head))
 	}
 	for _, s := range src.Runs {
-		if s.Type != "session" && s.ChangeID != prior.ChangeID && integration.RepoName(s) == src.Repo &&
-			(s.Branch == branch || s.PushedBranch != nil && *s.PushedBranch == branch) {
+		if inRepo(s) && s.ChangeID != prior.ChangeID && (s.Branch == branch || s.PushedBranch != nil && *s.PushedBranch == branch) {
 			return nil, fmt.Sprintf("branch %s is also run %s's, of another change", branch, s.ID)
 		}
 	}
