@@ -172,7 +172,7 @@ func TestClassifyByWhoseMoveItIs(t *testing.T) {
 // valley's view of the change's active version, wherever it was marked
 // ready, so earlier versions fold in and a running follow-up puts the row
 // with the agents and withholds the approve command. Salvaged work counts
-// unless a later run pushed. A change no valley lists is judged by its
+// unless a run that pushed took it on. A change no valley lists is judged by its
 // latest push. Runs without a change ID keep a row each.
 func TestChangeRowsGroupRuns(t *testing.T) {
 	now := time.Now()
@@ -234,10 +234,11 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 	elsewhere.TargetRepo = strPtr("o/other")
 	elsewhere.PushedSubject = "Port it elsewhere" // titles a change no valley knows
 	results[elsewhere.ID] = integration.Result{Verdict: integration.Awaiting}
-	// Salvaged work a later run pushed is continued; salvage after a push
-	// needs the operator.
-	add("continued salvage", chg('m'), 40, &run.State{NeedsAttention: strPtr("agent/x")})
+	// Salvaged work a run that pushed took on is continued; salvage after a
+	// push needs the operator.
+	salvage := add("continued salvage", chg('m'), 40, &run.State{NeedsAttention: strPtr("agent/x")})
 	continuing := pushed("continuing push", chg('m'), 30)
+	continuing.TookOver = []string{salvage.ID}
 	valley(continuing, integration.Ready, 1)
 	before := pushed("pushed first", chg('n'), 40)
 	valley(before, integration.Ready, 1)
@@ -281,16 +282,16 @@ func TestChangeRowsGroupRuns(t *testing.T) {
 		approve                  string
 	}
 	wants := map[string]want{
-		"active v2":         {"change:r#" + chg('k'), "kkkk", "yours", "READY  v2@", 2, 0, "valley approve kkkk --head " + *active.PushedSHA},
-		"readied v1":        {"change:r#" + chg('l'), "llll", "agents", "READY  agent:" + shortRunID(follow.ID) + " running  v1@", 2, 1, ""},
-		"Port it elsewhere": {"change:other#" + chg('l'), "llllllll", "yours", "SUBMIT", 1, 0, ""},
-		"continuing push":   {"change:r#" + chg('m'), "mmmm", "yours", "READY  v1@", 2, 0, "valley approve mmmm --head " + *continuing.PushedSHA},
-		"pushed first":      {"change:r#" + chg('n'), "nnnn", "yours", "ATTN  v1@", 2, 0, ""},
-		"first run":         {"change:r#" + chg('o'), "oooooooo", "agents", "agent:" + shortRunID(first.ID) + " running", 1, 1, ""},
-		"landed first":      {"change:r#" + chg('r'), "rrrr", "yours", "ATTN  v1@", 2, 0, ""},
-		"reactivated v1":    {"change:r#" + chg('q'), "qqqq", "yours", "READY  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
-		"gave way later":    {"change:r#" + chg('s'), "ssss", "yours", "READY  v3@eeeeeee", 2, 0, "valley approve ssss --head " + elsewhereHead},
-		"replaced":          {"change:r#" + chg('p'), "pppp", "done", "INTEGRATED  v2@fffffff", 1, 0, ""},
+		"active v2":         {"change:o/r#" + chg('k'), "kkkk", "yours", "READY  v2@", 2, 0, "valley approve kkkk --head " + *active.PushedSHA},
+		"readied v1":        {"change:o/r#" + chg('l'), "llll", "agents", "READY  agent:" + shortRunID(follow.ID) + " running  v1@", 2, 1, ""},
+		"Port it elsewhere": {"change:o/other#" + chg('l'), "llllllll", "yours", "SUBMIT", 1, 0, ""},
+		"continuing push":   {"change:o/r#" + chg('m'), "mmmm", "yours", "READY  v1@", 2, 0, "valley approve mmmm --head " + *continuing.PushedSHA},
+		"pushed first":      {"change:o/r#" + chg('n'), "nnnn", "yours", "ATTN  v1@", 2, 0, ""},
+		"first run":         {"change:o/r#" + chg('o'), "oooooooo", "agents", "agent:" + shortRunID(first.ID) + " running", 1, 1, ""},
+		"landed first":      {"change:o/r#" + chg('r'), "rrrr", "yours", "ATTN  v1@", 2, 0, ""},
+		"reactivated v1":    {"change:o/r#" + chg('q'), "qqqq", "yours", "READY  v1@", 2, 0, "valley approve qqqq --head " + *reactivated.PushedSHA},
+		"gave way later":    {"change:o/r#" + chg('s'), "ssss", "yours", "READY  v3@eeeeeee", 2, 0, "valley approve ssss --head " + elsewhereHead},
+		"replaced":          {"change:o/r#" + chg('p'), "pppp", "done", "INTEGRATED  v2@fffffff", 1, 0, ""},
 		"lone a":            {"run:" + loneA.ID, "agent:" + shortRunID(loneA.ID), "yours", "SUBMIT", 1, 0, ""},
 		"lone b":            {"run:" + loneB.ID, "agent:" + shortRunID(loneB.ID), "yours", "SUBMIT", 1, 0, ""},
 	}
@@ -967,15 +968,18 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 	})
 }
 
-// TestPRRowTakesItsChangesRunsWithoutAPR covers the incident of 2026-10-20:
-// a run stopped at the usage limit before opening its PR, and a
-// --resume-from run on the same change opened it. The salvaged run joins
-// the PR's row, behind the PR's agent, and its attention, superseded by the
-// later run, makes nothing ATTN, whether the PR is open or merged. Salvage
-// newer than the PR is still the operator's, even on a merged PR; a running
-// follow-up without a PR runs on the PR's row; and salvage with no later run
-// keeps its change's ATTN row. A run that resumed the salvaged one is later
-// even when both were created in the same second.
+// TestPRRowTakesItsChangesRunsWithoutAPR: a run that stopped at the usage
+// limit before opening its PR joins the row of its change's PR, behind the
+// PR's agent. Its attention stops counting only once a run records taking
+// its work on (TookOver) and is running or finished, whatever the creation
+// times say: then nothing reads ATTN, whether the PR is open or merged. A
+// successor that ended needing attention or failing carries the attention
+// itself, whatever became of its PR: merged, closed or out of reach. A
+// follow-up that only resumed it, on a fresh branch, or one that never
+// finished, hands nothing off. Salvage newer than a merged PR is
+// still the operator's, and a running follow-up without a PR runs on the
+// PR's row. A push without a PR after the PR keeps its change's own row
+// while it waits for integration, and folds into the PR's once it landed.
 func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 	now := time.Now()
 	n := 0
@@ -1001,31 +1005,50 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		})
 	}
 	pr := func(num int) *string { return strPtr(fmt.Sprintf("https://github.com/o/r/pull/%d", num)) }
+	open := &prStatus{State: "OPEN", CI: "pending", Conflicts: "none"}
+	status := map[string]*prStatus{}
 
-	salvaged("stopped before 335", chg('x'), 60)
-	merged := add("opened 335", chg('x'), 30, &run.State{PRURL: pr(335)})
-	salvaged("stopped before 334", chg('y'), 60)
-	open := add("opened 334", chg('y'), 30, &run.State{PRURL: pr(334)})
+	a := salvaged("stopped before 335", chg('x'), 60)
+	status[*add("opened 335", chg('x'), 30, &run.State{PRURL: pr(335), TookOver: []string{a.ID}}).PRURL] = &prStatus{State: "MERGED"}
+	// Its successor's clock ran behind: created "before" it.
+	b := salvaged("stopped before 334", chg('y'), 60)
+	status[*add("opened 334", chg('y'), 90, &run.State{PRURL: pr(334), TookOver: []string{b.ID}}).PRURL] = open
 	add("opened 336", chg('z'), 60, &run.State{PRURL: pr(336), MergedAt: strPtr(now.Add(-time.Hour).Format(time.RFC3339))})
 	salvaged("stopped after 336 merged", chg('z'), 10)
 	running := add("opened 337", chg('v'), 50, &run.State{PRURL: pr(337)})
+	status[*running.PRURL] = open
 	follow := add("following up 337", chg('v'), 5, &run.State{TmuxPane: strPtr("%1")})
 	salvaged("stopped with no follow-up", chg('w'), 20)
-	// Created in the same second as the run it resumes: later by its record.
-	tied := salvaged("stopped before 338", chg('u'), 15)
-	tiedPR := add("resumed it in the same second", chg('u'), 15, &run.State{PRURL: pr(338), OriginalRunID: &tied.ID})
-
-	m := dashboardModel{
-		states:   states,
-		tmuxDeps: testDashboardTmuxDeps(),
-		ghStatus: map[string]*prStatus{
-			*merged.PRURL:  {State: "MERGED"},
-			*open.PRURL:    {State: "OPEN", CI: "pending", Conflicts: "none"},
-			*running.PRURL: {State: "OPEN", CI: "pending", Conflicts: "none"},
-			*tiedPR.PRURL:  {State: "OPEN", CI: "pending", Conflicts: "none"},
-		},
-		hideAfter: defaultHideFinishedAfter,
+	// Resumed on a fresh branch: the successor recorded no handoff.
+	fresh := salvaged("stopped before 338", chg('u'), 40)
+	status[*add("resumed it on a fresh branch", chg('u'), 15, &run.State{PRURL: pr(338), OriginalRunID: &fresh.ID}).PRURL] = open
+	// Its successor took it on and was salvaged in turn, or failed.
+	c := salvaged("stopped, taken on, stopped again", chg('t'), 40)
+	add("took it on and stopped", chg('t'), 20, &run.State{TookOver: []string{c.ID},
+		NeedsAttention: strPtr("session_limit; branch agent/t preserved (pushed)")})
+	d := salvaged("stopped, taken on, crashed", chg('s'), 40)
+	add("took it on and crashed", chg('s'), 20, &run.State{TookOver: []string{d.ID}, FailureReason: strPtr("error_during_execution")})
+	// Its successor continued it under a PR and failed, and the PR merged,
+	// closed or went out of reach: the attention it took on stays.
+	var failedUnderPR []*run.State
+	for i, st := range []string{"MERGED", "CLOSED", gh.StateNoAccess} {
+		f := salvaged(fmt.Sprintf("stopped before %d", 341+i), chg(byte('l'+i)), 40)
+		failedUnderPR = append(failedUnderPR, f)
+		status[*add(fmt.Sprintf("took it on under %d and crashed", 341+i), chg(byte('l'+i)), 20, &run.State{PRURL: pr(341 + i),
+			TookOver: []string{f.ID}, FailureReason: strPtr("error_during_execution")}).PRURL] = &prStatus{State: st}
 	}
+	// Its successor's pane is gone and it never finished.
+	e := salvaged("stopped, taken on, vanished", chg('q'), 40)
+	add("took it on and vanished", chg('q'), 20, &run.State{TookOver: []string{e.ID}, TmuxPane: strPtr("gone")})
+	// A push after the PR waits on its own row until it lands; then it
+	// folds into the PR's.
+	status[*add("opened 339", chg('r'), 60, &run.State{PRURL: pr(339)}).PRURL] = &prStatus{State: "MERGED"}
+	waiting := add("pushed after 339", chg('r'), 30, &run.State{PushedBranch: strPtr("agent/r"), PushedSHA: strPtr(strings.Repeat("b", 40))})
+	status[*add("opened 340", chg('p'), 60, &run.State{PRURL: pr(340)}).PRURL] = &prStatus{State: "MERGED"}
+	landed := add("pushed and landed after 340", chg('p'), 30, &run.State{PushedBranch: strPtr("agent/p"), PushedSHA: strPtr(strings.Repeat("c", 40))})
+
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), ghStatus: status, hideAfter: defaultHideFinishedAfter,
+		integration: map[string]integration.Result{waiting.ID: {Verdict: integration.Awaiting}, landed.ID: {Verdict: integration.Integrated}}}
 	rows := m.buildRows()
 	type want struct {
 		key, category string
@@ -1033,12 +1056,21 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		runs, running int
 	}
 	wants := map[string]want{
-		"opened 335":                    {"pr:o/r#335", "done", false, 2, 0},
-		"opened 334":                    {"pr:o/r#334", "pipeline", false, 2, 0},
-		"opened 336":                    {"pr:o/r#336", "yours", true, 2, 0},
-		"opened 337":                    {"pr:o/r#337", "agents", false, 2, 1},
-		"stopped with no follow-up":     {"change:r#" + chg('w'), "yours", true, 1, 0},
-		"resumed it in the same second": {"pr:o/r#338", "pipeline", false, 2, 0},
+		"opened 339":                       {"pr:o/r#339", "done", false, 1, 0},
+		"pushed after 339":                 {"change:o/r#" + chg('r'), "yours", false, 1, 0},
+		"opened 340":                       {"pr:o/r#340", "done", false, 2, 0},
+		"opened 335":                       {"pr:o/r#335", "done", false, 2, 0},
+		"opened 334":                       {"pr:o/r#334", "pipeline", false, 2, 0},
+		"opened 336":                       {"pr:o/r#336", "yours", true, 2, 0},
+		"opened 337":                       {"pr:o/r#337", "agents", false, 2, 1},
+		"stopped with no follow-up":        {"change:o/r#" + chg('w'), "yours", true, 1, 0},
+		"resumed it on a fresh branch":     {"pr:o/r#338", "yours", true, 2, 0},
+		"took it on and stopped":           {"change:o/r#" + chg('t'), "yours", true, 2, 0},
+		"took it on and crashed":           {"change:o/r#" + chg('s'), "yours", true, 2, 0},
+		"took it on and vanished":          {"change:o/r#" + chg('q'), "yours", true, 2, 0},
+		"took it on under 341 and crashed": {"pr:o/r#341", "yours", true, 2, 0},
+		"took it on under 342 and crashed": {"pr:o/r#342", "yours", true, 2, 0},
+		"took it on under 343 and crashed": {"pr:o/r#343", "yours", true, 2, 0},
 	}
 	if len(rows) != len(wants) {
 		t.Errorf("%d rows, want %d", len(rows), len(wants))
@@ -1056,6 +1088,17 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 				prompt, r.key, categoryNames[r.category], r.attention, len(r.runs), len(r.running), w)
 		}
 	}
+	superseded := supersededRuns(states, m.agentRunning)
+	for _, s := range append([]*run.State{a, b, c, d}, failedUnderPR...) {
+		if !superseded[s.ID] {
+			t.Errorf("%q was taken on: it should be superseded", s.Prompt)
+		}
+	}
+	for _, s := range []*run.State{fresh, e} {
+		if superseded[s.ID] {
+			t.Errorf("%q handed nothing off: it should still need attention", s.Prompt)
+		}
+	}
 
 	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 30})
 	plain := ansi.Strip(m.View())
@@ -1067,10 +1110,91 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 	if line := lineWith(plain, "#336 "); !strings.Contains(line, "MERGED") || !strings.Contains(line, "ATTN") {
 		t.Errorf("salvage after #336 merged should show ATTN on its row: %q", line)
 	}
+	for _, num := range []string{"#341", "#342", "#343"} {
+		if line := lineWith(plain, num+" "); !strings.Contains(line, "ATTN") {
+			t.Errorf("the attention %s's failed run took on should show ATTN on its row: %q\n%s", num, line, plain)
+		}
+	}
 	if line := lineWith(plain, "#337 "); !strings.Contains(line, "agent:"+shortRunID(follow.ID)+" running") {
 		t.Errorf("the follow-up should run on #337's row: %q", line)
 	}
-	if !strings.Contains(plain, "2 yours") {
-		t.Errorf("only #336 and the change with no follow-up are yours:\n%s", plain)
+}
+
+// TestSameNamedReposAreDifferentChanges: the same change ID in alice/widget
+// and bob/widget names two changes. bob's salvaged run doesn't join alice's
+// PR, and alice's run recording it as taken on (it can't, in practice)
+// doesn't supersede it. A run that knows its repo only by its short name
+// joins the one owner its change's other runs are known by.
+func TestSameNamedReposAreDifferentChanges(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	change := strings.Repeat("k", 32)
+	branch, sha := "agent/x", strings.Repeat("a", 40)
+	bob := &run.State{ID: "20261021-1200-0001", Type: "launch", Prompt: "bob's salvage", ChangeID: change,
+		TargetRepo: strPtr("bob/widget"), RepoKey: "bob/widget", CreatedAt: now, CostUSD: float64Ptr(1),
+		NeedsAttention: strPtr("session_limit"), PushedBranch: &branch, PushedSHA: &sha}
+	alice := &run.State{ID: "20261021-1200-0002", Type: "launch", Prompt: "alice's PR", ChangeID: change,
+		TargetRepo: strPtr("widget"), PRURL: strPtr("https://github.com/alice/widget/pull/7"),
+		TookOver: []string{bob.ID}, CreatedAt: now, CostUSD: float64Ptr(1)}
+	short := &run.State{ID: "20261021-1200-0003", Type: "launch", Prompt: "alice's salvage, by short name", ChangeID: change,
+		TargetRepo: strPtr("widget"), CreatedAt: now, CostUSD: float64Ptr(1), NeedsAttention: strPtr("session_limit")}
+	states := []*run.State{bob, alice}
+
+	changeOf := changeKeys(states)
+	kb, _ := changeOf(bob)
+	ka, _ := changeOf(alice)
+	if kb == ka || kb.Repo != "bob/widget" || ka.Repo != "alice/widget" {
+		t.Errorf("bob's change %+v and alice's %+v should differ, by owner", kb, ka)
+	}
+	if supersededRuns(states, func(*run.State) bool { return false })[bob.ID] {
+		t.Error("a run in alice/widget can't take bob/widget's work on")
+	}
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{*alice.PRURL: {State: "MERGED"}}, hideAfter: defaultHideFinishedAfter}
+	for _, r := range m.buildRows() {
+		if len(r.runs) != 1 {
+			t.Errorf("row %s holds %d runs; each repo's run should have its own row", r.key, len(r.runs))
+		}
+		if r.state() == bob && (!r.attention || r.category != catYours) {
+			t.Errorf("bob's salvage should read ATTN, yours: %s attention %v", categoryNames[r.category], r.attention)
+		}
+	}
+
+	// Known only by its short name, alice's salvage joins alice's change:
+	// the one owner known for it among these runs.
+	if k, _ := changeKeys([]*run.State{alice, short})(short); k != ka {
+		t.Errorf("a run known by its short name should take the one known owner: %+v, want %+v", k, ka)
+	}
+	// With two owners known, it can't tell which, and joins neither.
+	if k, _ := changeKeys([]*run.State{alice, bob, short})(short); k == ka || k == kb {
+		t.Errorf("with two owners known, a run known by its short name should join neither: %+v", k)
+	}
+}
+
+// TestSameNumberedPRsInSameNamedRepos: alice/widget#7 and bob/widget#7 are
+// two PRs, though their runs know the repo by its short name, as the
+// project registry names a registered widget: each has its own row, with
+// its own status. A run that names alice's repo in full shares alice's
+// row, whatever the registry calls it.
+func TestSameNumberedPRsInSameNamedRepos(t *testing.T) {
+	now := time.Now()
+	at := func(minutesAgo int) string {
+		return now.Add(-time.Duration(minutesAgo) * time.Minute).Format(time.RFC3339)
+	}
+	alicePR, bobPR := "https://github.com/alice/widget/pull/7", "https://github.com/bob/widget/pull/7"
+	states := []*run.State{
+		{ID: "20261021-1200-0001", Type: "launch", Prompt: "alice's PR", TargetRepo: strPtr("widget"), PRURL: &alicePR, CreatedAt: at(30), CostUSD: float64Ptr(1)},
+		{ID: "20261021-1200-0002", Type: "launch", Prompt: "bob's PR", TargetRepo: strPtr("widget"), PRURL: &bobPR, CreatedAt: at(20), CostUSD: float64Ptr(1)},
+		{ID: "20261021-1200-0003", Type: "pr-fix", Prompt: "alice's fix", TargetRepo: strPtr("alice/widget"), PRURL: &alicePR, CreatedAt: at(10), CostUSD: float64Ptr(1)},
+	}
+	m := dashboardModel{states: states, tmuxDeps: testDashboardTmuxDeps(), hideAfter: defaultHideFinishedAfter,
+		ghStatus: map[string]*prStatus{alicePR: {State: "MERGED"}, bobPR: {State: "OPEN", CI: "pending", Conflicts: "none"}}}
+	rows := m.buildRows()
+	got := make(map[string]string)
+	for _, r := range rows {
+		got[r.key] = fmt.Sprintf("%s, %d runs", categoryNames[r.category], len(r.runs))
+	}
+	want := map[string]string{"pr:alice/widget#7": "done, 2 runs", "pr:bob/widget#7": "pipeline, 1 runs"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("rows %v, want %v", got, want)
 	}
 }

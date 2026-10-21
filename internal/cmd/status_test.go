@@ -122,6 +122,12 @@ func TestDetermineStatus(t *testing.T) {
 			want: "merged",
 		},
 		{
+			name: "merged run that took on others' attention and failed still needs attention",
+			s: &run.State{MergedAt: strPtr("2026-10-05T03:00:00Z"), PRURL: strPtr("https://github.com/owner/repo/pull/1"),
+				TookOver: []string{"20261005-0200-aaaa"}, FailureReason: strPtr("error_during_execution")},
+			want: "needs-attention",
+		},
+		{
 			name: "session type with missing worktree returns ended",
 			s:    &run.State{Type: "session", Worktree: "/nonexistent/path/that/does/not/exist"},
 			want: "ended",

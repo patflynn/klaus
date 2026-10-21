@@ -132,7 +132,17 @@ the run that opened the PR), in the target repo, naming that run.
 discarding its local, uncommitted work and unpushed commits. Without it,
 launch never discards work origin lacks: when the branch is checked out in a
 worktree with uncommitted changes, or the local branch has commits not on
-origin/<branch>, it refuses, naming the worktree or branch.
+origin/<branch>, it refuses, naming the worktree or branch. Nor does it
+remove a worktree that still has the branch checked out: it refuses, naming
+the run whose worktree it is (clean that run up, or pass --force-takeover).
+Even --force-takeover only replaces a worktree a run registered; one no run
+registered, such as your own checkout, is refused and left alone. It
+replaces only the worktree it checked: should another one have the branch
+checked out by the time launch creates its own, launch refuses and leaves
+it alone. A new run's worktree path must not exist. These launches, in one
+clone, take a lock from the check for a running holder through the new
+run's registration, so two of them can't both pass it: the second waits up
+to 5 minutes, saying so, then finds the first run and refuses.
 
 A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
 is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
@@ -169,17 +179,29 @@ staged.
 
 Without --pr, --change or --branch, a --resume-from run continues the branch
 its run pushed without a PR, as when finalize salvaged that run's work at a
-usage limit, unless something took the change further: no run of the change
-may have a PR, and the change's branch (its valley's active version's, else
-its newest push's) must still be that branch. The run keeps the change ID,
-its worktree tracks origin's branch, and it is told to push fast-forward to it
+usage limit, when the branch is still that change's and nothing took the
+change further: the run is in the target repo (by name and, where both are
+known, by GitHub owner); no run of the change has a PR; origin has the
+branch, with that run's push in its history; no run of another change worked
+on the branch, and origin's tip carries no other change's Change-Id; the
+change's branch (its valley's active version's, else its newest push's) is
+still that branch; and, for a repo on GitHub, no PR, open or not, has the
+branch as its head (asked with 'gh api'). The run keeps the change ID, its
+worktree tracks origin's branch, and it is told to push fast-forward to it
 (and, where the repo takes PRs, to open the PR from it), as --change does; it
-refuses as --change does while another run works on the branch or the change,
-or when local work on the branch isn't on origin. When the branch is gone from
-origin or has diverged from that run's push, or the change went on in a PR or
-on another branch, the run gets a new branch instead and the resume: line of
-the launch output says why. A run that pushed no branch, or opened a PR, gets
-a new branch too.
+refuses as --change does (above). Otherwise, as when GitHub can't be asked,
+the run gets a new branch instead and the resume: line of the launch output
+says why. A run that pushed no branch, or opened a PR, gets a new branch too.
+
+A --pr, --change or --resume-from run that continues a branch records, as
+took_over, the runs of its change that needed attention and whose pushed
+heads its starting head contains (the takes on: line names them), and
+finalize adds those whose pushed heads the head a run left on origin
+contains. Such a run carries their attention from then on: klaus status
+shows them superseded once it is running or finished, and if it in turn
+ended needing attention or failing, it shows needs-attention itself, even
+once its PR is merged, closed or out of reach. A --resume-from run on a new
+branch takes nothing on.
 
 For a budget-paused PR, and for any --change run, klaus continues the
 conversation of the most recent run on it by default (trajectory replay),
@@ -497,8 +519,13 @@ are synced back after completion. Use --local to force local execution, or
 		} else {
 			if resumeFrom != "" {
 				states, _ := run.ListAllSessions()
-				onChange, resumeNote = resumeTarget(ctx, repoRoot, resumeFrom,
-					changeSources{Runs: states, Repo: targetName(normalizedTarget), Valley: listValley})
+				src := changeSources{Runs: states, Repo: targetName(normalizedTarget), Valley: listValley, Slug: repoSlugForDir(repoRoot)}
+				if src.Slug != "" {
+					src.PRs = func(branch string) ([]string, error) {
+						return gh.NewGHCLIClient(src.Slug).PRsForBranch(ctx, src.Slug, branch)
+					}
+				}
+				onChange, resumeNote = resumeTarget(ctx, repoRoot, resumeFrom, src)
 			}
 			if onChange != nil {
 				branch = onChange.Branch
@@ -525,12 +552,30 @@ are synced back after completion. Use --local to force local execution, or
 			continuing = "--resume-from"
 		}
 
-		// Creating the worktree resets the branch and moves it from any
-		// worktree that has it checked out, so a run still working on the
-		// branch, or on the change, keeps it unless the operator takes over.
-		if (isPRFix || onChange != nil) && !forceTakeover {
-			if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
+		// Creating the worktree resets the branch, so a run still working on
+		// the branch, or on the change, keeps it unless the operator takes
+		// over, and a worktree that has it checked out is never removed
+		// unless it is a run's and the operator takes over (takeover), and
+		// then only the one the takeover checked. The check and the new
+		// run's registration happen under one lock, so two launches
+		// continuing a branch can't both pass it.
+		var takeover *git.Takeover
+		if isPRFix || onChange != nil {
+			release, err := lockContinuation(ctx, repoRoot)
+			if err != nil {
 				return fmt.Errorf("%s: %w", continuing, err)
+			}
+			defer release()
+			if !forceTakeover {
+				if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
+					return fmt.Errorf("%s: %w", continuing, err)
+				}
+			}
+			if forceTakeover {
+				states, _ := run.ListAllSessions()
+				if takeover, err = approveTakeover(ctx, repoRoot, branch, states); err != nil {
+					return fmt.Errorf("%s: %w", continuing, err)
+				}
 			}
 		}
 		if onChange != nil {
@@ -652,12 +697,19 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if isPRFix || onChange != nil {
 			// Create worktree tracking the PR's or the change's branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, takeover); err != nil {
 				var lw *git.LocalWorkError
-				if errors.As(err, &lw) {
-					return fmt.Errorf("creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", err)
+				var inUse *git.WorktreeInUseError
+				switch {
+				case errors.As(err, &lw):
+					return fmt.Errorf("%s: creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", continuing, err)
+				case errors.As(err, &inUse) && takeover != nil:
+					return fmt.Errorf("%s: %w", continuing, movedOccupantError(branch, inUse.Path, takeover))
+				case errors.As(err, &inUse):
+					states, _ := run.ListAllSessions()
+					return fmt.Errorf("%s: %w", continuing, occupantError(branch, inUse.Path, worktreeOwner(states, inUse.Path)))
 				}
-				return fmt.Errorf("creating worktree: %w", err)
+				return fmt.Errorf("%s: creating worktree: %w", continuing, err)
 			}
 		} else {
 			if err := gitClient.WorktreeAdd(ctx, repoRoot, worktree, branch, "origin/"+defaultBranch); err != nil {
@@ -711,6 +763,19 @@ are synced back after completion. Use --local to force local execution, or
 			return fmt.Errorf("choosing change ID: %w", err)
 		}
 		fmt.Printf("  change:   %s (%s)\n", change.ID, change.From)
+
+		// The runs of the change needing attention whose pushed work the
+		// branch holds are this run's to carry on.
+		var tookOver []string
+		if isPRFix || onChange != nil {
+			states, _ := run.ListAllSessions()
+			holder := &run.State{ID: id}
+			candidates := takeoverCandidates(states, holder, change.ID, targetName(normalizedTarget), change.Repo)
+			tookOver = recordTakeovers(ctx, worktree, "HEAD", holder, candidates)
+			if len(tookOver) > 0 {
+				fmt.Printf("  takes on: the work of %s, which needed attention\n", strings.Join(tookOver, ", "))
+			}
+		}
 
 		// Every commit the agent makes carries the provenance trailers, so a
 		// run that cannot stamp them does not start.
@@ -896,6 +961,7 @@ are synced back after completion. Use --local to force local execution, or
 			Model:       stringPtr(model),
 			Effort:      stringPtr(effort),
 			ChangeID:    change.ID,
+			TookOver:    tookOver,
 			Unready:     unready,
 			ChangeRepo:  change.Repo,
 			Delivery:    delivery,

@@ -51,7 +51,7 @@ func TestBuildRowsOneRowPerPRAndBareAgent(t *testing.T) {
 	}
 	// Both PRs are open; #7's latest activity (00:02) is newer than #9's. The
 	// exited bare agent is finished, so it sorts last.
-	want := []string{"pr:zzz#7", "pr:aaa#9", "run:bare"}
+	want := []string{"pr:o/zzz#7", "pr:o/aaa#9", "run:bare"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("row keys = %v, want %v", got, want)
 	}

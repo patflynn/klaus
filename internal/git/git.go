@@ -90,13 +90,18 @@ func ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]
 }
 
 // WorktreeAdd creates a new worktree at path on a new branch based on startPoint.
-// If the branch is already checked out in a stale worktree, it prunes and retries once.
+// It refuses when path already exists. If the branch is already checked out
+// in a stale worktree, it prunes and retries once; it never removes a
+// worktree whose directory exists.
 func WorktreeAdd(ctx context.Context, repoDir, path, branch, startPoint string) error {
+	if err := checkPathFree(path); err != nil {
+		return err
+	}
 	_, err := runGit(ctx, repoDir, "worktree", "add", path, "-b", branch, startPoint, "--quiet")
 	if err == nil {
 		return nil
 	}
-	return retryAfterPrune(ctx, repoDir, branch, err, false, func() error {
+	return retryAfterPrune(ctx, repoDir, branch, err, func() error {
 		// Use -B on retry: after pruning a stale worktree the branch ref remains,
 		// so -b (create new) would fail with "branch already exists".
 		_, e := runGit(ctx, repoDir, "worktree", "add", path, "-B", branch, startPoint, "--quiet")
@@ -110,29 +115,80 @@ func WorktreeRemove(ctx context.Context, repoDir, path string) error {
 	return err
 }
 
-// WorktreeAddTrack creates a worktree tracking an existing remote branch.
-// It uses -B to force-create/reset the local branch to match origin/<branch>.
-// If the branch is already checked out in another worktree, it removes that
-// worktree (or prunes it, when its directory is gone) and retries once.
+// WorktreeAddTrack creates a worktree at path tracking an existing remote
+// branch. It uses -B to force-create/reset the local branch to match
+// origin/<branch>. It refuses when path already exists.
 //
-// Unless discard is set, it first refuses with a *LocalWorkError to discard
-// work origin lacks: uncommitted changes in a worktree that has the branch
-// checked out, or commits on the local branch that aren't on origin/<branch>.
-// A local branch that only points at what origin has is reset freely.
-func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
-	if !discard {
+// When the branch is checked out in another worktree whose directory is
+// gone, it prunes that entry. When that directory still exists, it returns
+// a *WorktreeInUseError, unless takeover approved removing that very
+// worktree (Takeover.Occupant): then it removes it. It never removes any
+// other, so a worktree that took the branch after the takeover was
+// approved is refused, and left as it is.
+//
+// Unless takeover is set, it first refuses with a *LocalWorkError to
+// discard work origin lacks: uncommitted changes in a worktree that has the
+// branch checked out, or commits on the local branch that aren't on
+// origin/<branch>. A local branch that only points at what origin has is
+// reset freely.
+func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, takeover *Takeover) error {
+	if err := checkPathFree(path); err != nil {
+		return err
+	}
+	if takeover == nil {
 		if err := checkLocalWork(ctx, repoDir, branch); err != nil {
 			return err
 		}
 	}
-	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
-	if err == nil {
-		return nil
+	if wt := worktreePathForBranch(ctx, repoDir, branch); wt != "" {
+		if _, err := os.Stat(wt); err != nil {
+			if err := WorktreePrune(ctx, repoDir); err != nil {
+				return fmt.Errorf("pruning stale worktrees: %w", err)
+			}
+		} else if takeover == nil || takeover.Occupant == "" || filepath.Clean(wt) != filepath.Clean(takeover.Occupant) {
+			return &WorktreeInUseError{Branch: branch, Path: wt}
+		} else if err := WorktreeRemove(ctx, repoDir, wt); err != nil {
+			return fmt.Errorf("removing worktree %s: %w", wt, err)
+		}
 	}
-	return retryAfterPrune(ctx, repoDir, branch, err, true, func() error {
-		_, e := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
-		return e
-	})
+	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
+	return err
+}
+
+// Takeover is what a forced takeover of a branch approved discarding: work
+// origin lacks on the branch, and the worktree that had it checked out
+// when the takeover was checked.
+type Takeover struct {
+	// Occupant is the path, as BranchWorktree gave it, of the worktree
+	// approved for removal; "" when none had the branch checked out.
+	Occupant string
+}
+
+// WorktreeInUseError is WorktreeAddTrack's refusal to remove the worktree
+// that has Branch checked out, at Path, whose directory exists.
+type WorktreeInUseError struct {
+	Branch string
+	Path   string
+}
+
+func (e *WorktreeInUseError) Error() string {
+	return fmt.Sprintf("branch %q is checked out in worktree %s", e.Branch, e.Path)
+}
+
+// BranchWorktree returns the path of the worktree that has branch checked
+// out in repoDir, or "" when none does.
+func BranchWorktree(ctx context.Context, repoDir, branch string) string {
+	return worktreePathForBranch(ctx, repoDir, branch)
+}
+
+// checkPathFree refuses a new worktree's path that already holds anything.
+func checkPathFree(path string) error {
+	if _, err := os.Lstat(path); err == nil {
+		return fmt.Errorf("worktree path %s already exists", path)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("checking worktree path %s: %w", path, err)
+	}
+	return nil
 }
 
 // LocalWorkError is WorktreeAddTrack's refusal to discard work that origin
@@ -220,9 +276,9 @@ func worktreePathForBranch(ctx context.Context, repoDir, branch string) string {
 
 // retryAfterPrune handles "already used by worktree" errors. If the conflicting
 // worktree is stale (path no longer exists on disk), it prunes and retries.
-// If forceRemoveLive is true and the worktree directory still exists, it
-// force-removes the old worktree before retrying. Otherwise it returns a clear error.
-func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error, forceRemoveLive bool, retry func() error) error {
+// If the worktree directory still exists, it returns a clear error and
+// leaves it alone.
+func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error, retry func() error) error {
 	// Check whether this branch is recorded in any worktree.
 	wtPath := worktreePathForBranch(ctx, repoDir, branch)
 	if wtPath == "" {
@@ -231,15 +287,7 @@ func retryAfterPrune(ctx context.Context, repoDir, branch string, origErr error,
 	}
 
 	if _, err := os.Stat(wtPath); err == nil {
-		// Worktree directory still exists on disk.
-		if !forceRemoveLive {
-			return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
-		}
-		// Force-remove the old worktree so we can reuse the branch.
-		if err := WorktreeRemove(ctx, repoDir, wtPath); err != nil {
-			return fmt.Errorf("removing existing worktree %q: %w (original error: %v)", wtPath, err, origErr)
-		}
-		return retry()
+		return fmt.Errorf("branch %q is already checked out in active worktree %q; remove it first with: git worktree remove %s", branch, wtPath, wtPath)
 	}
 
 	// Worktree directory is gone — prune stale entries and retry.

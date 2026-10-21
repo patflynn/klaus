@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -21,9 +23,11 @@ var notificationsCmd = &cobra.Command{
 By default shows only events since the last time notifications was run.
 Use --all to show all events, or --json for machine-readable output.
 
-A run that needed attention is left out of the summary once a later run of
-its change (the same change ID in the same repo) exists, as klaus status
-shows it superseded: that run took the work on. --json lists every event.`,
+A run that needed attention is left out of the summary once a run of its
+change took its pushed work on and is running or finished, as klaus status
+shows it superseded: that run carries the attention, and its own
+agent:needs-attention says so if it ended needing attention or failing.
+--json lists every event.`,
 	Aliases: []string{"notif"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("all")
@@ -67,7 +71,8 @@ shows it superseded: that run took the work on. --json lists every event.`,
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: reading runs: %v\n", err)
 		}
-		printSummary(events, supersededRuns(states))
+		td := run.TmuxDepsFor(cmd.Context(), tmux.NewExecClient())
+		printSummary(events, supersededRuns(states, func(s *run.State) bool { return s.IsAgentRunningWith(td) }))
 		return nil
 	},
 }

@@ -23,10 +23,16 @@ var statusCmd = &cobra.Command{
 
 STATUS is one of: running (the agent's pane is still running it, judged as
 the dashboard judges it: a dead pane, or an idle one once the run finished,
-isn't running), needs-attention, superseded (it needed attention, but a
-later run of its change, the same change ID in the same repo, has taken
-the work on, as a --resume-from or --pr follow-up does; neither status nor
-the dashboard counts it as needing attention), pr-created, merged, closed,
+isn't running), needs-attention (finalize salvaged its work, or it failed
+after taking on the work of runs that needed attention), superseded (it
+needed attention, but a run of its change, the same change ID in the same
+repo, took its pushed work on and is running or finished: that run
+recorded it, as launch does for a --pr, --change or --resume-from run
+continuing a branch that holds the work, and finalize does when the head a
+run left on origin contains it; that run carries the attention from then
+on, and shows needs-attention itself if it ended needing attention or
+failing; neither status nor the dashboard counts the superseded run as
+needing attention), pr-created, merged, closed,
 no-access (GitHub won't show the PR with the current credentials), exited,
 and, for runs that finished by pushing a branch without a PR:
 
@@ -129,13 +135,18 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 	statuses := make([]string, len(states))
-	var pushed []*run.State
-	superseded := supersededRuns(states)
+	running := make(map[string]bool)
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		statuses[i] = determineStatus(ctx, s, tmuxClient)
+		running[s.ID] = statuses[i] == "running"
+	}
+	// A run whose work a later run took on hands its attention to that run.
+	superseded := supersededRuns(states, func(s *run.State) bool { return running[s.ID] })
+	var pushed []*run.State
+	for i, s := range states {
 		if statuses[i] == "needs-attention" && superseded[s.ID] {
 			statuses[i] = "superseded"
 		}
@@ -152,6 +163,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 
 	// The changes some run is still running on: any other run of one
 	// that isn't done is working.
+	changeOf := changeKeys(states)
 	busy := make(map[integration.ChangeKey]bool)
 	for i, s := range states {
 		if k, ok := changeOf(s); ok && statuses[i] == "running" {
@@ -218,7 +230,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		}
 
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, prs, handles), ci, conflicts, behind, merge, prompt)
+			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, changeOf, prs, handles), ci, conflicts, behind, merge, prompt)
 	}
 
 	return nil
@@ -245,10 +257,15 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 		return "running"
 	}
 
+	// The attention a run took on with other runs' work (TookOver) outlasts
+	// its PR's merge, as on the dashboard.
+	if needsAttention(s) && len(s.TookOver) > 0 {
+		return "needs-attention"
+	}
 	if s.MergedAt != nil {
 		return "merged"
 	}
-	if s.NeedsAttention != nil {
+	if needsAttention(s) {
 		return "needs-attention"
 	}
 	if s.PRURL != nil {
@@ -312,7 +329,7 @@ func formatCost(s *run.State) string {
 // change's handle (changeHandles), else the first 8 characters of its
 // change ID, as the dashboard names a PR's or a change's row; "-" for a run
 // with none of them.
-func changeLabel(s *run.State, prs, handles map[integration.ChangeKey]string) string {
+func changeLabel(s *run.State, changeOf func(*run.State) (integration.ChangeKey, bool), prs, handles map[integration.ChangeKey]string) string {
 	k, _ := changeOf(s)
 	switch {
 	case s.PRURL != nil:
@@ -331,6 +348,7 @@ func changeLabel(s *run.State, prs, handles map[integration.ChangeKey]string) st
 // number, the newest such run's, as the dashboard puts the change's runs
 // without a PR on that PR's row.
 func changePRs(states []*run.State) map[integration.ChangeKey]string {
+	changeOf := changeKeys(states)
 	out := make(map[integration.ChangeKey]string)
 	by := make(map[integration.ChangeKey]*run.State) // the run whose PR names each change
 	for _, s := range states {
@@ -350,6 +368,7 @@ func changePRs(states []*run.State) map[integration.ChangeKey]string {
 // the handle the latest run to record one got from finalize's ready or
 // launch's unready.
 func changeHandles(states []*run.State, listed map[integration.ChangeKey]integration.Result) map[integration.ChangeKey]string {
+	changeOf := changeKeys(states)
 	out := make(map[integration.ChangeKey]string)
 	by := make(map[integration.ChangeKey]*run.State) // the run whose record names each unlisted change
 	for _, s := range states {
@@ -357,7 +376,7 @@ func changeHandles(states []*run.State, listed map[integration.ChangeKey]integra
 		if !ok {
 			continue
 		}
-		if c := listed[k].Change; c != nil {
+		if c := listed[valleyKey(s)].Change; c != nil {
 			out[k] = c.Handle
 			continue
 		}

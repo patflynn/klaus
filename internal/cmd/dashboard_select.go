@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/patflynn/klaus/internal/config"
@@ -150,31 +153,37 @@ func (r dashRow) description() string {
 
 // buildRows turns the run states into dashboard rows, sorted by category
 // (yours, agents, pipeline, done) and most recent first within each
-// category. Sessions are excluded; agents on the same PR share a row. A run
-// without a PR joins the row of its change's PR (changeOf), the PR of the
-// newest run on the change that has one, after the PR's own agents; runs
-// without a PR on a change no PR carries share the change's row, across
-// repo groups.
+// category. Sessions are excluded; agents on the same PR share a row, a PR
+// named by the owner/repo of its URL and its number (prKey), so
+// alice/widget#7 and bob/widget#7 never share one, whatever the project
+// registry calls their repos. The
+// runs without a PR on one change (changeKeys) share a row across repo
+// groups: the row of the change's PR, the PR of the newest run on the
+// change that has one, after the PR's own agents, unless where the change
+// stands is the operator's to act on by itself (changeStandsAlone); else
+// the change's own row.
 func (m dashboardModel) buildRows() []dashRow {
 	var rows []dashRow
 	groups := groupByRepo(m.states)
+	changeOf := changeKeys(m.states)
 	prOfChange := make(map[integration.ChangeKey]int)     // the row of a change's PR
 	prOwner := make(map[integration.ChangeKey]*run.State) // the newest run with a PR on each change
+	prIndex := make(map[string]int)                       // the row of each PR, by its key
 	for _, g := range groups {
-		prIndex := make(map[string]int)
 		for _, s := range g.Runs {
 			prNum := extractPRNumber(s)
 			if prNum == "" {
 				continue
 			}
-			i, ok := prIndex[prNum]
+			key := prKey(s, g.Repo, prNum)
+			i, ok := prIndex[key]
 			if ok {
 				rows[i].runs = append(rows[i].runs, s)
 			} else {
 				i = len(rows)
-				prIndex[prNum] = i
+				prIndex[key] = i
 				rows = append(rows, dashRow{
-					key:   "pr:" + g.Repo + "#" + prNum,
+					key:   key,
 					repo:  g.Repo,
 					prNum: prNum,
 					runs:  []*run.State{s},
@@ -186,7 +195,11 @@ func (m dashboardModel) buildRows() []dashRow {
 			}
 		}
 	}
-	changeIndex := make(map[integration.ChangeKey]int)
+	// The runs without a PR on each change, and the repo group of each
+	// change's first.
+	var changeKeys []integration.ChangeKey
+	changeRuns := make(map[integration.ChangeKey][]*run.State)
+	changeRepo := make(map[integration.ChangeKey]string)
 	for _, g := range groups {
 		for _, s := range g.Runs {
 			if extractPRNumber(s) != "" {
@@ -197,24 +210,26 @@ func (m dashboardModel) buildRows() []dashRow {
 				rows = append(rows, dashRow{key: "run:" + s.ID, repo: g.Repo, runs: []*run.State{s}})
 				continue
 			}
-			if i, ok := prOfChange[k]; ok {
-				rows[i].runs = append(rows[i].runs, s)
-				continue
+			if _, seen := changeRuns[k]; !seen {
+				changeKeys = append(changeKeys, k)
+				changeRepo[k] = g.Repo
 			}
-			if i, ok := changeIndex[k]; ok {
-				rows[i].runs = append(rows[i].runs, s)
-				continue
-			}
-			changeIndex[k] = len(rows)
-			rows = append(rows, dashRow{
-				key:      "change:" + k.Repo + "#" + k.ChangeID,
-				repo:     g.Repo,
-				changeID: k.ChangeID,
-				runs:     []*run.State{s},
-			})
+			changeRuns[k] = append(changeRuns[k], s)
 		}
 	}
-	superseded := supersededRuns(m.states)
+	for _, k := range changeKeys {
+		if i, ok := prOfChange[k]; ok && !m.changeStandsAlone(changeRuns[k]) {
+			rows[i].runs = append(rows[i].runs, changeRuns[k]...)
+			continue
+		}
+		rows = append(rows, dashRow{
+			key:      "change:" + k.Repo + "#" + k.ChangeID,
+			repo:     changeRepo[k],
+			changeID: k.ChangeID,
+			runs:     changeRuns[k],
+		})
+	}
+	superseded := supersededRuns(m.states, m.agentRunning)
 	for i := range rows {
 		if rows[i].changeID != "" {
 			runs := rows[i].runs
@@ -235,23 +250,55 @@ func (m dashboardModel) buildRows() []dashRow {
 	return rows
 }
 
+// prKey is the row key of the PR numbered prNum that run s has: "pr:", the
+// owner/repo of its URL, lowercased as GitHub matches them, "#" and the
+// number. A URL without an owner/repo falls back on the run's repo group.
+func prKey(s *run.State, group, prNum string) string {
+	repo := strings.ToLower(gh.OwnerRepoFromPRURL(extractPRRef(s)))
+	if repo == "" {
+		repo = group
+	}
+	return "pr:" + repo + "#" + prNum
+}
+
+// changeStandsAlone reports whether where a change stands, apart from its
+// PR, is the operator's to act on by itself, so its runs without a PR keep
+// the change's own row rather than folding into the PR's: a valley lists
+// the change and its active version hasn't settled (a version to approve,
+// or one the integrator turned down), or one of those runs pushed a branch
+// that waits for integration, as far as its latest check knows. A push
+// that landed or is gone folds in. runs are the change's runs without a PR.
+func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
+	if view, ok := m.changes[valleyKey(runs[0])]; ok && view.Change != nil && !view.Verdict.Settled() {
+		return true
+	}
+	for _, s := range runs {
+		if awaitsIntegration(s) && !m.integration[s.ID].Verdict.Settled() {
+			return true
+		}
+	}
+	return false
+}
+
 // classify fills in a row's running agents, category, recency and whether
 // it may be hidden once old. A change row is judged by where the change
-// stands (placeChange). A run's need for attention counts only until a
-// later run of its change exists (superseded): that run took the work on.
+// stands (placeChange). A run's need for attention (needsAttention) stops
+// counting once a later run took its work on (superseded): that run
+// carries it, and shows it if it in turn ended needing attention.
 // Precedence: a running agent makes it the agents'; then salvaged work no
-// PR holds (any on a change, a run without a PR on a PR's row) makes it
-// yours; then merged, closed, no access, integrated, gone, withdrawn or
-// superseded make it done; then needs attention, a pushed branch (to
-// approve or submit, a draft, or whose change the integrator turned down or
-// the valley is unsure of) or a PR ready to approve make it yours, except a
-// change already approved, which is the pipeline's like any other open PR;
-// an exited agent is done.
+// PR holds (any on a change, a run without a PR on a PR's row), or
+// attention a run on a PR's row took on with other runs' work (TookOver),
+// makes it yours; then merged, closed, no access, integrated, gone,
+// withdrawn or superseded make it done; then needs attention, a pushed
+// branch (to approve or submit, a draft, or whose change the integrator
+// turned down or the valley is unsure of) or a PR ready to approve make it
+// yours, except a change already approved, which is the pipeline's like any
+// other open PR; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	if r.changeID != "" {
 		m.placeChange(r)
 	}
-	merged, attention, salvaged := false, false, false
+	merged, attention, owed := false, false, false
 	for _, s := range r.runs {
 		if m.agentRunning(s) {
 			r.running = append(r.running, s)
@@ -259,15 +306,15 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 		if s.MergedAt != nil {
 			merged = true
 		}
-		if s.NeedsAttention != nil && !superseded[s.ID] {
+		if needsAttention(s) && !superseded[s.ID] {
 			attention = true
-			salvaged = salvaged || r.prNum != "" && s.PRURL == nil
+			owed = owed || r.prNum != "" && (s.PRURL == nil || len(s.TookOver) > 0)
 		}
 		if t := runLastActivity(s); t.After(r.lastSeen) {
 			r.lastSeen = t
 		}
 	}
-	salvaged = salvaged || r.changeID != "" && attention
+	owed = owed || r.changeID != "" && attention
 	closed, noAccess := false, false
 	if r.ps != nil {
 		merged = merged || r.ps.State == "MERGED"
@@ -286,10 +333,12 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	switch {
 	case len(r.running) > 0:
 		r.category = catAgents
-	case salvaged:
+	case owed:
 		// Salvaged work that no later run took on, and that no PR holds,
 		// is the operator's, whatever became of the change's PR or
-		// version.
+		// version. So is the attention a run took on with other runs'
+		// work and didn't hand on: its PR merged, closed or out of reach
+		// settles nothing about it.
 		r.category = catYours
 		r.attention = true
 	case merged || closed || noAccess || r.verdict.Settled():
@@ -321,45 +370,129 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	}
 }
 
-// changeOf returns the change a run belongs to: its repo, by the rule the
-// ValleyChecker places runs with (integration.RepoName), and its change ID.
-// ok is false for a session or tracked PR, and for a run without a change ID
-// or a known repo: such a run shares its change with none.
-func changeOf(s *run.State) (integration.ChangeKey, bool) {
+// changeKeys returns changeOf for the runs among states: the change a run
+// belongs to, named by its repo and its change ID. ok is false for a
+// session or tracked PR, and for a run without a change ID or a known repo:
+// such a run shares its change with none.
+//
+// The repo is the name the ValleyChecker places runs with
+// (integration.RepoName: the valley's name for a valley's repo, else the
+// short name of the target repo), qualified by the GitHub owner the run's
+// repo is known by (repoOwner), so the same change ID in alice/widget and
+// bob/widget names two changes. A run whose owner isn't known (a valley's
+// repo, or a target named by its short name) takes the owner the other runs
+// of its change are known by when there is exactly one, and none otherwise.
+// A valley's listing names the change by the valley's repo name alone
+// (valleyKey).
+func changeKeys(states []*run.State) func(*run.State) (integration.ChangeKey, bool) {
+	owners := make(map[integration.ChangeKey]map[string]bool) // the owners each change's runs are known by
+	for _, s := range states {
+		k, ok := nameChange(s)
+		if o := repoOwner(s); ok && o != "" {
+			if owners[k] == nil {
+				owners[k] = make(map[string]bool)
+			}
+			owners[k][o] = true
+		}
+	}
+	return func(s *run.State) (integration.ChangeKey, bool) {
+		k, ok := nameChange(s)
+		if !ok {
+			return k, false
+		}
+		o := repoOwner(s)
+		if o == "" && len(owners[k]) == 1 {
+			for only := range owners[k] {
+				o = only
+			}
+		}
+		if o != "" {
+			k.Repo = o + "/" + k.Repo
+		}
+		return k, true
+	}
+}
+
+// nameChange is a run's change by its repo's name alone, as a valley's
+// listing names it; ok as for changeKeys.
+func nameChange(s *run.State) (integration.ChangeKey, bool) {
 	if s.Type == "session" || s.Type == "track" || s.ChangeID == "" {
 		return integration.ChangeKey{}, false
 	}
-	repo := integration.RepoName(s)
-	return integration.ChangeKey{Repo: repo, ChangeID: s.ChangeID}, repo != ""
+	k := valleyKey(s)
+	return k, k.Repo != ""
 }
 
-// supersededRuns returns the IDs of the runs whose need for attention a
-// later run took over: runs that need attention, with another run of their
-// change (changeOf) created after them, or continuing them (its
-// OriginalRunID), such as a --resume-from or --pr follow-up. Their attention
-// no longer counts; their records stay as they are.
-func supersededRuns(states []*run.State) map[string]bool {
-	newest := make(map[integration.ChangeKey]*run.State)
-	continued := make(map[integration.ChangeKey]map[string]bool) // runs a later run of the change continues
-	for _, s := range states {
-		k, ok := changeOf(s)
-		if !ok {
-			continue
-		}
-		if newest[k] == nil || createdBefore(newest[k], s) {
-			newest[k] = s
-		}
-		if s.OriginalRunID != nil {
-			if continued[k] == nil {
-				continued[k] = make(map[string]bool)
-			}
-			continued[k][*s.OriginalRunID] = true
+// repoOwner is the GitHub owner a run's repo is known by, lowercased: from
+// its PR's URL, else from its RepoKey or its target repo when either is
+// owner/repo. "" when none is, as for a valley's repo.
+func repoOwner(s *run.State) string {
+	slug := ""
+	if s.PRURL != nil {
+		slug = gh.OwnerRepoFromPRURL(*s.PRURL)
+	}
+	for _, ref := range []string{s.RepoKey, deref(s.TargetRepo)} {
+		if slug == "" && ownerRepoRegex.MatchString(ref) {
+			slug = ref
 		}
 	}
-	out := make(map[string]bool)
+	owner, _, _ := strings.Cut(slug, "/")
+	return strings.ToLower(owner)
+}
+
+// ownerRepoRegex matches a GitHub owner/repo, and not a path, a URL or a
+// valley:<name> key.
+var ownerRepoRegex = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+
+// deref is *p, or "" for nil.
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// valleyKey is how a valley's listing names a run's change: by the repo
+// name the ValleyChecker places runs with (integration.RepoName).
+func valleyKey(s *run.State) integration.ChangeKey {
+	return integration.ChangeKey{Repo: integration.RepoName(s), ChangeID: s.ChangeID}
+}
+
+// needsAttention reports whether a run ended needing the operator: finalize
+// salvaged its work, or it failed after taking on the work of runs that
+// needed attention (TookOver), whose attention is now its own.
+func needsAttention(s *run.State) bool {
+	return s.NeedsAttention != nil || s.FailureReason != nil && len(s.TookOver) > 0
+}
+
+// supersededRuns returns the IDs of the runs whose need for attention was
+// handed off: a run of the same change records that it took their pushed
+// work on (TookOver), and it is running or finished, so it carries that
+// attention from then on. A successor that ended needing attention or
+// failing is flagged itself (needsAttention); one that never finished and
+// isn't running hands nothing off. Creation times play no part. Two runs
+// that each record taking the other's work on hand nothing off to each
+// other. The superseded runs' records stay as they are.
+func supersededRuns(states []*run.State, running func(*run.State) bool) map[string]bool {
+	changeOf := changeKeys(states)
+	byID := make(map[string]*run.State, len(states))
 	for _, s := range states {
-		if k, ok := changeOf(s); ok && s.NeedsAttention != nil && (createdBefore(s, newest[k]) || continued[k][s.ID]) {
-			out[s.ID] = true
+		byID[s.ID] = s
+	}
+	out := make(map[string]bool)
+	for _, b := range states {
+		bk, ok := changeOf(b)
+		if !ok || len(b.TookOver) == 0 || !(running(b) || b.CostUSD != nil || b.DurationMS != nil) {
+			continue
+		}
+		for _, id := range b.TookOver {
+			a := byID[id]
+			if a == nil || a == b || !needsAttention(a) || slices.Contains(a.TookOver, b.ID) {
+				continue
+			}
+			if ak, ok := changeOf(a); ok && ak == bk {
+				out[id] = true
+			}
 		}
 	}
 	return out
@@ -393,8 +526,7 @@ func (m dashboardModel) placeChange(r *dashRow) {
 			break
 		}
 	}
-	k, _ := changeOf(r.runs[0])
-	view, ok := m.changes[k]
+	view, ok := m.changes[valleyKey(r.runs[0])]
 	if !ok || view.Change == nil {
 		if r.current = latest; latest != nil {
 			r.pushed = true
