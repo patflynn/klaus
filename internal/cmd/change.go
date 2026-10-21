@@ -268,7 +268,15 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	if id, err := git.CommitChangeID(ctx, repoRoot, origin); err == nil && run.ValidChangeID(id) && id != prior.ChangeID {
 		return nil, fmt.Sprintf("origin's %s ends in a commit of another change, %s", branch, id)
 	}
-	t, err := resolveChange(prior.ID, src)
+	// The change's branch, from its runs in this repo alone.
+	mine := src
+	mine.Runs = nil
+	for _, s := range src.Runs {
+		if inRepo(s) {
+			mine.Runs = append(mine.Runs, s)
+		}
+	}
+	t, err := resolveChange(prior.ID, mine)
 	if err != nil {
 		return nil, err.Error()
 	}
