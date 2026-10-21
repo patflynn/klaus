@@ -36,7 +36,8 @@ var formatStreamCmd = &cobra.Command{
 	Short:  "Format backend JSONL stream from stdin",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		watch, flush := streamCheckEvents()
+		sandbox, _ := cmd.Flags().GetBool("sandbox")
+		watch, flush := streamCheckEvents(sandbox)
 		err := stream.FormatStreamWatching(os.Stdin, os.Stdout, watch)
 		flush()
 		return err
@@ -46,10 +47,13 @@ var formatStreamCmd = &cobra.Command{
 // streamCheckEvents returns a watcher that emits check:started and
 // check:completed for the checks in the stream of the run whose pane this
 // is (runIDEnv), or nil outside one, and a flush for the end of the stream.
-// Launch saves the run's state just after its pane starts, so events wait
-// until it is found. At the end of the stream they wait up to
-// paneRunSaveWait more, then go out under the run's ID without it.
-func streamCheckEvents() (*stream.CheckWatcher, func()) {
+// Those are the stream's build, test and lint commands, and the _pre-review
+// checks a sandbox run's _pre-review reports in its output (a sandbox run
+// says so with sandbox). Launch saves the run's state just after its pane
+// starts, so events wait until it is found. At the end of the stream they
+// wait up to paneRunSaveWait more, then go out under the run's ID without
+// it.
+func streamCheckEvents(sandbox bool) (*stream.CheckWatcher, func()) {
 	p := currentPaneRun()
 	if p == nil {
 		return nil, func() {}
@@ -78,9 +82,14 @@ func streamCheckEvents() (*stream.CheckWatcher, func()) {
 		}
 	}
 	checkData := func(c stream.Check) map[string]interface{} {
-		return map[string]interface{}{"kind": c.Kind, "command": c.Command, "source": "stream", "started_at": eventTime(c.Start)}
+		data := map[string]interface{}{"kind": c.Kind, "command": c.Command, "source": "stream", "started_at": eventTime(c.Start)}
+		if c.IncludesPreReview {
+			data["includes_pre_review"] = true
+		}
+		return data
 	}
 	return &stream.CheckWatcher{
+		Sandbox: sandbox,
 		OnStart: func(c stream.Check) { emit(event.CheckStarted, checkData(c)) },
 		OnEnd: func(c stream.Check, end time.Time, success *bool) {
 			data := checkData(c)
@@ -89,6 +98,18 @@ func streamCheckEvents() (*stream.CheckWatcher, func()) {
 			if success != nil {
 				data["success"] = *success
 			}
+			emit(event.CheckCompleted, data)
+		},
+		// A reported check arrives whole, so it starts and ends here.
+		OnReport: func(data map[string]interface{}) {
+			started := map[string]interface{}{"via": "stream"}
+			for _, k := range []string{"kind", "command", "source", "started_at"} {
+				if v, ok := data[k]; ok {
+					started[k] = v
+				}
+			}
+			emit(event.CheckStarted, started)
+			data["via"] = "stream"
 			emit(event.CheckCompleted, data)
 		},
 	}, flush
@@ -1124,6 +1145,7 @@ func remoteHosts(ctx context.Context, dir string) []string {
 }
 
 func init() {
+	formatStreamCmd.Flags().Bool("sandbox", false, "The agent runs on a sandbox host: take _pre-review's checks from its output in the stream")
 	rootCmd.AddCommand(formatStreamCmd)
 	rootCmd.AddCommand(finalizeCmd)
 }

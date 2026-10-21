@@ -1279,14 +1279,18 @@ func syncWorktreeToSandbox(host, worktree string) error {
 func buildSandboxPaneCommand(host, worktree, agentCmd, promptFile, logFile, selfBin, finalizePrefix, id string) string {
 	// Run the agent on sandbox via SSH, pipe output locally through tee + formatter,
 	// then finalize locally and rsync results back. ssh forwards the local
-	// prompt file as the remote command's stdin.
+	// prompt file as the remote command's stdin. The remote command gets the
+	// run's ID too: the sandbox has no event log for the run, so _pre-review
+	// there reports its check in its output, which the stream brings back to
+	// _format-stream --sandbox.
 	rsyncBack := fmt.Sprintf("rsync -az %s:%s/ %s/",
 		shellQuote(host), shellQuote(worktree), shellQuote(worktree))
+	remoteCmd := remoteRunEnvPrefix(id) + "cd " + shellQuote(worktree) + " && " + agentCmd
 	return fmt.Sprintf(
-		"%s%s%s | tee %s | %s _format-stream; %s%s _finalize %s; %s",
+		"%s%s%s | tee %s | %s _format-stream --sandbox; %s%s _finalize %s; %s",
 		tmuxSessionEnvPrefix(),
 		runEnvPrefix(id),
-		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote("cd "+shellQuote(worktree)+" && "+agentCmd)+stdinFrom(promptFile)),
+		withExitEvent("ssh "+shellQuote(host)+" "+shellQuote(remoteCmd)+stdinFrom(promptFile)),
 		shellQuote(logFile),
 		selfBin,
 		finalizePrefix,

@@ -12,10 +12,23 @@ import (
 // Check is a build, test or lint command an agent ran, as its stream shows
 // it.
 type Check struct {
-	Kind    string // event.CheckBuild, event.CheckTest or event.CheckLint
+	// Kind is event.CheckBuild, event.CheckTest or event.CheckLint, or
+	// event.CheckPreReview for a sandbox run's _pre-review timed from the
+	// stream.
+	Kind    string
 	Command string // the command's first line
 	Start   time.Time
+	// IncludesPreReview says the command line also runs klaus _pre-review,
+	// which reports its own check: that part of the check's time is the
+	// pre-review's.
+	IncludesPreReview bool
 }
+
+// ReportPrefix starts a line a klaus command prints to report a check of the
+// run it runs in when it can't reach the run's event log, as on a sandbox
+// host: the prefix, then the check:completed event's data as JSON. The line
+// reaches the pane's _format-stream in the tool result of the agent's call.
+const ReportPrefix = "klaus-check-completed: "
 
 // CheckWatcher finds the checks in an agent's stream as it arrives, and times
 // each from the line that calls its command to the line with its result.
@@ -26,15 +39,26 @@ type CheckWatcher struct {
 	OnStart func(c Check)
 	// OnEnd gets success when the result says, nil when it doesn't.
 	OnEnd func(c Check, end time.Time, success *bool)
+	// OnReport gets the check:completed data of each check reported in the
+	// result of a call that runs klaus _pre-review (ReportPrefix lines).
+	OnReport func(data map[string]interface{})
+	// Sandbox says the agent runs on a sandbox host, where _pre-review
+	// reports in its output. A call that runs it and no other check, whose
+	// result reports nothing (the output was cut, or the host's klaus
+	// predates reports), is timed from the stream as a pre-review check
+	// instead. A line that runs another check first may have stopped before
+	// _pre-review, so it gets none.
+	Sandbox bool
 
 	byID  map[string]*Check
-	queue []*Check // calls without IDs, in order; nil for a call that isn't a check
+	queue []*Check // calls without IDs, in order; nil for a call the watcher doesn't time
 }
 
 // Observe takes one normalized stream line, seen at now.
 func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 	var ev struct {
-		Type    string `json:"type"`
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
 		Message *struct {
 			Content []struct {
 				Type      string          `json:"type"`
@@ -42,6 +66,7 @@ func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 				Input     json.RawMessage `json:"input"`
 				ToolUseID string          `json:"tool_use_id"`
 				IsError   *bool           `json:"is_error"`
+				Content   json.RawMessage `json:"content"`
 			} `json:"content"`
 		} `json:"message"`
 	}
@@ -57,12 +82,7 @@ func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 			if b.Type != "tool_use" {
 				continue
 			}
-			var c *Check
-			if cmd, background := toolCommand(b.Input); !background {
-				if kind := CheckKind(cmd); kind != "" {
-					c = &Check{Kind: kind, Command: firstLine(cmd), Start: now}
-				}
-			}
+			c := callCheck(b.Input, now)
 			if b.ID == "" {
 				w.queue = append(w.queue, c)
 			} else if c != nil {
@@ -71,7 +91,7 @@ func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 				}
 				w.byID[b.ID] = c
 			}
-			if c != nil && w.OnStart != nil {
+			if c != nil && c.Kind != "" && w.OnStart != nil {
 				w.OnStart(*c)
 			}
 		}
@@ -90,7 +110,7 @@ func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 				passed := !*b.IsError
 				success = &passed
 			}
-			w.end(c, now, success)
+			w.end(c, now, success, b.Content)
 		}
 	case "tool_result":
 		if len(w.queue) == 0 {
@@ -99,15 +119,93 @@ func (w *CheckWatcher) Observe(line []byte, now time.Time) {
 		c := w.queue[0]
 		w.queue = w.queue[1:]
 		if c != nil {
-			w.end(c, now, nil)
+			w.end(c, now, nil, ev.Content)
 		}
 	}
 }
 
-func (w *CheckWatcher) end(c *Check, now time.Time, success *bool) {
-	if w.OnEnd != nil {
+// callCheck returns what the watcher times of a tool call: the check its
+// command runs, with Kind "" for one that runs only klaus _pre-review. It is
+// nil for a call that runs neither, or runs in the background, where its
+// result comes back before it ends.
+func callCheck(input json.RawMessage, now time.Time) *Check {
+	cmd, background := toolCommand(input)
+	if cmd == "" || background {
+		return nil
+	}
+	kind, preReview := CheckKind(cmd), RunsPreReview(cmd)
+	if kind == "" && !preReview {
+		return nil
+	}
+	return &Check{Kind: kind, Command: firstLine(cmd), Start: now, IncludesPreReview: preReview}
+}
+
+// end ends a call at its result: its check, then the pre-review checks its
+// output reports.
+func (w *CheckWatcher) end(c *Check, now time.Time, success *bool, output json.RawMessage) {
+	if c.Kind != "" && w.OnEnd != nil {
 		w.OnEnd(*c, now, success)
 	}
+	if !c.IncludesPreReview {
+		return
+	}
+	reports := checkReports(resultText(output))
+	for _, r := range reports {
+		if w.OnReport != nil {
+			w.OnReport(r)
+		}
+	}
+	if len(reports) == 0 && w.Sandbox && c.Kind == "" {
+		p := Check{Kind: event.CheckPreReview, Command: c.Command, Start: c.Start}
+		if w.OnStart != nil {
+			w.OnStart(p)
+		}
+		if w.OnEnd != nil {
+			w.OnEnd(p, now, success)
+		}
+	}
+}
+
+// resultText is a tool result's output: a string, or Claude's text blocks.
+func resultText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, bl := range blocks {
+		if bl.Type == "text" {
+			b.WriteString(bl.Text)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// checkReports returns the data of the checks output reports (ReportPrefix).
+func checkReports(output string) []map[string]interface{} {
+	var reports []map[string]interface{}
+	for _, line := range strings.Split(output, "\n") {
+		i := strings.Index(line, ReportPrefix)
+		if i < 0 {
+			continue
+		}
+		var data map[string]interface{}
+		if json.Unmarshal([]byte(strings.TrimSpace(line[i+len(ReportPrefix):])), &data) != nil {
+			continue
+		}
+		if kind, _ := data["kind"].(string); kind != "" {
+			reports = append(reports, data)
+		}
+	}
+	return reports
 }
 
 // toolCommand returns the shell command a tool call runs, "" for a call that
@@ -217,23 +315,43 @@ var segmentSep = regexp.MustCompile(`&&|\|\||[;|\n]`)
 // it runs none CheckKind knows. Each command in the line counts (split at
 // &&, ||, ;, | and newlines), after any leading VAR=value assignments and
 // wrappers such as time, timeout or nix develop -c; the line takes the
-// highest kind among them, test over lint over build. klaus commands run no
-// check of their own here: _pre-review reports itself.
+// highest kind among them, test over lint over build. klaus _pre-review is no
+// kind here: it reports itself (see RunsPreReview).
 func CheckKind(line string) string {
-	if strings.Contains(line, "klaus _pre-review") {
-		return ""
-	}
 	best := ""
+	for _, f := range lineCommands(line) {
+		if k := commandKind(f); checkRank[k] > checkRank[best] {
+			best = k
+		}
+	}
+	return best
+}
+
+// RunsPreReview reports whether a shell command line runs klaus _pre-review,
+// alone or among other commands.
+func RunsPreReview(line string) bool {
+	for _, f := range lineCommands(line) {
+		if len(f) > 1 && (f[0] == "klaus" || strings.HasSuffix(f[0], "/klaus")) && f[1] == "_pre-review" {
+			return true
+		}
+	}
+	return false
+}
+
+// lineCommands splits a command line into its commands' words, without the
+// wrappers before each.
+func lineCommands(line string) [][]string {
+	var cmds [][]string
 	for _, seg := range segmentSep.Split(line, -1) {
 		f := strings.Fields(seg)
 		for i := range f {
 			f[i] = strings.TrimRight(f[i], ")}")
 		}
-		if k := commandKind(stripWrappers(f)); checkRank[k] > checkRank[best] {
-			best = k
+		if f = stripWrappers(f); len(f) > 0 {
+			cmds = append(cmds, f)
 		}
 	}
-	return best
+	return cmds
 }
 
 // stripWrappers drops what runs before the command proper.

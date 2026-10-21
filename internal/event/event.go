@@ -58,7 +58,10 @@ const (
 	// CheckStarted and CheckCompleted bracket a check an agent ran where
 	// klaus can see it: `klaus _pre-review`, or a build, test or lint
 	// command in the agent's stream (Check* kinds below). check:completed
-	// carries duration_ms and, when known, success.
+	// carries duration_ms and, when known, success. A stream check whose
+	// command line also ran _pre-review carries includes_pre_review; a
+	// sandbox run's _pre-review check, which reached the run through the
+	// agent's stream, carries via: stream.
 	CheckStarted   = "check:started"
 	CheckCompleted = "check:completed"
 )

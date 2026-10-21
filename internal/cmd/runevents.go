@@ -19,13 +19,29 @@ import (
 )
 
 // runIDEnv names the run whose pane a process runs in. Launch exports it in
-// the agent's pane, so _format-stream and the klaus commands the agent runs
-// (_pre-review) put their events on the run.
+// the agent's pane, and on a sandbox host in the agent's command, so
+// _format-stream and the klaus commands the agent runs (_pre-review) put
+// their events on the run.
 const runIDEnv = "KLAUS_RUN_ID"
+
+// runEventsEnv, set to runEventsOutput, tells the klaus commands in a run
+// that they can't reach its event log, as on a sandbox host, so they report
+// their events in their output (stream.ReportPrefix). The agent's stream
+// carries the output back to the pane's _format-stream, which records them.
+const (
+	runEventsEnv    = "KLAUS_RUN_EVENTS"
+	runEventsOutput = "output"
+)
 
 // runEnvPrefix exports runIDEnv for a pane command.
 func runEnvPrefix(id string) string {
 	return fmt.Sprintf("export %s=%s; ", runIDEnv, shellQuote(id))
+}
+
+// remoteRunEnvPrefix exports runIDEnv for a command on a sandbox host, with
+// runEventsEnv set so its klaus commands report in their output.
+func remoteRunEnvPrefix(id string) string {
+	return fmt.Sprintf("export %s=%s %s=%s; ", runIDEnv, shellQuote(id), runEventsEnv, runEventsOutput)
 }
 
 // runFields returns the fields that say what a run worked on and why, which

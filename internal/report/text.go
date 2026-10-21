@@ -95,8 +95,8 @@ func (r *Report) WriteText(w io.Writer) error {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Checks run within the agent phase. WAIT is between runs on the same change;")
-	fmt.Fprintln(w, "APPROVAL is from a PR's last run to its first approval.")
+	fmt.Fprintln(w, "Checks run within the agent phase. WAIT is time a change had no run going,")
+	fmt.Fprintln(w, "between its runs; APPROVAL is from a PR's last run to its first approval.")
 	o := r.Overall
 	fmt.Fprintf(w, "Cost is known for %d of %d runs.", o.CostRuns, o.Runs)
 	if o.Untimed > 0 {
@@ -104,6 +104,9 @@ func (r *Report) WriteText(w io.Writer) error {
 	}
 	if o.Unfinished > 0 {
 		fmt.Fprintf(w, " %d run(s) have not finished.", o.Unfinished)
+	}
+	if o.UnknownWaits > 0 {
+		fmt.Fprintf(w, " %d follow-up(s) started after a run with no end on their change: their wait is unknown.", o.UnknownWaits)
 	}
 	fmt.Fprintln(w)
 	return nil

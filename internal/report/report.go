@@ -48,7 +48,9 @@ type Totals struct {
 	// finalize time.
 	Untimed int `json:"untimed,omitempty"`
 	// Checks sums check:completed by kind. Checks run within the agent
-	// phase, so their time is part of AgentMS.
+	// phase, so their time is part of AgentMS. A command line that also ran
+	// _pre-review counts without the pre-review's time, which is its own
+	// check's.
 	Checks map[string]*CheckTotals `json:"checks"`
 	// Changes counts the changes the runs worked on, and FollowUps the
 	// runs that continued one: a run after the change's first in the
@@ -57,9 +59,12 @@ type Totals struct {
 	Changes         int            `json:"changes"`
 	FollowUps       int            `json:"follow_ups"`
 	FollowUpReasons map[string]int `json:"follow_up_reasons"`
-	// WaitMS sums the time a change waited between one run ending and the
-	// next starting: on review, CI or the operator.
-	WaitMS int64 `json:"wait_between_runs_ms"`
+	// WaitMS sums the time a change waited with none of its runs going:
+	// from the last end among its earlier runs to the next run's start, on
+	// review, CI or the operator. UnknownWaits counts the follow-ups whose
+	// wait is unknown, because an earlier run on the change has no end.
+	WaitMS       int64 `json:"wait_between_runs_ms"`
+	UnknownWaits int   `json:"unknown_waits,omitempty"`
 	// ApprovalWaitMS sums, over Approvals changes, the time from the run
 	// that ended last before a change's first approval to that approval.
 	ApprovalWaitMS int64   `json:"approval_wait_ms"`
@@ -94,7 +99,11 @@ type Change struct {
 type FollowUp struct {
 	RunID  string `json:"run_id"`
 	Reason string `json:"reason"`
-	WaitMS int64  `json:"wait_ms"` // since the change's previous run in the report ended; 0 when unknown
+	// WaitMS is the time since the change's earlier runs in the report had
+	// all ended; 0 when one was still going. WaitUnknown says an earlier
+	// run has no end, so whether the change waited is unknown.
+	WaitMS      int64 `json:"wait_ms"`
+	WaitUnknown bool  `json:"wait_unknown,omitempty"`
 }
 
 // unknownReason is a run's reason when its events don't say.
@@ -116,6 +125,8 @@ var followUpReasons = map[string]bool{
 type runInfo struct {
 	id                  string
 	repo, changeID, pr  string
+	repos               []string // every repo key its events gave, first seen first
+	prKeys              []string // <repo>#<pr> for each canonical name of its repo, once it has a PR
 	reason              string
 	start, end          time.Time
 	agentStartedAt      time.Time
@@ -128,9 +139,13 @@ type runInfo struct {
 }
 
 type check struct {
-	kind    string
-	ms      int64
-	success *bool
+	kind       string
+	start, end time.Time
+	ms         int64
+	success    *bool
+	// includesPreReview: the check's command line also ran _pre-review,
+	// whose own check covers part of it.
+	includesPreReview bool
 }
 
 // approval is an approval of a PR, from the pipeline or klaus approve.
@@ -205,12 +220,14 @@ func Build(sessions [][]event.Event, opts Options) *Report {
 	qualified := map[string]map[string]bool{}
 	for _, r := range runs {
 		r.finish()
-		if isQualified(r.repo) {
-			name := repoName(r.repo)
-			if qualified[name] == nil {
-				qualified[name] = map[string]bool{}
+		for _, repo := range r.repos {
+			if isQualified(repo) {
+				name := repoName(repo)
+				if qualified[name] == nil {
+					qualified[name] = map[string]bool{}
+				}
+				qualified[name][repo] = true
 			}
-			qualified[name][r.repo] = true
 		}
 	}
 	qualify := func(repo string) string {
@@ -222,16 +239,29 @@ func Build(sessions [][]event.Event, opts Options) *Report {
 		return repo
 	}
 
+	// A change's runs share an identity: its change ID or its PR, each
+	// qualified by the repo. Older runs know only the PR, and a renamed
+	// repo has two names, so runs that share any identity are one change.
+	same := unionFind{}
+	ids := map[string][]string{}
+	for _, id := range order {
+		r := runs[id]
+		r.repo = qualify(r.repo)
+		ids[id] = r.identities(qualify)
+		for _, k := range ids[id][1:] {
+			same.union(ids[id][0], k)
+		}
+	}
+
 	// The runs in the report, grouped by change.
 	changes := map[string][]*runInfo{}
 	var changeOrder []string
 	for _, id := range order {
 		r := runs[id]
-		r.repo = qualify(r.repo)
 		if r.start.IsZero() || r.start.Before(opts.Since) || !matchRepo(opts.Repo, r.repo) {
 			continue
 		}
-		c := r.changeIdentity()
+		c := same.find(ids[id][0])
 		if _, ok := changes[c]; !ok {
 			changeOrder = append(changeOrder, c)
 		}
@@ -252,25 +282,40 @@ func Build(sessions [][]event.Event, opts Options) *Report {
 	for _, c := range changeOrder {
 		rs := changes[c]
 		sort.SliceStable(rs, func(i, j int) bool { return rs[i].start.Before(rs[j].start) })
-		ch := Change{Key: changeKey(rs), Repo: lastRepo(rs), Runs: len(rs), FollowUps: []FollowUp{}}
+		key, repo := changeKey(rs)
+		ch := Change{Key: key, Repo: repo, Runs: len(rs), FollowUps: []FollowUp{}}
 		repoT := totals(ch.Repo)
 		for _, t := range []*Totals{&rep.Overall, repoT} {
 			t.Changes++
 		}
+		// Runs on a change can overlap, so it waits only once every earlier
+		// run has ended: from the last of their ends. After a run with no
+		// end, whether it waited is unknown.
+		var ended time.Time
+		unknown := false
 		for i, r := range rs {
 			var wait int64
-			if i > 0 && !rs[i-1].end.IsZero() && r.start.After(rs[i-1].end) {
-				wait = r.start.Sub(rs[i-1].end).Milliseconds()
+			if i > 0 && !unknown && r.start.After(ended) {
+				wait = r.start.Sub(ended).Milliseconds()
+			}
+			waitUnknown := i > 0 && unknown
+			if r.end.IsZero() {
+				unknown = true
+			} else if r.end.After(ended) {
+				ended = r.end
 			}
 			followUp := i > 0 || followUpReasons[r.reason]
 			ch.AgentMS += r.agent
 			ch.WaitMS += wait
 			if followUp {
-				ch.FollowUps = append(ch.FollowUps, FollowUp{RunID: r.id, Reason: reasonOf(r), WaitMS: wait})
+				ch.FollowUps = append(ch.FollowUps, FollowUp{RunID: r.id, Reason: reasonOf(r), WaitMS: wait, WaitUnknown: waitUnknown})
 			}
 			for _, t := range []*Totals{&rep.Overall, repoT} {
 				t.addRun(r)
 				t.WaitMS += wait
+				if waitUnknown {
+					t.UnknownWaits++
+				}
 				if followUp {
 					t.FollowUps++
 					t.FollowUpReasons[reasonOf(r)]++
@@ -376,7 +421,7 @@ func (r *runInfo) observe(typ string, at time.Time, d data) {
 	// The fields every run event carries; later events know more (a PR, a
 	// valley's name for the repo).
 	if v := d.str("repo_key"); v != "" {
-		r.repo = v
+		r.nameRepo(v)
 	}
 	if v := d.str("change_id"); v != "" {
 		r.changeID = v
@@ -392,7 +437,7 @@ func (r *runInfo) observe(typ string, at time.Time, d data) {
 	case event.AgentStarted:
 		r.agentStartedAt = at
 		if r.repo == "" {
-			r.repo = d.str("target_repo") // before repo_key
+			r.nameRepo(d.str("target_repo")) // before repo_key
 		}
 	case event.PhaseCompleted:
 		ms := d.int("duration_ms")
@@ -415,7 +460,14 @@ func (r *runInfo) observe(typ string, at time.Time, d data) {
 			}
 		}
 	case event.CheckCompleted:
-		c := check{kind: d.str("kind"), ms: d.int("duration_ms")}
+		c := check{kind: d.str("kind"), ms: d.int("duration_ms"), end: at, includesPreReview: d.str("includes_pre_review") == "true"}
+		if t, err := time.Parse(time.RFC3339Nano, d.str("ended_at")); err == nil {
+			c.end = t
+		}
+		c.start = c.end.Add(-time.Duration(c.ms) * time.Millisecond)
+		if t, err := time.Parse(time.RFC3339Nano, d.str("started_at")); err == nil {
+			c.start = t
+		}
 		if v, ok := d["success"].(bool); ok {
 			c.success = &v
 		}
@@ -429,25 +481,40 @@ func (r *runInfo) observe(typ string, at time.Time, d data) {
 		r.terminalAt = at
 		if r.repo == "" || !strings.Contains(r.repo, "/") {
 			if repo := repoFromPRURL(d.str("pr_url")); repo != "" {
-				r.repo = repo
+				r.nameRepo(repo)
 			}
 		}
 	case event.AgentBranchPushed:
 		r.terminalAt = at
 		if r.repo == "" {
-			r.repo = shortName(d.str("repo"))
+			r.nameRepo(shortName(d.str("repo")))
 		}
 	case event.AgentChangeReady:
 		r.terminalAt = at
 		if v := d.str("repo"); v != "" && !strings.HasPrefix(r.repo, "valley:") {
-			r.repo = "valley:" + v
+			r.nameRepo("valley:" + v)
 		}
 	}
 }
 
+// nameRepo takes a repo key for the run from one of its events.
+func (r *runInfo) nameRepo(repo string) {
+	if repo == "" {
+		return
+	}
+	r.repo = repo
+	for _, k := range r.repos {
+		if k == repo {
+			return
+		}
+	}
+	r.repos = append(r.repos, repo)
+}
+
 // finish settles what the run's events leave open: a run from before phase
 // events ends at its terminal event, and its agent time runs there from
-// agent:started.
+// agent:started. A check whose command line also ran _pre-review loses the
+// time the pre-review's own check covers.
 func (r *runInfo) finish() {
 	if r.finished {
 		return
@@ -459,34 +526,120 @@ func (r *runInfo) finish() {
 	if !r.timed && !r.agentStartedAt.IsZero() && r.terminalAt.After(r.agentStartedAt) {
 		r.agent = r.terminalAt.Sub(r.agentStartedAt).Milliseconds()
 	}
-}
-
-// changeIdentity is what groups runs into a change: the change ID, which
-// every run since change IDs has and follow-ups inherit, else the PR, else
-// the run itself.
-func (r *runInfo) changeIdentity() string {
-	switch {
-	case r.changeID != "":
-		return "change:" + r.changeID
-	case r.pr != "":
-		return "pr:" + r.repo + "#" + r.pr
+	for i := range r.checks {
+		c := &r.checks[i]
+		if !c.includesPreReview {
+			continue
+		}
+		for _, p := range r.checks {
+			if p.kind == event.CheckPreReview {
+				c.ms -= overlapMS(c.start, c.end, p.start, p.end)
+			}
+		}
+		c.ms = max(c.ms, 0)
 	}
-	return "run:" + r.id
 }
 
-// changeKey names a change's runs as runFields' key does: by its PR when a
-// run has one, else by its change ID, else by its lone run.
-func changeKey(rs []*runInfo) string {
-	repo := lastRepo(rs)
-	for i := len(rs) - 1; i >= 0; i-- {
-		if rs[i].pr != "" {
-			return repo + "#" + rs[i].pr
+// overlapMS is how long two intervals overlap, in milliseconds.
+func overlapMS(aStart, aEnd, bStart, bEnd time.Time) int64 {
+	start, end := aStart, aEnd
+	if bStart.After(start) {
+		start = bStart
+	}
+	if bEnd.Before(end) {
+		end = bEnd
+	}
+	if !end.After(start) {
+		return 0
+	}
+	return end.Sub(start).Milliseconds()
+}
+
+// identities are the keys that name the run's change, the first of them
+// joining the rest: <repo>@<change id> and <repo>#<pr> for each name its
+// events gave its repo (a renamed repo has two), qualified when other runs
+// qualify a short name one way only, in lower case as GitHub's names are; or
+// the run alone. A short name counts only when no event qualified the repo,
+// so the runs of two repos that share a short name stay apart. It also sets
+// prKeys.
+func (r *runInfo) identities(qualify func(string) string) []string {
+	var repos []string
+	add := func(repo string) {
+		repo = strings.ToLower(repo)
+		for _, k := range repos {
+			if k == repo {
+				return
+			}
+		}
+		repos = append(repos, repo)
+	}
+	for i := len(r.repos) - 1; i >= 0; i-- {
+		if repo := qualify(r.repos[i]); isQualified(repo) {
+			add(repo)
 		}
 	}
-	if rs[0].changeID != "" {
-		return repo + "@" + rs[0].changeID
+	if len(repos) == 0 {
+		add(r.repo)
 	}
-	return rs[0].id
+	var ids []string
+	for _, repo := range repos {
+		if r.changeID != "" {
+			ids = append(ids, "change:"+repo+"@"+r.changeID)
+		}
+		if r.pr != "" {
+			ids = append(ids, "pr:"+repo+"#"+r.pr)
+			r.prKeys = append(r.prKeys, repo+"#"+r.pr)
+		}
+	}
+	if len(ids) == 0 {
+		ids = append(ids, "run:"+r.id)
+	}
+	return ids
+}
+
+// unionFind joins keys that name the same thing.
+type unionFind map[string]string
+
+// find returns the key that names k and every key joined to it.
+func (u unionFind) find(k string) string {
+	for {
+		p, ok := u[k]
+		if !ok || p == k {
+			return k
+		}
+		if gp, ok := u[p]; ok {
+			u[k] = gp
+		}
+		k = p
+	}
+}
+
+func (u unionFind) union(a, b string) {
+	if ra, rb := u.find(a), u.find(b); ra != rb {
+		u[rb] = ra
+	}
+}
+
+// changeKey names a change's runs as runFields' key does, and returns the
+// repo it names them in: by the PR of the last run with one, in that run's
+// repo, since a PR's URL names a renamed repo by its new name; else by its
+// change ID in its last run's repo; else by its lone run.
+func changeKey(rs []*runInfo) (key, repo string) {
+	for i := len(rs) - 1; i >= 0; i-- {
+		if rs[i].pr != "" {
+			if repo = rs[i].repo; repo == "" {
+				repo = lastRepo(rs)
+			}
+			return repo + "#" + rs[i].pr, repo
+		}
+	}
+	repo = lastRepo(rs)
+	for _, r := range rs {
+		if r.changeID != "" {
+			return repo + "@" + r.changeID, repo
+		}
+	}
+	return rs[0].id, repo
 }
 
 func lastRepo(rs []*runInfo) string {
@@ -499,15 +652,21 @@ func lastRepo(rs []*runInfo) string {
 }
 
 // approvalWait is the time from the run that ended last before the change's
-// first approval to that approval.
+// first approval to that approval. An approval is the change's when it names
+// one of its runs' PRs, under any name of the repo.
 func approvalWait(rs []*runInfo, approvals []approval) (int64, bool) {
-	key := changeKey(rs)
-	if !strings.Contains(key, "#") {
+	prs := map[string]bool{}
+	for _, r := range rs {
+		for _, k := range r.prKeys {
+			prs[k] = true
+		}
+	}
+	if len(prs) == 0 {
 		return 0, false
 	}
 	var first time.Time
 	for _, a := range approvals {
-		if strings.EqualFold(a.key, key) && (first.IsZero() || a.at.Before(first)) {
+		if prs[strings.ToLower(a.key)] && (first.IsZero() || a.at.Before(first)) {
 			first = a.at
 		}
 	}

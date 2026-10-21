@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/review"
+	"github.com/patflynn/klaus/internal/stream"
 	"github.com/spf13/cobra"
 )
 
@@ -157,9 +159,12 @@ var preReviewCmd = &cobra.Command{
 
 // preReviewCheck reports a _pre-review run as a check of the run whose pane
 // it runs in (runIDEnv): check:started when it starts, check:completed when
-// it finishes. Outside a run's pane it reports nothing.
+// it finishes. On a sandbox host (runEventsEnv) it prints check:completed in
+// its output instead, for the pane's _format-stream to record. Outside a
+// run's pane it reports nothing.
 type preReviewCheck struct {
 	run     *paneRun
+	report  io.Writer // where a sandbox run's check is printed; nil otherwise
 	start   time.Time
 	data    map[string]interface{}
 	started bool
@@ -167,8 +172,13 @@ type preReviewCheck struct {
 }
 
 func startPreReviewCheck() *preReviewCheck {
-	c := &preReviewCheck{run: currentPaneRun(), start: time.Now()}
+	c := &preReviewCheck{start: time.Now()}
 	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
+	if os.Getenv(runIDEnv) != "" && os.Getenv(runEventsEnv) == runEventsOutput {
+		c.report = os.Stdout
+		return c
+	}
+	c.run = currentPaneRun()
 	if c.run != nil && c.run.state != nil {
 		c.run.emit(event.CheckStarted, c.data)
 		c.started = true
@@ -180,11 +190,11 @@ func startPreReviewCheck() *preReviewCheck {
 // A run launch hadn't saved yet when the check started gets both events now,
 // once launch saves it or, after paneRunSaveWait, under the run's ID alone.
 func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
-	if c.done || c.run == nil {
+	if c.done || c.run == nil && c.report == nil {
 		return
 	}
 	c.done = true
-	if !c.started {
+	if c.run != nil && !c.started {
 		c.run.awaitState()
 		c.run.emit(event.CheckStarted, c.data)
 	}
@@ -195,6 +205,12 @@ func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
 	}
 	for k, v := range extra {
 		data[k] = v
+	}
+	if c.report != nil {
+		if line, err := json.Marshal(data); err == nil {
+			fmt.Fprintf(c.report, "%s%s\n", stream.ReportPrefix, line)
+		}
+		return
 	}
 	c.run.emit(event.CheckCompleted, data)
 }
