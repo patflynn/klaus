@@ -36,7 +36,7 @@ const (
 type PRStatus struct {
 	PRNumber              string
 	PRURL                 string
-	State                 string // OPEN, MERGED, CLOSED
+	State                 string // OPEN, MERGED, CLOSED, or UNKNOWN when GitHub couldn't be asked
 	CI                    string // passing, failing, pending, unknown
 	Conflicts             string // yes, none, unknown
 	BehindBy              int    // commits base has that head lacks; >0 = stale-but-mergeable
@@ -66,7 +66,6 @@ type PRPipelineState struct {
 	LastMergeAttemptAt      time.Time // when the last merge or branch-update attempt was made (backoff guard)
 
 	pendingLaunchDetail string // transient: detail text for pending launch action
-	approvedEmitted     bool   // pr:approved already emitted for the current approval
 }
 
 // Action describes a side-effect the controller wants the dashboard to perform.
@@ -106,6 +105,7 @@ type Controller struct {
 	eventLog *event.Log
 	logger   *slog.Logger
 	prStates map[string]*PRPipelineState // keyed by PR number
+	ledger   *Ledger                     // the PR transitions already seen and reported
 	mu       sync.Mutex
 
 	autoMergeOnApproval bool // whether to auto-merge approved PRs
@@ -127,6 +127,7 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 		eventLog: eventLog,
 		logger:   logger,
 		prStates: make(map[string]*PRPipelineState),
+		ledger:   NewLedger(),
 		tmuxDeps: run.DefaultTmuxDeps(),
 	}
 	c.launchAgent = c.defaultLaunchAgent
@@ -142,6 +143,15 @@ func New(store run.StateStore, eventLog *event.Log, logger *slog.Logger) *Contro
 // SetTmuxDeps overrides the tmux dependencies used for pane state checks.
 func (c *Controller) SetTmuxDeps(td run.TmuxDeps) {
 	c.tmuxDeps = td
+}
+
+// SetLedger replaces the in-memory ledger, typically with one loaded from
+// the session directory so a restarted dashboard doesn't report a PR
+// transition again.
+func (c *Controller) SetLedger(l *Ledger) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ledger = l
 }
 
 // SetAutoMergeOnApproval controls whether approved PRs are automatically merged.
@@ -211,18 +221,30 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 	}
 
 	for prNum, status := range statuses {
-		if status.State == "MERGED" || status.State == "CLOSED" {
-			// Clean up tracking for merged/closed PRs.
-			if ps, ok := c.prStates[prNum]; ok {
-				if status.State == "MERGED" && ps.Stage != StageMerged {
-					ps.Stage = StageMerged
-					c.emitEvent(prNum, event.PRMerged, map[string]interface{}{
-						"pr_number": prNum,
-						"pr_url":    status.PRURL,
-					})
-				}
-				delete(c.prStates, prNum)
+		key := ledgerKey(prNum, status.PRURL)
+		switch status.State {
+		case "OPEN":
+			c.recordTransition(key, markSeenOpen)
+		case "MERGED":
+			// A merge is reported once, and only for a PR klaus saw open:
+			// one already merged when klaus first sees it is history.
+			if c.recordTransition(key, markMerged) && c.ledger.has(key, markSeenOpen) {
+				c.emitEvent(prNum, event.PRMerged, map[string]interface{}{
+					"pr_number": prNum,
+					"pr_url":    status.PRURL,
+				})
 			}
+			delete(c.prStates, prNum)
+			continue
+		case "CLOSED":
+			delete(c.prStates, prNum)
+			continue
+		default:
+			// GitHub couldn't be asked (UNKNOWN: a timeout, rate limit or
+			// network failure). That says nothing about the PR, so leave it
+			// as it was. Taking it for open once tracked long-merged PRs
+			// afresh, re-approved them, tried to merge them, and reported
+			// them merged again when the next poll got through.
 			continue
 		}
 
@@ -241,13 +263,9 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 		}
 
 		// Approval-edge bookkeeping: once the PR is no longer approved, the
-		// next approval is a fresh transition, so allow pr:approved to be
-		// emitted again and give auto-merge a fresh attempt budget. Keeping
-		// this in one place is what makes pr:approved edge-triggered — the
-		// stage alone can't carry it, because a failed merge legitimately
-		// moves an approved PR out of (and back into) StageApproved.
+		// next approval gives auto-merge a fresh attempt budget. pr:approved
+		// itself is reported once per PR, through the ledger.
 		if !isApproved(c, ps, status, runStates) {
-			ps.approvedEmitted = false
 			ps.MergeAttempts = 0
 			ps.BranchUpdateAttempts = 0
 			ps.LastMergeAttemptAt = time.Time{}
@@ -387,10 +405,12 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: auto-merge failed", mr.prNumber), Error: truncateError(mr.err.Error(), 120)})
 		} else {
 			ps.Stage = StageMerged
-			c.emitEvent(mr.prNumber, event.PRMerged, map[string]interface{}{
-				"pr_number": mr.prNumber,
-				"pr_url":    ps.PRURL,
-			})
+			if c.recordTransition(ledgerKey(mr.prNumber, ps.PRURL), markMerged) {
+				c.emitEvent(mr.prNumber, event.PRMerged, map[string]interface{}{
+					"pr_number": mr.prNumber,
+					"pr_url":    ps.PRURL,
+				})
+			}
 			actions = append(actions, Action{Type: "merge", Detail: fmt.Sprintf("Merged PR #%s", mr.prNumber)})
 		}
 	}
@@ -613,6 +633,16 @@ func (c *Controller) hasKlausApproval(prNumber string, runStates []*run.State) b
 		}
 	}
 	return false
+}
+
+// recordTransition records a PR's transition in the ledger and reports
+// whether it is new, that is, whether its event should be emitted.
+func (c *Controller) recordTransition(key string, m ledgerMark) bool {
+	first, err := c.ledger.record(key, m)
+	if err != nil {
+		c.logger.Error("failed to persist PR transition", "pr", key, "err", err)
+	}
+	return first
 }
 
 // emitEvent emits a PR's event. The run ID is the PR number; a PR URL in

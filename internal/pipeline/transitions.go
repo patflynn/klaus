@@ -908,20 +908,20 @@ func approvedBookkeeping(c *Controller, ps *PRPipelineState, status *PRStatus, r
 	c.markRunStatesApproved(ps.PRNumber, runStates)
 }
 
-// setApprovedIfNeeded emits pr:approved on the approval edge and moves the PR
-// into StageApproved.
+// setApprovedIfNeeded emits pr:approved the first time the PR is seen
+// approved and moves the PR into StageApproved.
 //
-// The emission is keyed off ps.approvedEmitted rather than the stage, because
-// the stage is not a reliable edge signal: a failed auto-merge moves an
-// approved PR out of StageApproved and the next poll moves it back, which
-// would re-emit pr:approved on every poll for as long as the merge keeps
-// failing. ps.approvedEmitted is cleared in HandleGHStatus when the PR stops
-// being approved, so a genuine re-approval emits again.
+// The emission is keyed off the ledger rather than the stage, because the
+// stage is not a reliable edge signal: a failed auto-merge moves an approved
+// PR out of StageApproved and the next poll moves it back, which would
+// re-emit pr:approved on every poll for as long as the merge keeps failing.
+// The ledger also outlives a restart and a PR dropping out of tracking, so
+// the event fires once per PR, even when an approval is dismissed and
+// granted again.
 //
 // StageStalled is preserved so a tripped circuit breaker stays observable.
 func setApprovedIfNeeded(c *Controller, ps *PRPipelineState, status *PRStatus) {
-	if !ps.approvedEmitted {
-		ps.approvedEmitted = true
+	if c.recordTransition(ledgerKey(ps.PRNumber, status.PRURL), markApproved) {
 		c.emitEvent(ps.PRNumber, event.PRApproved, map[string]interface{}{
 			"pr_number": ps.PRNumber,
 			"pr_url":    status.PRURL,

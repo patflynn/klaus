@@ -26,6 +26,14 @@ func testTmuxDeps() run.TmuxDeps {
 func newTestController(t *testing.T) (*Controller, string) {
 	t.Helper()
 	dir := t.TempDir()
+	return controllerIn(t, dir), dir
+}
+
+// controllerIn builds a controller on the session in dir, as the dashboard
+// does: events and the transition ledger live in the session directory. A
+// second call on the same dir stands in for a dashboard restart.
+func controllerIn(t *testing.T, dir string) *Controller {
+	t.Helper()
 	baseDir := filepath.Join(dir, "session")
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -38,7 +46,12 @@ func newTestController(t *testing.T) (*Controller, string) {
 
 	c := New(store, eventLog, logger)
 	c.SetTmuxDeps(testTmuxDeps())
-	return c, dir
+	ledger, err := LoadLedger(filepath.Join(baseDir, LedgerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetLedger(ledger)
+	return c
 }
 
 func TestStateTransition_CIPendingToFailed(t *testing.T) {
@@ -2969,10 +2982,10 @@ func TestFailingBranchUpdateStalls(t *testing.T) {
 	}
 }
 
-// TestReApprovalReEmitsAndResetsMergeBudget checks the edge really is an edge:
-// losing and regaining approval is a new transition, so pr:approved fires
-// again and auto-merge gets a fresh attempt budget.
-func TestReApprovalReEmitsAndResetsMergeBudget(t *testing.T) {
+// TestReApprovalResetsMergeBudgetWithoutReEmitting: losing and regaining
+// approval gives auto-merge a fresh attempt budget, but pr:approved is
+// reported once per PR, so it doesn't fire again.
+func TestReApprovalResetsMergeBudgetWithoutReEmitting(t *testing.T) {
 	c, dir := newTestController(t)
 	c.SetAutoMergeOnApproval(true)
 
@@ -3005,8 +3018,8 @@ func TestReApprovalReEmitsAndResetsMergeBudget(t *testing.T) {
 	if mergeCount != 2 {
 		t.Errorf("expected re-approval to reset the merge budget and retry immediately, got %d attempts", mergeCount)
 	}
-	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 2 {
-		t.Errorf("expected 2 pr:approved events (one per approval edge), got %d", got)
+	if got := countEvents(readEvents(t, dir), event.PRApproved); got != 1 {
+		t.Errorf("expected 1 pr:approved event (once per PR), got %d", got)
 	}
 }
 
