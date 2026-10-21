@@ -966,3 +966,111 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 		}
 	})
 }
+
+// TestPRRowTakesItsChangesRunsWithoutAPR covers the incident of 2026-10-20:
+// a run stopped at the usage limit before opening its PR, and a
+// --resume-from run on the same change opened it. The salvaged run joins
+// the PR's row, behind the PR's agent, and its attention, superseded by the
+// later run, makes nothing ATTN, whether the PR is open or merged. Salvage
+// newer than the PR is still the operator's, even on a merged PR; a running
+// follow-up without a PR runs on the PR's row; and salvage with no later run
+// keeps its change's ATTN row. A run that resumed the salvaged one is later
+// even when both were created in the same second.
+func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
+	now := time.Now()
+	n := 0
+	var states []*run.State
+	chg := func(c byte) string { return strings.Repeat(string(c), 32) }
+	add := func(prompt, change string, minutesAgo int, s *run.State) *run.State {
+		n++
+		s.ID = fmt.Sprintf("20261020-1200-%04d", n)
+		s.Prompt, s.Type, s.ChangeID = prompt, "launch", change
+		s.TargetRepo = strPtr("o/r")
+		s.CreatedAt = now.Add(-time.Duration(minutesAgo) * time.Minute).Format(time.RFC3339)
+		if s.TmuxPane == nil {
+			s.CostUSD = float64Ptr(1)
+		}
+		states = append(states, s)
+		return s
+	}
+	salvaged := func(prompt, change string, minutesAgo int) *run.State {
+		branch := "agent/" + strings.ReplaceAll(prompt, " ", "-")
+		return add(prompt, change, minutesAgo, &run.State{
+			NeedsAttention: strPtr("session_limit; branch " + branch + " preserved (pushed)"),
+			PushedBranch:   &branch, PushedSHA: strPtr(strings.Repeat("a", 40)),
+		})
+	}
+	pr := func(num int) *string { return strPtr(fmt.Sprintf("https://github.com/o/r/pull/%d", num)) }
+
+	salvaged("stopped before 335", chg('x'), 60)
+	merged := add("opened 335", chg('x'), 30, &run.State{PRURL: pr(335)})
+	salvaged("stopped before 334", chg('y'), 60)
+	open := add("opened 334", chg('y'), 30, &run.State{PRURL: pr(334)})
+	add("opened 336", chg('z'), 60, &run.State{PRURL: pr(336), MergedAt: strPtr(now.Add(-time.Hour).Format(time.RFC3339))})
+	salvaged("stopped after 336 merged", chg('z'), 10)
+	running := add("opened 337", chg('v'), 50, &run.State{PRURL: pr(337)})
+	follow := add("following up 337", chg('v'), 5, &run.State{TmuxPane: strPtr("%1")})
+	salvaged("stopped with no follow-up", chg('w'), 20)
+	// Created in the same second as the run it resumes: later by its record.
+	tied := salvaged("stopped before 338", chg('u'), 15)
+	tiedPR := add("resumed it in the same second", chg('u'), 15, &run.State{PRURL: pr(338), OriginalRunID: &tied.ID})
+
+	m := dashboardModel{
+		states:   states,
+		tmuxDeps: testDashboardTmuxDeps(),
+		ghStatus: map[string]*prStatus{
+			*merged.PRURL:  {State: "MERGED"},
+			*open.PRURL:    {State: "OPEN", CI: "pending", Conflicts: "none"},
+			*running.PRURL: {State: "OPEN", CI: "pending", Conflicts: "none"},
+			*tiedPR.PRURL:  {State: "OPEN", CI: "pending", Conflicts: "none"},
+		},
+		hideAfter: defaultHideFinishedAfter,
+	}
+	rows := m.buildRows()
+	type want struct {
+		key, category string
+		attention     bool
+		runs, running int
+	}
+	wants := map[string]want{
+		"opened 335":                    {"pr:o/r#335", "done", false, 2, 0},
+		"opened 334":                    {"pr:o/r#334", "pipeline", false, 2, 0},
+		"opened 336":                    {"pr:o/r#336", "yours", true, 2, 0},
+		"opened 337":                    {"pr:o/r#337", "agents", false, 2, 1},
+		"stopped with no follow-up":     {"change:r#" + chg('w'), "yours", true, 1, 0},
+		"resumed it in the same second": {"pr:o/r#338", "pipeline", false, 2, 0},
+	}
+	if len(rows) != len(wants) {
+		t.Errorf("%d rows, want %d", len(rows), len(wants))
+	}
+	for _, r := range rows {
+		prompt := r.state().Prompt
+		w, ok := wants[prompt]
+		if !ok {
+			t.Errorf("unexpected row %q (%s)", prompt, r.key)
+			continue
+		}
+		if r.key != w.key || categoryNames[r.category] != w.category || r.attention != w.attention ||
+			len(r.runs) != w.runs || len(r.running) != w.running {
+			t.Errorf("%q: %s %s, attention %v, %d runs, %d running; want %+v",
+				prompt, r.key, categoryNames[r.category], r.attention, len(r.runs), len(r.running), w)
+		}
+	}
+
+	m = send(m, tea.WindowSizeMsg{Width: 200, Height: 30})
+	plain := ansi.Strip(m.View())
+	for _, num := range []string{"#335", "#334"} {
+		if line := lineWith(plain, num+" "); line == "" || strings.Contains(line, "ATTN") {
+			t.Errorf("%s should show, without ATTN: %q\n%s", num, line, plain)
+		}
+	}
+	if line := lineWith(plain, "#336 "); !strings.Contains(line, "MERGED") || !strings.Contains(line, "ATTN") {
+		t.Errorf("salvage after #336 merged should show ATTN on its row: %q", line)
+	}
+	if line := lineWith(plain, "#337 "); !strings.Contains(line, "agent:"+shortRunID(follow.ID)+" running") {
+		t.Errorf("the follow-up should run on #337's row: %q", line)
+	}
+	if !strings.Contains(plain, "2 yours") {
+		t.Errorf("only #336 and the change with no follow-up are yours:\n%s", plain)
+	}
+}

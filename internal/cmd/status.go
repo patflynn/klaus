@@ -23,9 +23,12 @@ var statusCmd = &cobra.Command{
 
 STATUS is one of: running (the agent's pane is still running it, judged as
 the dashboard judges it: a dead pane, or an idle one once the run finished,
-isn't running), needs-attention, pr-created, merged, closed, no-access
-(GitHub won't show the PR with the current credentials), exited, and, for
-runs that finished by pushing a branch without a PR:
+isn't running), needs-attention, superseded (it needed attention, but a
+later run of its change, the same change ID in the same repo, has taken
+the work on, as a --resume-from or --pr follow-up does; neither status nor
+the dashboard counts it as needing attention), pr-created, merged, closed,
+no-access (GitHub won't show the PR with the current credentials), exited,
+and, for runs that finished by pushing a branch without a PR:
 
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
@@ -54,9 +57,10 @@ its change (the same change ID in the same repo) is running: a follow-up
 (--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
 nothing to approve yet.
 
-CHANGE names the change a run belongs to: its PR's number (#319), else its
-valley change's handle, else the first 8 characters of its change ID, so
-runs of one change share it, running or not. The handle is the valley
+CHANGE names the change a run belongs to: its PR's number (#319), else the
+number of its change's PR (the PR of the newest run of the change that has
+one), else its valley change's handle, else the first 8 characters of its
+change ID, so runs of one change share it, running or not. The handle is the valley
 listing's, else (when the valley can't be asked) the one a run of the
 change recorded when finalize marked it ready or launch returned it to
 draft. A valley run shows its change's title as the
@@ -126,11 +130,15 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 
 	statuses := make([]string, len(states))
 	var pushed []*run.State
+	superseded := supersededRuns(states)
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		statuses[i] = determineStatus(ctx, s, tmuxClient)
+		if statuses[i] == "needs-attention" && superseded[s.ID] {
+			statuses[i] = "superseded"
+		}
 		if statuses[i] == "awaiting-integration" {
 			pushed = append(pushed, s)
 		}
@@ -140,6 +148,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	// the rest.
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
 	handles := changeHandles(states, report.Changes)
+	prs := changePRs(states)
 
 	// The changes some run is still running on: any other run of one
 	// that isn't done is working.
@@ -209,7 +218,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		}
 
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, handles), ci, conflicts, behind, merge, prompt)
+			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, prs, handles), ci, conflicts, behind, merge, prompt)
 	}
 
 	return nil
@@ -299,20 +308,39 @@ func formatCost(s *run.State) string {
 }
 
 // changeLabel names the change a run belongs to, for the CHANGE column: its
-// PR's number (#319), else its valley change's handle (changeHandles), else
-// the first 8 characters of its change ID, as the dashboard names a
-// change's row; "-" for a run with none of them.
-func changeLabel(s *run.State, handles map[integration.ChangeKey]string) string {
+// PR's number (#319), else its change's PR's (changePRs), else its valley
+// change's handle (changeHandles), else the first 8 characters of its
+// change ID, as the dashboard names a PR's or a change's row; "-" for a run
+// with none of them.
+func changeLabel(s *run.State, prs, handles map[integration.ChangeKey]string) string {
 	k, _ := changeOf(s)
 	switch {
 	case s.PRURL != nil:
 		return formatPR(s)
+	case prs[k] != "":
+		return prs[k]
 	case handles[k] != "":
 		return handles[k]
 	case s.ChangeID != "":
 		return s.ChangeID[:min(8, len(s.ChangeID))]
 	}
 	return "-"
+}
+
+// changePRs names each change some run with a PR belongs to by that PR's
+// number, the newest such run's, as the dashboard puts the change's runs
+// without a PR on that PR's row.
+func changePRs(states []*run.State) map[integration.ChangeKey]string {
+	out := make(map[integration.ChangeKey]string)
+	by := make(map[integration.ChangeKey]*run.State) // the run whose PR names each change
+	for _, s := range states {
+		k, ok := changeOf(s)
+		if !ok || s.PRURL == nil || by[k] != nil && createdBefore(s, by[k]) {
+			continue
+		}
+		out[k], by[k] = formatPR(s), s
+	}
+	return out
 }
 
 // changeHandles names each valley change some run belongs to, so every run

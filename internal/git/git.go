@@ -269,6 +269,13 @@ func RefExists(ctx context.Context, repoDir, ref string) bool {
 	return err == nil
 }
 
+// IsAncestor reports whether commit a is b or one of its ancestors in
+// repoDir; false when either is unknown there.
+func IsAncestor(ctx context.Context, repoDir, a, b string) bool {
+	_, err := runGit(ctx, repoDir, "merge-base", "--is-ancestor", a, b)
+	return err == nil
+}
+
 // BranchDelete deletes a local branch.
 func BranchDelete(ctx context.Context, repoDir, branch string) error {
 	_, err := runGit(ctx, repoDir, "branch", "-D", branch)

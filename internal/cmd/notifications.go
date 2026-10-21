@@ -19,7 +19,11 @@ var notificationsCmd = &cobra.Command{
 	Long: `Displays events since the last check, grouped into actionable summaries.
 
 By default shows only events since the last time notifications was run.
-Use --all to show all events, or --json for machine-readable output.`,
+Use --all to show all events, or --json for machine-readable output.
+
+A run that needed attention is left out of the summary once a later run of
+its change (the same change ID in the same repo) exists, as klaus status
+shows it superseded: that run took the work on. --json lists every event.`,
 	Aliases: []string{"notif"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		showAll, _ := cmd.Flags().GetBool("all")
@@ -59,12 +63,18 @@ Use --all to show all events, or --json for machine-readable output.`,
 			return nil
 		}
 
-		printSummary(events)
+		states, err := store.List()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reading runs: %v\n", err)
+		}
+		printSummary(events, supersededRuns(states))
 		return nil
 	},
 }
 
-func printSummary(events []event.Event) {
+// printSummary prints the events' actionable summary. A needs-attention
+// event of a run in superseded is left out: a later run took its work on.
+func printSummary(events []event.Event, superseded map[string]bool) {
 	var (
 		prsReady       []string
 		needsAttention []string
@@ -120,6 +130,9 @@ func printSummary(events []event.Event) {
 			}
 			ciFailed = append(ciFailed, fmt.Sprintf("#%s attempt %.0f (%s)", prNumberFromURL(prURL), attempt, id))
 		case event.AgentNeedsAttention:
+			if superseded[evt.RunID] {
+				continue
+			}
 			reason, ok := evt.Data["reason"].(string)
 			if !ok {
 				reason = "unknown"

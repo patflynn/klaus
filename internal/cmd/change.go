@@ -193,6 +193,58 @@ func resolveChange(ref string, src changeSources) (*changeTarget, error) {
 	return t, nil
 }
 
+// resumeTarget decides whether a --resume-from launch that names no branch
+// of its own (no --pr, --change or --branch) continues the branch of the
+// run it resumes, priorID, as --change continues a change. It does when
+// that run pushed its branch without a PR and nothing took the change
+// further: no run of the change has a PR, the change's branch as
+// resolveChange finds it (its valley's active version's, else its newest
+// push's) is still that branch, and origin has that branch with the run's
+// push in its history. Otherwise it returns nil and why the launch gets a
+// new branch instead, or "" when the run is unknown, has no change ID or
+// pushed no branch: then a new branch is all there is.
+func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSources) (*changeTarget, string) {
+	prior := findRun(src.Runs, priorID)
+	if prior == nil || !run.ValidChangeID(prior.ChangeID) {
+		return nil, ""
+	}
+	if prior.PRURL != nil && *prior.PRURL != "" {
+		return nil, fmt.Sprintf("run %s opened PR %s; --pr continues its branch", prior.ID, formatPR(prior))
+	}
+	if prior.PushedBranch == nil || *prior.PushedBranch == "" || prior.PushedSHA == nil {
+		return nil, ""
+	}
+	if repo := integration.RepoName(prior); repo != src.Repo {
+		return nil, fmt.Sprintf("run %s is in %s, not %s", prior.ID, repo, src.Repo)
+	}
+	branch, head := *prior.PushedBranch, *prior.PushedSHA
+	var pr *run.State // the newest run of the change with a PR
+	for _, s := range src.Runs {
+		if s.Type != "session" && s.ChangeID == prior.ChangeID && integration.RepoName(s) == src.Repo &&
+			s.PRURL != nil && *s.PRURL != "" && (pr == nil || createdBefore(pr, s)) {
+			pr = s
+		}
+	}
+	if pr != nil {
+		return nil, fmt.Sprintf("its change went on in PR %s (run %s); --pr continues that branch", formatPR(pr), pr.ID)
+	}
+	origin := "refs/remotes/origin/" + branch
+	if !git.RefExists(ctx, repoRoot, origin) {
+		return nil, fmt.Sprintf("run %s's branch %s is gone from origin", prior.ID, branch)
+	}
+	if !git.IsAncestor(ctx, repoRoot, head, origin) {
+		return nil, fmt.Sprintf("origin's %s has diverged from run %s's push %s", branch, prior.ID, shortSHA(head))
+	}
+	t, err := resolveChange(prior.ID, src)
+	if err != nil {
+		return nil, err.Error()
+	}
+	if t.Branch != branch {
+		return nil, fmt.Sprintf("change %s moved on to branch %s; --change continues it there", t.Name, t.Branch)
+	}
+	return t, ""
+}
+
 // checkBranch reports an error unless the change's branch is on origin, as
 // fetched into repoRoot: the worktree tracks origin's branch.
 func (t *changeTarget) checkBranch(ctx context.Context, repoRoot string) error {
