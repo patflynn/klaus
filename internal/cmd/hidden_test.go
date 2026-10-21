@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1137,6 +1138,32 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 		}
 	})
 
+	// Salvage commits every untracked file .gitignore doesn't exclude: a
+	// script the agent never committed, or a binary fixture, may be the work.
+	// Build output belongs in the worker's $KLAUS_SCRATCH instead.
+	t.Run("untracked script and binary are salvaged", func(t *testing.T) {
+		origin, repo, worktree, branch := setupBareRemote(t)
+		writeWorktreeFile(t, worktree, "scripts/gen.sh", []byte("#!/bin/sh\necho gen\n"), 0o755)
+		writeWorktreeFile(t, worktree, "testdata/golden.png", binaryContent(2<<20), 0o644)
+		writeWorktreeFile(t, worktree, ".gitignore", []byte("/out/\n"), 0o644)
+		writeWorktreeFile(t, worktree, "out/tool", binaryContent(1024), 0o755)
+
+		_, state, _ := finalizeRealRepo(t, repo, worktree, branch, sessionLimitLog, "")
+
+		if subj, _ := gitOut(t, origin, "log", "-1", "--format=%s", branch); subj != "wip: klaus finalize salvage "+state.ID {
+			t.Fatalf("origin tip = %q, want the salvage commit", subj)
+		}
+		tree, _ := gitOut(t, origin, "ls-tree", "-r", branch)
+		for _, want := range []string{"100755 blob .*\tscripts/gen.sh", "100644 blob .*\ttestdata/golden.png", "\twip.txt", "\t.gitignore"} {
+			if !regexp.MustCompile(`(?m)` + want + `$`).MatchString(tree) {
+				t.Errorf("salvage commit lacks %q; the branch holds:\n%s", want, tree)
+			}
+		}
+		if strings.Contains(tree, "out/tool") {
+			t.Errorf("an ignored file was salvaged; the branch holds:\n%s", tree)
+		}
+	})
+
 	t.Run("push failure keeps the local branch", func(t *testing.T) {
 		origin, repo, worktree, branch := setupBareRemote(t)
 		runGitCmd(t, repo, "remote", "set-url", "origin", origin+"-gone")
@@ -1212,6 +1239,29 @@ func TestFinalizeSalvagesRunWithoutPR(t *testing.T) {
 			t.Errorf("unverified remote must report pushed=false, got %v", na)
 		}
 	})
+}
+
+// binaryContent is n bytes that git takes for binary (they hold NULs).
+func binaryContent(n int) []byte {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = byte(i % 7)
+	}
+	return b
+}
+
+func writeWorktreeFile(t *testing.T, worktree, rel string, data []byte, mode os.FileMode) {
+	t.Helper()
+	path := filepath.Join(worktree, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, mode); err != nil { // WriteFile's mode is masked by umask
+		t.Fatal(err)
+	}
 }
 
 // commitAndPush commits the worktree's changes and pushes the branch, leaving

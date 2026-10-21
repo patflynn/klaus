@@ -679,10 +679,11 @@ func hitSessionLimit(logPath string) bool {
 	return hit
 }
 
-// cleanupWorktree removes the agent's worktree and local branch after
-// completion. The state file and logs are preserved. The branch is kept when
-// keepBranch is set or branchDeletable can't prove its work is safe. It is
-// idempotent — if the worktree is already gone, the state is still cleared.
+// cleanupWorktree removes the agent's worktree, its scratch directory and its
+// local branch after completion. The state file and logs are preserved. The
+// branch is kept when keepBranch is set or branchDeletable can't prove its
+// work is safe. It is idempotent — if the worktree is already gone, the state
+// is still cleared.
 func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Client, state *run.State, keepBranch bool) {
 	if state.Worktree == "" {
 		return
@@ -699,6 +700,7 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	if err := gitClient.WorktreeRemove(ctx, gitRoot, state.Worktree); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: worktree cleanup: %v\n", err)
 	}
+	removeScratchDir(store, state.ID)
 	if state.Branch != "" && !keepBranch {
 		if ok, err := branchDeletable(ctx, gitClient, gitRoot, state.Branch); !ok {
 			slog.Warn("keeping branch: work not verified on origin", "id", state.ID, "branch", state.Branch, "err", err)
@@ -709,6 +711,17 @@ func cleanupWorktree(ctx context.Context, store run.StateStore, gitClient git.Cl
 	state.Worktree = ""
 	if err := store.Save(state); err != nil {
 		slog.Warn("failed to save state after worktree cleanup", "id", state.ID, "err", err)
+	}
+}
+
+// removeScratchDir removes a run's scratch directory (workerScratchDir).
+func removeScratchDir(store run.StateStore, runID string) {
+	dir := workerScratchDir(store, runID)
+	if filepath.Dir(dir) != filepath.Join(filepath.Dir(store.LogDir()), "scratch") {
+		return // an empty or malformed ID would name the scratch root or beyond
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Warn("failed to remove scratch directory", "id", runID, "dir", dir, "err", err)
 	}
 }
 

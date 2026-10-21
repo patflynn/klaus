@@ -150,6 +150,7 @@ func cleanupOne(ctx context.Context, root string, store run.StateStore, gitClien
 			slog.Warn("failed to remove worktree", "id", id, "worktree", state.Worktree, "err", err)
 		}
 	}
+	removeScratchDir(store, id)
 
 	// Delete local branch
 	if state.Branch != "" {

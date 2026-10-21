@@ -472,7 +472,7 @@ func TestAgentPaneCommandKeepsPromptOut(t *testing.T) {
 		for _, host := range []string{"", "sandbox-0"} {
 			t.Run(string(kind)+"/host="+host, func(t *testing.T) {
 				o := backend.Options{SystemPrompt: "sys", SystemPromptFile: "/p/20260918-1440-abcd.system.md", Prompt: prompt, RunID: "20260918-1440-abcd", Budget: "5"}
-				cmd, err := agentPaneCommand(kind, o, promptPath, host, "/wt", "/logs/x.jsonl", "", "20260918-1440-abcd", "/tmux/20260918-1440-abcd")
+				cmd, err := agentPaneCommand(kind, o, promptPath, host, "/wt", "/logs/x.jsonl", "", "20260918-1440-abcd", workerDirs{tmux: "/tmux/20260918-1440-abcd", scratch: "/scratch/20260918-1440-abcd"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -507,7 +507,7 @@ func TestAgentPaneCommandSizeGuard(t *testing.T) {
 		{name: "sandbox agy reads both prompts on stdin", kind: backend.Agy, host: "sandbox-0", o: backend.Options{SystemPrompt: big, Prompt: big}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd, err := agentPaneCommand(tc.kind, tc.o, "/p/prompt.md", tc.host, "/wt", "/logs/x.jsonl", "", "id", "/tmux/id")
+			cmd, err := agentPaneCommand(tc.kind, tc.o, "/p/prompt.md", tc.host, "/wt", "/logs/x.jsonl", "", "id", workerDirs{tmux: "/tmux/id", scratch: "/scratch/id"})
 			if tc.want == "" {
 				if err != nil || len(cmd) > maxPaneCommandBytes {
 					t.Fatalf("err = %v, len = %d", err, len(cmd))
