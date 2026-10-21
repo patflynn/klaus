@@ -555,11 +555,10 @@ are synced back after completion. Use --local to force local execution, or
 		// Creating the worktree resets the branch, so a run still working on
 		// the branch, or on the change, keeps it unless the operator takes
 		// over, and a worktree that has it checked out is never removed
-		// unless it is a run's and the operator takes over. The check and
-		// the new run's registration happen under one lock, so two launches
+		// unless it is a run's and the operator takes over (takeover), and
+		// then only the one the takeover checked. The check and the new
+		// run's registration happen under one lock, so two launches
 		// continuing a branch can't both pass it.
-		// A forced takeover's leave to discard work: creating the worktree
-		// removes only the occupant it approved.
 		var takeover *git.Takeover
 		if isPRFix || onChange != nil {
 			release, err := lockContinuation(ctx, repoRoot)

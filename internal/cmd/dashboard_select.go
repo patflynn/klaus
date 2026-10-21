@@ -289,11 +289,11 @@ func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
 // PR holds (any on a change, a run without a PR on a PR's row), or
 // attention a run on a PR's row took on with other runs' work (TookOver),
 // makes it yours; then merged, closed, no access, integrated, gone,
-// withdrawn or superseded make it done; then needs attention, a pushed branch (to
-// approve or submit, a draft, or whose change the integrator turned down or
-// the valley is unsure of) or a PR ready to approve make it yours, except a
-// change already approved, which is the pipeline's like any other open PR;
-// an exited agent is done.
+// withdrawn or superseded make it done; then needs attention, a pushed
+// branch (to approve or submit, a draft, or whose change the integrator
+// turned down or the valley is unsure of) or a PR ready to approve make it
+// yours, except a change already approved, which is the pipeline's like any
+// other open PR; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	if r.changeID != "" {
 		m.placeChange(r)
