@@ -54,9 +54,14 @@ a full status re-fetch every 5 minutes by default (configurable via
 "reconcile_interval_seconds") so a dropped webhook can't strand a PR forever.
 
 Runs are listed by what they work on: the runs on a PR share its row, and
-the runs without a PR on one change (the same change ID in the same repo)
-share the change's row; a run with neither has a row of its own. Rows are
-grouped by whose move it is, most recent first within each group:
+so do the runs without a PR on its change (the same change ID in the same
+repo), as when a run that stopped before opening the PR was continued by
+one that opened it. The runs without a PR on a change no PR carries share
+the change's row; a run with neither has a row of its own. A run that
+needs attention stops counting once a later run of its change exists: that
+run took the work on, so the row reads ATTN only for attention no later run
+superseded. Rows are grouped by whose move it is, most recent first within
+each group:
   yours     needs you: needs attention (ATTN), a valley change to approve
             (READY) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
             DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready

@@ -124,9 +124,10 @@ the branch and the change ID. When that conversation can't be resumed, the
 agent starts fresh rather than replaying another, for --pr as for --change, and
 the replay: line says so.
 
---pr and --change refuse while a run in any session is still running on the
-branch they would work on, or on the change they continue (for --pr, the
-change of the run that opened the PR), in the target repo, naming that run.
+--pr and --change, and --resume-from when it continues its run's branch
+(below), refuse while a run in any session is still running on the branch
+they would work on, or on the change they continue (for --pr, the change of
+the run that opened the PR), in the target repo, naming that run.
 --force-takeover launches anyway: the new worktree replaces that run's,
 discarding its local, uncommitted work and unpushed commits. Without it,
 launch never discards work origin lacks: when the branch is checked out in a
@@ -161,10 +162,24 @@ and a failure is recorded on the run and printed as a warning; neither stops
 the launch.
 
 Use --resume-from <run-id> to continue a previous run's Claude conversation in
-a fresh worktree on a new branch, paused or not — the follow-up keeps what the
-earlier agent learned instead of re-exploring the repo. Prior errors produce a
-warning but do not prevent resume. It starts fresh if the transcript cannot be
-located or staged.
+a fresh worktree, paused or not — the follow-up keeps what the earlier agent
+learned instead of re-exploring the repo. Prior errors produce a warning but do
+not prevent resume. It starts fresh if the transcript cannot be located or
+staged.
+
+Without --pr, --change or --branch, a --resume-from run continues the branch
+its run pushed without a PR, as when finalize salvaged that run's work at a
+usage limit, unless something took the change further: no run of the change
+may have a PR, and the change's branch (its valley's active version's, else
+its newest push's) must still be that branch. The run keeps the change ID,
+its worktree tracks origin's branch, and it is told to push fast-forward to it
+(and, where the repo takes PRs, to open the PR from it), as --change does; it
+refuses as --change does while another run works on the branch or the change,
+or when local work on the branch isn't on origin. When the branch is gone from
+origin or has diverged from that run's push, or the change went on in a PR or
+on another branch, the run gets a new branch instead and the resume: line of
+the launch output says why. A run that pushed no branch, or opened a PR, gets
+a new branch too.
 
 For a budget-paused PR, and for any --change run, klaus continues the
 conversation of the most recent run on it by default (trajectory replay),
@@ -251,8 +266,8 @@ are synced back after completion. Use --local to force local execution, or
 		if err := checkDispatchReason(reasonFlag); err != nil {
 			return err
 		}
-		if forceTakeover && prNumber == "" && changeRef == "" {
-			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr or --change")
+		if forceTakeover && prNumber == "" && changeRef == "" && resumeFrom == "" {
+			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr, --change or --resume-from")
 		}
 		if cmd.Flags().Changed("branch") {
 			if err := git.CheckBranchName(ctx, branchFlag); err != nil {
@@ -423,11 +438,21 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		// When --pr or --change is set, track the PR's or the change's
-		// branch instead of creating a new one
+		// branch instead of creating a new one; so does --resume-from, on
+		// the branch its run pushed, when nothing took the change further.
 		var branch string
 		var isPRFix bool
 		var prURL string
 		var onChange *changeTarget
+		var resumeNote string // why a --resume-from run gets a new branch
+		// The valley's changes of the target repo, for a launch that
+		// continues a change.
+		listValley := func() (*valley.Changes, error) {
+			if !valley.Detect(ctx, repoRoot, "", "origin/"+defaultBranch) {
+				return nil, errNoValley
+			}
+			return valley.ListRepo(ctx, repoRoot)
+		}
 
 		if prNumber != "" {
 			ghRepo := resolveGHRepo(repoRef, repoRoot)
@@ -449,16 +474,7 @@ are synced back after completion. Use --local to force local execution, or
 				return fmt.Errorf("--change continues a change in a repo that delivers without PRs, and %s's origin is on GitHub; use --pr to continue a PR", repoName)
 			}
 			states, _ := run.ListAllSessions()
-			onChange, err = resolveChange(changeRef, changeSources{
-				Runs: states,
-				Repo: targetName(normalizedTarget),
-				Valley: func() (*valley.Changes, error) {
-					if !valley.Detect(ctx, repoRoot, "", "origin/"+defaultBranch) {
-						return nil, errNoValley
-					}
-					return valley.ListRepo(ctx, repoRoot)
-				},
-			})
+			onChange, err = resolveChange(changeRef, changeSources{Runs: states, Repo: targetName(normalizedTarget), Valley: listValley})
 			if err != nil {
 				return fmt.Errorf("--change: %w", err)
 			}
@@ -479,17 +495,34 @@ are synced back after completion. Use --local to force local execution, or
 			}
 			branch = branchFlag
 		} else {
-			var issueTitle string
-			if knot != nil {
-				issueTitle = knot.Knot.Title
-			} else if issue != "" {
-				title, err := gh.NewGHCLIClient(resolveGHRepo(repoRef, repoRoot)).GetIssueTitle(ctx, issue)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not fetch the title of issue %s for the branch name: %v\n", issue, err)
-				}
-				issueTitle = title
+			if resumeFrom != "" {
+				states, _ := run.ListAllSessions()
+				onChange, resumeNote = resumeTarget(ctx, repoRoot, resumeFrom,
+					changeSources{Runs: states, Repo: targetName(normalizedTarget), Valley: listValley})
 			}
-			branch = defaultBranchName(ctx, id, repoName, issueTitle, prompt)
+			if onChange != nil {
+				branch = onChange.Branch
+			} else {
+				var issueTitle string
+				if knot != nil {
+					issueTitle = knot.Knot.Title
+				} else if issue != "" {
+					title, err := gh.NewGHCLIClient(resolveGHRepo(repoRef, repoRoot)).GetIssueTitle(ctx, issue)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "warning: could not fetch the title of issue %s for the branch name: %v\n", issue, err)
+					}
+					issueTitle = title
+				}
+				branch = defaultBranchName(ctx, id, repoName, issueTitle, prompt)
+			}
+		}
+		// The flag that has the launch continue a branch, for its errors.
+		continuing := "--change"
+		switch {
+		case isPRFix:
+			continuing = "--pr"
+		case changeRef == "" && onChange != nil:
+			continuing = "--resume-from"
 		}
 
 		// Creating the worktree resets the branch and moves it from any
@@ -497,15 +530,12 @@ are synced back after completion. Use --local to force local execution, or
 		// branch, or on the change, keeps it unless the operator takes over.
 		if (isPRFix || onChange != nil) && !forceTakeover {
 			if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
-				if isPRFix {
-					return fmt.Errorf("--pr: %w", err)
-				}
-				return fmt.Errorf("--change: %w", err)
+				return fmt.Errorf("%s: %w", continuing, err)
 			}
 		}
 		if onChange != nil {
 			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
-				return fmt.Errorf("--change: %w", err)
+				return fmt.Errorf("%s: %w", continuing, err)
 			}
 		}
 
@@ -657,6 +687,12 @@ are synced back after completion. Use --local to force local execution, or
 
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
+		switch {
+		case continuing == "--resume-from":
+			fmt.Printf("  resume:   continuing the branch run %s pushed\n", resumeFrom)
+		case resumeNote != "":
+			fmt.Printf("  resume:   new branch: %s\n", resumeNote)
+		}
 		if directPush {
 			fmt.Printf("  delivery: push branch, no PR (origin is not on GitHub)\n")
 		}
@@ -766,7 +802,11 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Build the selected backend command.
 		if kind != backend.Claude && resumeFrom != "" && resolvedResume == "" {
-			fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr or --change\n", kind)
+			if onChange != nil || isPRFix {
+				fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation on the branch\n", kind)
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: %s starts a fresh worker conversation; prior branch changes remain available with --pr or --change\n", kind)
+			}
 		}
 		workerOpts.ResumeID = resolvedResume
 
@@ -862,7 +902,7 @@ are synced back after completion. Use --local to force local execution, or
 			Knot:        knotRec,
 			HeadSHA:     gitHead(ctx, worktree),
 		}
-		state.DispatchReason = dispatchReason(reasonFlag, isPRFix, budgetPaused, onChange != nil, resumeFrom)
+		state.DispatchReason = dispatchReason(reasonFlag, isPRFix, budgetPaused, changeRef != "", resumeFrom)
 		state.RepoKey = launchRepoKey(ctx, state, repoRoot)
 		if resumeFrom != "" {
 			state.OriginalRunID = &resumeFrom
@@ -1376,9 +1416,9 @@ func init() {
 	launchCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
 	launchCmd.Flags().Bool("local", false, "Force local execution even when sandbox is configured")
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
-	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID)")
+	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID); without --pr, --change or --branch, continue the branch it pushed without a PR when nothing took its change further")
 	launchCmd.Flags().String("change", "", "Continue an existing change in a repo without PRs, named by run ID, change ID or valley handle: work on its branch and keep its change ID, on any backend; Claude replays the latest run's stored conversation, Codex forks its own session on the same machine, agy starts fresh; not with --pr or --branch")
-	launchCmd.Flags().Bool("force-takeover", false, "With --pr or --change, launch even while another run is still working on the branch or change, discarding that run's local, uncommitted work")
+	launchCmd.Flags().Bool("force-takeover", false, "With --pr, --change or a --resume-from that continues its run's branch, launch even while another run is still working on the branch or change, discarding that run's local, uncommitted work")
 	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr or --change")
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for --pr or --change (continue the prior conversation, bypassing the size threshold, and for --pr the budget-paused check)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for --pr or --change; dispatch a fresh agent instead")

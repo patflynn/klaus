@@ -348,8 +348,9 @@ type PromptVars struct {
 	// agent delivers by pushing its branch for the operator to integrate,
 	// instead of opening a PR.
 	DirectPush bool
-	// Change names the change a --change run continues, by its handle or
-	// ID: Branch is the change's branch, which already holds its work.
+	// Change names the change a --change run continues, or a --resume-from
+	// run that continues its run's branch, by its handle or ID: Branch is
+	// the change's branch, which already holds its work.
 	Change string
 	// Knot names the valley knot the run works (--issue <knot>), as given;
 	// Issue is empty then.
@@ -451,6 +452,10 @@ End your turn with a final report the operator can review from, since there is n
    Fixes #{{.Issue}}{{end}}
 {{if .Reviewer}}
 Use --reviewer {{.Reviewer}} when creating the PR.
+{{end}}
+{{- if .Change}}
+You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
+Commit on top of it, push fast-forward to the same branch and open the PR from it. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
 {{end}}
 {{- end}}
 Do not include any AI attribution or 'Generated with Claude Code' lines in {{if .DirectPush}}commit messages or the report{{else}}the PR body{{end}}.
@@ -624,10 +629,13 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
 - ` + "`klaus launch --resume-from <run-id> \"<new instructions>\"`" + ` continues that
   run's Claude conversation in a fresh worktree — the new agent keeps everything
   the previous one learned and just receives the correction. Use this whenever an
-  agent went the wrong way but its exploration is still worth keeping. The
-  follow-up gets its own branch and PR unless you also pass --pr (or, in a repo
-  without PRs, --change). It falls back to a fresh agent if the prior run crashed
-  or its transcript can't be found.
+  agent went the wrong way but its exploration is still worth keeping. With --pr
+  (or, in a repo without PRs, --change) it works on that PR's or change's branch.
+  Without them, when the prior run pushed its branch without a PR (as finalize
+  does with salvaged work at a usage limit) and no PR or later push took its
+  change further, it continues that branch with the same change ID; otherwise it
+  gets its own branch, and the launch output's resume: line says why. It falls
+  back to a fresh agent if the prior run crashed or its transcript can't be found.
 - ` + "`klaus launch --pr <num> \"<prompt>\"`" + ` against a budget-paused PR does the
   same thing automatically via **trajectory replay**: klaus stores each run's
   conversation on ` + "`refs/klaus/data`" + ` at finalize time, and on relaunch it restores
@@ -807,7 +815,7 @@ There is no subcommand named ` + "`klaus resume`" + ` or ` + "`klaus finalize`" 
 
 - ` + "`--pr <num>`" + ` — resume a budget-paused PR. The draft PR plus label IS the persisted state: the branch carries the WIP commit, and the stored trajectory carries the conversation when replay is eligible.
 - ` + "`--change <ref>`" + ` — continue a change in a repo without PRs, the valley counterpart of ` + "`--pr`" + `: the branch carries the change's work, and the stored trajectory of its most recent run carries the conversation when replay is eligible.
-- ` + "`--resume-from <run-id>`" + ` — continue any prior run's Claude conversation, paused or not. This is how you correct an agent without losing what it already learned.
+- ` + "`--resume-from <run-id>`" + ` — continue any prior run's Claude conversation, paused or not. This is how you correct an agent without losing what it already learned. A run that pushed its branch without a PR, such as one salvaged at a usage limit, is continued on that branch, so don't tell the agent to move to another one.
 
 Each costs a relaunch (new worktree, new pane). None costs a cold re-exploration of the repo unless the conversation is unavailable and it falls back to a fresh agent.
 
