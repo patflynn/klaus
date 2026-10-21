@@ -136,11 +136,13 @@ origin/<branch>, it refuses, naming the worktree or branch. Nor does it
 remove a worktree that still has the branch checked out: it refuses, naming
 the run whose worktree it is (clean that run up, or pass --force-takeover).
 Even --force-takeover only replaces a worktree a run registered; one no run
-registered, such as your own checkout, is refused and left alone. A new
-run's worktree path must not exist. These launches, in one clone, take a
-lock from the check for a running holder through the new run's
-registration, so two of them can't both pass it: the second waits up to 5
-minutes, saying so, then finds the first run and refuses.
+registered, such as your own checkout, is refused and left alone. It
+replaces only the worktree it checked: should another one have the branch
+checked out by the time launch creates its own, launch refuses and leaves
+it alone. A new run's worktree path must not exist. These launches, in one
+clone, take a lock from the check for a running holder through the new
+run's registration, so two of them can't both pass it: the second waits up
+to 5 minutes, saying so, then finds the first run and refuses.
 
 A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
 is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
@@ -556,6 +558,9 @@ are synced back after completion. Use --local to force local execution, or
 		// unless it is a run's and the operator takes over. The check and
 		// the new run's registration happen under one lock, so two launches
 		// continuing a branch can't both pass it.
+		// A forced takeover's leave to discard work: creating the worktree
+		// removes only the occupant it approved.
+		var takeover *git.Takeover
 		if isPRFix || onChange != nil {
 			release, err := lockContinuation(ctx, repoRoot)
 			if err != nil {
@@ -569,7 +574,7 @@ are synced back after completion. Use --local to force local execution, or
 			}
 			if forceTakeover {
 				states, _ := run.ListAllSessions()
-				if err := checkTakeoverOccupant(ctx, repoRoot, branch, states); err != nil {
+				if takeover, err = approveTakeover(ctx, repoRoot, branch, states); err != nil {
 					return fmt.Errorf("%s: %w", continuing, err)
 				}
 			}
@@ -693,12 +698,14 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if isPRFix || onChange != nil {
 			// Create worktree tracking the PR's or the change's branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, takeover); err != nil {
 				var lw *git.LocalWorkError
 				var inUse *git.WorktreeInUseError
 				switch {
 				case errors.As(err, &lw):
 					return fmt.Errorf("%s: creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", continuing, err)
+				case errors.As(err, &inUse) && takeover != nil:
+					return fmt.Errorf("%s: %w", continuing, movedOccupantError(branch, inUse.Path, takeover))
 				case errors.As(err, &inUse):
 					states, _ := run.ListAllSessions()
 					return fmt.Errorf("%s: %w", continuing, occupantError(branch, inUse.Path, worktreeOwner(states, inUse.Path)))

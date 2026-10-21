@@ -306,7 +306,7 @@ func rebaseAndPush(prNumber string, repo string) error {
 		}
 	}()
 
-	if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktreePath, branch, false); err != nil {
+	if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktreePath, branch, nil); err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 	tracking = true

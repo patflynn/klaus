@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -10,10 +11,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -635,14 +636,176 @@ func TestResumeFromChecksBranchOwnership(t *testing.T) {
 
 func strPtrFloat(f float64) *float64 { return &f }
 
+// gitBarrier holds one klaus process at a git call of the test's choosing,
+// to force an interleaving: the git on the harness's PATH is a wrapper
+// that runs the real one, and in a process started with the barrier's env
+// (pause) it stops at the nth call whose arguments match a glob until the
+// test releases it. Other processes run git straight through.
+type gitBarrier struct {
+	t   *testing.T
+	dir string
+}
+
+// gitBarrier installs the wrapper and returns a new barrier.
+func (h *Harness) gitBarrier() *gitBarrier {
+	h.t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	h.WriteStub("git", fmt.Sprintf(`#!/usr/bin/env bash
+real=%q
+pause() {
+  local dir=$E2E_GIT_BARRIER n
+  n=$(( $(cat "$dir/count" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" > "$dir/count"
+  [ "$n" = "$E2E_GIT_PAUSE_NTH" ] || return 0
+  : > "$dir/paused"
+  # klaus gives a local git call 30s.
+  for _ in $(seq 1 500); do [ -f "$dir/release" ] && return 0; sleep 0.05; done
+}
+if [ -n "$E2E_GIT_BARRIER" ] && [[ "$*" == $E2E_GIT_PAUSE ]]; then
+  if [ "$E2E_GIT_PAUSE_AFTER" = 1 ]; then
+    "$real" "$@"; rc=$?; pause; exit $rc
+  fi
+  pause
+fi
+exec "$real" "$@"
+`, real))
+	dir, err := os.MkdirTemp(h.E2EDir, "git-barrier-")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return &gitBarrier{t: h.t, dir: dir}
+}
+
+// pause is the environment that holds a process at the nth git call whose
+// arguments ("$*") match glob, before the real git runs or, with after,
+// once it has.
+func (b *gitBarrier) pause(glob string, nth int, after bool) []string {
+	env := []string{"E2E_GIT_BARRIER=" + b.dir, "E2E_GIT_PAUSE=" + glob, fmt.Sprintf("E2E_GIT_PAUSE_NTH=%d", nth)}
+	if after {
+		env = append(env, "E2E_GIT_PAUSE_AFTER=1")
+	}
+	return env
+}
+
+// waitPaused waits until p is held at the barrier, failing the test if p
+// exits first.
+func (b *gitBarrier) waitPaused(p *klausProcess) {
+	b.t.Helper()
+	p.waitFor(func() bool {
+		_, err := os.Stat(filepath.Join(b.dir, "paused"))
+		return err == nil
+	}, "to reach the git barrier")
+}
+
+// release lets the held process go on.
+func (b *gitBarrier) release() {
+	b.t.Helper()
+	if err := os.WriteFile(filepath.Join(b.dir, "release"), nil, 0o644); err != nil {
+		b.t.Fatal(err)
+	}
+}
+
+// klausProcess is a klaus invocation running in the background, writing
+// its output to files.
+type klausProcess struct {
+	t              *testing.T
+	cmd            *exec.Cmd
+	stdout, stderr string
+	done           chan struct{}
+	err            error
+}
+
+// startKlaus starts the real klaus binary as RunKlaus runs it, with extra
+// environment, and doesn't wait for it.
+func (h *Harness) startKlaus(env []string, args ...string) *klausProcess {
+	h.t.Helper()
+	dir, err := os.MkdirTemp(h.E2EDir, "klaus-")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	p := &klausProcess{t: h.t, stdout: filepath.Join(dir, "stdout"), stderr: filepath.Join(dir, "stderr"), done: make(chan struct{})}
+	out, err := os.Create(p.stdout)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	errf, err := os.Create(p.stderr)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	p.cmd = exec.Command(klausBinary, args...)
+	p.cmd.Dir, p.cmd.Env, p.cmd.Stdout, p.cmd.Stderr = h.RepoDir, append(h.env(), env...), out, errf
+	if err := p.cmd.Start(); err != nil {
+		h.t.Fatalf("starting klaus %v: %v", args, err)
+	}
+	go func() {
+		p.err = p.cmd.Wait()
+		out.Close()
+		errf.Close()
+		close(p.done)
+	}()
+	h.t.Cleanup(func() {
+		p.cmd.Process.Kill()
+		<-p.done
+	})
+	return p
+}
+
+// output is what p has written to stdout and stderr so far.
+func (p *klausProcess) output() (string, string) {
+	out, _ := os.ReadFile(p.stdout)
+	errOut, _ := os.ReadFile(p.stderr)
+	return string(out), string(errOut)
+}
+
+// waitFor waits up to 30s until cond holds, failing the test if p exits
+// first; what names what it waits for p to do.
+func (p *klausProcess) waitFor(cond func() bool, what string) {
+	p.t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		select {
+		case <-p.done:
+			if cond() {
+				return
+			}
+			stdout, stderr := p.output()
+			p.t.Fatalf("klaus %v exited before %s\nstdout:\n%s\nstderr:\n%s", p.cmd.Args[1:], what, stdout, stderr)
+		case <-time.After(50 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			p.t.Fatalf("klaus %v didn't %s within 30s", p.cmd.Args[1:], what)
+		}
+	}
+}
+
+// wait waits for p to exit and returns its outcome.
+func (p *klausProcess) wait() RunResult {
+	p.t.Helper()
+	<-p.done
+	stdout, stderr := p.output()
+	res := RunResult{Stdout: stdout, Stderr: stderr}
+	if ee, ok := p.err.(*exec.ExitError); ok {
+		res.ExitCode = ee.ExitCode()
+	} else if p.err != nil {
+		p.t.Fatalf("running klaus %v: %v", p.cmd.Args[1:], p.err)
+	}
+	return res
+}
+
 // TestContinuingNeverTouchesOtherWork: a --resume-from run that would
 // continue its run's branch refuses, as --change and --pr do, and leaves
 // the work where it is, when the branch is checked out in a worktree with
 // uncommitted changes, when the local branch has commits origin lacks, when
 // a finished run's clean worktree still has it checked out, and, even with
-// --force-takeover, when a worktree no run registered has it. Two such
-// launches at once don't both start: one does, and the other refuses,
-// naming it, with the first's worktree intact.
+// --force-takeover, when a worktree no run registered has it. Of two such
+// launches on one branch, the second checks while the first is between its
+// own check and its run's registration, its worktree created and work
+// under way in it (held there by a git barrier): the second waits for the
+// first to register, then refuses, naming it, and the first's worktree
+// keeps its uncommitted work.
 func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -716,29 +879,33 @@ func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 		t.Errorf("the unpushed commit should still be on the local branch: %s ahead", got)
 	}
 
-	// Two launches at once on one branch.
+	// Two launches on one branch: the first holds once its worktree
+	// exists, before its run is registered, and work starts in it; the
+	// second launches then.
 	contested := prior(4, "agent/contested")
 	before := len(h.RunIDs())
-	var wg sync.WaitGroup
-	results := make([]RunResult, 2)
-	for i := range results {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			results[i] = h.RunKlaus("launch", "--repo", "widget", "--resume-from", contested.ID, fmt.Sprintf("attempt %d", i))
-		}(i)
+	barrier := h.gitBarrier()
+	first := h.startKlaus(barrier.pause("worktree add -B agent/contested *", 1, true),
+		"launch", "--repo", "widget", "--resume-from", contested.ID, "attempt 1")
+	barrier.waitPaused(first)
+	firstWT := git.BranchWorktree(context.Background(), h.RepoDir, "agent/contested")
+	if firstWT == "" {
+		t.Fatal("the first launch's worktree should have agent/contested checked out")
 	}
-	wg.Wait()
-	var won, lost []RunResult
-	for _, r := range results {
-		if r.ExitCode == 0 {
-			won = append(won, r)
-		} else {
-			lost = append(lost, r)
-		}
+	notes := filepath.Join(firstWT, "notes.txt")
+	if err := os.WriteFile(notes, []byte("half done\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if len(won) != 1 || len(lost) != 1 {
-		t.Fatalf("exactly one of two concurrent launches should start: %d did\n%+v", len(won), results)
+	second := h.startKlaus(nil, "launch", "--repo", "widget", "--resume-from", contested.ID, "attempt 2")
+	second.waitFor(func() bool {
+		_, stderr := second.output()
+		return strings.Contains(stderr, "waiting for another launch continuing a branch in ")
+	}, "wait for the first launch")
+	barrier.release()
+	won, lost := first.wait(), second.wait()
+	if won.ExitCode != 0 || lost.ExitCode == 0 {
+		t.Fatalf("the first launch should start and the second refuse: exits %d and %d\nfirst:\n%s%s\nsecond:\n%s%s",
+			won.ExitCode, lost.ExitCode, won.Stdout, won.Stderr, lost.Stdout, lost.Stderr)
 	}
 	if ids := h.RunIDs(); len(ids) != before+1 {
 		t.Fatalf("one run should be recorded: %d new", len(ids)-before)
@@ -749,15 +916,79 @@ func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 			winner = st
 		}
 	}
-	if winner == nil {
-		t.Fatalf("no run continues agent/contested\n%s", won[0].Stdout)
+	if winner == nil || winner.Worktree != firstWT {
+		t.Fatalf("the first launch's run should continue agent/contested in %s: %+v\n%s", firstWT, winner, won.Stdout)
 	}
-	if want := "--resume-from: run " + winner.ID + " is still working on"; !strings.Contains(lost[0].Stderr, want) {
-		t.Errorf("the other launch should refuse, naming %s: %q\n%s", winner.ID, want, lost[0].Stderr)
+	if want := "--resume-from: run " + winner.ID + " is still working on"; !strings.Contains(lost.Stderr, want) {
+		t.Errorf("the second launch should refuse, naming %s: %q\n%s", winner.ID, want, lost.Stderr)
 	}
 	h.WaitForClaudeStart(30 * time.Second)
-	if _, err := os.Stat(filepath.Join(winner.Worktree, "f4.txt")); err != nil {
-		t.Errorf("the winner's worktree should be intact: %v", err)
+	if data, err := os.ReadFile(notes); err != nil || string(data) != "half done\n" {
+		t.Errorf("the first run's uncommitted work should be intact: %q, %v", data, err)
 	}
+	if got := h.GitOutput(firstWT, "status", "--porcelain"); got != "?? notes.txt" {
+		t.Errorf("the first run's worktree should hold its work and nothing else: %q", got)
+	}
+	if got := h.GitOutput(firstWT, "rev-parse", "--abbrev-ref", "HEAD"); got != "agent/contested" {
+		t.Errorf("the first run's worktree should still be on agent/contested: %s", got)
+	}
+	os.Remove(notes) // so finalize has nothing to salvage
 	h.finishRun(winner.ID)
+}
+
+// TestForcedTakeoverRemovesOnlyTheWorktreeItChecked: a --force-takeover
+// launch checks that the worktree with the branch checked out is a run's,
+// and approves replacing it. Between that check and creating its own
+// worktree (held there by a git barrier), the run's worktree moves to
+// another branch and an ordinary checkout takes the branch, with work
+// under way in it. The launch refuses, naming both, and removes nothing:
+// the checkout keeps its uncommitted work, the run's worktree its branch,
+// and no run is recorded.
+func TestForcedTakeoverRemovesOnlyTheWorktreeItChecked(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.RegisterProject("acme/widget", h.RepoDir)
+	cost := 0.5
+	salvaged := h.seedSalvaged("20261021-2200-00000040", "agent/forced", h.pushBranch("agent/forced", "forced.txt"), strings.Repeat("k", 32))
+	runWT := filepath.Join(t.TempDir(), "wt")
+	h.git(h.RepoDir, "worktree", "add", "-q", "-B", "agent/forced", runWT, "origin/agent/forced")
+	h.SeedState(&run.State{ID: "20261021-2200-00000041", Type: "launch", Prompt: "an earlier attempt", TargetRepo: strPtrE2E("acme/widget"),
+		Branch: "agent/forced", ChangeID: salvaged.ChangeID, Worktree: runWT, CostUSD: &cost, CreatedAt: salvaged.CreatedAt})
+	before := len(h.RunIDs())
+
+	// The takeover's check is the launch's first look at the worktrees.
+	barrier := h.gitBarrier()
+	launch := h.startKlaus(barrier.pause("worktree list --porcelain", 1, true),
+		"launch", "--repo", "widget", "--resume-from", salvaged.ID, "--force-takeover", "take it over")
+	barrier.waitPaused(launch)
+	h.git(runWT, "checkout", "-q", "-b", "agent/elsewhere")
+	checkout := filepath.Join(t.TempDir(), "checkout")
+	h.git(h.RepoDir, "worktree", "add", "-q", checkout, "agent/forced")
+	notes := filepath.Join(checkout, "notes.txt")
+	if err := os.WriteFile(notes, []byte("half done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	barrier.release()
+
+	res := launch.wait()
+	if res.ExitCode == 0 {
+		t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
+	}
+	want := "--resume-from: branch agent/forced is now checked out in " + checkout + ", though it was checked out in " + runWT +
+		" when --force-takeover was checked; klaus removes only the worktree it checked, and left " + checkout + " alone"
+	if !strings.Contains(res.Stderr, want) {
+		t.Errorf("stderr should say %q:\n%s", want, res.Stderr)
+	}
+	if data, err := os.ReadFile(notes); err != nil || string(data) != "half done\n" {
+		t.Errorf("the checkout's uncommitted work should be intact: %q, %v", data, err)
+	}
+	if got := h.GitOutput(checkout, "status", "--porcelain"); got != "?? notes.txt" {
+		t.Errorf("the checkout should hold its work and nothing else: %q", got)
+	}
+	if got := h.GitOutput(runWT, "rev-parse", "--abbrev-ref", "HEAD"); got != "agent/elsewhere" {
+		t.Errorf("the run's worktree should be left on agent/elsewhere: %s", got)
+	}
+	if ids := h.RunIDs(); len(ids) != before {
+		t.Errorf("a refused launch should record no run: %d new", len(ids)-before)
+	}
 }

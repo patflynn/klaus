@@ -121,19 +121,21 @@ func WorktreeRemove(ctx context.Context, repoDir, path string) error {
 //
 // When the branch is checked out in another worktree whose directory is
 // gone, it prunes that entry. When that directory still exists, it returns
-// a *WorktreeInUseError, unless discard is set: then it removes that
-// worktree first, and the caller must have made sure it belongs to the run
-// being taken over. It never removes one otherwise.
+// a *WorktreeInUseError, unless takeover approved removing that very
+// worktree (Takeover.Occupant): then it removes it. It never removes any
+// other, so a worktree that took the branch after the takeover was
+// approved is refused, and left as it is.
 //
-// Unless discard is set, it first refuses with a *LocalWorkError to discard
-// work origin lacks: uncommitted changes in a worktree that has the branch
-// checked out, or commits on the local branch that aren't on origin/<branch>.
-// A local branch that only points at what origin has is reset freely.
-func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
+// Unless takeover is set, it first refuses with a *LocalWorkError to
+// discard work origin lacks: uncommitted changes in a worktree that has the
+// branch checked out, or commits on the local branch that aren't on
+// origin/<branch>. A local branch that only points at what origin has is
+// reset freely.
+func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, takeover *Takeover) error {
 	if err := checkPathFree(path); err != nil {
 		return err
 	}
-	if !discard {
+	if takeover == nil {
 		if err := checkLocalWork(ctx, repoDir, branch); err != nil {
 			return err
 		}
@@ -143,7 +145,7 @@ func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard
 			if err := WorktreePrune(ctx, repoDir); err != nil {
 				return fmt.Errorf("pruning stale worktrees: %w", err)
 			}
-		} else if !discard {
+		} else if takeover == nil || takeover.Occupant == "" || filepath.Clean(wt) != filepath.Clean(takeover.Occupant) {
 			return &WorktreeInUseError{Branch: branch, Path: wt}
 		} else if err := WorktreeRemove(ctx, repoDir, wt); err != nil {
 			return fmt.Errorf("removing worktree %s: %w", wt, err)
@@ -151,6 +153,15 @@ func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard
 	}
 	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 	return err
+}
+
+// Takeover is what a forced takeover of a branch approved discarding: work
+// origin lacks on the branch, and the worktree that had it checked out
+// when the takeover was checked.
+type Takeover struct {
+	// Occupant is the path, as BranchWorktree gave it, of the worktree
+	// approved for removal; "" when none had the branch checked out.
+	Occupant string
 }
 
 // WorktreeInUseError is WorktreeAddTrack's refusal to remove the worktree
