@@ -183,7 +183,9 @@ Key behaviors:
   PR, not once per poll, approval or dashboard start. The dashboard records
   them in `pr-transitions.json` in the session directory, so a restart, a
   reload, a failed merge that moves the PR out of `approved` and back, or a
-  dismissed and re-granted approval doesn't report them again. A PR already
+  dismissed and re-granted approval doesn't report them again. Dashboards on
+  one session share the file, locking `pr-transitions.json.lock` while they
+  update it, so only one of them reports each transition. A PR already
   merged when klaus first sees it reports nothing; one klaus saw open that
   merged while the dashboard was down reports its merge when the dashboard
   starts. When GitHub can't be asked for a PR's state (a timeout or rate

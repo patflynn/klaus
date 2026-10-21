@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -83,14 +84,19 @@ func (l *Ledger) has(key string, m ledgerMark) bool {
 
 // record sets the mark for the PR and reports whether it is new. A mark
 // another process recorded since the ledger was loaded counts as already
-// set, so two dashboards on one session don't both report a transition. An
-// error means the mark is held in memory but couldn't be saved.
+// set, so two dashboards on one session don't both report a transition: the
+// file stays locked from reading it to renaming its replacement in, so one
+// dashboard's record sees the other's mark and neither's write drops marks
+// the other just saved. An error means the mark is held in memory but
+// couldn't be saved, or was saved without the lock.
 func (l *Ledger) record(key string, m ledgerMark) (bool, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if e := l.prs[key]; e != nil && *e.field(m) != "" {
 		return false, nil
 	}
+	unlock, lockErr := l.lock()
+	defer unlock()
 	loadErr := l.mergeFromDisk()
 	e := l.prs[key]
 	if e == nil {
@@ -101,11 +107,35 @@ func (l *Ledger) record(key string, m ledgerMark) (bool, error) {
 		return false, nil
 	}
 	*e.field(m) = time.Now().UTC().Format(time.RFC3339)
-	return true, errors.Join(loadErr, l.save())
+	return true, errors.Join(lockErr, loadErr, l.save())
+}
+
+// lock takes an exclusive lock shared with every process using the ledger
+// file. It locks a file of its own beside the ledger, since save replaces
+// the ledger file. If the lock can't be taken, unlock does nothing and the
+// error says why.
+func (l *Ledger) lock() (unlock func(), err error) {
+	if l.path == "" {
+		return func() {}, nil
+	}
+	f, err := os.OpenFile(l.path+".lock", os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return func() {}, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return func() {}, fmt.Errorf("locking %s: %w", f.Name(), err)
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck
+		f.Close()
+	}, nil
 }
 
 // mergeFromDisk adds the marks in the ledger file to the ones in memory.
-// The caller holds l.mu, except in LoadLedger.
+// The caller holds l.mu and the file lock, except in LoadLedger, which needs
+// neither: save renames a whole file into place, so a read never sees half
+// of one.
 func (l *Ledger) mergeFromDisk() error {
 	if l.path == "" {
 		return nil
