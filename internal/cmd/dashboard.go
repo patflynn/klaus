@@ -55,13 +55,18 @@ a full status re-fetch every 5 minutes by default (configurable via
 
 Runs are listed by what they work on: the runs on a PR share its row, and
 so do the runs without a PR on its change (the same change ID in the same
-repo), as when a run that stopped before opening the PR was continued by
-one that opened it. The runs without a PR on a change no PR carries share
-the change's row; a run with neither has a row of its own. A run that
-needs attention stops counting once a later run of its change exists: that
-run took the work on, so the row reads ATTN only for attention no later run
-superseded. Rows are grouped by whose move it is, most recent first within
-each group:
+repo, the repo named by the valley's name or its short name, and by its
+GitHub owner where a run knows it, so alice/widget and bob/widget are two
+repos), as when a run that stopped before opening the PR was continued by
+one that opened it. Where the change stands apart from its PR keeps its own
+row: when a valley lists the change, or one of those runs pushed a branch
+that waits for integration, they share the change's row, as the runs
+without a PR on a change no PR carries do. A run with neither has a row of
+its own. A run that needs attention stops counting once a run of its
+change records taking its pushed work on (see klaus launch) and is running
+or finished: that run carries the attention, and the row reads ATTN if it
+in turn ended needing attention or failing. Rows are grouped by whose move
+it is, most recent first within each group:
   yours     needs you: needs attention (ATTN), a valley change to approve
             (READY) or to look at (STALE, REJECTED, FAILED, UNCERTAIN,
             DRAFT), a pushed branch to submit (SUBMIT), or a PR that is ready

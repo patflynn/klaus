@@ -35,6 +35,13 @@ type changeSources struct {
 	// --json` does, or returns errNoValley when no valley serves it. nil
 	// means no valley. resolveChange calls it at most once.
 	Valley func() (*valley.Changes, error)
+	// Slug is the target repo's GitHub owner/repo, "" when its origin isn't
+	// on GitHub.
+	Slug string
+	// PRs lists the URLs of the GitHub PRs, open or not, whose head is a
+	// branch of the target repo, newest first. nil when its origin isn't on
+	// GitHub.
+	PRs func(branch string) ([]string, error)
 }
 
 // errNoValley is changeSources.Valley's answer when no valley serves the
@@ -196,13 +203,22 @@ func resolveChange(ref string, src changeSources) (*changeTarget, error) {
 // resumeTarget decides whether a --resume-from launch that names no branch
 // of its own (no --pr, --change or --branch) continues the branch of the
 // run it resumes, priorID, as --change continues a change. It does when
-// that run pushed its branch without a PR and nothing took the change
-// further: no run of the change has a PR, the change's branch as
-// resolveChange finds it (its valley's active version's, else its newest
-// push's) is still that branch, and origin has that branch with the run's
-// push in its history. Otherwise it returns nil and why the launch gets a
-// new branch instead, or "" when the run is unknown, has no change ID or
-// pushed no branch: then a new branch is all there is.
+// that run pushed its branch without a PR, the branch is still its
+// change's, and nothing took the change further:
+//
+//   - the run is in the target repo, by name and, where both are known, by
+//     GitHub owner;
+//   - no run of the change has a PR;
+//   - origin has the branch, with the run's push in its history;
+//   - no run of another change worked on the branch, and origin's tip
+//     carries no other change's Change-Id;
+//   - the change's branch as resolveChange finds it (its valley's active
+//     version's, else its newest push's) is still that branch;
+//   - on GitHub, no PR, open or not, has the branch as its head.
+//
+// Otherwise it returns nil and why the launch gets a new branch instead, or
+// "" when the run is unknown, has no change ID or pushed no branch: then a
+// new branch is all there is.
 func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSources) (*changeTarget, string) {
 	prior := findRun(src.Runs, priorID)
 	if prior == nil || !run.ValidChangeID(prior.ChangeID) {
@@ -216,6 +232,11 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	}
 	if repo := integration.RepoName(prior); repo != src.Repo {
 		return nil, fmt.Sprintf("run %s is in %s, not %s", prior.ID, repo, src.Repo)
+	}
+	if owner, _, _ := strings.Cut(src.Slug, "/"); owner != "" {
+		if o := repoOwner(prior); o != "" && !strings.EqualFold(o, owner) {
+			return nil, fmt.Sprintf("run %s is in %s's %s, not %s", prior.ID, o, src.Repo, src.Slug)
+		}
 	}
 	branch, head := *prior.PushedBranch, *prior.PushedSHA
 	var pr *run.State // the newest run of the change with a PR
@@ -235,12 +256,30 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	if !git.IsAncestor(ctx, repoRoot, head, origin) {
 		return nil, fmt.Sprintf("origin's %s has diverged from run %s's push %s", branch, prior.ID, shortSHA(head))
 	}
+	for _, s := range src.Runs {
+		if s.Type != "session" && s.ChangeID != prior.ChangeID && integration.RepoName(s) == src.Repo &&
+			(s.Branch == branch || s.PushedBranch != nil && *s.PushedBranch == branch) {
+			return nil, fmt.Sprintf("branch %s is also run %s's, of another change", branch, s.ID)
+		}
+	}
+	if id, err := git.CommitChangeID(ctx, repoRoot, origin); err == nil && run.ValidChangeID(id) && id != prior.ChangeID {
+		return nil, fmt.Sprintf("origin's %s ends in a commit of another change, %s", branch, id)
+	}
 	t, err := resolveChange(prior.ID, src)
 	if err != nil {
 		return nil, err.Error()
 	}
 	if t.Branch != branch {
 		return nil, fmt.Sprintf("change %s moved on to branch %s; --change continues it there", t.Name, t.Branch)
+	}
+	if src.PRs != nil {
+		prs, err := src.PRs(branch)
+		switch {
+		case err != nil:
+			return nil, fmt.Sprintf("couldn't ask GitHub whether branch %s has a PR: %v", branch, err)
+		case len(prs) > 0:
+			return nil, fmt.Sprintf("branch %s has PR #%s on GitHub; --pr continues it", branch, extractPRNumberFromURL(prs[0]))
+		}
 	}
 	return t, ""
 }

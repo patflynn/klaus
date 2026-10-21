@@ -57,6 +57,12 @@ type State struct {
 	DispatchReason   string   `json:"dispatch_reason,omitempty"`   // why the run was launched (event.Dispatch*, or launch --reason); empty in state that predates it
 	RepoKey          string   `json:"repo_key,omitempty"`          // the repo as launch named it for events: owner/repo, valley:<name>, or the repo's short name
 	HeadSHA          string   `json:"head_sha,omitempty"`          // the worktree's HEAD when the agent started, then when it finished
+	// TookOver names the runs of this run's change, each needing attention,
+	// whose pushed work this run took on: recorded at launch when it
+	// continued a branch (--pr, --change, or --resume-from on its run's
+	// branch) holding their pushed heads, and at finalize when the head it
+	// left on origin contains theirs. Their attention is then this run's.
+	TookOver []string `json:"took_over,omitempty"`
 }
 
 // How a run delivers its work, as launch decides it from the run's repo.

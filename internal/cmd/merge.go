@@ -198,7 +198,9 @@ history and dismiss the approval the merge depends on. If GitHub refuses the
 merge because the branch must be up to date, klaus runs GitHub's "Update
 branch" (a merge from main, not a rebase), waits for CI, and merges again.
 
-If a rebase fails or CI times out, stops and reports the stuck PR.
+If a rebase fails or CI times out, stops and reports the stuck PR. The rebase
+runs in a worktree of its own; while another worktree, such as a fix agent's,
+has the PR's branch checked out, merge stops rather than remove it.
 
 Use --repo to specify the target repository when running outside a git repo
 (e.g. from a klaus session workspace). If PRs were created by klaus agents,

@@ -205,6 +205,11 @@ var finalizeCmd = &cobra.Command{
 		if !paused && noPR && (salvage == nil || salvage.pushed) {
 			recordPushedBranch(ctx, gitClient, state)
 		}
+		// Work of runs that needed attention, which the head this run left
+		// on origin holds, is this run's to carry on.
+		if !paused && (salvage == nil || salvage.pushed) {
+			recordFinalTakeovers(ctx, gitClient, state)
+		}
 		// Persist before the data-ref sync, which reads the state file.
 		if err := store.Save(state); err != nil {
 			slog.Warn("failed to save state before sync", "id", state.ID, "err", err)

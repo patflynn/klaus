@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -572,6 +573,27 @@ func (c *GHCLIClient) APIGet(ctx context.Context, path string) ([]byte, error) {
 		return nil, fmt.Errorf("gh api %s: %w", path, wrapTimeoutErr(ctx, "gh api "+path, err))
 	}
 	return stdout.Bytes(), nil
+}
+
+// PRsForBranch returns the URLs of the PRs in slug (owner/repo), open or
+// not, whose head is branch in that repo, newest first, by the REST API.
+func (c *GHCLIClient) PRsForBranch(ctx context.Context, slug, branch string) ([]string, error) {
+	owner, _, _ := strings.Cut(slug, "/")
+	data, err := c.APIGet(ctx, "repos/"+slug+"/pulls?state=all&per_page=5&head="+url.QueryEscape(owner+":"+branch))
+	if err != nil {
+		return nil, err
+	}
+	var prs []struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.Unmarshal(data, &prs); err != nil {
+		return nil, fmt.Errorf("reading the PRs of branch %s: %w", branch, err)
+	}
+	urls := make([]string, 0, len(prs))
+	for _, pr := range prs {
+		urls = append(urls, pr.HTMLURL)
+	}
+	return urls, nil
 }
 
 // APIPost runs gh api with POST method and field arguments.

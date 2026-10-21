@@ -632,9 +632,12 @@ Correcting an agent does NOT require killing it and re-briefing a cold one:
   agent went the wrong way but its exploration is still worth keeping. With --pr
   (or, in a repo without PRs, --change) it works on that PR's or change's branch.
   Without them, when the prior run pushed its branch without a PR (as finalize
-  does with salvaged work at a usage limit) and no PR or later push took its
-  change further, it continues that branch with the same change ID; otherwise it
-  gets its own branch, and the launch output's resume: line says why. It falls
+  does with salvaged work at a usage limit), the branch is still that change's
+  (no other change's run or commit on it, no PR on GitHub with it as head) and
+  no PR or later push took its change further, it continues that branch with
+  the same change ID and takes the prior run's attention on; otherwise it gets
+  its own branch, the launch output's resume: line says why, and the prior run
+  keeps needing attention. It falls
   back to a fresh agent if the prior run crashed or its transcript can't be found.
 - ` + "`klaus launch --pr <num> \"<prompt>\"`" + ` against a budget-paused PR does the
   same thing automatically via **trajectory replay**: klaus stores each run's

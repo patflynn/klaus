@@ -700,9 +700,12 @@ func trackingRepo(t *testing.T, branch string) string {
 	return repo
 }
 
-// TestWorktreeAddTrack_RemovesWorktreeOriginHasAll: a worktree left on the
-// branch that holds nothing origin lacks is removed to make way.
-func TestWorktreeAddTrack_RemovesWorktreeOriginHasAll(t *testing.T) {
+// TestWorktreeAddTrack_LeavesALiveWorktree: a worktree left on the branch
+// is never removed to make way, even when it holds nothing origin lacks:
+// WorktreeAddTrack refuses with a WorktreeInUseError naming it. With
+// discard, as for a takeover, it removes it. A path that already holds
+// anything is refused either way.
+func TestWorktreeAddTrack_LeavesALiveWorktree(t *testing.T) {
 	ctx := context.Background()
 	repo := trackingRepo(t, "feature-y")
 	oldPath := filepath.Join(t.TempDir(), "old-worktree")
@@ -711,12 +714,32 @@ func TestWorktreeAddTrack_RemovesWorktreeOriginHasAll(t *testing.T) {
 	}
 
 	newPath := filepath.Join(t.TempDir(), "new-worktree")
-	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-y", false); err != nil {
-		t.Fatalf("WorktreeAddTrack should remove a worktree origin has all of: %v", err)
+	err := WorktreeAddTrack(ctx, repo, newPath, "feature-y", false)
+	var inUse *WorktreeInUseError
+	if !errors.As(err, &inUse) || inUse.Path != oldPath {
+		t.Fatalf("WorktreeAddTrack = %v, want a WorktreeInUseError naming %s", err, oldPath)
+	}
+	if _, err := os.Stat(filepath.Join(oldPath, "README.md")); err != nil {
+		t.Errorf("the live worktree should be untouched: %v", err)
+	}
+	if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+		t.Errorf("no new worktree should exist: %v", err)
+	}
+
+	occupied := t.TempDir()
+	if err := WorktreeAddTrack(ctx, repo, occupied, "feature-y", true); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("an existing path should be refused, even with discard: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(oldPath, "README.md")); err != nil {
+		t.Errorf("a refused path should leave the live worktree alone: %v", err)
+	}
+
+	if err := WorktreeAddTrack(ctx, repo, newPath, "feature-y", true); err != nil {
+		t.Fatalf("WorktreeAddTrack with discard: %v", err)
 	}
 	defer WorktreeRemove(ctx, repo, newPath)
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
-		t.Error("old worktree directory should have been removed")
+		t.Error("with discard, the old worktree should have been removed")
 	}
 	if _, err := os.Stat(filepath.Join(newPath, "README.md")); err != nil {
 		t.Errorf("new worktree should contain README.md: %v", err)
