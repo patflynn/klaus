@@ -127,22 +127,21 @@ the replay: line says so.
 --pr and --change, and --resume-from when it continues its run's branch
 (below), refuse while a run in any session is still running on the branch
 they would work on, or on the change they continue (for --pr, the change of
-the run that opened the PR), in the target repo, naming that run.
---force-takeover launches anyway: the new worktree replaces that run's,
-discarding its local, uncommitted work and unpushed commits. Without it,
-launch never discards work origin lacks: when the branch is checked out in a
-worktree with uncommitted changes, or the local branch has commits not on
-origin/<branch>, it refuses, naming the worktree or branch. Nor does it
-remove a worktree that still has the branch checked out: it refuses, naming
-the run whose worktree it is (clean that run up, or pass --force-takeover).
-Even --force-takeover only replaces a worktree a run registered; one no run
-registered, such as your own checkout, is refused and left alone. It
-replaces only the worktree it checked: should another one have the branch
-checked out by the time launch creates its own, launch refuses and leaves
-it alone. A new run's worktree path must not exist. These launches, in one
-clone, take a lock from the check for a running holder through the new
-run's registration, so two of them can't both pass it: the second waits up
-to 5 minutes, saying so, then finds the first run and refuses.
+the run that opened the PR), in the target repo, naming that run. Wait for
+it to finish, or stop it and clean it up ('klaus cleanup --force <run>',
+which removes its worktree with any uncommitted work), then launch again.
+Launch never removes a worktree to make way: while one has the branch
+checked out, whether a run's or your own checkout, it refuses, naming it
+and saying whether it holds uncommitted changes or commits origin lacks;
+clean that run up, or remove the worktree yourself, first. Nor does it
+discard commits on the local branch that aren't on origin/<branch>: it
+refuses, naming the branch. --force-takeover launches past a run still
+working on the branch or change, and resets the local branch to origin's
+tip, discarding such commits; it never removes a worktree either. A new
+run's worktree path must not exist. These launches, in one clone, take a
+lock from the check for a running holder through the new run's
+registration, so two of them can't both pass it: the second waits up to 5
+minutes, saying so, then finds the first run and refuses.
 
 A run without --pr or --change gets a new branch named <slug>-<tail>. The tail
 is the random end of the run ID (bd92f081 for 20261011-1843-bd92f081). The slug
@@ -554,12 +553,9 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Creating the worktree resets the branch, so a run still working on
 		// the branch, or on the change, keeps it unless the operator takes
-		// over, and a worktree that has it checked out is never removed
-		// unless it is a run's and the operator takes over (takeover), and
-		// then only the one the takeover checked. The check and the new
-		// run's registration happen under one lock, so two launches
-		// continuing a branch can't both pass it.
-		var takeover *git.Takeover
+		// over, and a worktree that has it checked out is never removed,
+		// even then. The check and the new run's registration happen under
+		// one lock, so two launches continuing a branch can't both pass it.
 		if isPRFix || onChange != nil {
 			release, err := lockContinuation(ctx, repoRoot)
 			if err != nil {
@@ -568,12 +564,6 @@ are synced back after completion. Use --local to force local execution, or
 			defer release()
 			if !forceTakeover {
 				if err := checkNoLiveHolder(ctx, tmuxClient, branch, prURL, normalizedTarget, onChange); err != nil {
-					return fmt.Errorf("%s: %w", continuing, err)
-				}
-			}
-			if forceTakeover {
-				states, _ := run.ListAllSessions()
-				if takeover, err = approveTakeover(ctx, repoRoot, branch, states); err != nil {
 					return fmt.Errorf("%s: %w", continuing, err)
 				}
 			}
@@ -697,17 +687,15 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if isPRFix || onChange != nil {
 			// Create worktree tracking the PR's or the change's branch
-			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, takeover); err != nil {
+			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
 				var lw *git.LocalWorkError
 				var inUse *git.WorktreeInUseError
 				switch {
 				case errors.As(err, &lw):
 					return fmt.Errorf("%s: creating worktree: %w; push or remove that work, or pass --force-takeover to discard it", continuing, err)
-				case errors.As(err, &inUse) && takeover != nil:
-					return fmt.Errorf("%s: %w", continuing, movedOccupantError(branch, inUse.Path, takeover))
 				case errors.As(err, &inUse):
 					states, _ := run.ListAllSessions()
-					return fmt.Errorf("%s: %w", continuing, occupantError(branch, inUse.Path, worktreeOwner(states, inUse.Path)))
+					return fmt.Errorf("%s: %w", continuing, occupantError(branch, inUse.Path, inUse.Work, worktreeOwner(states, inUse.Path)))
 				}
 				return fmt.Errorf("%s: creating worktree: %w", continuing, err)
 			}
@@ -1102,7 +1090,7 @@ func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string
 	case s.Branch == branch:
 		what = "branch " + branch
 	}
-	return fmt.Errorf("run %s is still working on %s; wait for it to finish or stop it, or pass --force-takeover to take over, discarding that run's local, uncommitted work", s.ID, what)
+	return fmt.Errorf("run %s is still working on %s; wait for it to finish, or stop it and clean it up (klaus cleanup --force %s, which discards its uncommitted work) and launch again; --force-takeover launches past it, but never removes a worktree that has the branch checked out", s.ID, what, s.ID)
 }
 
 // resolveResumeID preserves resumable conversations even after an error.
@@ -1484,7 +1472,7 @@ func init() {
 	launchCmd.Flags().String("host", "", "Override sandbox host (ignores config sandbox_host)")
 	launchCmd.Flags().String("resume-from", "", "Resume from a previous agent's session (run ID); without --pr, --change or --branch, continue the branch it pushed without a PR when nothing took its change further")
 	launchCmd.Flags().String("change", "", "Continue an existing change in a repo without PRs, named by run ID, change ID or valley handle: work on its branch and keep its change ID, on any backend; Claude replays the latest run's stored conversation, Codex forks its own session on the same machine, agy starts fresh; not with --pr or --branch")
-	launchCmd.Flags().Bool("force-takeover", false, "With --pr, --change or a --resume-from that continues its run's branch, launch even while another run is still working on the branch or change, discarding that run's local, uncommitted work")
+	launchCmd.Flags().Bool("force-takeover", false, "With --pr, --change or a --resume-from that continues its run's branch, launch even while another run is still working on the branch or change, and discard commits on the local branch that origin lacks; never removes a worktree that has the branch checked out (klaus cleanup that run first)")
 	launchCmd.Flags().String("branch", "", "Name of the new run's branch (default: <slug>-<run-id tail>, the slug taken from the --issue title or the prompt's first '# ' heading or line); not with --pr or --change")
 	launchCmd.Flags().Bool("replay", false, "Force trajectory replay for --pr or --change (continue the prior conversation, bypassing the size threshold, and for --pr the budget-paused check)")
 	launchCmd.Flags().Bool("no-replay", false, "Disable trajectory replay for --pr or --change; dispatch a fresh agent instead")

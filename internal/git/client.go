@@ -23,13 +23,11 @@ type Client interface {
 	WorktreeRemove(ctx context.Context, repoDir, path string) error
 
 	// WorktreeAddTrack creates a worktree tracking an existing remote branch.
-	// It refuses when path exists, and with a *WorktreeInUseError when the
-	// branch is checked out in a worktree whose directory exists, unless
-	// takeover approved removing that very worktree: then it removes it.
-	// Unless takeover is set, it refuses with a *LocalWorkError when that
-	// worktree has uncommitted changes or the local branch has commits
-	// origin lacks.
-	WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, takeover *Takeover) error
+	// It never removes a worktree: it refuses when path exists, and with a
+	// *WorktreeInUseError when the branch is checked out in a worktree whose
+	// directory exists. Unless discard is set, it refuses with a
+	// *LocalWorkError when the local branch has commits origin lacks.
+	WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error
 
 	// WorktreePrune removes stale worktree tracking information.
 	WorktreePrune(ctx context.Context, repoDir string) error
