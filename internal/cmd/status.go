@@ -257,6 +257,11 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 		return "running"
 	}
 
+	// The attention a run took on with other runs' work (TookOver) outlasts
+	// its PR's merge, as on the dashboard.
+	if needsAttention(s) && len(s.TookOver) > 0 {
+		return "needs-attention"
+	}
 	if s.MergedAt != nil {
 		return "merged"
 	}

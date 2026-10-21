@@ -974,8 +974,9 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 // its work on (TookOver) and is running or finished, whatever the creation
 // times say: then nothing reads ATTN, whether the PR is open or merged. A
 // successor that ended needing attention or failing carries the attention
-// itself. A follow-up that only resumed it, on a fresh branch, or one that
-// never finished, hands nothing off. Salvage newer than a merged PR is
+// itself, whatever became of its PR: merged, closed or out of reach. A
+// follow-up that only resumed it, on a fresh branch, or one that never
+// finished, hands nothing off. Salvage newer than a merged PR is
 // still the operator's, and a running follow-up without a PR runs on the
 // PR's row. A push without a PR after the PR keeps its change's own row
 // while it waits for integration, and folds into the PR's once it landed.
@@ -1027,6 +1028,15 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		NeedsAttention: strPtr("session_limit; branch agent/t preserved (pushed)")})
 	d := salvaged("stopped, taken on, crashed", chg('s'), 40)
 	add("took it on and crashed", chg('s'), 20, &run.State{TookOver: []string{d.ID}, FailureReason: strPtr("error_during_execution")})
+	// Its successor continued it under a PR and failed, and the PR merged,
+	// closed or went out of reach: the attention it took on stays.
+	var failedUnderPR []*run.State
+	for i, st := range []string{"MERGED", "CLOSED", gh.StateNoAccess} {
+		f := salvaged(fmt.Sprintf("stopped before %d", 341+i), chg(byte('l'+i)), 40)
+		failedUnderPR = append(failedUnderPR, f)
+		status[*add(fmt.Sprintf("took it on under %d and crashed", 341+i), chg(byte('l'+i)), 20, &run.State{PRURL: pr(341 + i),
+			TookOver: []string{f.ID}, FailureReason: strPtr("error_during_execution")}).PRURL] = &prStatus{State: st}
+	}
 	// Its successor's pane is gone and it never finished.
 	e := salvaged("stopped, taken on, vanished", chg('q'), 40)
 	add("took it on and vanished", chg('q'), 20, &run.State{TookOver: []string{e.ID}, TmuxPane: strPtr("gone")})
@@ -1046,18 +1056,21 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		runs, running int
 	}
 	wants := map[string]want{
-		"opened 339":                   {"pr:o/r#339", "done", false, 1, 0},
-		"pushed after 339":             {"change:o/r#" + chg('r'), "yours", false, 1, 0},
-		"opened 340":                   {"pr:o/r#340", "done", false, 2, 0},
-		"opened 335":                   {"pr:o/r#335", "done", false, 2, 0},
-		"opened 334":                   {"pr:o/r#334", "pipeline", false, 2, 0},
-		"opened 336":                   {"pr:o/r#336", "yours", true, 2, 0},
-		"opened 337":                   {"pr:o/r#337", "agents", false, 2, 1},
-		"stopped with no follow-up":    {"change:o/r#" + chg('w'), "yours", true, 1, 0},
-		"resumed it on a fresh branch": {"pr:o/r#338", "yours", true, 2, 0},
-		"took it on and stopped":       {"change:o/r#" + chg('t'), "yours", true, 2, 0},
-		"took it on and crashed":       {"change:o/r#" + chg('s'), "yours", true, 2, 0},
-		"took it on and vanished":      {"change:o/r#" + chg('q'), "yours", true, 2, 0},
+		"opened 339":                       {"pr:o/r#339", "done", false, 1, 0},
+		"pushed after 339":                 {"change:o/r#" + chg('r'), "yours", false, 1, 0},
+		"opened 340":                       {"pr:o/r#340", "done", false, 2, 0},
+		"opened 335":                       {"pr:o/r#335", "done", false, 2, 0},
+		"opened 334":                       {"pr:o/r#334", "pipeline", false, 2, 0},
+		"opened 336":                       {"pr:o/r#336", "yours", true, 2, 0},
+		"opened 337":                       {"pr:o/r#337", "agents", false, 2, 1},
+		"stopped with no follow-up":        {"change:o/r#" + chg('w'), "yours", true, 1, 0},
+		"resumed it on a fresh branch":     {"pr:o/r#338", "yours", true, 2, 0},
+		"took it on and stopped":           {"change:o/r#" + chg('t'), "yours", true, 2, 0},
+		"took it on and crashed":           {"change:o/r#" + chg('s'), "yours", true, 2, 0},
+		"took it on and vanished":          {"change:o/r#" + chg('q'), "yours", true, 2, 0},
+		"took it on under 341 and crashed": {"pr:o/r#341", "yours", true, 2, 0},
+		"took it on under 342 and crashed": {"pr:o/r#342", "yours", true, 2, 0},
+		"took it on under 343 and crashed": {"pr:o/r#343", "yours", true, 2, 0},
 	}
 	if len(rows) != len(wants) {
 		t.Errorf("%d rows, want %d", len(rows), len(wants))
@@ -1076,7 +1089,7 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 		}
 	}
 	superseded := supersededRuns(states, m.agentRunning)
-	for _, s := range []*run.State{a, b, c, d} {
+	for _, s := range append([]*run.State{a, b, c, d}, failedUnderPR...) {
 		if !superseded[s.ID] {
 			t.Errorf("%q was taken on: it should be superseded", s.Prompt)
 		}
@@ -1096,6 +1109,11 @@ func TestPRRowTakesItsChangesRunsWithoutAPR(t *testing.T) {
 	}
 	if line := lineWith(plain, "#336 "); !strings.Contains(line, "MERGED") || !strings.Contains(line, "ATTN") {
 		t.Errorf("salvage after #336 merged should show ATTN on its row: %q", line)
+	}
+	for _, num := range []string{"#341", "#342", "#343"} {
+		if line := lineWith(plain, num+" "); !strings.Contains(line, "ATTN") {
+			t.Errorf("the attention %s's failed run took on should show ATTN on its row: %q\n%s", num, line, plain)
+		}
 	}
 	if line := lineWith(plain, "#337 "); !strings.Contains(line, "agent:"+shortRunID(follow.ID)+" running") {
 		t.Errorf("the follow-up should run on #337's row: %q", line)

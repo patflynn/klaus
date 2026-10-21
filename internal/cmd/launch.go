@@ -197,8 +197,9 @@ heads its starting head contains (the takes on: line names them), and
 finalize adds those whose pushed heads the head a run left on origin
 contains. Such a run carries their attention from then on: klaus status
 shows them superseded once it is running or finished, and if it in turn
-ended needing attention or failing, it shows needs-attention itself. A
---resume-from run on a new branch takes nothing on.
+ended needing attention or failing, it shows needs-attention itself, even
+once its PR is merged, closed or out of reach. A --resume-from run on a new
+branch takes nothing on.
 
 For a budget-paused PR, and for any --change run, klaus continues the
 conversation of the most recent run on it by default (trajectory replay),

@@ -271,9 +271,10 @@ func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
 // counting once a later run took its work on (superseded): that run
 // carries it, and shows it if it in turn ended needing attention.
 // Precedence: a running agent makes it the agents'; then salvaged work no
-// PR holds (any on a change, a run without a PR on a PR's row) makes it
-// yours; then merged, closed, no access, integrated, gone, withdrawn or
-// superseded make it done; then needs attention, a pushed branch (to
+// PR holds (any on a change, a run without a PR on a PR's row), or
+// attention a run on a PR's row took on with other runs' work (TookOver),
+// makes it yours; then merged, closed, no access, integrated, gone,
+// withdrawn or superseded make it done; then needs attention, a pushed branch (to
 // approve or submit, a draft, or whose change the integrator turned down or
 // the valley is unsure of) or a PR ready to approve make it yours, except a
 // change already approved, which is the pipeline's like any other open PR;
@@ -282,7 +283,7 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	if r.changeID != "" {
 		m.placeChange(r)
 	}
-	merged, attention, salvaged := false, false, false
+	merged, attention, owed := false, false, false
 	for _, s := range r.runs {
 		if m.agentRunning(s) {
 			r.running = append(r.running, s)
@@ -292,13 +293,13 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 		}
 		if needsAttention(s) && !superseded[s.ID] {
 			attention = true
-			salvaged = salvaged || r.prNum != "" && s.PRURL == nil
+			owed = owed || r.prNum != "" && (s.PRURL == nil || len(s.TookOver) > 0)
 		}
 		if t := runLastActivity(s); t.After(r.lastSeen) {
 			r.lastSeen = t
 		}
 	}
-	salvaged = salvaged || r.changeID != "" && attention
+	owed = owed || r.changeID != "" && attention
 	closed, noAccess := false, false
 	if r.ps != nil {
 		merged = merged || r.ps.State == "MERGED"
@@ -317,10 +318,12 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	switch {
 	case len(r.running) > 0:
 		r.category = catAgents
-	case salvaged:
+	case owed:
 		// Salvaged work that no later run took on, and that no PR holds,
 		// is the operator's, whatever became of the change's PR or
-		// version.
+		// version. So is the attention a run took on with other runs'
+		// work and didn't hand on: its PR merged, closed or out of reach
+		// settles nothing about it.
 		r.category = catYours
 		r.attention = true
 	case merged || closed || noAccess || r.verdict.Settled():
