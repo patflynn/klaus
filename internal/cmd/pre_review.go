@@ -11,7 +11,6 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/review"
-	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
 
@@ -160,34 +159,34 @@ var preReviewCmd = &cobra.Command{
 // it runs in (runIDEnv): check:started when it starts, check:completed when
 // it finishes. Outside a run's pane it reports nothing.
 type preReviewCheck struct {
-	baseDir string
-	state   *run.State
+	run     *paneRun
 	start   time.Time
 	data    map[string]interface{}
+	started bool
 	done    bool
 }
 
 func startPreReviewCheck() *preReviewCheck {
-	c := &preReviewCheck{start: time.Now()}
+	c := &preReviewCheck{run: currentPaneRun(), start: time.Now()}
 	c.data = map[string]interface{}{"kind": event.CheckPreReview, "command": "klaus _pre-review", "source": "pre-review", "started_at": eventTime(c.start)}
-	if c.baseDir, c.state = paneRun(); c.state != nil {
-		emitRunEvent(c.baseDir, c.state, event.CheckStarted, c.data)
+	if c.run != nil && c.run.state != nil {
+		c.run.emit(event.CheckStarted, c.data)
+		c.started = true
 	}
 	return c
 }
 
 // finish emits check:completed, once, with extra added to the check's data.
-// A run launch hadn't saved yet when the check started gets both events now.
+// A run launch hadn't saved yet when the check started gets both events now,
+// once launch saves it or, after paneRunSaveWait, under the run's ID alone.
 func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
-	if c.done {
+	if c.done || c.run == nil {
 		return
 	}
 	c.done = true
-	if c.state == nil {
-		if c.baseDir, c.state = paneRun(); c.state == nil {
-			return
-		}
-		emitRunEvent(c.baseDir, c.state, event.CheckStarted, c.data)
+	if !c.started {
+		c.run.awaitState()
+		c.run.emit(event.CheckStarted, c.data)
 	}
 	end := time.Now()
 	data := map[string]interface{}{"ended_at": eventTime(end), "duration_ms": end.Sub(c.start).Milliseconds(), "success": success}
@@ -197,7 +196,7 @@ func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
 	for k, v := range extra {
 		data[k] = v
 	}
-	emitRunEvent(c.baseDir, c.state, event.CheckCompleted, data)
+	c.run.emit(event.CheckCompleted, data)
 }
 
 func modelLabel(model string) string {

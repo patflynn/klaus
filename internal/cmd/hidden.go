@@ -46,33 +46,36 @@ var formatStreamCmd = &cobra.Command{
 // streamCheckEvents returns a watcher that emits check:started and
 // check:completed for the checks in the stream of the run whose pane this
 // is (runIDEnv), or nil outside one, and a flush for the end of the stream.
-// Launch saves the run's state just after its pane starts, so the run is
-// looked up at its first check, and events wait until it is found.
+// Launch saves the run's state just after its pane starts, so events wait
+// until it is found. At the end of the stream they wait up to
+// paneRunSaveWait more, then go out under the run's ID without it.
 func streamCheckEvents() (*stream.CheckWatcher, func()) {
-	if os.Getenv(runIDEnv) == "" {
+	p := currentPaneRun()
+	if p == nil {
 		return nil, func() {}
 	}
-	var baseDir string
-	var state *run.State
 	type pendingEvent struct {
 		typ  string
 		data map[string]interface{}
 	}
 	var pending []pendingEvent
-	flush := func() {
-		if state == nil {
-			if baseDir, state = paneRun(); state == nil {
-				return
-			}
-		}
-		for _, p := range pending {
-			emitRunEvent(baseDir, state, p.typ, p.data)
+	send := func() {
+		for _, e := range pending {
+			p.emit(e.typ, e.data)
 		}
 		pending = nil
 	}
 	emit := func(eventType string, data map[string]interface{}) {
 		pending = append(pending, pendingEvent{eventType, data})
-		flush()
+		if p.load() {
+			send()
+		}
+	}
+	flush := func() {
+		if len(pending) > 0 {
+			p.awaitState()
+			send()
+		}
 	}
 	checkData := func(c stream.Check) map[string]interface{} {
 		return map[string]interface{}{"kind": c.Kind, "command": c.Command, "source": "stream", "started_at": eventTime(c.Start)}

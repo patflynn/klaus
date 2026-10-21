@@ -263,24 +263,63 @@ func emitAgentPhase(baseDir string, s *run.State, end time.Time) {
 	})
 }
 
-// paneRun returns the session directory and state of the run whose pane
-// this process runs in (runIDEnv), or "" and nil outside one.
-func paneRun() (string, *run.State) {
+// paneRunSaveWait bounds how long a pane's process, finishing with events
+// for its run, waits for launch to save the run's state. Launch saves it just
+// after the pane starts, so a fast agent can finish first.
+const paneRunSaveWait = 2 * time.Second
+
+// paneRun is the run whose pane this process runs in (runIDEnv).
+type paneRun struct {
+	baseDir string     // the session's directory
+	id      string     // the run's ID
+	state   *run.State // nil until launch has saved it
+}
+
+// currentPaneRun returns the run whose pane this process runs in, with its
+// state if launch has saved it, or nil outside a run's pane.
+func currentPaneRun() *paneRun {
 	id := os.Getenv(runIDEnv)
 	if id == "" {
-		return "", nil
+		return nil
 	}
 	store, err := sessionStore()
 	if err != nil {
-		return "", nil
+		return nil
 	}
 	hds, ok := store.(*run.HomeDirStore)
 	if !ok {
-		return "", nil
+		return nil
 	}
-	s, err := store.Load(id)
-	if err != nil {
-		return "", nil
+	p := &paneRun{baseDir: hds.BaseDir(), id: id}
+	p.load()
+	return p
+}
+
+// load loads p's state if launch has saved it, and reports whether p has it.
+func (p *paneRun) load() bool {
+	if p.state == nil {
+		if s, err := run.NewHomeDirStoreFromPath(p.baseDir).Load(p.id); err == nil {
+			p.state = s
+		}
 	}
-	return hds.BaseDir(), s
+	return p.state != nil
+}
+
+// awaitState waits up to paneRunSaveWait for launch to save p's state.
+func (p *paneRun) awaitState() {
+	deadline := time.Now().Add(paneRunSaveWait)
+	for !p.load() && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// emit emits an event of p's run: with its runFields once p has its state,
+// else under its ID alone, so it isn't lost when launch never saves the
+// state in time; the report takes the run's fields from its other events.
+func (p *paneRun) emit(eventType string, data map[string]interface{}) {
+	if p.state != nil {
+		emitRunEvent(p.baseDir, p.state, eventType, data)
+		return
+	}
+	emitEvent(p.baseDir, p.id, eventType, data)
 }

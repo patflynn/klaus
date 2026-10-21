@@ -5,6 +5,7 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/report"
+	"github.com/patflynn/klaus/internal/run"
 )
 
 // TestEventsSayWhereAgentTimeGoes launches a run whose agent runs go test and
@@ -121,5 +123,81 @@ func TestEventsSayWhereAgentTimeGoes(t *testing.T) {
 	}
 	if len(rep.Repos) != 1 || rep.Repos[0].Repo != "acme/widget" || len(rep.Changes) != 1 || rep.Changes[0].Key != "acme/widget#12" {
 		t.Errorf("report repos %+v, changes %+v", rep.Repos, rep.Changes)
+	}
+}
+
+// TestStreamChecksOutlastUnsavedState runs the real _format-stream as an
+// agent's pane does (KLAUS_RUN_ID set) on a stream that runs go test and
+// ends before launch has saved the run's state, as a fast agent's can. For
+// one run launch saves the state soon after, and its check events carry the
+// run's fields; for the other it never does, and its check events still land
+// in the session's event log under the run's ID, where klaus report time
+// counts them.
+func TestStreamChecksOutlastUnsavedState(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	const agentStream = `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"go test ./..."}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":"ok"}]}}
+`
+	formatStream := func(id string) *exec.Cmd {
+		cmd := exec.Command(klausBinary, "_format-stream")
+		cmd.Dir = h.RepoDir
+		cmd.Env = append(h.env(), "KLAUS_RUN_ID="+id)
+		cmd.Stdin = strings.NewReader(agentStream)
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("starting _format-stream: %v", err)
+		}
+		return cmd
+	}
+
+	const savedLate, neverSaved = "20261021-0100-5a7ed1a7", "20261021-0100-0e7e5a7e"
+	late, never := formatStream(savedLate), formatStream(neverSaved)
+	time.Sleep(500 * time.Millisecond) // both streams have ended by now
+	h.SeedState(&run.State{
+		ID:             savedLate,
+		CreatedAt:      time.Now().Format(time.RFC3339),
+		RepoKey:        "acme/widget",
+		ChangeID:       "Ifeedface",
+		DispatchReason: event.DispatchLaunch,
+	})
+	for _, cmd := range []*exec.Cmd{late, never} {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("_format-stream: %v", err)
+		}
+	}
+
+	for _, tc := range []struct {
+		id      string
+		repoKey interface{} // nil: the run's state never existed
+	}{
+		{savedLate, "acme/widget"},
+		{neverSaved, nil},
+	} {
+		evts := h.runEvents(tc.id)
+		var types []string
+		for _, e := range evts {
+			types = append(types, e.Type)
+			if e.Data["kind"] != event.CheckTest || e.Data["command"] != "go test ./..." || e.Data["repo_key"] != tc.repoKey {
+				t.Errorf("run %s %s: %+v", tc.id, e.Type, e.Data)
+			}
+			if e.Type == event.CheckCompleted && e.Data["success"] != true {
+				t.Errorf("run %s check:completed: success %v", tc.id, e.Data["success"])
+			}
+		}
+		if got, want := strings.Join(types, " "), "check:started check:completed"; got != want {
+			t.Errorf("run %s events: %q, want %q", tc.id, got, want)
+		}
+	}
+
+	res := h.RunKlaus("report", "time", "--current", "--json")
+	if res.ExitCode != 0 {
+		t.Fatalf("report time exited %d: %s", res.ExitCode, res.Stderr)
+	}
+	var rep report.Report
+	if err := json.Unmarshal([]byte(res.Stdout), &rep); err != nil {
+		t.Fatalf("report JSON: %v\n%s", err, res.Stdout)
+	}
+	if c := rep.Overall.Checks["test"]; c == nil || c.Count != 2 || c.Failed != 0 {
+		t.Errorf("report test checks %+v", c)
 	}
 }
