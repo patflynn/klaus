@@ -119,60 +119,59 @@ func WorktreeRemove(ctx context.Context, repoDir, path string) error {
 // branch. It uses -B to force-create/reset the local branch to match
 // origin/<branch>. It refuses when path already exists.
 //
-// When the branch is checked out in another worktree whose directory is
-// gone, it prunes that entry. When that directory still exists, it returns
-// a *WorktreeInUseError, unless takeover approved removing that very
-// worktree (Takeover.Occupant): then it removes it. It never removes any
-// other, so a worktree that took the branch after the takeover was
-// approved is refused, and left as it is.
+// It never removes a worktree to make way. When the branch is checked out
+// in another worktree whose directory is gone, it prunes that entry; when
+// that directory exists, it refuses with a *WorktreeInUseError, saying what
+// work there origin lacks. Git knows a worktree only by its path, so no
+// check of which worktree that is could keep a removal from taking one
+// recreated at the same path since.
 //
-// Unless takeover is set, it first refuses with a *LocalWorkError to
-// discard work origin lacks: uncommitted changes in a worktree that has the
-// branch checked out, or commits on the local branch that aren't on
-// origin/<branch>. A local branch that only points at what origin has is
+// Unless discard is set, it refuses with a *LocalWorkError when the local
+// branch has commits that aren't on origin/<branch>; with discard, the
+// reset drops them. A local branch that only points at what origin has is
 // reset freely.
-func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, takeover *Takeover) error {
+func WorktreeAddTrack(ctx context.Context, repoDir, path, branch string, discard bool) error {
 	if err := checkPathFree(path); err != nil {
 		return err
 	}
-	if takeover == nil {
-		if err := checkLocalWork(ctx, repoDir, branch); err != nil {
-			return err
+	if wt := worktreePathForBranch(ctx, repoDir, branch); wt != "" {
+		if _, err := os.Stat(wt); err == nil {
+			work, err := localWork(ctx, repoDir, wt, branch)
+			if err != nil {
+				return err
+			}
+			return &WorktreeInUseError{Branch: branch, Path: wt, Work: work}
+		}
+		if err := WorktreePrune(ctx, repoDir); err != nil {
+			return fmt.Errorf("pruning stale worktrees: %w", err)
 		}
 	}
-	if wt := worktreePathForBranch(ctx, repoDir, branch); wt != "" {
-		if _, err := os.Stat(wt); err != nil {
-			if err := WorktreePrune(ctx, repoDir); err != nil {
-				return fmt.Errorf("pruning stale worktrees: %w", err)
-			}
-		} else if takeover == nil || takeover.Occupant == "" || filepath.Clean(wt) != filepath.Clean(takeover.Occupant) {
-			return &WorktreeInUseError{Branch: branch, Path: wt}
-		} else if err := WorktreeRemove(ctx, repoDir, wt); err != nil {
-			return fmt.Errorf("removing worktree %s: %w", wt, err)
+	if !discard {
+		work, err := localWork(ctx, repoDir, "", branch)
+		if err != nil {
+			return err
+		}
+		if work != "" {
+			return &LocalWorkError{Branch: branch, Work: work}
 		}
 	}
 	_, err := runGit(ctx, repoDir, "worktree", "add", "-B", branch, path, "origin/"+branch, "--quiet")
 	return err
 }
 
-// Takeover is what a forced takeover of a branch approved discarding: work
-// origin lacks on the branch, and the worktree that had it checked out
-// when the takeover was checked.
-type Takeover struct {
-	// Occupant is the path, as BranchWorktree gave it, of the worktree
-	// approved for removal; "" when none had the branch checked out.
-	Occupant string
-}
-
-// WorktreeInUseError is WorktreeAddTrack's refusal to remove the worktree
-// that has Branch checked out, at Path, whose directory exists.
+// WorktreeInUseError is WorktreeAddTrack's refusal while the worktree at
+// Path, whose directory exists, has Branch checked out.
 type WorktreeInUseError struct {
 	Branch string
 	Path   string
+	Work   string // what it holds that origin lacks, e.g. "uncommitted changes"; "" for nothing
 }
 
 func (e *WorktreeInUseError) Error() string {
-	return fmt.Sprintf("branch %q is checked out in worktree %s", e.Branch, e.Path)
+	if e.Work == "" {
+		return fmt.Sprintf("branch %q is checked out in worktree %s", e.Branch, e.Path)
+	}
+	return fmt.Sprintf("branch %q is checked out in worktree %s, which has %s", e.Branch, e.Path, e.Work)
 }
 
 // BranchWorktree returns the path of the worktree that has branch checked
@@ -191,47 +190,42 @@ func checkPathFree(path string) error {
 	return nil
 }
 
-// LocalWorkError is WorktreeAddTrack's refusal to discard work that origin
-// lacks on Branch.
+// LocalWorkError is WorktreeAddTrack's refusal to discard commits that
+// origin lacks on the local Branch, which no worktree has checked out.
 type LocalWorkError struct {
 	Branch string
-	Path   string // the worktree that has Branch checked out; "" when none does
-	Work   string // what origin lacks, e.g. "uncommitted changes"
+	Work   string // what origin lacks, e.g. "1 commit(s) not on origin/<branch>"
 }
 
 func (e *LocalWorkError) Error() string {
-	if e.Path == "" {
-		return fmt.Sprintf("local branch %q has %s", e.Branch, e.Work)
-	}
-	return fmt.Sprintf("branch %q is checked out in %s, which has %s", e.Branch, e.Path, e.Work)
+	return fmt.Sprintf("local branch %q has %s", e.Branch, e.Work)
 }
 
-// checkLocalWork returns a *LocalWorkError when branch holds work that
-// origin/<branch> lacks: uncommitted changes in the worktree that has it
-// checked out, or local commits that aren't on origin/<branch>.
-func checkLocalWork(ctx context.Context, repoDir, branch string) error {
-	wt := worktreePathForBranch(ctx, repoDir, branch)
+// localWork is what branch holds that origin/<branch> lacks: uncommitted
+// changes in wt, the worktree that has it checked out ("" for none), or
+// else local commits that aren't on origin/<branch>. "" for nothing.
+func localWork(ctx context.Context, repoDir, wt, branch string) (string, error) {
 	if wt != "" {
-		if _, err := os.Stat(wt); err != nil {
-			wt = "" // stale: pruned before the retry
-		} else if dirty, err := hasUncommittedChanges(ctx, wt); err != nil {
-			return fmt.Errorf("checking %s for uncommitted changes: %w", wt, err)
-		} else if dirty {
-			return &LocalWorkError{Branch: branch, Path: wt, Work: "uncommitted changes"}
+		dirty, err := hasUncommittedChanges(ctx, wt)
+		if err != nil {
+			return "", fmt.Errorf("checking %s for uncommitted changes: %w", wt, err)
+		}
+		if dirty {
+			return "uncommitted changes", nil
 		}
 	}
 	local, remote := "refs/heads/"+branch, "refs/remotes/origin/"+branch
 	if !RefExists(ctx, repoDir, local) || !RefExists(ctx, repoDir, remote) {
-		return nil
+		return "", nil
 	}
 	n, err := revListCount(ctx, repoDir, remote+".."+local)
 	if err != nil {
-		return fmt.Errorf("checking branch %q for commits not on origin: %w", branch, err)
+		return "", fmt.Errorf("checking branch %q for commits not on origin: %w", branch, err)
 	}
 	if n > 0 {
-		return &LocalWorkError{Branch: branch, Path: wt, Work: fmt.Sprintf("%d commit(s) not on origin/%s", n, branch)}
+		return fmt.Sprintf("%d commit(s) not on origin/%s", n, branch), nil
 	}
-	return nil
+	return "", nil
 }
 
 // hasUncommittedChanges reports whether the worktree at dir has staged,

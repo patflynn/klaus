@@ -851,9 +851,9 @@ func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 		want  string
 		keep  string
 	}{
-		{"dirty worktree", dirty, false, `--resume-from: creating worktree: branch "agent/dirty" is checked out in ` + dirtyWT + `, which has uncommitted changes; push or remove that work, or pass --force-takeover to discard it`, filepath.Join(dirtyWT, "notes.txt")},
+		{"dirty worktree", dirty, false, "--resume-from: branch agent/dirty is checked out in run 20261021-2200-00000030's worktree " + dirtyWT + " (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup 20261021-2200-00000030, with --force while its agent runs) and launch again", filepath.Join(dirtyWT, "notes.txt")},
 		{"unpushed commits", unpushed, false, `--resume-from: creating worktree: local branch "agent/unpushed" has 1 commit(s) not on origin/agent/unpushed`, ""},
-		{"a finished run's worktree", occupied, false, "--resume-from: branch agent/occupied is checked out in run 20261021-2200-00000032's worktree " + occupiedWT + "; clean that run up (klaus cleanup 20261021-2200-00000032), or pass --force-takeover to replace its worktree", occupiedWT},
+		{"a finished run's worktree", occupied, false, "--resume-from: branch agent/occupied is checked out in run 20261021-2200-00000032's worktree " + occupiedWT + "; klaus never removes a worktree, even with --force-takeover: clean that run up first (klaus cleanup 20261021-2200-00000032, with --force while its agent runs) and launch again", occupiedWT},
 		{"a worktree no run registered", foreign, true, "--resume-from: branch agent/foreign is checked out in " + foreignWT + ", which no klaus run registered; klaus never removes it", foreignWT},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -936,59 +936,64 @@ func TestContinuingNeverTouchesOtherWork(t *testing.T) {
 	h.finishRun(winner.ID)
 }
 
-// TestForcedTakeoverRemovesOnlyTheWorktreeItChecked: a --force-takeover
-// launch checks that the worktree with the branch checked out is a run's,
-// and approves replacing it. Between that check and creating its own
-// worktree (held there by a git barrier), the run's worktree moves to
-// another branch and an ordinary checkout takes the branch, with work
-// under way in it. The launch refuses, naming both, and removes nothing:
-// the checkout keeps its uncommitted work, the run's worktree its branch,
-// and no run is recorded.
-func TestForcedTakeoverRemovesOnlyTheWorktreeItChecked(t *testing.T) {
+// TestForcedTakeoverNeverRemovesAWorktree: --force-takeover refuses while
+// a worktree has the branch checked out, with uncommitted work in it, and
+// leaves it as it was: a finished run's worktree, and an ordinary checkout
+// recreated at a run's registered path after that run's worktree was
+// removed, which no check of the path could tell from the run's. The
+// refusal names the run and the work, and no run is recorded.
+func TestForcedTakeoverNeverRemovesAWorktree(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
 	h.RegisterProject("acme/widget", h.RepoDir)
 	cost := 0.5
-	salvaged := h.seedSalvaged("20261021-2200-00000040", "agent/forced", h.pushBranch("agent/forced", "forced.txt"), strings.Repeat("k", 32))
-	runWT := filepath.Join(t.TempDir(), "wt")
-	h.git(h.RepoDir, "worktree", "add", "-q", "-B", "agent/forced", runWT, "origin/agent/forced")
-	h.SeedState(&run.State{ID: "20261021-2200-00000041", Type: "launch", Prompt: "an earlier attempt", TargetRepo: strPtrE2E("acme/widget"),
-		Branch: "agent/forced", ChangeID: salvaged.ChangeID, Worktree: runWT, CostUSD: &cost, CreatedAt: salvaged.CreatedAt})
-	before := len(h.RunIDs())
+	for i, tc := range []struct {
+		name     string
+		recreate bool // the run's worktree is removed, and a checkout made at its path
+	}{
+		{"a finished run's worktree", false},
+		{"a checkout recreated at a run's path", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := fmt.Sprintf("agent/forced-%d", i)
+			salvaged := h.seedSalvaged(fmt.Sprintf("20261021-2200-0000004%d", i), branch, h.pushBranch(branch, fmt.Sprintf("forced%d.txt", i)),
+				strings.Repeat(string(rune('k'+i)), 32))
+			runWT := filepath.Join(t.TempDir(), "wt")
+			h.git(h.RepoDir, "worktree", "add", "-q", "-B", branch, runWT, "origin/"+branch)
+			holder := fmt.Sprintf("20261021-2200-0000005%d", i)
+			h.SeedState(&run.State{ID: holder, Type: "launch", Prompt: "an earlier attempt", TargetRepo: strPtrE2E("acme/widget"),
+				Branch: branch, ChangeID: salvaged.ChangeID, Worktree: runWT, CostUSD: &cost, CreatedAt: salvaged.CreatedAt})
+			if tc.recreate {
+				h.git(h.RepoDir, "worktree", "remove", runWT)
+				h.git(h.RepoDir, "worktree", "add", "-q", runWT, branch)
+			}
+			notes := filepath.Join(runWT, "notes.txt")
+			if err := os.WriteFile(notes, []byte("half done\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			before := len(h.RunIDs())
 
-	// The takeover's check is the launch's first look at the worktrees.
-	barrier := h.gitBarrier()
-	launch := h.startKlaus(barrier.pause("worktree list --porcelain", 1, true),
-		"launch", "--repo", "widget", "--resume-from", salvaged.ID, "--force-takeover", "take it over")
-	barrier.waitPaused(launch)
-	h.git(runWT, "checkout", "-q", "-b", "agent/elsewhere")
-	checkout := filepath.Join(t.TempDir(), "checkout")
-	h.git(h.RepoDir, "worktree", "add", "-q", checkout, "agent/forced")
-	notes := filepath.Join(checkout, "notes.txt")
-	if err := os.WriteFile(notes, []byte("half done\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	barrier.release()
-
-	res := launch.wait()
-	if res.ExitCode == 0 {
-		t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
-	}
-	want := "--resume-from: branch agent/forced is now checked out in " + checkout + ", though it was checked out in " + runWT +
-		" when --force-takeover was checked; klaus removes only the worktree it checked, and left " + checkout + " alone"
-	if !strings.Contains(res.Stderr, want) {
-		t.Errorf("stderr should say %q:\n%s", want, res.Stderr)
-	}
-	if data, err := os.ReadFile(notes); err != nil || string(data) != "half done\n" {
-		t.Errorf("the checkout's uncommitted work should be intact: %q, %v", data, err)
-	}
-	if got := h.GitOutput(checkout, "status", "--porcelain"); got != "?? notes.txt" {
-		t.Errorf("the checkout should hold its work and nothing else: %q", got)
-	}
-	if got := h.GitOutput(runWT, "rev-parse", "--abbrev-ref", "HEAD"); got != "agent/elsewhere" {
-		t.Errorf("the run's worktree should be left on agent/elsewhere: %s", got)
-	}
-	if ids := h.RunIDs(); len(ids) != before {
-		t.Errorf("a refused launch should record no run: %d new", len(ids)-before)
+			res := h.RunKlaus("launch", "--repo", "widget", "--resume-from", salvaged.ID, "--force-takeover", "take it over")
+			if res.ExitCode == 0 {
+				t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
+			}
+			want := "--resume-from: branch " + branch + " is checked out in run " + holder + "'s worktree " + runWT +
+				" (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup " + holder
+			if !strings.Contains(res.Stderr, want) {
+				t.Errorf("stderr should say %q:\n%s", want, res.Stderr)
+			}
+			if data, err := os.ReadFile(notes); err != nil || string(data) != "half done\n" {
+				t.Errorf("the uncommitted work should be intact: %q, %v", data, err)
+			}
+			if got := h.GitOutput(runWT, "status", "--porcelain"); got != "?? notes.txt" {
+				t.Errorf("the worktree should hold its work and nothing else: %q", got)
+			}
+			if got := h.GitOutput(runWT, "rev-parse", "--abbrev-ref", "HEAD"); got != branch {
+				t.Errorf("the worktree should still be on %s: %s", branch, got)
+			}
+			if ids := h.RunIDs(); len(ids) != before {
+				t.Errorf("a refused launch should record no run: %d new", len(ids)-before)
+			}
+		})
 	}
 }

@@ -66,48 +66,24 @@ func lockContinuation(ctx context.Context, repoRoot string) (func(), error) {
 	}
 }
 
-// approveTakeover returns what a --force-takeover onto branch, in the clone
-// at repoRoot, may discard: work origin lacks on the branch, and the
-// worktree that has it checked out when a run registered it, as
-// git.Takeover.Occupant. It refuses while a worktree that no run
-// registered, whose directory exists, has it checked out: a takeover
-// replaces a run's worktree, never anything else. Creating the worktree
-// removes that occupant only if it still has the branch checked out, and
-// refuses if another one took it since (movedOccupantError). states are
-// every recorded run.
-func approveTakeover(ctx context.Context, repoRoot, branch string, states []*run.State) (*git.Takeover, error) {
-	wt := git.BranchWorktree(ctx, repoRoot, branch)
-	if wt == "" {
-		return &git.Takeover{}, nil
-	}
-	if _, err := os.Stat(wt); err != nil {
-		return &git.Takeover{}, nil // stale: pruned when the worktree is created
-	}
-	if worktreeOwner(states, wt) == nil {
-		return nil, occupantError(branch, wt, nil)
-	}
-	return &git.Takeover{Occupant: wt}, nil
-}
-
 // occupantError is the refusal to create a worktree on branch while the
-// worktree at path has it checked out: the run that registered it, owner,
-// or nil when none did.
-func occupantError(branch, path string, owner *run.State) error {
+// worktree at path has it checked out, holding work that origin lacks (""
+// for none): owner is the run that registered it, or nil when none did.
+// klaus never removes such a worktree, even for --force-takeover, so the
+// operator frees the branch first.
+func occupantError(branch, path, work string, owner *run.State) error {
+	what := path
+	if work != "" {
+		what += " (with " + work + ")"
+	}
 	if owner == nil {
-		return fmt.Errorf("branch %s is checked out in %s, which no klaus run registered; klaus never removes it: check another branch out there, or remove it yourself", branch, path)
+		return fmt.Errorf("branch %s is checked out in %s, which no klaus run registered; klaus never removes it: check another branch out there, or remove it yourself", branch, what)
 	}
-	return fmt.Errorf("branch %s is checked out in run %s's worktree %s; clean that run up (klaus cleanup %s), or pass --force-takeover to replace its worktree", branch, owner.ID, path, owner.ID)
-}
-
-// movedOccupantError is a forced takeover's refusal once branch turns out
-// to be checked out in path, not in the worktree the takeover approved
-// removing (takeover.Occupant): another worktree took it in between.
-func movedOccupantError(branch, path string, takeover *git.Takeover) error {
-	was := "no worktree had it checked out"
-	if takeover.Occupant != "" {
-		was = "it was checked out in " + takeover.Occupant
+	free := "clean that run up first"
+	if work != "" {
+		free = "save that work, then clean that run up"
 	}
-	return fmt.Errorf("branch %s is now checked out in %s, though %s when --force-takeover was checked; klaus removes only the worktree it checked, and left %s alone", branch, path, was, path)
+	return fmt.Errorf("branch %s is checked out in run %s's worktree %s; klaus never removes a worktree, even with --force-takeover: %s (klaus cleanup %s, with --force while its agent runs) and launch again", branch, owner.ID, what, free, owner.ID)
 }
 
 // worktreeOwner returns the run whose recorded worktree is path, or nil.

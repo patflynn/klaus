@@ -301,8 +301,10 @@ func TestChangeRefErrors(t *testing.T) {
 
 // TestContinuingYieldsToALiveRun: while a --change follow-up is still
 // running, another --change launch on the change and a --pr launch on its
-// branch refuse, naming it, and leave its uncommitted work alone;
-// --force-takeover replaces it on the branch.
+// branch refuse, naming it, and leave its uncommitted work alone. So does
+// --force-takeover, which never removes the worktree the live run has the
+// branch checked out in. Once the operator cleans that run up (klaus
+// cleanup --force), a --change launch continues the branch.
 func TestContinuingYieldsToALiveRun(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -343,7 +345,7 @@ exit 0
 			if res.ExitCode == 0 {
 				t.Fatalf("launch should refuse\nstdout:\n%s", res.Stdout)
 			}
-			for _, want := range []string{tc.want, "--force-takeover", "discarding that run's local, uncommitted work"} {
+			for _, want := range []string{tc.want, "klaus cleanup --force " + live.ID, "--force-takeover launches past it, but never removes a worktree"} {
 				if !strings.Contains(res.Stderr, want) {
 					t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
 				}
@@ -357,8 +359,24 @@ exit 0
 		t.Errorf("the live run's uncommitted work should be untouched: %v", err)
 	}
 
+	res := h.RunKlaus("launch", "--repo", "widget", "--change", first.ID, "--force-takeover", "take it over")
+	want := "--change: branch " + first.Branch + " is checked out in run " + live.ID + "'s worktree " + live.Worktree +
+		" (with uncommitted changes); klaus never removes a worktree, even with --force-takeover: save that work, then clean that run up (klaus cleanup " + live.ID + ", with --force while its agent runs) and launch again"
+	if res.ExitCode == 0 || !strings.Contains(res.Stderr, want) {
+		t.Fatalf("--force-takeover should refuse, saying %q: exit %d\nstdout:\n%s\nstderr:\n%s", want, res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if data, err := os.ReadFile(notes); err != nil || string(data) != "half done\n" {
+		t.Errorf("the live run's uncommitted work should be untouched: %q, %v", data, err)
+	}
+	if ids := h.RunIDs(); len(ids) != 2 {
+		t.Errorf("a refused takeover should record no run: %v", ids)
+	}
+
+	if res := h.RunKlaus("cleanup", "--force", live.ID); res.ExitCode != 0 {
+		t.Fatalf("klaus cleanup --force %s exited %d\n%s%s", live.ID, res.ExitCode, res.Stdout, res.Stderr)
+	}
 	h.resetWorker()
-	takeover, res := h.launchRun("--repo", "widget", "--change", first.ID, "--force-takeover", "take it over")
+	takeover, res := h.launchRun("--repo", "widget", "--change", first.ID, "take it over")
 	h.WaitForClaudeStart(30 * time.Second)
 	if !strings.Contains(res.Stdout, "branch:   "+first.Branch+"\n") || takeover.ChangeID != first.ChangeID {
 		t.Errorf("takeover on branch %q, change %q; want %q, %q\n%s", takeover.Branch, takeover.ChangeID, first.Branch, first.ChangeID, res.Stdout)
@@ -366,11 +384,7 @@ exit 0
 	if head := h.GitOutput(takeover.Worktree, "rev-parse", "HEAD"); head != v1 {
 		t.Errorf("takeover worktree at %s, want origin's %s", head, v1)
 	}
-	if _, err := os.Stat(live.Worktree); !os.IsNotExist(err) {
-		t.Errorf("--force-takeover should replace the live run's worktree: %v", err)
-	}
 	h.finishRun(takeover.ID)
-	h.WaitForState(live.ID, func(s *run.State) bool { return s.DurationMS != nil && s.TmuxPane == nil }, 60*time.Second)
 }
 
 // TestChangeResumeFromUnresumableStartsFresh: --change A --resume-from B,

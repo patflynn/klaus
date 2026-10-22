@@ -207,13 +207,13 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			prState := ghClient.GetState(ctx, prRef)
 			switch prState {
 			case "MERGED":
-				status = "merged"
+				status = prSettled(status, s, "merged")
 				merge = "merged"
 			case "CLOSED":
-				status = "closed"
+				status = prSettled(status, s, "closed")
 			case gh.StateNoAccess:
 				// GitHub won't show this PR to us: nothing else to ask.
-				status = "no-access"
+				status = prSettled(status, s, "no-access")
 			default:
 				ci = ghClient.GetCI(ctx, prRef)
 				conflicts = ghClient.GetConflicts(ctx, prRef)
@@ -234,6 +234,17 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	}
 
 	return nil
+}
+
+// prSettled is the status of run s, status so far, once GitHub says its PR
+// is settled (merged, closed or out of reach): settled, unless the run
+// still needs attention it took on with other runs' work (TookOver), which
+// its PR's fate settles nothing about, as on the dashboard.
+func prSettled(status string, s *run.State, settled string) string {
+	if status == "needs-attention" && len(s.TookOver) > 0 {
+		return status
+	}
+	return settled
 }
 
 func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
