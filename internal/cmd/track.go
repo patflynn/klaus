@@ -15,18 +15,32 @@ import (
 )
 
 var trackCmd = &cobra.Command{
-	Use:   "track <pr-ref> [<pr-ref>...]",
-	Short: "Track existing PRs on the dashboard",
-	Long: `Adds existing PRs to the klaus dashboard for monitoring.
+	Use:   "track <ref> [<ref>...]",
+	Short: "Track existing PRs or valley changes on the dashboard",
+	Long: `Adds existing GitHub PRs or valley changes to the klaus dashboard and
+klaus status for monitoring.
 
-Accepts PR numbers, full GitHub PR URLs, or owner/repo#number references.
+A PR is named by its number, its full GitHub PR URL, or owner/repo#number.
 Use --repo to specify the repository when using bare PR numbers.
+
+A valley change is named by its handle (vpkz), its full change ID, or
+<project>:<handle>. klaus asks the valley about the project's local checkout
+(valley changes --json, run there) and records the change; the dashboard
+then shows it as a change row and klaus status as a run, both standing where
+the valley's listing says its active version does, as for a change an agent
+pushed. The project is the one before the colon, else --repo, else the
+session target, else the repo of the current directory: a registered project
+name, owner/repo or URL with a checkout on this machine. A change already on
+the dashboard, tracked or pushed by a run, isn't added again.
 
 Examples:
   klaus track 405                              # uses session target repo
   klaus track 405 --repo cosmo                 # explicit repo
   klaus track https://github.com/org/repo/pull/405
-  klaus track 405 406 407                      # multiple PRs`,
+  klaus track 405 406 407                      # multiple PRs
+  klaus track --repo the-valley vpkz           # a valley change, by handle
+  klaus track the-valley:vpkz                  # the same change
+  klaus track --repo the-valley vpkzrpxvokultrxwoomvtwqvqqxuxvyw   # by change ID`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoFlag, _ := cmd.Flags().GetString("repo")
@@ -45,12 +59,32 @@ Examples:
 			return err
 		}
 
-		// Resolve repo context for bare PR numbers
+		// Resolve repo context for bare PR numbers and change handles
 		resolvedRepo := resolveTrackRepo(repoFlag)
 
+		listings := make(valleyListings)
 		for _, ref := range args {
-			if err := trackPR(ref, resolvedRepo, store, existingStates); err != nil {
+			if _, _, err := parsePRRef(ref); err == nil {
+				err = trackPR(ref, resolvedRepo, store, existingStates)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: %s: %v\n", ref, err)
+				}
+				continue
+			}
+			project, id, ok := parseChangeRef(ref)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "warning: %s: not a PR (number, URL or owner/repo#number) or a valley change (handle, change ID or <project>:<handle>)\n", ref)
+				continue
+			}
+			if project == "" {
+				project = resolvedRepo
+			}
+			st, err := trackChange(cmd.Context(), project, id, store, existingStates, listings)
+			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: %s: %v\n", ref, err)
+			}
+			if st != nil {
+				existingStates = append(existingStates, st)
 			}
 		}
 		return nil
@@ -94,8 +128,8 @@ func parsePRRef(ref string) (repo, prNumber string, err error) {
 	return "", ref, nil
 }
 
-// resolveTrackRepo determines which repo to use for bare PR numbers.
-// Priority: --repo flag > session target.
+// resolveTrackRepo determines which repo to use for bare PR numbers and
+// change handles. Priority: --repo flag > session target.
 func resolveTrackRepo(repoFlag string) string {
 	if repoFlag != "" {
 		return repoFlag
@@ -179,6 +213,6 @@ func fetchPRMetadata(prNumber, repo string) (prURL, title, headBranch, state str
 }
 
 func init() {
-	trackCmd.Flags().String("repo", "", "Target repo: registered project name, owner/repo, or full URL")
+	trackCmd.Flags().String("repo", "", "Repo of a bare PR number, or project of a valley change: registered project name, owner/repo, or full URL")
 	rootCmd.AddCommand(trackCmd)
 }

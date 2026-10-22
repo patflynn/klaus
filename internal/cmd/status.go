@@ -63,6 +63,12 @@ its change (the same change ID in the same repo) is running: a follow-up
 (--pr, --resume-from or a pipeline fix) is still pushing to it, so there is
 nothing to approve yet.
 
+A valley change added with klaus track shows where the valley's listing
+says its active version stands, by the statuses above (awaiting-approval,
+approved, integrated, draft, withdrawn and so on), with its title as the
+prompt; it reads tracking while the valley can't be asked. A tracked PR
+reads tracking until GitHub says it is merged or closed.
+
 CHANGE names the change a run belongs to: its PR's number (#319), else the
 number of its change's PR (the PR of the newest run of the change that has
 one), else its valley change's handle, else the first 8 characters of its
@@ -150,13 +156,13 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		if statuses[i] == "needs-attention" && superseded[s.ID] {
 			statuses[i] = "superseded"
 		}
-		if statuses[i] == "awaiting-integration" {
+		if statuses[i] == "awaiting-integration" || integration.TracksChange(s) {
 			pushed = append(pushed, s)
 		}
 	}
 	// Where pushed branches stand: one valley listing for the runs a
-	// valley knows, one check per repo against each run's own clone for
-	// the rest.
+	// valley knows and the tracked valley changes, one check per repo
+	// against each run's own clone for the rest.
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
 	handles := changeHandles(states, report.Changes)
 	prs := changePRs(states)
@@ -187,6 +193,17 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			status = pushedStatus(res.Verdict, change != nil)
 			if change != nil && change.Title != "" {
 				prompt = truncate(change.Title, 40)
+			}
+		}
+		// A tracked valley change stands where the valley's listing says
+		// its active version does; tracking while the valley can't be
+		// asked.
+		if integration.TracksChange(s) {
+			if view := report.Changes[valleyKey(s)]; view.Change != nil {
+				status = pushedStatus(view.Verdict, true)
+				if view.Change.Title != "" {
+					prompt = truncate(view.Change.Title, 40)
+				}
 			}
 		}
 		cost := formatCost(s)
@@ -406,10 +423,7 @@ func recordedHandle(s *run.State) string {
 	if s.Valley != nil && s.Valley.Handle != "" {
 		return s.Valley.Handle
 	}
-	if s.Unready != nil {
-		return s.Unready.Handle
-	}
-	return ""
+	return s.UnreadyHandle()
 }
 
 func formatPR(s *run.State) string {

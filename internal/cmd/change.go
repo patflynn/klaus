@@ -382,8 +382,8 @@ func recordedHandles(s *run.State) []string {
 	if s.Valley != nil {
 		hs = append(hs, s.Valley.Handle)
 	}
-	if s.Unready != nil {
-		hs = append(hs, s.Unready.Handle)
+	if h := s.UnreadyHandle(); h != "" {
+		hs = append(hs, h)
 	}
 	return hs
 }

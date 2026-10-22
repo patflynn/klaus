@@ -215,7 +215,7 @@ func TestFollowUpLaunchUnreadiesValleyChange(t *testing.T) {
 				if len(calls) != 1 || calls[0] != want {
 					t.Errorf("valley unready calls = %q, want [%q]", calls, want)
 				}
-				if st.Unready == nil || *st.Unready != (run.Unready{Repo: "widget", Handle: "nxvp"}) {
+				if st.Unready == nil || *st.Unready != (run.Unready{ChangeID: prior.ChangeID, Repo: "widget", Handle: "nxvp"}) {
 					t.Errorf("recorded unready = %+v", st.Unready)
 				}
 				if !strings.Contains(res.Stdout, "valley:   widget nxvp is a draft until the agent pushes") {

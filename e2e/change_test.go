@@ -139,7 +139,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 	if follow.OriginalRunID == nil || *follow.OriginalRunID != first.ID {
 		t.Errorf("follow-up should record the run it replays, %s: %v", first.ID, follow.OriginalRunID)
 	}
-	if follow.Unready == nil || *follow.Unready != (run.Unready{Repo: "widget", Handle: "nxvp"}) {
+	if follow.Unready == nil || *follow.Unready != (run.Unready{ChangeID: first.ChangeID, Repo: "widget", Handle: "nxvp"}) {
 		t.Errorf("follow-up unready = %+v, want the change back to draft", follow.Unready)
 	}
 	if _, err := os.Stat(filepath.Join(h.E2EDir, "valley.unready-late")); err == nil {

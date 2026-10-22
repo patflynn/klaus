@@ -183,3 +183,23 @@ func RecordedChange(s *run.State) *Change {
 	}
 	return c
 }
+
+// TracksChange reports whether s is the record `klaus track` keeps of a
+// valley change: a track record naming the change and the valley's name for
+// its repo. It has no push of its own; where the change stands comes from
+// the valley's listing (Report.Changes).
+func TracksChange(s *run.State) bool {
+	return s.Type == "track" && s.ChangeID != "" && s.Valley != nil && s.Valley.Repo != ""
+}
+
+// TrackedChange is the change a tracked valley change's record names, as
+// klaus track found its active version, or nil when s isn't one. It stands
+// in for the valley's view until a check gets one.
+func TrackedChange(s *run.State) *Change {
+	if !TracksChange(s) {
+		return nil
+	}
+	v := s.Valley
+	return &Change{Repo: v.Repo, ChangeID: s.ChangeID, Handle: v.Handle, Title: v.Title,
+		Version: v.Version, Head: s.HeadSHA, Branch: s.Branch, Active: true}
+}
