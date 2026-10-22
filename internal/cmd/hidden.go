@@ -238,9 +238,10 @@ var finalizeCmd = &cobra.Command{
 			emitFinalizeEvents(baseDir, state, salvage)
 		}
 		// A pushed branch in a repo that delivers to a valley becomes a
-		// version of the run's change. This runs once agent:branch-pushed
-		// is out, so a slow or refusing valley never holds that up.
-		if !paused && salvage == nil && markChangeReady(ctx, baseDir, state) {
+		// version of the run's change: ready, or a draft awaiting review.
+		// This runs once agent:branch-pushed is out, so a slow or refusing
+		// valley never holds that up.
+		if !paused && salvage == nil && markChangeReady(ctx, baseDir, state, readiesAtFinalize(ctx, state, cfg)) {
 			if err := store.Save(state); err != nil {
 				slog.Warn("failed to save state after valley ready", "id", state.ID, "err", err)
 			}
@@ -368,10 +369,16 @@ func branchDir(state *run.State) string {
 // markChangeReady marks a pushed run's head ready as a version of the run's
 // change when the run's repo delivers to a valley (valley.Detect): it runs
 // `valley ready`, bounded by valley.ReadyTimeout, records the version on the
-// run and emits agent:change-ready. A refusal or other failure is recorded
-// on the run as a short reason and never fails finalize. It reports whether
-// it recorded anything; a repo that isn't a valley's records nothing.
-func markChangeReady(ctx context.Context, baseDir string, state *run.State) bool {
+// run and emits agent:change-ready. With ready false (ready_at_finalize off)
+// it then returns the change to draft at once with `valley unready`, bounded
+// by valley.UnreadyTimeout, so the version awaits review rather than
+// approval, and emits agent:change-draft instead; the valley has no verb
+// that records a version as a draft. A valley that doesn't list unready
+// isn't asked to ready the head at all. A refusal or other failure is
+// recorded on the run as a short reason and never fails finalize. It
+// reports whether it recorded anything; a repo that isn't a valley's
+// records nothing.
+func markChangeReady(ctx context.Context, baseDir string, state *run.State, ready bool) bool {
 	if state.PushedBranch == nil || state.PushedSHA == nil || state.FailureReason != nil ||
 		(state.PRURL != nil && *state.PRURL != "") {
 		return false
@@ -382,30 +389,86 @@ func markChangeReady(ctx context.Context, baseDir string, state *run.State) bool
 	}
 	rec := &run.Valley{Title: commitSubject(ctx, dir, head)}
 	state.Valley = rec
-	if state.ChangeID == "" {
+	switch {
+	case state.ChangeID == "":
 		rec.Error = "valley ready not run: the run has no change ID"
-	} else if r, err := valley.Ready(ctx, dir, state.ChangeID, head, branch); err != nil {
-		rec.Error = err.Error()
-	} else {
+	case !ready && !valley.HasUnready(ctx):
+		rec.Error = "valley ready not run: ready_at_finalize is off, and the valley has no unready to leave the change a draft"
+	default:
+		r, err := valley.Ready(ctx, dir, state.ChangeID, head, branch)
+		if err != nil {
+			rec.Error = err.Error()
+			break
+		}
 		rec.Repo, rec.Handle, rec.Version = r.Repo, r.Handle, r.Version
+		if ready {
+			break
+		}
+		// A change the valley says wasn't ready is a draft all the same.
+		if _, err := valley.Unready(ctx, dir, state.ChangeID); err != nil {
+			rec.Error = "marked ready, but not returned to draft for review: " + err.Error()
+		} else {
+			rec.Draft = true
+		}
 	}
 	if rec.Error != "" {
-		slog.Warn("could not mark the change ready", "id", state.ID, "err", rec.Error)
-		fmt.Fprintf(os.Stderr, "warning: could not mark the change ready: %s\n", rec.Error)
+		slog.Warn("could not record the change", "id", state.ID, "draft", rec.Draft, "err", rec.Error)
+		fmt.Fprintf(os.Stderr, "warning: could not record the change: %s\n", rec.Error)
+	}
+	if rec.Handle == "" || baseDir == "" {
 		return true
 	}
-	if baseDir != "" {
-		emitRunEvent(baseDir, state, event.AgentChangeReady, map[string]interface{}{
-			"id":        state.ID,
-			"repo":      rec.Repo,
-			"change_id": state.ChangeID,
-			"handle":    rec.Handle,
-			"version":   rec.Version,
-			"title":     rec.Title,
-			"head":      head,
-		})
+	typ := event.AgentChangeReady
+	if rec.Draft {
+		typ = event.AgentChangeDraft
 	}
+	emitRunEvent(baseDir, state, typ, changeEventData(state, head))
 	return true
+}
+
+// changeEventData is what agent:change-ready and agent:change-draft carry:
+// the version of the run's change that its pushed head, head, became.
+func changeEventData(state *run.State, head string) map[string]interface{} {
+	rec := state.Valley
+	return map[string]interface{}{
+		"id":        state.ID,
+		"repo":      rec.Repo,
+		"change_id": state.ChangeID,
+		"handle":    rec.Handle,
+		"version":   rec.Version,
+		"title":     rec.Title,
+		"head":      head,
+	}
+}
+
+// readiesAtFinalize reports whether finalize marks the run's change ready
+// (ready_at_finalize), as the config of the checkout the run's worktree
+// belongs to says, over ~/.klaus/config.json: its clone, or the main
+// checkout of its worktree. The worktree's own config is the agent's to
+// change, so it never decides. cfg, finalize's config, stands in when that
+// checkout can't be found or its config read.
+func readiesAtFinalize(ctx context.Context, state *run.State, cfg config.Config) bool {
+	dir := ""
+	if state.CloneDir != nil {
+		dir = *state.CloneDir
+	} else if state.Worktree != "" {
+		out, err := exec.CommandContext(ctx, "git", "-C", state.Worktree, "rev-parse", "--git-common-dir").Output()
+		if common := strings.TrimSpace(string(out)); err == nil && filepath.Base(common) == ".git" {
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(state.Worktree, common)
+			}
+			dir = filepath.Dir(common)
+		}
+	}
+	if dir == "" {
+		return cfg.ReadiesAtFinalize()
+	}
+	own, err := config.Load(dir)
+	if err != nil {
+		slog.Warn("could not read the run's project config", "id", state.ID, "dir", dir, "err", err)
+		return cfg.ReadiesAtFinalize()
+	}
+	return own.ReadiesAtFinalize()
 }
 
 // commitSubject returns the subject of commit sha in dir, or "".

@@ -41,9 +41,13 @@ and, for runs that finished by pushing a branch without a PR:
                         or by an equal patch-id, or the valley says it landed
   branch-gone           the branch was deleted from origin without landing
 
-and, for a branch finalize marked ready as a version of its change on a
-valley, where the valley's record says the change stands:
+and, for a branch finalize recorded as a version of its change on a valley
+(ready, or a draft when ready_at_finalize is off), where the valley's record
+says the change stands:
 
+  awaiting-review       a draft finalize left for review, as it does when
+                        ready_at_finalize is off; approve refuses it until
+                        'klaus ready' marks it ready once its review passes
   awaiting-approval     ready and waiting for you to approve it
   approved              approved; the integrator hasn't decided
   uncertain             a request was consumed or failed with no landing
@@ -82,7 +86,7 @@ Integration is checked with one "valley changes --all --json" when a valley
 is involved, and otherwise against each run's clone (one ls-remote and fetch
 per repo). If the valley can't be asked, its runs are checked against their
 clones. If the check can't complete, the run stays awaiting-integration (or
-awaiting-approval). A deleted branch alone never settles a valley change: it
+awaiting-approval, or awaiting-review). A deleted branch alone never settles a valley change: it
 stays awaiting-approval rather than branch-gone.
 
 After the runs, a jobs table lists the session's consults and reviews (see
@@ -191,6 +195,9 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 				change = integration.RecordedChange(s)
 			}
 			status = pushedStatus(res.Verdict, change != nil)
+			if change != nil && awaitsReview(s, res.Verdict) {
+				status = "awaiting-review"
+			}
 			if change != nil && change.Title != "" {
 				prompt = truncate(change.Title, 40)
 			}
@@ -312,7 +319,7 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 // gone, or been withdrawn or superseded.
 func live(status string) bool {
 	switch status {
-	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-approval",
+	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-review", "awaiting-approval",
 		"approved", "uncertain", "stale", "rejected", "failed", "draft":
 		return true
 	}
@@ -340,6 +347,18 @@ func pushedStatus(v integration.Verdict, valley bool) string {
 	// approved, uncertain, stale, rejected, failed, withdrawn, superseded,
 	// draft
 	return v.String()
+}
+
+// awaitsReview reports whether a valley change's version, which run s
+// pushed and a check says v of, awaits review rather than approval:
+// finalize left it a draft (ready_at_finalize off), klaus ready hasn't
+// marked it ready since, and the valley says it is still a draft, or can't
+// be asked. A draft whose review passed is marked ready with klaus ready.
+func awaitsReview(s *run.State, v integration.Verdict) bool {
+	if s == nil || s.Valley == nil || !s.Valley.Draft {
+		return false
+	}
+	return v == integration.Draft || v == integration.Unknown || v == integration.Awaiting
 }
 
 func formatCost(s *run.State) string {

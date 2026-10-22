@@ -53,6 +53,11 @@ type Config struct {
 	// coordinator's window is never split; "pane" splits the coordinator's
 	// window as klaus used to. Empty means "detached".
 	AgentDisplay string `json:"agent_display,omitempty"`
+	// ReadyAtFinalize decides whether finalize marks the change a run pushed
+	// to a valley ready for approval (the default), or leaves it a draft
+	// awaiting review, for `klaus ready` to mark ready once its review
+	// passes.
+	ReadyAtFinalize *bool `json:"ready_at_finalize,omitempty"`
 }
 
 type ConsultConfig struct {
@@ -229,6 +234,12 @@ func (c *Config) RequiresApproval() bool {
 		return true
 	}
 	return *c.RequireApproval
+}
+
+// ReadiesAtFinalize reports whether finalize marks a pushed valley change
+// ready (ready_at_finalize). Defaults to true if not configured.
+func (c *Config) ReadiesAtFinalize() bool {
+	return c.ReadyAtFinalize == nil || *c.ReadyAtFinalize
 }
 
 // AutoMergesOnApproval returns true if PRs should be automatically merged
@@ -795,7 +806,7 @@ What happens after ` + "`klaus launch`" + `:
 1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
 2. Agent runs its selected backend in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
-4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until its work lands on the default branch, when it shows integrated, or its branch is deleted from origin without landing, when it shows branch-gone. ` + "`klaus status`" + ` and the dashboard check this against the run's clone each time they look; nothing is recorded. A PR the agent can no longer read on GitHub shows as no-access. In a repo that delivers to a valley, finalize then marks the pushed head ready as a version of the run's change and emits agent:change-ready with the repo, the change's handle, the version and the title; ` + "`klaus status`" + ` shows the handle in place of the run ID and the run as awaiting-approval until the valley's record says approved, integrated, uncertain, stale, rejected, failed, withdrawn or superseded. Like PR approval, approving a valley change is strictly a human operator task: never run valley approve.)
+4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until its work lands on the default branch, when it shows integrated, or its branch is deleted from origin without landing, when it shows branch-gone. ` + "`klaus status`" + ` and the dashboard check this against the run's clone each time they look; nothing is recorded. A PR the agent can no longer read on GitHub shows as no-access. In a repo that delivers to a valley, finalize then marks the pushed head ready as a version of the run's change and emits agent:change-ready with the repo, the change's handle, the version and the title; ` + "`klaus status`" + ` shows the handle in place of the run ID and the run as awaiting-approval until the valley's record says approved, integrated, uncertain, stale, rejected, failed, withdrawn or superseded. When ready_at_finalize is false in config, finalize leaves the change a draft awaiting review instead and emits agent:change-draft; ` + "`klaus status`" + ` shows it as awaiting-review, and the operator can't approve it. Once its review passes, run ` + "`klaus ready <run-id|handle>`" + `, which marks it ready for approval and emits agent:change-ready. Like PR approval, approving a valley change is strictly a human operator task: never run valley approve.)
 5. Dashboard detects state change and updates display
 6. Pipeline evaluates the PR and manages CI/review/merge cycle
 

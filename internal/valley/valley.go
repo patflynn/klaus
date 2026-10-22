@@ -165,6 +165,12 @@ func Supported(ctx context.Context) bool {
 	return hasVerbs(ctx, changeVerbs...)
 }
 
+// HasUnready reports whether the valley on PATH lists unready, which a
+// valley from before drafts lacks.
+func HasUnready(ctx context.Context) bool {
+	return hasVerbs(ctx, "unready")
+}
+
 // hasVerbs reports whether the valley on PATH lists every one of verbs in
 // its help.
 func hasVerbs(ctx context.Context, verbs ...string) bool {

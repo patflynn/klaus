@@ -25,7 +25,7 @@ type rowCategory int
 const (
 	catYours    rowCategory = iota // the operator's move: needs attention, a change to approve or look at, a draft, a branch to submit, a PR ready to approve
 	catAgents                      // an agent is running on it
-	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide
+	catPipeline                    // an open PR the pipeline is moving (CI, conflicts, behind, approved and waiting), or a change the integrator has to decide or that awaits review
 	catDone                        // merged, closed, integrated, gone, withdrawn, no access, or an agent that exited
 )
 
@@ -92,6 +92,9 @@ type dashRow struct {
 	// outdated marks a verdict and change kept from an earlier check because
 	// the latest couldn't ask the valley (integration.Result.Outdated).
 	outdated bool
+	// review marks a valley change whose version finalize left a draft
+	// awaiting review (awaitsReview): it reads REVIEW, not DRAFT.
+	review bool
 }
 
 // state returns the run that speaks for the row: a PR's first agent, which
@@ -293,8 +296,8 @@ func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
 // withdrawn or superseded make it done; then needs attention, a pushed
 // branch (to approve or submit, a draft, or whose change the integrator
 // turned down or the valley is unsure of) or a PR ready to approve make it
-// yours, except a change already approved, which is the pipeline's like any
-// other open PR; an exited agent is done.
+// yours, except a change already approved or awaiting review, which is the
+// pipeline's like any other open PR; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	if r.changeID != "" {
 		m.placeChange(r)
@@ -330,6 +333,7 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 		r.pushed = true
 		r.verdict, r.change, r.outdated = m.runView(r.runs[0])
 	}
+	r.review = r.pushed && r.change != nil && awaitsReview(r.pushedRun(), r.verdict)
 
 	switch {
 	case len(r.running) > 0:
@@ -348,7 +352,9 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	case attention:
 		r.category = catYours
 		r.attention = true
-	case r.pushed && r.verdict == integration.Approved:
+	case r.pushed && (r.verdict == integration.Approved || r.review):
+		// Approved waits on the integrator; a draft awaiting review on its
+		// reviewer, who marks it ready with klaus ready.
 		r.category = catPipeline
 	case r.pushed:
 		// A pushed branch waits for the operator to approve or submit it, or
