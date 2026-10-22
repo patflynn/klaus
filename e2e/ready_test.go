@@ -22,7 +22,9 @@ import (
 // show the change awaiting review, with no approve command. klaus ready, by
 // the change's handle, marks the change's head ready, clears the draft on
 // the run and emits agent:change-ready; status then shows it awaiting
-// approval. While a follow-up runs on the change, klaus ready refuses. The
+// approval. While a follow-up runs on the change, klaus ready refuses; once
+// it has pushed a newer head, klaus ready --head the reviewed head refuses,
+// and --head the newer one readies exactly that. The
 // project config lives only in the host checkout, uncommitted, so finalize
 // reads it there, not from the agent's worktree.
 func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
@@ -112,21 +114,26 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 				t.Errorf("agent:change-draft data = %v", draft)
 			}
 
-			// The valley lists the change as a draft at the run's head.
-			listing := func(state string) {
-				v := version(1, head, "Add a health check", "not-landed")
-				v["branch"] = branch
+			// The valley lists the change in state, with a version at each
+			// head on the run's branch, the last active.
+			listing := func(state string, heads ...string) {
+				var vs []map[string]any
+				for i, hd := range heads {
+					v := version(i+1, hd, "Add a health check", "not-landed")
+					v["branch"] = branch
+					vs = append(vs, v)
+				}
 				h.writeValleyChanges(map[string]any{
 					"schema": "valley-changes/v1",
 					"host":   "classic-laddie",
 					"repos": []any{map[string]any{
 						"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil,
-						"changes":  []any{change(st, state, 1, v)},
+						"changes":  []any{change(st, state, len(vs), vs...)},
 						"branches": []any{},
 					}},
 				})
 			}
-			listing("draft")
+			listing("draft", head)
 			res = h.RunKlaus("status")
 			if res.ExitCode != 0 {
 				t.Fatalf("status exited %d; stderr: %s", res.ExitCode, res.Stderr)
@@ -139,7 +146,7 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 				// The dashboard: REVIEW with the pipeline, no approve
 				// command, and the klaus ready that readies it.
 				_, screen := h.startDashboard(170)
-				s := screen("1 pipeline", "REVIEW  v1@"+head[:7], "klaus ready nxvp")
+				s := screen("1 pipeline", "REVIEW  v1@"+head[:7], "klaus ready nxvp --head "+head[:7])
 				if strings.Contains(s, "approve: ") || strings.Contains(s, "READY") {
 					t.Errorf("a draft awaiting review must offer no approve command:\n%s", s)
 				}
@@ -149,7 +156,7 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 			if res.ExitCode != 0 {
 				t.Fatalf("klaus ready exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
 			}
-			if got, want := strings.TrimSpace(res.Stdout), "widget nxvp v1 ready (run "+id+")"; got != want {
+			if got, want := strings.TrimSpace(res.Stdout), "widget nxvp v1 ready at "+head+" (run "+id+")"; got != want {
 				t.Errorf("klaus ready printed %q, want %q", got, want)
 			}
 			readies := h.valleyCalls("ready")
@@ -174,7 +181,7 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 				t.Errorf("agent:change-ready data = %v", ready)
 			}
 
-			listing("ready")
+			listing("ready", head)
 			res = h.RunKlaus("status")
 			if got := statusOf(t, res.Stdout, id); got != "awaiting-approval" {
 				t.Errorf("status once ready = %q, want awaiting-approval:\n%s", got, res.Stdout)
@@ -201,6 +208,44 @@ func TestReadyAtFinalizeOffLeavesDraftForKlausReady(t *testing.T) {
 			}
 			if n := len(h.valleyCalls("ready")); n != 2 {
 				t.Errorf("a refused klaus ready must not run valley ready: %d calls in all", n)
+			}
+
+			// The follow-up pushes after the review: v2, a draft at a newer
+			// head. klaus ready --head the reviewed head refuses, naming the
+			// newer one, and asks the valley nothing; --head the newer one,
+			// once reviewed, readies exactly it.
+			newer := h.pushWork(follow, "health_test.go", "Test the health check")
+			h.finishRun(follow.ID)
+			if n := len(h.valleyCalls("ready")); n != 3 {
+				t.Fatalf("the follow-up's finalize should have run valley ready: %d calls in all", n)
+			}
+			// While the valley lists only v1, as when the follow-up's ready
+			// failed, origin's branch says the change moved on.
+			listing("draft", head)
+			res = h.RunKlaus("ready", "nxvp", "--head", head[:12])
+			if want := "change nxvp's current head is " + newer + " (origin's " + branch + ", a push the valley doesn't hold as a version yet), not " + head[:12]; res.ExitCode == 0 || !strings.Contains(res.Stderr, want) {
+				t.Errorf("klaus ready --head <reviewed> past an unlisted push exited %d, want a refusal: %q\nstdout:\n%s\nstderr:\n%s",
+					res.ExitCode, want, res.Stdout, res.Stderr)
+			}
+			listing("draft", head, newer)
+			res = h.RunKlaus("ready", "nxvp", "--head", head[:12])
+			if res.ExitCode == 0 || !strings.Contains(res.Stderr, "change nxvp's current head is "+newer+", not "+head[:12]) {
+				t.Errorf("klaus ready --head <reviewed> after a newer push exited %d, want a refusal naming %s\nstdout:\n%s\nstderr:\n%s",
+					res.ExitCode, newer, res.Stdout, res.Stderr)
+			}
+			if n := len(h.valleyCalls("ready")); n != 3 {
+				t.Errorf("a refused klaus ready --head must not run valley ready: %d calls in all", n)
+			}
+			res = h.RunKlaus("ready", "nxvp", "--head", newer)
+			if res.ExitCode != 0 {
+				t.Fatalf("klaus ready --head <newer> exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
+			}
+			if got, want := strings.TrimSpace(res.Stdout), "widget nxvp v1 ready at "+newer+" (run "+follow.ID+")"; got != want {
+				t.Errorf("klaus ready --head printed %q, want %q", got, want)
+			}
+			readies = h.valleyCalls("ready")
+			if want := fmt.Sprintf("%s: ready --change %s --head %s %s", h.RepoDir, st.ChangeID, newer, branch); len(readies) != 4 || readies[3] != want {
+				t.Errorf("valley ready calls = %q, want the fourth to be %q", readies, want)
 			}
 		})
 	}

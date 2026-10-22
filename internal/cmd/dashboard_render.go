@@ -454,7 +454,7 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 // branch to submit and dashboard.approve_command is set, the footer leads
 // with that command. Otherwise, when an agent is running on the selected PR
 // or change, it leads with which one, and for a change awaiting review, with
-// the klaus ready that marks it ready. Then, for a change, it notes a newer
+// the klaus ready that marks its head on screen ready. Then, for a change, it notes a newer
 // local push the valley doesn't hold as a version.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
@@ -491,7 +491,7 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		} else if len(r.running) > 0 && (r.prNum != "" || r.changeID != "") {
 			notes = append(notes, part{runningNote(r), yellowStyle})
 		} else if r.review {
-			notes = append(notes, part{"awaiting review: once it passes, ", dimStyle}, part{"klaus ready " + r.change.Handle, cyanStyle})
+			notes = append(notes, part{"awaiting review: once it passes, ", dimStyle}, part{"klaus ready " + r.change.Handle + " --head " + shortSHA(r.change.Head), cyanStyle})
 		}
 		if r.unplaced != "" {
 			if len(notes) > 0 {

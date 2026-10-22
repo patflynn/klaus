@@ -97,8 +97,8 @@ v2@1a2b3c4). Finalize marked the pushed head ready, or, with
 "ready_at_finalize": false in config, left it a draft awaiting review. Every
 minute, one "valley changes --all --json" for all such runs says where each
 stands: REVIEW (a draft finalize left that awaits review; approve refuses it,
-and the footer offers the 'klaus ready <handle>' that marks it ready once the
-review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
+and the footer offers the 'klaus ready <handle> --head <head>' that marks the
+head on screen ready once its review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
 (landed), UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED
 (the integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as
 launch does when a follow-up run continues the change, and no run of it is
