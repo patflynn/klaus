@@ -1049,7 +1049,7 @@ func unreadyChange(ctx context.Context, worktree string, change changeChoice) *r
 	if err != nil || !valley.DetectUnready(ctx, worktree, strings.TrimSpace(string(head))) {
 		return nil
 	}
-	rec := &run.Unready{}
+	rec := &run.Unready{ChangeID: change.ID}
 	switch r, err := valley.Unready(ctx, worktree, change.ID); {
 	case err != nil:
 		rec.Error = err.Error()

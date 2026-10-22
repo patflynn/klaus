@@ -19,7 +19,7 @@ type State struct {
 	Prompt           string   `json:"prompt"`
 	Issue            *string  `json:"issue"`
 	PR               *string  `json:"pr,omitempty"`
-	Branch           string   `json:"branch"`
+	Branch           string   `json:"branch"` // the run's branch: launch's, until finalize finds the run pushed another, as an agent that makes a new change does
 	Worktree         string   `json:"worktree"`
 	TmuxPane         *string  `json:"tmux_pane"`
 	Budget           *string  `json:"budget"`
@@ -48,7 +48,7 @@ type State struct {
 	PushedSubject    string   `json:"pushed_subject,omitempty"`    // the subject of the commit at PushedSHA, when finalize had it
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
-	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer); empty in state that predates change IDs
+	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer): launch's, until finalize finds the run pushed another (see Branch); empty in state that predates change IDs
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley
 	Unready          *Unready `json:"unready,omitempty"`           // set when launch returned the change this run continues to draft on a valley, or tried to
 	ChangeRepo       string   `json:"change_repo,omitempty"`       // the repo of the change this run continues, as the run it continues named it (integration.RepoName); set at launch when the change ID is inherited from a run
@@ -56,7 +56,7 @@ type State struct {
 	Knot             *Knot    `json:"knot,omitempty"`              // set when the run was launched to work a valley knot (--issue <knot>)
 	DispatchReason   string   `json:"dispatch_reason,omitempty"`   // why the run was launched (event.Dispatch*, or launch --reason); empty in state that predates it
 	RepoKey          string   `json:"repo_key,omitempty"`          // the repo as launch named it for events: owner/repo, valley:<name>, or the repo's short name
-	HeadSHA          string   `json:"head_sha,omitempty"`          // the worktree's HEAD when the agent started, then when it finished
+	HeadSHA          string   `json:"head_sha,omitempty"`          // the worktree's HEAD when the agent started, then when it finished; for a tracked valley change, its active version's head when klaus track added it
 	// TookOver names the runs of this run's change, each needing attention,
 	// whose pushed work this run took on: recorded at launch when it
 	// continued a branch (--pr, --change, or --resume-from on its run's
@@ -74,10 +74,24 @@ const (
 // Unready is what launch's `valley unready` did to the change a follow-up
 // run continues, before its agent started.
 type Unready struct {
-	Repo   string `json:"repo,omitempty"`   // the valley's name for the repo, when the change became a draft
-	Handle string `json:"handle,omitempty"` // the change's handle, when it became a draft
-	Note   string `json:"note,omitempty"`   // what the valley said when the change wasn't ready
-	Error  string `json:"error,omitempty"`  // why valley unready failed
+	// ChangeID is the change launch returned to draft. Empty in state that
+	// predates it, where it is the run's change; finalize fills it in when
+	// the run pushed another change.
+	ChangeID string `json:"change_id,omitempty"`
+	Repo     string `json:"repo,omitempty"`   // the valley's name for the repo, when the change became a draft
+	Handle   string `json:"handle,omitempty"` // the change's handle, when it became a draft
+	Note     string `json:"note,omitempty"`   // what the valley said when the change wasn't ready
+	Error    string `json:"error,omitempty"`  // why valley unready failed
+}
+
+// UnreadyHandle is the handle launch's `valley unready` reported for the
+// run's change, or "" when it reported none, or reported it for a change the
+// run then left for another.
+func (s *State) UnreadyHandle() string {
+	if s.Unready == nil || s.Unready.ChangeID != "" && s.Unready.ChangeID != s.ChangeID {
+		return ""
+	}
+	return s.Unready.Handle
 }
 
 // Valley is what finalize's `valley ready` recorded for a pushed run: the

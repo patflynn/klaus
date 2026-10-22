@@ -15,7 +15,7 @@ import (
 //
 // A check runs `valley changes --all --json` once, for every repo the valley
 // serves, and only when finalize found that some run's repo delivers to a
-// valley (run.State.Valley). It places a run by repo, change ID and version
+// valley (run.State.Valley), or a valley change is tracked (TracksChange). It places a run by repo, change ID and version
 // head: the run's version is the one whose head is the run's pushed SHA, in
 // the listed repo that is the run's own. A run whose repo klaus doesn't know
 // is never placed, and neither is any run in a repo the valley couldn't read
@@ -86,11 +86,12 @@ func (c *ValleyChecker) judgeByGit(ctx context.Context, runs []*run.State) map[s
 }
 
 // valleyDir picks where to run valley: the clone of a run whose repo
-// delivers to a valley, or the current directory when no such clone is
-// there. ok is false when no run's repo delivers to a valley.
+// delivers to a valley, or of a tracked valley change (TracksChange), or the
+// current directory when no such clone is there. ok is false when no run's
+// repo delivers to a valley and no change is tracked.
 func valleyDir(runs []*run.State) (dir string, ok bool) {
 	for _, s := range runs {
-		if !Applies(s) || s.Valley == nil {
+		if !(Applies(s) || TracksChange(s)) || s.Valley == nil {
 			continue
 		}
 		ok = true

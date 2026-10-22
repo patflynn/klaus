@@ -154,6 +154,7 @@ var finalizeCmd = &cobra.Command{
 		if hds, ok := store.(*run.HomeDirStore); ok {
 			baseDir = hds.BaseDir()
 		}
+		launchHead := state.HeadSHA
 		if head := gitHead(ctx, state.Worktree); head != "" {
 			state.HeadSHA = head
 		}
@@ -204,6 +205,11 @@ var finalizeCmd = &cobra.Command{
 		// salvage push already showed origin lacks the branch's tip.
 		if !paused && noPR && (salvage == nil || salvage.pushed) {
 			recordPushedBranch(ctx, gitClient, state)
+		}
+		// The agent may have pushed another change, on another branch,
+		// than the one launch recorded.
+		if !paused && noPR && salvage == nil {
+			recordPushedChange(ctx, baseDir, state, launchHead, cfg.DefaultBranch)
 		}
 		// Work of runs that needed attention, which the head this run left
 		// on origin holds, is this run's to carry on.

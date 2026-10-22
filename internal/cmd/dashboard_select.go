@@ -50,7 +50,8 @@ func hideFinishedAfter(cfg *config.DashboardConfig) time.Duration {
 
 // dashRow is one line of the dashboard run list: a PR, with every agent
 // that worked on it and every run of its change that has no PR; a change
-// no PR carries, with every run on it; or a bare agent run with neither.
+// no PR carries, with every run on it and its klaus track record, if any;
+// or a bare agent run with neither.
 type dashRow struct {
 	key      string // stable identity, so the selection survives reordering
 	repo     string
@@ -371,9 +372,10 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 }
 
 // changeKeys returns changeOf for the runs among states: the change a run
-// belongs to, named by its repo and its change ID. ok is false for a
-// session or tracked PR, and for a run without a change ID or a known repo:
-// such a run shares its change with none.
+// belongs to, named by its repo and its change ID; a tracked valley change
+// (integration.TracksChange) belongs to the change it names. ok is false for
+// a session or tracked PR, and for a run without a change ID or a known
+// repo: such a run shares its change with none.
 //
 // The repo is the name the ValleyChecker places runs with
 // (integration.RepoName: the valley's name for a valley's repo, else the
@@ -416,7 +418,7 @@ func changeKeys(states []*run.State) func(*run.State) (integration.ChangeKey, bo
 // nameChange is a run's change by its repo's name alone, as a valley's
 // listing names it; ok as for changeKeys.
 func nameChange(s *run.State) (integration.ChangeKey, bool) {
-	if s.Type == "session" || s.Type == "track" || s.ChangeID == "" {
+	if s.Type == "session" || s.Type == "track" && !integration.TracksChange(s) || s.ChangeID == "" {
 		return integration.ChangeKey{}, false
 	}
 	k := valleyKey(s)
@@ -516,14 +518,17 @@ func (m dashboardModel) runView(s *run.State) (integration.Verdict, *integration
 // later local push the valley doesn't hold as a version is only noted
 // (unplaced). When the valley doesn't list the change (a repo with no
 // valley, or an outage before the dashboard got a view), the latest run
-// that pushed holds the state, as it would on its own. runs are newest
+// that pushed holds the state, as it would on its own; with none, a tracked
+// change stands as klaus track found it, provisionally. runs are newest
 // first.
 func (m dashboardModel) placeChange(r *dashRow) {
-	var latest *run.State
+	var latest, tracked *run.State
 	for _, s := range r.runs {
-		if awaitsIntegration(s) {
+		if latest == nil && awaitsIntegration(s) {
 			latest = s
-			break
+		}
+		if tracked == nil && integration.TracksChange(s) {
+			tracked = s
 		}
 	}
 	view, ok := m.changes[valleyKey(r.runs[0])]
@@ -531,6 +536,8 @@ func (m dashboardModel) placeChange(r *dashRow) {
 		if r.current = latest; latest != nil {
 			r.pushed = true
 			r.verdict, r.change, r.outdated = m.runView(latest)
+		} else if tracked != nil {
+			r.pushed, r.change = true, integration.TrackedChange(tracked)
 		}
 		return
 	}

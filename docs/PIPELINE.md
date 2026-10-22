@@ -290,7 +290,9 @@ After an agent completes:
   branch is deleted only when it has no commits beyond the default branch or
   `origin`'s live tip matches it (the PR branch on the remote stays). A
   clean run without a PR whose branch is already on `origin` (direct-push
-  repos) records the branch and SHA and emits `agent:branch-pushed`; its
+  repos) records the branch and SHA and emits `agent:branch-pushed`, after
+  `agent:change-recorded` when the agent pushed another change or branch
+  than launch recorded, which finalize then records for the run; its
   status is `awaiting-integration` until `klaus status` or the dashboard
   observes its work on the default branch (`integrated`) or its branch
   deleted without landing (`branch-gone`). That observation is never

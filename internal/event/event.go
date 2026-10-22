@@ -50,6 +50,16 @@ const (
 	// change. It follows agent:branch-pushed and carries repo, change_id,
 	// handle, version, title and head.
 	AgentChangeReady = "agent:change-ready"
+	// AgentChangeRecorded signals that finalize recorded, for a run without
+	// a PR, the change or branch the run pushed in place of the ones launch
+	// recorded, as when an agent made a new change instead of continuing
+	// the one it was launched on; or that the run pushed heads of more than
+	// one change, and finalize recorded the one its final head belongs to.
+	// It comes before agent:completed and carries change_id, branch and
+	// head as recorded, launch_change_id and launch_branch, and, when the
+	// run pushed more than one change, pushed: each head's change_id,
+	// branch and head.
+	AgentChangeRecorded = "agent:change-recorded"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.

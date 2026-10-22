@@ -152,8 +152,8 @@ const integrationInterval = time.Minute
 const integrationTimeout = 5 * time.Minute
 
 // checkIntegrationCmd checks, in the background, the runs that are waiting
-// for their pushed branch to be integrated. With a ValleyChecker that is at
-// most one `valley changes` for all of them. Then, with a store, it settles
+// for their pushed branch to be integrated, and the tracked valley changes.
+// With a ValleyChecker that is at most one `valley changes` for all of them. Then, with a store, it settles
 // the knots of runs whose change the check found landed (settleKnots). The
 // next check starts only once this one is done, so no two settle a knot at
 // once.
@@ -163,7 +163,7 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 	}
 	var pushed []*run.State
 	for _, s := range states {
-		if awaitsIntegration(s) {
+		if awaitsIntegration(s) || integration.TracksChange(s) {
 			cp := *s // the check runs off the Update goroutine
 			pushed = append(pushed, &cp)
 		}
