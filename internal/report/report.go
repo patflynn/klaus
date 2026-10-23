@@ -489,8 +489,11 @@ func (r *runInfo) observe(typ string, at time.Time, d data) {
 		if r.repo == "" {
 			r.nameRepo(shortName(d.str("repo")))
 		}
-	case event.AgentChangeReady:
-		r.terminalAt = at
+	case event.AgentChangeReady, event.AgentChangeDraft:
+		// klaus ready marks a draft ready long after the run ended.
+		if d.str("via") == "" {
+			r.terminalAt = at
+		}
 		if v := d.str("repo"); v != "" && !strings.HasPrefix(r.repo, "valley:") {
 			r.nameRepo("valley:" + v)
 		}

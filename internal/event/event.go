@@ -48,7 +48,8 @@ const (
 	// AgentChangeReady signals that finalize marked a pushed branch's head
 	// ready on the valley its repo delivers to, as a version of the run's
 	// change. It follows agent:branch-pushed and carries repo, change_id,
-	// handle, version, title and head.
+	// handle, version, title and head. `klaus ready` emits it too, with
+	// via "klaus ready", when it marks a draft ready.
 	AgentChangeReady = "agent:change-ready"
 	// AgentChangeRecorded signals that finalize recorded, for a run without
 	// a PR, the change or branch the run pushed in place of the ones launch
@@ -60,6 +61,12 @@ const (
 	// run pushed more than one change, pushed: each head's change_id,
 	// branch and head.
 	AgentChangeRecorded = "agent:change-recorded"
+	// AgentChangeDraft signals that finalize recorded a pushed branch's head
+	// as a version of the run's change on its valley but left the change a
+	// draft awaiting review (ready_at_finalize off): `klaus ready` marks it
+	// ready, emitting agent:change-ready. It follows agent:branch-pushed and
+	// carries what agent:change-ready does.
+	AgentChangeDraft = "agent:change-draft"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.

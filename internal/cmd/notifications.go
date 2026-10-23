@@ -87,7 +87,9 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 		prCreated      []string
 		branchPushed   []runNote
 		changeReady    []string
-		readyRuns      = make(map[string]bool) // runs listed under changeReady
+		changeDraft    []runNote
+		readyRuns      = make(map[string]bool) // runs listed under changeReady or changeDraft
+		readied        = make(map[string]bool) // runs listed under changeReady
 		ciFailed       []string
 		ciPassed       []string
 		prMerged       []string
@@ -117,6 +119,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 			handle, _ := evt.Data["handle"].(string)
 			version, _ := evt.Data["version"].(float64)
 			changeReady = append(changeReady, fmt.Sprintf("%s %s v%d (%s)", repo, handle, int(version), id))
+			readyRuns[id], readied[id] = true, true
+		case event.AgentChangeDraft:
+			repo, _ := evt.Data["repo"].(string)
+			handle, _ := evt.Data["handle"].(string)
+			version, _ := evt.Data["version"].(float64)
+			changeDraft = append(changeDraft, runNote{id: id, text: fmt.Sprintf("%s %s v%d (%s)", repo, handle, int(version), id)})
 			readyRuns[id] = true
 		case event.AgentCIPassed:
 			prURL, ok := evt.Data["pr_url"].(string)
@@ -174,7 +182,17 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 	if len(changeReady) > 0 {
 		fmt.Printf("%d change(s) awaiting approval: %s\n", len(changeReady), strings.Join(changeReady, ", "))
 	}
-	// A branch marked ready as a change is listed once, as the change.
+	// A draft that klaus ready marked ready since is listed as ready.
+	var drafts []string
+	for _, d := range changeDraft {
+		if !readied[d.id] {
+			drafts = append(drafts, d.text)
+		}
+	}
+	if len(drafts) > 0 {
+		fmt.Printf("%d change(s) awaiting review: %s\n", len(drafts), strings.Join(drafts, ", "))
+	}
+	// A branch recorded as a change is listed once, as the change.
 	var awaiting []string
 	for _, b := range branchPushed {
 		if !readyRuns[b.id] {

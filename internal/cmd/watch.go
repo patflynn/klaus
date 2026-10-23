@@ -33,6 +33,7 @@ var defaultWatchFilter = []string{
 	event.AgentPRCreated,      // live
 	event.AgentBranchPushed,   // live
 	event.AgentChangeReady,    // live
+	event.AgentChangeDraft,    // live
 	event.AgentNeedsAttention, // live
 	"agent:error",             // reserved
 	event.PRApproved,          // live
@@ -55,7 +56,8 @@ var knownEventTypes = []eventTypeInfo{
 	{event.AgentCompleted, "live", "An agent run finished (success or failure)"},
 	{event.AgentPRCreated, "live", "An agent published a PR"},
 	{event.AgentBranchPushed, "live", "An agent finished with its branch on origin and no PR (awaiting integration)"},
-	{event.AgentChangeReady, "live", "Finalize marked a pushed branch ready on its valley as a version of the run's change (awaiting approval)"},
+	{event.AgentChangeReady, "live", "Finalize, or klaus ready, marked a pushed branch ready on its valley as a version of the run's change (awaiting approval)"},
+	{event.AgentChangeDraft, "live", "Finalize recorded a pushed branch on its valley as a version of the run's change but left it a draft (awaiting review; ready_at_finalize off)"},
 	{event.AgentCIPassed, "live", "CI passed on an agent-owned PR"},
 	{event.AgentCIFailed, "live", "CI failed on an agent-owned PR"},
 	{event.AgentNeedsAttention, "live", "An agent stopped and needs operator input"},
@@ -496,12 +498,16 @@ func eventSummary(evt event.Event) string {
 			msg += " (" + repo + ")"
 		}
 		return msg
-	case event.AgentChangeReady:
+	case event.AgentChangeReady, event.AgentChangeDraft:
 		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
 		if v := get("version"); v != "" {
 			msg += " v" + v
 		}
-		msg += " ready, awaiting approval"
+		if evt.Type == event.AgentChangeDraft {
+			msg += " draft, awaiting review"
+		} else {
+			msg += " ready, awaiting approval"
+		}
 		if title := get("title"); title != "" {
 			msg += ": " + title
 		}

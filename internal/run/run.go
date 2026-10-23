@@ -96,13 +96,16 @@ func (s *State) UnreadyHandle() string {
 
 // Valley is what finalize's `valley ready` recorded for a pushed run: the
 // version of its change that the pushed head became, or why it couldn't
-// mark it ready.
+// mark it ready. klaus ready updates it when it marks the version ready.
 type Valley struct {
 	Repo    string `json:"repo,omitempty"`    // the valley's name for the repo
 	Handle  string `json:"handle,omitempty"`  // the change's handle when it was marked ready
 	Version int    `json:"version,omitempty"` // the version the pushed head became
 	Title   string `json:"title,omitempty"`   // the pushed head's subject
-	Error   string `json:"error,omitempty"`   // why valley ready failed; empty when it succeeded
+	Error   string `json:"error,omitempty"`   // why valley ready (or, for a draft, valley unready) failed; empty when it succeeded
+	// Draft is set when finalize left the version a draft awaiting review
+	// (ready_at_finalize off), until klaus ready marks it ready.
+	Draft bool `json:"draft,omitempty"`
 }
 
 // Knot is the knot in a valley project's plan graph that a run was launched

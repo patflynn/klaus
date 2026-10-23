@@ -67,7 +67,8 @@ func (m *dashboardModel) snapshotRunning() {
 // an integration check (v) says it landed (INTEGRATED, or INTEGRATED~ for a
 // content match) or was deleted (GONE), or the valley's record says where
 // the change stands (APPROVED, UNCERTAIN, STALE, REJECTED, FAILED,
-// WITHDRAWN, SUPERSEDED, DRAFT).
+// WITHDRAWN, SUPERSEDED, DRAFT). A row reads REVIEW for a draft awaiting
+// review instead (dashRow.statusLabel).
 func agentStatusLabel(s *run.State, v integration.Verdict, valley bool) string {
 	if s.NeedsAttention != nil {
 		return "ATTN"

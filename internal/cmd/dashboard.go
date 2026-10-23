@@ -76,6 +76,7 @@ it is, most recent first within each group:
   pipeline  an open PR the pipeline is handling: CI running or failing,
             conflicts, behind, approved and waiting to merge; or a valley
             change that is approved and waiting on the integrator (APPROVED)
+            or a draft awaiting its review (REVIEW)
   done      merged, closed, integrated, gone, withdrawn, no access, or
             exited
 The line above the list counts each group (e.g. "2 yours") and shows the
@@ -92,16 +93,18 @@ re-checked every 30 minutes.
 
 A run whose repo delivers to a valley shows as its change: the repo (always
 shown), the change's handle and its title, then the version and head (e.g.
-v2@1a2b3c4). Finalize marked the pushed head ready. Every minute, one
-"valley changes --all --json" for all such runs says where each stands:
-READY (ready and waiting for you), APPROVED, INTEGRATED (landed),
-UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED (the
-integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as launch
-does when a follow-up run continues the change, and no run of it is
-running). If valley
-can't be asked, the git check above decides, and a change waiting on it
-reads READY. A run whose change finalize couldn't mark ready shows SUBMIT
-and the reason.
+v2@1a2b3c4). Finalize marked the pushed head ready, or, with
+"ready_at_finalize": false in config, left it a draft awaiting review. Every
+minute, one "valley changes --all --json" for all such runs says where each
+stands: REVIEW (a draft finalize left that awaits review; approve refuses it,
+and the footer offers the 'klaus ready <handle> --head <head>' that marks the
+head on screen ready once its review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
+(landed), UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED
+(the integrator's decision), WITHDRAWN, or DRAFT (returned to draft, as
+launch does when a follow-up run continues the change, and no run of it is
+running). If valley can't be asked, the git check above decides, and a change
+waiting on it reads READY, or REVIEW when finalize left it a draft. A run
+whose change finalize couldn't mark ready shows SUBMIT and the reason.
 
 A change's row is built like a PR's. It shows the valley's handle, else the
 first 8 characters of the change ID; the valley's title, else the subject
@@ -136,8 +139,8 @@ to show, in the footer, the command that approves the selected READY row
 the pushed branch, {change} the full change ID, {handle} the change's handle
 and {head} the pushed head, so the approval binds the head you saw. A row
 with no value for a placeholder the template uses, such as {handle} on a
-branch no valley knows, shows no command, and neither does a DRAFT row or
-one with an agent running on it. The command is for you to run on your own
+branch no valley knows, shows no command, and neither does a DRAFT or
+REVIEW row or one with an agent running on it. The command is for you to run on your own
 machine; the dashboard never runs it. "submit_command" is the
 deprecated name of "approve_command", read only when approve_command is
 unset.

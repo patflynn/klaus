@@ -357,6 +357,8 @@ func (r dashRow) statusLabel() string {
 	switch {
 	case r.attention:
 		return "ATTN"
+	case r.review:
+		return "REVIEW"
 	case r.pushed:
 		return pushedLabel(r.verdict, r.change != nil)
 	}
@@ -372,7 +374,7 @@ func changeStatus(r dashRow) string {
 		status = redStyle.Render(label)
 	case r.verdict == integration.Stale || r.verdict == integration.Uncertain:
 		status = yellowStyle.Render(label)
-	case r.category == catYours || r.verdict == integration.Approved:
+	case r.category == catYours || r.verdict == integration.Approved || r.review:
 		status = cyanStyle.Render(label)
 	case r.verdict.Landed():
 		status = greenStyle.Render(label)
@@ -451,7 +453,8 @@ func (m dashboardModel) renderSummary(v dashView, width int) string {
 // help on narrower panes. When the selected row is a change to approve or a
 // branch to submit and dashboard.approve_command is set, the footer leads
 // with that command. Otherwise, when an agent is running on the selected PR
-// or change, it leads with which one. Then, for a change, it notes a newer
+// or change, it leads with which one, and for a change awaiting review, with
+// the klaus ready that marks its head on screen ready. Then, for a change, it notes a newer
 // local push the valley doesn't hold as a version.
 func (m dashboardModel) renderFooter(v dashView, width int) string {
 	running, total := 0, 0
@@ -487,6 +490,8 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 			notes = append(notes, part{verb + ": ", dimStyle}, part{cmd, cyanStyle})
 		} else if len(r.running) > 0 && (r.prNum != "" || r.changeID != "") {
 			notes = append(notes, part{runningNote(r), yellowStyle})
+		} else if r.review {
+			notes = append(notes, part{"awaiting review: once it passes, ", dimStyle}, part{"klaus ready " + r.change.Handle + " --head " + shortSHA(r.change.Head), cyanStyle})
 		}
 		if r.unplaced != "" {
 			if len(notes) > 0 {
