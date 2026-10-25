@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1042,5 +1043,36 @@ func TestLinkSharedMemoryDottedPath(t *testing.T) {
 	memoryPath := filepath.Join(homeDir, ".claude", "projects", encoded, "memory")
 	if _, err := os.Readlink(memoryPath); err != nil {
 		t.Fatalf("memory path for dotted worktree is not a symlink: %v", err)
+	}
+}
+
+// forbidden_terms is private to the host: a repo's .klaus/config.json can
+// neither add to it nor empty an entry the host set.
+func TestLoadForbiddenTermsHostOnly(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeJSON := func(dir, data string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, ".klaus"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ".klaus", "config.json"), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(home, `{"forbidden_terms": {"example-project": {"terms": ["example-host"], "allow_paths": ["docs/hosts.md"]}}}`)
+	repo := t.TempDir()
+	writeJSON(repo, `{"default_branch": "trunk", "forbidden_terms": {"example-project": {"terms": []}, "acme/widget": {"terms": ["x"]}}}`)
+
+	cfg, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DefaultBranch != "trunk" {
+		t.Errorf("DefaultBranch = %q, want the repo's trunk", cfg.DefaultBranch)
+	}
+	want := map[string]ForbiddenTermsConfig{"example-project": {Terms: []string{"example-host"}, AllowPaths: []string{"docs/hosts.md"}}}
+	if !reflect.DeepEqual(cfg.ForbiddenTerms, want) {
+		t.Errorf("ForbiddenTerms = %+v, want the host's %+v", cfg.ForbiddenTerms, want)
 	}
 }

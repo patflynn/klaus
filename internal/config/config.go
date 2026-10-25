@@ -58,6 +58,19 @@ type Config struct {
 	// awaiting review, for `klaus ready` to mark ready once its review
 	// passes.
 	ReadyAtFinalize *bool `json:"ready_at_finalize,omitempty"`
+	// ForbiddenTerms maps a repo, by registered project name or owner/repo,
+	// to words a change to it must never add; _pre-review refuses one that
+	// does. The list is private, so it is read only from the host config,
+	// ~/.klaus/config.json: Load ignores it in a repo's .klaus/config.json.
+	ForbiddenTerms map[string]ForbiddenTermsConfig `json:"forbidden_terms,omitempty"`
+}
+
+// ForbiddenTermsConfig is one repo's forbidden_terms entry. Each term matches
+// case-insensitively as a literal substring. AllowPaths are files, or
+// directories, whose lines may contain the terms.
+type ForbiddenTermsConfig struct {
+	Terms      []string `json:"terms"`
+	AllowPaths []string `json:"allow_paths,omitempty"`
 }
 
 type ConsultConfig struct {
@@ -314,7 +327,8 @@ func Defaults() Config {
 }
 
 // Load reads config by layering: defaults → ~/.klaus/config.json → .klaus/config.json.
-// Repo-local config overrides global config.
+// Repo-local config overrides global config, except forbidden_terms, which
+// only the global config sets.
 func Load(repoRoot string) (Config, error) {
 	cfg := Defaults()
 
@@ -338,7 +352,11 @@ func Load(repoRoot string) (Config, error) {
 			}
 			return cfg, fmt.Errorf("reading config: %w", err)
 		}
-		if err := json.Unmarshal(data, &cfg); err != nil {
+		hostTerms := cfg.ForbiddenTerms
+		cfg.ForbiddenTerms = nil
+		err = json.Unmarshal(data, &cfg)
+		cfg.ForbiddenTerms = hostTerms // host config only: a repo can't change its own
+		if err != nil {
 			return cfg, fmt.Errorf("parsing config: %w", err)
 		}
 	}

@@ -1015,6 +1015,18 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 
+`forbidden_terms` lists words a repo's changes must never add, such as the names of your own hosts, projects, accounts or addresses in a public repo. The list is itself private, so klaus reads it only from `~/.klaus/config.json` and ignores it in a repo's `.klaus/config.json`:
+
+```json
+"forbidden_terms": {
+  "example-project": {"terms": ["example-host", "example.internal", "10.1.2."], "allow_paths": ["docs/hosts.md", "third_party"]}
+}
+```
+
+An entry's key is a registered project name (see `klaus project`) or `owner/repo`. A project name covers that project's checkout and its worktrees, and any clone with the same GitHub `origin`; `owner/repo` covers any checkout whose `origin` is that GitHub repo. When both forms name a repo, both entries apply. `klaus _pre-review` runs this check first, before linting and peer review, so a diff that adds a term is never sent to a reviewer. It runs even when `pre_review.enabled` is false. The check fails a change if any of these contains a term: the lines it adds (in binary files too) since its merge base with the default branch (`origin/<default_branch>`, or the local branch when there's no origin copy), the names of files it adds or renames, or the messages of its new commits. Deleted lines don't count; a moved file's lines count as added at its new path. Terms match case-insensitively as literal substrings (dots are just dots). Files that match an `allow_paths` entry exactly, or sit under it as a directory, are skipped. The report lists `file:line: term` for each hit, or `commit <sha>: term` for a commit message, and asks for a neutral name. It names only the terms it found, never the list. A repo with no entry is unaffected.
+
+To check any range, for example a change you're about to `klaus ready`, run `klaus _forbidden-terms [--repo <name>] [<base>] [<head>]` in a checkout of the repo. `<head>` defaults to `HEAD` and `<base>` to the default branch. `--repo` picks the entry when the checkout's origin or registration doesn't match it. The command prints the same report and exits 1 on a match.
+
 **`.klaus/prompt.md`** — Custom system prompt for launched agents. Go template variables: `{{.RunID}}`, `{{.Issue}}`, `{{.Branch}}`, `{{.RepoName}}`, `{{.Reviewer}}`, `{{.DirectPush}}` (true when the repo's `origin` is not on github.com; see [Runs that end without a PR](#runs-that-end-without-a-pr)). Customize this to match your repo's conventions, test commands, and PR workflow. Klaus appends a short "Non-interactive run" section to every worker prompt, custom or default (including `pr-fix-prompt.md`), so agents know their run ends with their turn.
 
 **`.klaus/session-prompt.md`** — Custom prompt for the coordinator session. Same template variables.
