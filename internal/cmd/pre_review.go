@@ -35,7 +35,10 @@ var preReviewCmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		if !cfg.PreReviewEnabled() {
+		// forbidden_terms is host config, so a repo's pre_review.enabled
+		// doesn't turn its check off.
+		forbidden := forbiddenTermsFor(cfg, dir, "")
+		if !cfg.PreReviewEnabled() && len(forbidden) == 0 {
 			fmt.Println("Pre-review is disabled in config.")
 			return nil
 		}
@@ -49,6 +52,30 @@ var preReviewCmd = &cobra.Command{
 
 		fmt.Println("=== Pre-PR Review ===")
 		fmt.Println()
+
+		// Forbidden terms go first, so a diff that adds one is never sent
+		// to the peer reviewer, which then reviews the diff they checked.
+		reviewBase := cfg.DefaultBranch
+		if len(forbidden) > 0 {
+			reviewBase = defaultBranchRef(dir, cfg.DefaultBranch)
+			fmt.Println("Forbidden terms:")
+			hits, err := scanForbiddenTerms(dir, reviewBase, "HEAD", forbidden)
+			if err != nil {
+				return fmt.Errorf("checking forbidden terms: %w", err)
+			}
+			printForbiddenTerms(os.Stdout, hits)
+			fmt.Println()
+			if len(hits) > 0 {
+				check.finish(false, map[string]interface{}{"forbidden_terms": len(hits)})
+				fmt.Println("Forbidden terms added — PR creation should be blocked.")
+				os.Exit(1)
+			}
+			if !cfg.PreReviewEnabled() {
+				check.finish(true, nil)
+				fmt.Println("Pre-review is disabled in config; only forbidden terms were checked.")
+				return nil
+			}
+		}
 
 		// Run linters
 		linters := cfg.PreReviewLinters()
@@ -113,7 +140,7 @@ var preReviewCmd = &cobra.Command{
 			Backend:      string(kind),
 			Model:        model,
 			MaxFixRounds: cfg.PreReviewMaxFixRounds(),
-		}, cfg.DefaultBranch)
+		}, reviewBase)
 		if err != nil {
 			return fmt.Errorf("running peer review: %w", err)
 		}
