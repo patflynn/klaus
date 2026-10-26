@@ -67,6 +67,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRMerged, "live", "A PR merged"},
 	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
+	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
 	{event.CheckStarted, "live", "An agent started a check klaus can see (_pre-review, or a build, test or lint command); not in the default filter"},

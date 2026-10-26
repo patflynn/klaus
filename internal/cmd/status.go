@@ -23,8 +23,11 @@ var statusCmd = &cobra.Command{
 
 STATUS is one of: running (the agent's pane is still running it, judged as
 the dashboard judges it: a dead pane, or an idle one once the run finished,
-isn't running), needs-attention (finalize salvaged its work, or it failed
-after taking on the work of runs that needed attention), superseded (it
+isn't running), needs-attention (finalize salvaged its work, it failed
+after taking on the work of runs that needed attention, or the files its
+clone shares across worktrees, its git config, info/attributes or hooks,
+changed while it ran: a line below the table names them, and that holds
+whatever became of its work), superseded (it
 needed attention, but a run of its change, the same change ID in the same
 repo, took its pushed work on and is running or finished: that run
 recorded it, as launch does for a --pr, --change or --resume-from run
@@ -157,7 +160,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	superseded := supersededRuns(states, func(s *run.State) bool { return running[s.ID] })
 	var pushed []*run.State
 	for i, s := range states {
-		if statuses[i] == "needs-attention" && superseded[s.ID] {
+		if statuses[i] == "needs-attention" && superseded[s.ID] && !s.SharedGitChanged() {
 			statuses[i] = "superseded"
 		}
 		if statuses[i] == "awaiting-integration" || integration.TracksChange(s) {
@@ -205,7 +208,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		// A tracked valley change stands where the valley's listing says
 		// its active version does; tracking while the valley can't be
 		// asked.
-		if integration.TracksChange(s) {
+		if integration.TracksChange(s) && !s.SharedGitChanged() {
 			if view := report.Changes[valleyKey(s)]; view.Change != nil {
 				status = pushedStatus(view.Verdict, true)
 				if view.Change.Title != "" {
@@ -249,12 +252,27 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			}
 		}
 
-		if k, ok := changeOf(s); ok && busy[k] && live(status) {
+		if k, ok := changeOf(s); ok && busy[k] && live(status) && !s.SharedGitChanged() {
 			status = "working"
 		}
 
 		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
 			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, changeOf, prs, handles), ci, conflicts, behind, merge, prompt)
+	}
+
+	// A run that changed the files its clone shares across worktrees
+	// says which, for the operator to check before git runs there again.
+	first := true
+	for _, s := range states {
+		if !s.SharedGitChanged() {
+			continue
+		}
+		if first {
+			fmt.Fprintln(os.Stdout)
+			first = false
+		}
+		fmt.Fprintf(os.Stdout, "%s changed its clone's shared git files while it ran: %s (in %s); check them before running git in that clone\n",
+			s.ID, strings.Join(s.SharedGit.Changed, ", "), s.SharedGit.Dir)
 	}
 
 	return nil
@@ -265,7 +283,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 // still needs attention it took on with other runs' work (TookOver), which
 // its PR's fate settles nothing about, as on the dashboard.
 func prSettled(status string, s *run.State, settled string) string {
-	if status == "needs-attention" && len(s.TookOver) > 0 {
+	if status == "needs-attention" && (len(s.TookOver) > 0 || s.SharedGitChanged()) {
 		return status
 	}
 	return settled
@@ -293,8 +311,9 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 	}
 
 	// The attention a run took on with other runs' work (TookOver) outlasts
-	// its PR's merge, as on the dashboard.
-	if needsAttention(s) && len(s.TookOver) > 0 {
+	// its PR's merge, as on the dashboard, and so does a change to the
+	// clone's shared git files.
+	if needsAttention(s) && len(s.TookOver) > 0 || s.SharedGitChanged() {
 		return "needs-attention"
 	}
 	if s.MergedAt != nil {

@@ -46,6 +46,19 @@ own directory outside the worktree (scratch/<run-id> in the session
 directory) for build output and other scratch files; finalize removes it with
 the worktree. A sandbox worker gets neither.
 
+A local worker gets launch's own PATH: tmux gives a pane the PATH of the
+client that creates it. Launch fails, before creating a worktree, when a
+command the worker runs by name isn't on that PATH: the backend's CLI and,
+for agy, bash, which runs every command agy's run_command tool runs. The
+error names the command and the PATH it searched.
+
+Just before the agent starts, launch snapshots the files the clone shares
+across its worktrees and that decide what git does there: its config (less
+the branch tracking git push -u writes), info/attributes and hooks. Finalize
+compares them; on a difference it emits agent:shared-git-changed naming the
+files, and klaus status shows the run needs-attention with a line naming
+them. A worker can't be kept from writing them: it runs as you.
+
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
 technical prompts: in zsh a backtick inside a double-quoted argument is command
@@ -691,6 +704,14 @@ are synced back after completion. Use --local to force local execution, or
 				return err
 			}
 		}
+		// A local worker that can't run its commands doesn't start: an agy
+		// worker without bash can edit files and nothing else. A sandbox
+		// worker runs on its host's PATH.
+		if sandboxHost == "" {
+			if err := checkWorkerPath(kind, worktree); err != nil {
+				return err
+			}
+		}
 
 		switch {
 		case isPRFix:
@@ -887,6 +908,9 @@ are synced back after completion. Use --local to force local execution, or
 		if sandboxHost != "" {
 			if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
+				if err := checkWorkerPath(kind, worktree); err != nil {
+					return err
+				}
 			} else {
 				useSandbox = true
 				sandboxHostName = sandboxHost
@@ -915,6 +939,9 @@ are synced back after completion. Use --local to force local execution, or
 			}
 			knotRec = knot.record()
 		}
+
+		// What the clone shares across worktrees, as the agent finds it.
+		sharedGit := snapshotSharedGit(ctx, worktree)
 
 		// Launch the agent's tmux pane. Detached by default (its own window in
 		// the agents session); splitFrom is non-empty only when agent_display
@@ -973,6 +1000,7 @@ are synced back after completion. Use --local to force local execution, or
 			Delivery:    delivery,
 			Knot:        knotRec,
 			HeadSHA:     gitHead(ctx, worktree),
+			SharedGit:   sharedGit,
 		}
 		state.DispatchReason = dispatchReason(reasonFlag, isPRFix, budgetPaused, changeRef != "", resumeFrom)
 		state.RepoKey = launchRepoKey(ctx, state, repoRoot)
@@ -1109,6 +1137,28 @@ func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string
 		what = "branch " + branch
 	}
 	return fmt.Errorf("run %s is still working on %s; wait for it to finish, or stop it and clean it up (klaus cleanup --force %s, which discards its uncommitted work) and launch again; --force-takeover launches past it, but never removes a worktree that has the branch checked out", s.ID, what, s.ID)
+}
+
+// snapshotSharedGit records the files worktree's clone shares across its
+// worktrees, for finalize to compare; nil when git can't find the clone.
+func snapshotSharedGit(ctx context.Context, worktree string) *run.SharedGit {
+	dir, err := git.SharedGitDir(ctx, worktree)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: can't snapshot the clone's shared git files: %v\n", err)
+		return nil
+	}
+	return &run.SharedGit{Dir: dir, Files: git.SharedSnapshot(ctx, dir)}
+}
+
+// checkWorkerPath fails when a command kind's local worker, which runs in
+// worktree, runs by name isn't on the PATH it gets. That is launch's own:
+// tmux gives a pane the PATH of the client that creates it, here klaus
+// launch, before the pane's shell starts.
+func checkWorkerPath(kind backend.Kind, worktree string) error {
+	if err := kind.CheckPath(os.Getenv("PATH"), worktree); err != nil {
+		return fmt.Errorf("%w; a worker gets the PATH klaus launch runs with, so launch it with one that has the command", err)
+	}
+	return nil
 }
 
 // resolveResumeID preserves resumable conversations even after an error.
