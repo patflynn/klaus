@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -90,7 +91,7 @@ func TestWatchFilterMatches(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := buildFilter(tc.include, tc.exclude)
+			f := buildFilter(tc.include, tc.exclude, nil)
 			got := f.matches(tc.eventType)
 			if got != tc.want {
 				t.Errorf("matches(%q) with include=%v exclude=%v = %v, want %v",
@@ -584,4 +585,132 @@ func TestWatchStreamsBranchPushed(t *testing.T) {
 	}
 
 	p.stopSIGTERM(t)
+}
+
+// runKlaus runs the real binary with HOME set, waiting up to 10s for it to
+// exit, and returns its stdout, stderr and exit error.
+func runKlaus(t *testing.T, bin, home string, args ...string) (string, string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("klaus %v didn't exit within 10s\nstdout:\n%s\nstderr:\n%s", args, stdout.String(), stderr.String())
+	}
+	return stdout.String(), stderr.String(), err
+}
+
+// TestWatchOnceJSONKeepsFlags: --once --json prints the matching events as
+// they are in the file, then an object with the offset past them and the
+// command that reads on from it with the same filters, which wakes only for
+// an event that passes them.
+func TestWatchOnceJSONKeepsFlags(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	em := newEmitter(sessionDir)
+	em.emit(t, "r1", event.PRMerged, map[string]interface{}{"pr_number": "1"})
+	em.emit(t, "r2", event.AgentStarted, nil)
+	em.emit(t, "r2", event.PRMerged, map[string]interface{}{"pr_number": "2"})
+	eventsPath := filepath.Join(sessionDir, "events.jsonl")
+
+	type trailer struct {
+		After int64  `json:"after"`
+		Next  string `json:"next"`
+	}
+	check := func(out string, wantPR string) trailer {
+		t.Helper()
+		raw, err := os.ReadFile(eventsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+		if len(lines) != 2 {
+			t.Fatalf("want one event and the trailer, got:\n%s", out)
+		}
+		var evt event.Event
+		if err := json.Unmarshal([]byte(lines[0]), &evt); err != nil || evt.RunID != "r2" || evt.Data["pr_number"] != wantPR {
+			t.Fatalf("want r2's merge of PR %s, got %q (%v)", wantPR, lines[0], err)
+		}
+		if !strings.Contains(string(raw), lines[0]+"\n") {
+			t.Errorf("event line %q isn't as it is in the file", lines[0])
+		}
+		var tr trailer
+		if err := json.Unmarshal([]byte(lines[1]), &tr); err != nil {
+			t.Fatalf("trailer %q: %v", lines[1], err)
+		}
+		want := fmt.Sprintf("klaus watch --once --after %d --session-id %s --filter pr:merged --run r2 --json", len(raw), sessionID)
+		if tr.After != int64(len(raw)) || tr.Next != want {
+			t.Errorf("trailer = %+v, want after %d, next %q", tr, len(raw), want)
+		}
+		return tr
+	}
+
+	out, stderr, err := runKlaus(t, bin, home, "watch", "--session-id", sessionID, "--once", "--since-start", "--json", "--filter", event.PRMerged, "--run", "r2")
+	if err != nil {
+		t.Fatalf("watch --once: %v\n%s", err, stderr)
+	}
+	tr := check(out, "2")
+
+	// r1's merge doesn't pass --run r2; r2's does.
+	em.emit(t, "r1", event.PRMerged, map[string]interface{}{"pr_number": "3"})
+	em.emit(t, "r2", event.PRMerged, map[string]interface{}{"pr_number": "4"})
+	out, stderr, err = runKlaus(t, bin, home, strings.Fields(tr.Next)[1:]...)
+	if err != nil {
+		t.Fatalf("%s: %v\n%s", tr.Next, err, stderr)
+	}
+	check(out, "4")
+}
+
+// TestWatchOnceRejectsBadCursors: an --after that can't have come from a
+// next: line is an error, not a silent re-read or skip.
+func TestWatchOnceRejectsBadCursors(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	newEmitter(sessionDir).emit(t, "r1", event.PRMerged, map[string]interface{}{"pr_number": "1"})
+
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--after", "0"}, "--after needs --once"},
+		{[]string{"--once", "--since-start", "--after", "0"}, "mutually exclusive"},
+		{[]string{"--once", "--after", "100000"}, "past the end"},
+		{[]string{"--once", "--after", "3"}, "not at the start of a line"},
+	} {
+		_, stderr, err := runKlaus(t, bin, home, append([]string{"watch", "--session-id", sessionID}, tc.args...)...)
+		if err == nil || !strings.Contains(stderr, tc.want) {
+			t.Errorf("watch %v: err %v, stderr %q; want a failure saying %q", tc.args, err, stderr, tc.want)
+		}
+	}
+}
+
+// TestWatchOnceEndsWhenTheFileIsReplaced: an offset into the events file
+// means nothing in a file put in its place, so a waiting --once watch fails
+// instead of waiting on the old one forever.
+func TestWatchOnceEndsWhenTheFileIsReplaced(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	touchEventsFile(t, sessionDir)
+	p := startWatch(t, bin, sessionID, home, "--once")
+	time.Sleep(300 * time.Millisecond)
+
+	replacement := filepath.Join(sessionDir, "events.jsonl.new")
+	if err := os.WriteFile(replacement, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, filepath.Join(sessionDir, "events.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-p.done:
+		if err == nil || !strings.Contains(p.stderr.String(), "was replaced or removed") {
+			t.Fatalf("watch --once exited with %v, stderr %q; want a failure saying the file was replaced", err, p.stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch --once kept waiting on a replaced events file")
+	}
 }
