@@ -46,6 +46,12 @@ own directory outside the worktree (scratch/<run-id> in the session
 directory) for build output and other scratch files; finalize removes it with
 the worktree. A sandbox worker gets neither.
 
+A local worker gets launch's own PATH: tmux gives a pane the PATH of the
+client that creates it. Launch fails, before creating a worktree, when a
+command the worker runs by name isn't on that PATH: the backend's CLI and,
+for agy, bash, which runs every command agy's run_command tool runs. The
+error names the command and the PATH it searched.
+
 The prompt comes either from the positional argument or from --prompt-file
 <path>; exactly one of the two is required. Prefer --prompt-file for long or
 technical prompts: in zsh a backtick inside a double-quoted argument is command
@@ -673,6 +679,14 @@ are synced back after completion. Use --local to force local execution, or
 				return err
 			}
 		}
+		// A local worker that can't run its commands doesn't start: an agy
+		// worker without bash can edit files and nothing else. A sandbox
+		// worker runs on its host's PATH.
+		if sandboxHost == "" {
+			if err := checkWorkerPath(kind); err != nil {
+				return err
+			}
+		}
 
 		switch {
 		case isPRFix:
@@ -869,6 +883,9 @@ are synced back after completion. Use --local to force local execution, or
 		if sandboxHost != "" {
 			if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
+				if err := checkWorkerPath(kind); err != nil {
+					return err
+				}
 			} else {
 				useSandbox = true
 				sandboxHostName = sandboxHost
@@ -1091,6 +1108,17 @@ func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string
 		what = "branch " + branch
 	}
 	return fmt.Errorf("run %s is still working on %s; wait for it to finish, or stop it and clean it up (klaus cleanup --force %s, which discards its uncommitted work) and launch again; --force-takeover launches past it, but never removes a worktree that has the branch checked out", s.ID, what, s.ID)
+}
+
+// checkWorkerPath fails when a command kind's local worker runs by name
+// isn't on the PATH it gets. That is launch's own: tmux gives a pane the PATH
+// of the client that creates it, here klaus launch, before the pane's shell
+// starts.
+func checkWorkerPath(kind backend.Kind) error {
+	if err := kind.CheckPath(os.Getenv("PATH")); err != nil {
+		return fmt.Errorf("%w; a worker gets the PATH klaus launch runs with, so launch it with one that has the command", err)
+	}
+	return nil
 }
 
 // resolveResumeID preserves resumable conversations even after an error.

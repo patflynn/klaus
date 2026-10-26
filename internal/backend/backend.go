@@ -4,6 +4,8 @@ package backend
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -124,6 +126,48 @@ func (k Kind) Worker(o Options) []string {
 	// --print, runs print mode on the prompt it reads from a stdin that isn't
 	// a terminal; --print "-" would be taken as the literal prompt.
 	return a
+}
+
+// need is a command a backend's worker runs by name, and why.
+type need struct{ command, why string }
+
+// needs are the commands each backend's worker runs by name, so they must
+// resolve on the PATH it gets: its own CLI, and for agy, bash, which runs
+// every command agy's run_command tool runs. An agy worker without bash
+// can't run any command, only edit files.
+func (k Kind) needs() []need {
+	cli := need{string(k), "the worker's own CLI"}
+	if k == Agy {
+		return []need{cli, {"bash", "agy runs every command through bash"}}
+	}
+	return []need{cli}
+}
+
+// CheckPath returns an error naming the first command k's worker needs that
+// doesn't resolve on path, a PATH value, and the PATH it searched.
+func (k Kind) CheckPath(path string) error {
+	for _, n := range k.needs() {
+		if !onPath(n.command, path) {
+			return fmt.Errorf("the %s worker can't run: %s isn't on the PATH it gets (%s); searched PATH=%q", k, n.command, n.why, path)
+		}
+	}
+	return nil
+}
+
+// onPath reports whether name resolves to an executable file in a directory
+// of path, as a shell's PATH lookup finds it; an empty entry is the current
+// directory.
+func onPath(name, path string) bool {
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // Stdin is what a worker or a one-shot call reads on stdin: the prompt, with
