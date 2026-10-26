@@ -63,6 +63,24 @@ type State struct {
 	// branch) holding their pushed heads, and at finalize when the head it
 	// left on origin contains theirs. Their attention is then this run's.
 	TookOver []string `json:"took_over,omitempty"`
+	// SharedGit is launch's snapshot of the files the run's clone shares
+	// across its worktrees, and what finalize found changed.
+	SharedGit *SharedGit `json:"shared_git,omitempty"`
+}
+
+// SharedGit records the files of a run's clone that every worktree of the
+// clone shares and that decide what git does there (git.SharedSnapshot).
+type SharedGit struct {
+	Dir     string            `json:"dir"`               // the clone's common git dir
+	Files   map[string]string `json:"files"`             // launch's digest of each, by path relative to Dir
+	Changed []string          `json:"changed,omitempty"` // the files finalize found changed since launch
+}
+
+// SharedGitChanged reports whether finalize found the run's clone's shared
+// git files changed. Such a run needs attention whatever became of its work,
+// and no other run takes that on.
+func (s *State) SharedGitChanged() bool {
+	return s.SharedGit != nil && len(s.SharedGit.Changed) > 0
 }
 
 // How a run delivers its work, as launch decides it from the run's repo.

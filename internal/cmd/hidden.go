@@ -174,6 +174,12 @@ var finalizeCmd = &cobra.Command{
 			}
 		}
 
+		// A worker that wrote the files its clone shares reached every other
+		// worktree's git, and the operator's.
+		if baseDir != "" {
+			checkSharedGit(ctx, baseDir, state)
+		}
+
 		// Sync to data ref — use the target repo's clone dir if available,
 		// otherwise fall back to the current git repo.
 		var syncRoot string
@@ -273,6 +279,27 @@ var finalizeCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+// checkSharedGit compares the files state's clone shares across worktrees
+// with launch's snapshot, and on a difference records the changed files on
+// state, emits agent:shared-git-changed and says so on stderr.
+func checkSharedGit(ctx context.Context, baseDir string, state *run.State) {
+	sg := state.SharedGit
+	if sg == nil || sg.Dir == "" {
+		return
+	}
+	changed := git.SharedChanges(sg.Files, git.SharedSnapshot(ctx, sg.Dir))
+	if len(changed) == 0 {
+		return
+	}
+	sg.Changed = changed
+	fmt.Fprintf(os.Stderr, "warning: the clone's shared git files changed while run %s ran: %s (in %s)\n", state.ID, strings.Join(changed, ", "), sg.Dir)
+	emitRunEvent(baseDir, state, event.AgentSharedGitChanged, map[string]interface{}{
+		"id":    state.ID,
+		"dir":   sg.Dir,
+		"files": changed,
+	})
 }
 
 // emitFinalizeEvents emits the terminal events for a finalized, non-paused

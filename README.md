@@ -83,6 +83,12 @@ agy runs every command through `bash`, so a local agy worker needs `bash` on
 the PATH it gets, which is the PATH `klaus launch` runs with: launch fails,
 naming the command and the PATH it searched, when that PATH lacks `bash` or
 the worker's own CLI, rather than start a worker that can't run commands.
+
+A worker's writes to its clone's git config, `info/attributes` or hooks reach
+every worktree of the clone, so launch snapshots those files and finalize
+compares them. On a difference, beyond the branch tracking `git push -u`
+writes, finalize emits `agent:shared-git-changed` and `klaus status` shows the
+run as needs-attention, with a line naming the files to check.
 `--resume-from` never transfers conversations between backends or machines;
 when a compatible conversation is unavailable, the worker starts fresh. Use
 `--pr` (or `--change` in a repo without PRs) to continue the actual branch

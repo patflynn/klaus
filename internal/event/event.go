@@ -45,6 +45,11 @@ const (
 	// branch on origin — the normal finish in a direct-push repo, where the
 	// operator integrates the branch by hand. It carries repo, branch and sha.
 	AgentBranchPushed = "agent:branch-pushed"
+	// AgentSharedGitChanged signals that finalize found a file its run's
+	// clone shares across worktrees (its git config, info/attributes or a
+	// hook) changed since launch. It carries dir, the clone's common git
+	// dir, and files, the changed paths relative to it.
+	AgentSharedGitChanged = "agent:shared-git-changed"
 	// AgentChangeReady signals that finalize marked a pushed branch's head
 	// ready on the valley its repo delivers to, as a version of the run's
 	// change. It follows agent:branch-pushed and carries repo, change_id,
