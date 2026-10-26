@@ -21,6 +21,7 @@ type changeTarget struct {
 	Repo   string       // the change's repo, as integration.RepoName names it; "" when unknown
 	Branch string       // the branch its work is on; "" when none is known
 	Head   string       // that branch's last known head
+	Tip    string       // origin's tip of the branch, which the worktree starts from; set by checkBranch
 	Runs   []*run.State // klaus's runs on the change, newest first
 }
 
@@ -209,11 +210,15 @@ func resolveChange(ref string, src changeSources) (*changeTarget, error) {
 //   - the run is in the target repo, by name and, where both are known, by
 //     GitHub owner;
 //   - no run of the change has a PR;
-//   - origin has the branch, with the run's push in its history;
+//   - origin has the branch;
 //   - no run of another change worked on the branch, and origin's tip
 //     carries no other change's Change-Id;
 //   - the change's branch as resolveChange finds it (its valley's active
 //     version's, else its newest push's) is still that branch;
+//   - origin's branch has the run's push in its history, or a later head of
+//     the change that rewrote it, as restacking the change onto main does:
+//     the push of a later run of the change on the branch, or the head
+//     resolveChange finds;
 //   - on GitHub, no PR, open or not, has the branch as its head.
 //
 // Otherwise it returns nil and why the launch gets a new branch instead, or
@@ -257,9 +262,6 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	if !git.RefExists(ctx, repoRoot, origin) {
 		return nil, fmt.Sprintf("run %s's branch %s is gone from origin", prior.ID, branch)
 	}
-	if !git.IsAncestor(ctx, repoRoot, head, origin) {
-		return nil, fmt.Sprintf("origin's %s has diverged from run %s's push %s", branch, prior.ID, shortSHA(head))
-	}
 	for _, s := range src.Runs {
 		if inRepo(s) && s.ChangeID != prior.ChangeID && (s.Branch == branch || s.PushedBranch != nil && *s.PushedBranch == branch) {
 			return nil, fmt.Sprintf("branch %s is also run %s's, of another change", branch, s.ID)
@@ -283,6 +285,15 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 	if t.Branch != branch {
 		return nil, fmt.Sprintf("change %s moved on to branch %s; --change continues it there", t.Name, t.Branch)
 	}
+	heads := []string{head, t.Head}
+	for _, s := range t.Runs {
+		if createdBefore(prior, s) && s.PushedBranch != nil && *s.PushedBranch == branch && s.PushedSHA != nil {
+			heads = append(heads, *s.PushedSHA)
+		}
+	}
+	if !slices.ContainsFunc(heads, func(h string) bool { return h != "" && git.IsAncestor(ctx, repoRoot, h, origin) }) {
+		return nil, fmt.Sprintf("origin's %s has diverged from run %s's push %s", branch, prior.ID, shortSHA(head))
+	}
 	if src.PRs != nil {
 		prs, err := src.PRs(branch)
 		switch {
@@ -296,12 +307,14 @@ func resumeTarget(ctx context.Context, repoRoot, priorID string, src changeSourc
 }
 
 // checkBranch reports an error unless the change's branch is on origin, as
-// fetched into repoRoot: the worktree tracks origin's branch.
+// fetched into repoRoot: the worktree tracks origin's branch. It records
+// that branch's tip as t.Tip.
 func (t *changeTarget) checkBranch(ctx context.Context, repoRoot string) error {
 	if t.Branch == "" {
 		return fmt.Errorf("change %s has no known branch or head: no run on it recorded a pushed branch, and no valley lists one", t.Name)
 	}
-	if !git.RefExists(ctx, repoRoot, "refs/remotes/origin/"+t.Branch) {
+	t.Tip = git.RefCommit(ctx, repoRoot, "refs/remotes/origin/"+t.Branch)
+	if t.Tip == "" {
 		head := t.Head
 		if head == "" {
 			head = "unknown"

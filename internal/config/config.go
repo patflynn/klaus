@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -381,6 +382,14 @@ type PromptVars struct {
 	// run that continues its run's branch, by its handle or ID: Branch is
 	// the change's branch, which already holds its work.
 	Change string
+	// Valley is set for a Change in a repo that delivers to a valley, which
+	// takes a change only as a line of commits on main and keeps every
+	// version's head: the run may restack the change onto main, pushing the
+	// rebase with a lease on Head.
+	Valley bool
+	// Head is the commit Branch was at on origin when launch checked it,
+	// which the worktree starts from.
+	Head string
 	// Knot names the valley knot the run works (--issue <knot>), as given;
 	// Issue is empty then.
 	Knot string
@@ -466,7 +475,14 @@ Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
 {{- if .Change}}
 
 You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
+{{- if and .Valley .Head}}
+Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
+If the brief asks you to rebase the change, or it conflicts with origin/main, restack it instead: rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts, test it, and push it to the same branch with a lease on the head this run started from:
+` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
+After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so the rebase loses nothing. Never force-push any other way, and do not rewrite pushed commits for any other reason. If the push is refused, someone else moved the branch: stop and say so in your report.
+{{- else}}
 Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
+{{- end}}
 {{- end}}
 {{- if .Issue}}
 Reference issue #{{.Issue}} in your commit message.
@@ -1226,8 +1242,25 @@ func renderPromptFromFile(repoRoot, filename, defaultTemplate string, vars Promp
 	return renderTemplate(string(data), vars)
 }
 
+// templateFuncs are the functions a prompt template may call.
+var templateFuncs = template.FuncMap{"shellarg": shellArg}
+
+// safeShellWord matches a word no POSIX shell treats specially.
+var safeShellWord = regexp.MustCompile(`^[A-Za-z0-9_./:=@%+,-]+$`)
+
+// shellArg quotes s as one shell word for a command a prompt gives the
+// worker to run: bare when no shell treats any of it specially, as with the
+// branches klaus names, else in single quotes. Git allows $(), ; and quotes
+// in a branch name, and a valley may list any branch.
+func shellArg(s string) string {
+	if safeShellWord.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func renderTemplate(tmplStr string, vars PromptVars) (string, error) {
-	tmpl, err := template.New("prompt").Parse(tmplStr)
+	tmpl, err := template.New("prompt").Funcs(templateFuncs).Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parsing template: %w", err)
 	}

@@ -115,10 +115,18 @@ Launch fails, naming the change and its last known head, when that branch
 isn't on origin. The run keeps the change ID, returns the change to draft as
 below, continues the conversation of the change's most recent run when its
 backend can (below), and is told to push fast-forward to the same branch;
-finalize marks the new head ready. Every backend keeps the branch, the change
-ID and the provenance trailers; only the conversation differs: Claude replays
-the stored conversation, on any machine that has the data ref, Codex forks
-its own session on the same machine, and agy starts fresh.
+finalize marks the new head ready. In a repo that delivers to a valley, the
+agent is also told never to merge another branch into the change, and that
+when the brief asks it to rebase, or the change conflicts with origin/main,
+it may restack it: rebase it onto origin/main and push it to the same branch
+with 'git push --force-with-lease=refs/heads/<branch>:<head> origin
+HEAD:refs/heads/<branch>', <head> being the branch's tip on origin when
+launch checked it, which the worktree starts from. Finalize marks the rebased
+head ready as the next version of the same change. Every backend keeps the
+branch, the change ID and the provenance trailers; only the conversation
+differs: Claude replays the stored conversation, on any machine that has the
+data ref, Codex forks its own session on the same machine, and agy starts
+fresh.
 With --resume-from, that run's conversation is used, and --change still picks
 the branch and the change ID. When that conversation can't be resumed, the
 agent starts fresh rather than replaying another, for --pr as for --change, and
@@ -181,11 +189,13 @@ its run pushed without a PR, as when finalize salvaged that run's work at a
 usage limit, when the branch is still that change's and nothing took the
 change further: the run is in the target repo (by name and, where both are
 known, by GitHub owner); no run of the change has a PR; origin has the
-branch, with that run's push in its history; no run of another change worked
-on the branch, and origin's tip carries no other change's Change-Id; the
-change's branch (its valley's active version's, else its newest push's) is
-still that branch; and, for a repo on GitHub, no PR, open or not, has the
-branch as its head (asked with 'gh api'). The run keeps the change ID, its
+branch; no run of another change worked on the branch, and origin's tip
+carries no other change's Change-Id; the change's branch (its valley's
+active version's, else its newest push's) is still that branch; that branch
+has that run's push in its history, or a later head of the change that
+rewrote it, as a restack does: a later run's push there, or the head the
+change's branch was found at; and, for a repo on GitHub, no PR, open or not,
+has the branch as its head (asked with 'gh api'). The run keeps the change ID, its
 worktree tracks origin's branch, and it is told to push fast-forward to it
 (and, where the repo takes PRs, to open the PR from it), as --change does; it
 refuses as --change does (above). Otherwise, as when GitHub can't be asked,
@@ -615,6 +625,14 @@ are synced back after completion. Use --local to force local execution, or
 			}
 			if onChange != nil {
 				vars.Change = onChange.Name
+				// A valley change may be restacked onto main, its rebase
+				// pushed with a lease on the tip the worktree starts from.
+				// A fetch elsewhere before the worktree exists can only
+				// make that lease stale, so the push fails rather than
+				// overwrite.
+				if directPush && valley.Detect(ctx, repoRoot, "", "origin/"+defaultBranch) {
+					vars.Valley, vars.Head = true, onChange.Tip
+				}
 			}
 			sysPrompt, err = config.RenderPrompt(repoRoot, vars)
 		}
