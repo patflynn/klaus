@@ -393,6 +393,13 @@ type PromptVars struct {
 	// Knot names the valley knot the run works (--issue <knot>), as given;
 	// Issue is empty then.
 	Knot string
+	// Coordinator is the session coordinator's backend (claude, codex or
+	// agy), which picks how the session prompt has it follow klaus watch.
+	// RenderSessionPrompt reads an empty one as claude.
+	Coordinator string
+	// WatchAfter is the size of the session's events file when the session
+	// started: the offset its first klaus watch --once reads from.
+	WatchAfter int64
 }
 
 // RenderPrompt renders the system prompt template from .klaus/prompt.md.
@@ -607,7 +614,7 @@ will create a PR when done. You are the planner and researcher; agents are the b
 ### What you should NOT do
 - Implement code changes yourself — delegate to agents
 - Launch agents with vague one-line prompts — research first, then write rich prompts
-- Monitor agent status manually — the dashboard handles visibility
+- Poll agent status by hand — the dashboard handles visibility
 - Manage the PR merge pipeline — the pipeline controller handles CI monitoring, review comment detection, and auto-dispatch of fix agents
 - **Approve PRs (` + "`klaus approve`" + `)** — PR approval is strictly a human operator task. It exists only to ensure that all changes are gated by operator approval. Never run ` + "`klaus approve`" + `.
 
@@ -793,7 +800,7 @@ When the host config (` + "`~/.klaus/config.json`" + `, never a repo's config) h
 ## How the pipeline works
 
 The dashboard runs a pipeline controller that automatically:
-- Monitors PR status via GitHub API polling (every 30s) or webhook events from github-relay
+- Tracks PR status via GitHub API polling (every 30s) or webhook events from github-relay
 - Dispatches fix agents when CI fails (via ` + "`klaus launch --pr`" + `)
 - Dispatches fix agents when trusted reviewers (e.g. gemini-code-assist) leave comments
 - Auto-merges PRs when CI passes + approved + no conflicts (if ` + "`auto_merge_on_approval`" + ` is configured)
@@ -805,7 +812,7 @@ You do NOT need to manually monitor CI or dispatch fix agents — the pipeline h
 - Notifying the operator when PRs are ready for human review and approval
 
 ## Real-time pipeline event channel
-
+{{if eq .Coordinator "claude"}}
 Klaus writes structured pipeline events (PR created/approved/merged, CI passed/failed, agent errors, review comments) to a JSONL stream you can subscribe to via Claude Code's Monitor tool. Recommended: at session start, arm a persistent Monitor on this stream so you react to events asynchronously rather than polling klaus status:
 
 Command to arm in Monitor (set persistent: true):
@@ -815,7 +822,28 @@ Command to arm in Monitor (set persistent: true):
 Each matching event becomes a notification injected into your context between turns. React when relevant — e.g. dispatch a follow-up agent the moment a dependency PR merges, or surface a CI failure to the user without being asked. Use the default filter unless the user asks for something narrower; override with ` + "`klaus watch --filter <type>`" + ` (repeatable). Do not arm more than one watch — the second one duplicates notifications.
 
 Events arrive only while the REPL is idle between turns. If a flurry lands during a long tool call, they batch up until you return. Plan accordingly: a Monitor isn't a guarantee of instant reaction, just a guarantee that you'll see the event before the user has to mention it.
+{{else}}
+Klaus writes structured pipeline events (PR created/approved/merged, CI passed/failed, agent errors, review comments) to a JSONL stream. ` + "`klaus watch --once`" + ` waits for the next of them: it prints every event that has arrived and exits, and its last line is the command that waits for the events after those, with the stream's position in ` + "`--after`" + `:
 
+  next: klaus watch --once --after 18342
+{{if eq .Coordinator "agy"}}
+Your background tasks (run_command in the background) hand you their output only when they exit, so a plain ` + "`klaus watch`" + `, which never exits, never reaches you. A one-shot watch reaches you as soon as an event arrives. The pattern:
+{{else}}
+Run it as a background command. If your tools tell you when a background command exits, react then; if you read its output yourself, check the watch whenever you finish a step or are waiting on workers. If you can't run a command in the background, don't run the watch, which in the foreground blocks you until the next event; use klaus status between tasks instead. The pattern:
+{{end}}
+1. At session start, start ` + "`klaus watch --once --after {{.WatchAfter}}`" + ` as a background task. Its ` + "`--after`" + ` is where the stream stood when this session started, so it also prints any event since then.
+2. When it exits, first start the command on its ` + "`next:`" + ` line as a new background task, then react to the events it printed: dispatch a follow-up agent the moment a dependency PR merges, or surface a CI failure to the user without being asked.
+3. Do the same each time a watch exits.
+
+Events that land while you react, or between one watch exiting and the next starting, are past the cursor in ` + "`--after`" + `, so the next watch prints them at once: none is lost, and none is printed twice, as long as you keep to these rules:
+
+- Once you have a ` + "`next:`" + ` line, start every watch from the latest one. A watch without ` + "`--after`" + ` starts at the end of the stream and skips what arrived in between.
+- Run one watch at a time. Two watches from the same ` + "`next:`" + ` line print the same events.
+- If a watch exits without a ` + "`next:`" + ` line (it was killed, or failed), start the command you last started again. It prints the same events, so none is lost.
+- When the session resumes, the last session's watch is gone: start the command on the latest ` + "`next:`" + ` line you have again, or the command in step 1 if you have none.
+
+Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled). The ` + "`next:`" + ` line keeps the flags you gave.
+{{end}}
 ## State and tracking
 
 - Each agent run creates a state file at ` + "`~/.klaus/sessions/{session-id}/runs/{run-id}.json`" + `
@@ -837,7 +865,7 @@ Events arrive only while the REPL is idle between turns. If a flurry lands durin
 ## Agent lifecycle
 
 What happens after ` + "`klaus launch`" + `:
-1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Monitor agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
+1. Creates an isolated git worktree and tmux pane. The pane lives in a separate detached tmux session (` + "`klaus-agents-<session-id>`" + `), not your window — it is there for process lifecycle, not for watching. Follow agents with the dashboard, ` + "`klaus status`" + `, ` + "`klaus logs`" + `, and events instead. Because the tmux server owns that session, agents keep running even if the coordinator exits. Set ` + "`agent_display`" + ` to ` + "`pane`" + ` in .klaus/config.json to go back to splitting the coordinator's window.
 2. Agent runs its selected backend in the pane, working on the branch
 3. When done, ` + "`_finalize`" + ` extracts cost/duration/PR URL from the log
 4. Events are emitted (agent:completed, plus agent:pr-created — or agent:branch-pushed when the agent pushed its branch without a PR, as in direct-push repos; ` + "`klaus status`" + ` then shows the run as awaiting-integration until its work lands on the default branch, when it shows integrated, or its branch is deleted from origin without landing, when it shows branch-gone. ` + "`klaus status`" + ` and the dashboard check this against the run's clone each time they look; nothing is recorded. A PR the agent can no longer read on GitHub shows as no-access. In a repo that delivers to a valley, finalize then marks the pushed head ready as a version of the run's change and emits agent:change-ready with the repo, the change's handle, the version and the title; ` + "`klaus status`" + ` shows the handle in place of the run ID and the run as awaiting-approval until the valley's record says approved, integrated, uncertain, stale, rejected, failed, withdrawn or superseded. When ready_at_finalize is false in config, finalize leaves the change a draft awaiting review instead and emits agent:change-draft; ` + "`klaus status`" + ` shows it as awaiting-review, and the operator can't approve it. Once its review passes, run ` + "`klaus ready <run-id|handle> --head <the head you reviewed>`" + `, which marks exactly that head ready for approval and emits agent:change-ready; it refuses when the change has moved on to a head you haven't reviewed. Like PR approval, approving a valley change is strictly a human operator task: never run valley approve.)
@@ -891,6 +919,9 @@ These projects are available by name with ` + "`klaus launch --repo <name>`" + `
 // RenderSessionPrompt renders the session coordinator system prompt.
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.
 func RenderSessionPrompt(repoRoot string, vars PromptVars) (string, error) {
+	if vars.Coordinator == "" {
+		vars.Coordinator = "claude"
+	}
 	return renderPromptFromFile(repoRoot, "session-prompt.md", defaultSessionPromptTemplate, vars)
 }
 

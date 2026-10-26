@@ -152,9 +152,13 @@ Inside a Klaus session, `klaus review` emits `review:started` and
 and summary (see [Consulting other models](#consulting-other-models)). SIGINT
 and SIGTERM end it as `interrupted`.
 
-The coordinator prompt describes `klaus watch`. Claude can attach its Monitor
-tool; other backends use their own background tools or `klaus status` and
-`klaus logs`. Klaus does not emulate Claude's Monitor tool.
+The coordinator prompt describes `klaus watch` for its backend. Claude arms
+it in its Monitor tool. agy, whose background tasks hand it their output only
+when they exit, and Codex get a chain of one-shot watches instead: each
+`klaus watch --once` runs as a background task, and when it exits the
+coordinator starts the next one from its `next:` line (see
+[Real-time event channel](#real-time-event-channel)). Klaus does not emulate
+Claude's Monitor tool.
 
 CLI event contracts: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)
 and [Antigravity headless mode](https://antigravity.google/docs/cli/headless).
@@ -317,10 +321,24 @@ klaus watch --filter pr:merged       # narrow to a single event type (repeatable
 klaus watch --filter-out pr:approved # subtract from the default filter
 klaus watch --filter pipeline:stalled # only PRs the pipeline gave up on
 klaus watch --json                   # raw JSONL passthrough
+klaus watch --run <run-id>           # only one run's events (a PR number for pipeline events)
 klaus watch --list-types             # show live and reserved event types
+klaus watch --once                   # wait for the next events, print them, exit
+klaus watch --once --after 18342     # ...from where the last one's next: line left off
 ```
 
-The coordinator session's system prompt automatically suggests arming a persistent Monitor on `klaus watch` at startup. The dashboard reads the same `events.jsonl` file independently — both consumers can run side by side.
+`klaus session` and `klaus new` create `events.jsonl` when they create or resume a session, so a watch armed at session start has a file to follow. A watch in a session with no events file yet (one from an older klaus) waits for it for as long as the session's directory exists, and reads it from the start once it appears; a watch on an unknown session ID fails at once.
+
+`klaus watch --once` is for a coordinator that can't take a stream of notifications. It waits until at least one matching event has arrived, prints every matching event that has, and exits 0. Its last line is the command that waits for the events after those:
+
+```
+17:02:03  20261026-1701-abcd  agent:pr-created        PR #85: https://github.com/acme/widget/pull/85
+next: klaus watch --once --after 18342
+```
+
+`--after` is a byte offset into `events.jsonl`, always at the start of a line, and the `next:` line keeps the other flags given (`--filter`, `--filter-out`, `--run`, `--json`, `--session-id`). Starting each watch from the last one's `next:` line delivers every event exactly once: events that land between two watches are past the offset, so the next one prints them at once, and running the same command again prints the same events, so a watch that died without a `next:` line loses nothing. Without `--after`, `--once` starts at the end of the file (at its start with `--since-start`). Interrupted before any event, it prints just its `next:` line. With `--json` the last line is `{"after":18342,"next":"klaus watch --once --after 18342 --json"}`. An `--after` past the end of the file or inside a line is an error, and so is an events file replaced or removed while a watch waits on it.
+
+The coordinator session's system prompt tells a Claude coordinator to arm a persistent Monitor on `klaus watch` at startup, and an agy or Codex coordinator to run one-shot watches as background tasks, starting the next from each one's `next:` line, the first from the offset the events file had when the session started. The dashboard reads the same `events.jsonl` file independently — both consumers can run side by side.
 
 ### Where agent time goes
 
@@ -646,7 +664,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus webhook check` | Check registered projects for GitHub webhook configuration |
 | `klaus webhook setup [project]` | Create missing webhooks for registered projects |
 | `klaus dashboard` | Live TUI dashboard for monitoring agents and PRs |
-| `klaus watch` | Stream pipeline events line-by-line (designed for Claude Code's Monitor tool) |
+| `klaus watch` | Stream pipeline events line-by-line (designed for Claude Code's Monitor tool), or with `--once` wait for the next ones and exit |
 | `klaus review <pr> [--post]` | Second-opinion review of a PR by a different model family |
 | `klaus approve <pr>...` | Approve PRs for merging (operator task) |
 | `klaus ready <run-id\|handle> [--head <sha>]` | Mark a valley change ready for approval once its review passes, only at the reviewed head with `--head` (see [Drafts awaiting review](#drafts-awaiting-review-ready_at_finalize)) |
