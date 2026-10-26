@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -1074,5 +1075,35 @@ func TestLoadForbiddenTermsHostOnly(t *testing.T) {
 	want := map[string]ForbiddenTermsConfig{"example-project": {Terms: []string{"example-host"}, AllowPaths: []string{"docs/hosts.md"}}}
 	if !reflect.DeepEqual(cfg.ForbiddenTerms, want) {
 		t.Errorf("ForbiddenTerms = %+v, want the host's %+v", cfg.ForbiddenTerms, want)
+	}
+}
+
+// TestRestackPushQuotesTheBranch runs the push command a valley change's
+// prompt gives in a real shell, with git a function that prints its
+// arguments: a branch named with $(), ; and a quote reaches git as written
+// and runs nothing.
+func TestRestackPushQuotesTheBranch(t *testing.T) {
+	dir := t.TempDir()
+	head := strings.Repeat("a", 40)
+	for _, branch := range []string{"add-a-greeting-1a2b3c4d", `x$(touch pwned);'y`} {
+		prompt, err := RenderPrompt(dir, PromptVars{RunID: "r", Branch: branch, DirectPush: true, Change: "kkkk", Valley: true, Head: head})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, rest, _ := strings.Cut(prompt, "\n`git push ")
+		line, _, _ := strings.Cut(rest, "`\n")
+		cmd := exec.Command("sh", "-c", `git() { printf '%s\n' "$@"; }; git push `+line)
+		cmd.Dir = dir
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%s: running %q: %v", branch, line, err)
+		}
+		want := "push\n--force-with-lease=refs/heads/" + branch + ":" + head + "\norigin\nHEAD:refs/heads/" + branch + "\n"
+		if string(out) != want {
+			t.Errorf("git got %q, want %q", out, want)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
+			t.Errorf("%s: the push command ran the branch name's $()", branch)
+		}
 	}
 }

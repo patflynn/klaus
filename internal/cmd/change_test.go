@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -286,5 +288,73 @@ func TestChangeBranchMustBeOnOrigin(t *testing.T) {
 		if err := tc.t.checkBranch(ctx, repo); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("checkBranch(%+v) = %v, want %q", tc.t, err, tc.want)
 		}
+	}
+}
+
+// TestResumeFromFollowsARestack: a --resume-from run continues its run's
+// branch after the change was restacked onto main, which rewrote that run's
+// push, when a later run of the change pushed the rewrite, even one the
+// valley didn't record, or the valley records it as the change's active
+// version there. A rewrite neither records has diverged.
+func TestResumeFromFollowsARestack(t *testing.T) {
+	_, repo, _, _ := setupBareRemote(t)
+	ctx := context.Background()
+	commit := func(file string) string {
+		if err := os.WriteFile(filepath.Join(repo, file), []byte(file+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGitCmd(t, repo, "add", file)
+		runGitCmd(t, repo, "commit", "-qm", "add "+file)
+		sha, err := gitOut(t, repo, "rev-parse", "HEAD")
+		if err != nil {
+			t.Fatal(sha)
+		}
+		return sha
+	}
+	runGitCmd(t, repo, "checkout", "-qb", "greet")
+	v1 := commit("greeting.txt")
+	runGitCmd(t, repo, "push", "-q", "origin", "greet")
+	runGitCmd(t, repo, "checkout", "-q", "main")
+	commit("main.txt")
+	runGitCmd(t, repo, "push", "-q", "origin", "main")
+	runGitCmd(t, repo, "checkout", "-q", "greet")
+	runGitCmd(t, repo, "rebase", "-q", "main")
+	runGitCmd(t, repo, "push", "-q", "--force", "origin", "greet")
+	v2, _ := gitOut(t, repo, "rev-parse", "HEAD")
+
+	change, target, branch := strings.Repeat("k", 32), "acme/widget", "greet"
+	prior := &run.State{ID: "20261026-0900-00000001", TargetRepo: &target, ChangeID: change, Branch: branch,
+		PushedBranch: &branch, PushedSHA: &v1, CreatedAt: "2026-10-26T09:00:00Z"}
+	restack := &run.State{ID: "20261026-1000-00000002", TargetRepo: &target, ChangeID: change, Branch: branch,
+		PushedBranch: &branch, PushedSHA: &v2, CreatedAt: "2026-10-26T10:00:00Z"}
+	listing := func(versions ...string) func() (*valley.Changes, error) {
+		ch := valley.Change{ChangeID: change, Handle: "kkkk", State: valley.StateDraft, Active: len(versions)}
+		for i, head := range versions {
+			ch.Versions = append(ch.Versions, valley.Version{N: i + 1, Head: head, Branch: branch})
+		}
+		return func() (*valley.Changes, error) {
+			return &valley.Changes{Schema: valley.SchemaV1, Repos: []valley.Repo{{Repo: "widget", Changes: []valley.Change{ch}}}}, nil
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		runs   []*run.State
+		valley func() (*valley.Changes, error)
+		note   string
+	}{
+		{"a later run pushed the rewrite", []*run.State{prior, restack}, listing(v1), ""},
+		{"the valley records the rewrite", []*run.State{prior}, listing(v1, v2), ""},
+		{"nothing records the rewrite", []*run.State{prior}, listing(v1), "origin's greet has diverged from run " + prior.ID + "'s push " + v1[:7]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, note := resumeTarget(ctx, repo, prior.ID, changeSources{Runs: tc.runs, Repo: "widget", Valley: tc.valley})
+			if note != tc.note {
+				t.Fatalf("note = %q, want %q", note, tc.note)
+			}
+			if tc.note == "" && (got == nil || got.ID != change || got.Branch != branch) {
+				t.Errorf("resumeTarget = %+v, want change %s on %s", got, change, branch)
+			}
+		})
 	}
 }

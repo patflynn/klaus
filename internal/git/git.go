@@ -311,6 +311,16 @@ func RefExists(ctx context.Context, repoDir, ref string) bool {
 	return err == nil
 }
 
+// RefCommit returns the commit ref resolves to in repoDir, or "" when it
+// resolves to none.
+func RefCommit(ctx context.Context, repoDir, ref string) string {
+	sha, err := runGit(ctx, repoDir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	if err != nil {
+		return ""
+	}
+	return sha
+}
+
 // IsAncestor reports whether commit a is b or one of its ancestors in
 // repoDir; false when either is unknown there.
 func IsAncestor(ctx context.Context, repoDir, a, b string) bool {
