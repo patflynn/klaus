@@ -551,8 +551,10 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 }
 
 // WorkerRules states the run contract every worker backend shares: the run
-// ends with the agent's turn, and scratch files stay out of the worktree,
-// whose uncommitted files finalize salvages into a commit. It is not part of
+// ends with the agent's turn, scratch files stay out of the worktree, whose
+// uncommitted files finalize salvages into a commit, and a worker whose
+// environment is broken stops and reports instead of writing outside its
+// worktree, to shared configuration, to get around it. It is not part of
 // the templates, so a custom .klaus/prompt.md cannot drop it.
 const WorkerRules = `## Non-interactive run
 You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
@@ -561,6 +563,10 @@ You run non-interactively: your run ends when your turn ends. Nothing wakes you 
 
 ## Scratch files
 - Build output, test binaries and other scratch files go under $KLAUS_SCRATCH, never in the worktree: for example, ` + "`go build -o \"$KLAUS_SCRATCH/<name>\" ./<pkg>`" + `. $KLAUS_SCRATCH is outside the worktree, and klaus removes it when the run ends; where it is unset, use a directory from ` + "`mktemp -d`" + `.
+
+## A broken environment
+- If your environment keeps you from working (commands fail to start, the shell or a tool you need is missing, a tool's permissions block you), stop and report what fails, with the error, and end your turn. Don't work around it.
+- Never edit files outside your worktree and $KLAUS_SCRATCH to get past a problem: not the clone's git configuration, attributes or hooks, not your home directory, shell profiles or package profiles, not system files. Other workers and the operator share them.
 `
 
 // WithWorkerRules appends WorkerRules to a worker system prompt.
