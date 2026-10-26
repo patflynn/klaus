@@ -144,10 +144,11 @@ func (k Kind) needs() []need {
 }
 
 // CheckPath returns an error naming the first command k's worker needs that
-// doesn't resolve on path, a PATH value, and the PATH it searched.
-func (k Kind) CheckPath(path string) error {
+// doesn't resolve on path, a PATH value, for a worker that runs in dir, and
+// the PATH it searched.
+func (k Kind) CheckPath(path, dir string) error {
 	for _, n := range k.needs() {
-		if !onPath(n.command, path) {
+		if !onPath(n.command, path, dir) {
 			return fmt.Errorf("the %s worker can't run: %s isn't on the PATH it gets (%s); searched PATH=%q", k, n.command, n.why, path)
 		}
 	}
@@ -155,12 +156,12 @@ func (k Kind) CheckPath(path string) error {
 }
 
 // onPath reports whether name resolves to an executable file in a directory
-// of path, as a shell's PATH lookup finds it; an empty entry is the current
-// directory.
-func onPath(name, path string) bool {
+// of path, as a shell's PATH lookup finds it in cwd: an empty or relative
+// entry is taken from cwd.
+func onPath(name, path, cwd string) bool {
 	for _, dir := range filepath.SplitList(path) {
-		if dir == "" {
-			dir = "."
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(cwd, dir)
 		}
 		info, err := os.Stat(filepath.Join(dir, name))
 		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {

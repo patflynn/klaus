@@ -690,7 +690,7 @@ are synced back after completion. Use --local to force local execution, or
 		// worker without bash can edit files and nothing else. A sandbox
 		// worker runs on its host's PATH.
 		if sandboxHost == "" {
-			if err := checkWorkerPath(kind); err != nil {
+			if err := checkWorkerPath(kind, worktree); err != nil {
 				return err
 			}
 		}
@@ -890,7 +890,7 @@ are synced back after completion. Use --local to force local execution, or
 		if sandboxHost != "" {
 			if err := syncWorktreeToSandbox(sandboxHost, worktree); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: sandbox sync failed, falling back to local: %v\n", err)
-				if err := checkWorkerPath(kind); err != nil {
+				if err := checkWorkerPath(kind, worktree); err != nil {
 					return err
 				}
 			} else {
@@ -1132,12 +1132,12 @@ func snapshotSharedGit(ctx context.Context, worktree string) *run.SharedGit {
 	return &run.SharedGit{Dir: dir, Files: git.SharedSnapshot(ctx, dir)}
 }
 
-// checkWorkerPath fails when a command kind's local worker runs by name
-// isn't on the PATH it gets. That is launch's own: tmux gives a pane the PATH
-// of the client that creates it, here klaus launch, before the pane's shell
-// starts.
-func checkWorkerPath(kind backend.Kind) error {
-	if err := kind.CheckPath(os.Getenv("PATH")); err != nil {
+// checkWorkerPath fails when a command kind's local worker, which runs in
+// worktree, runs by name isn't on the PATH it gets. That is launch's own:
+// tmux gives a pane the PATH of the client that creates it, here klaus
+// launch, before the pane's shell starts.
+func checkWorkerPath(kind backend.Kind, worktree string) error {
+	if err := kind.CheckPath(os.Getenv("PATH"), worktree); err != nil {
 		return fmt.Errorf("%w; a worker gets the PATH klaus launch runs with, so launch it with one that has the command", err)
 	}
 	return nil
