@@ -591,12 +591,12 @@ func (m dashboardModel) approveCommand(r dashRow) (verb, cmd string) {
 }
 
 // shellWord makes s one word for a POSIX shell: as it is when it is only
-// [A-Za-z0-9._/-], which a shell takes literally, so the common command stays
-// readable; else single-quoted (shellQuote).
+// [A-Za-z0-9._/:-], which a shell takes literally, so the common command
+// stays readable; else single-quoted (shellQuote).
 func shellWord(s string) string {
 	plain := s != ""
 	for _, c := range s {
-		plain = plain && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._/-", c))
+		plain = plain && (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._/:-", c))
 	}
 	if plain {
 		return s

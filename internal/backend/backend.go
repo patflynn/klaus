@@ -208,7 +208,7 @@ func (k Kind) Coordinator(o Options) []string {
 	case Agy:
 		prompt := o.SystemPrompt
 		if o.Continue && o.ResumeID != "" {
-			prompt = "Klaus coordinator session resumed. Continue using the existing coordinator instructions; use klaus status to refresh worker state."
+			prompt = "Klaus coordinator session resumed. Continue using the existing coordinator instructions; use klaus status to refresh worker state. Your background klaus watch ended with the last session: start the command on the latest next: line it printed again as a background task, or, if no watch printed one, the first watch command your instructions give."
 		}
 		a = []string{"agy", "--add-dir", ".", "--dangerously-skip-permissions", "--prompt-interactive", prompt}
 		if o.Continue && o.ResumeID != "" {

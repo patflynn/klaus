@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -104,7 +105,31 @@ default filter so this command stays forward-compatible. Run 'klaus watch
 --list-types' to see which types are live vs reserved.
 
 Passing --filter REPLACES the default. --filter-out is always subtracted.
-Both flags are repeatable and use OR semantics within each flag.`,
+Both flags are repeatable and use OR semantics within each flag. --run keeps
+only the events of the given runs (repeatable; a pipeline event's run is its
+PR's number).
+
+klaus session creates the events file when it creates or resumes a session.
+In a session that has none yet, watch waits for it as long as the session's
+directory exists, then reads it from the start. An unknown session ID is an
+error.
+
+--once is for a coordinator whose background tasks hand it their output only
+when they exit (agy, for one): it waits until at least one matching event has
+arrived, prints every matching event that has, and exits 0. Its last line is
+the command that waits for the events after those, with the stream's position
+in --after, e.g.
+
+  next: klaus watch --once --after 18342
+
+(with --json, a JSON object: {"after":18342,"next":"klaus watch ..."}).
+Starting each watch from the last one's next: line delivers every event once:
+--after is a byte offset into events.jsonl, so events that land between two
+watches are past it, and running the same command again prints the same
+events. Without --after, --once starts at the end of the file (at its start
+with --since-start). Interrupted before any event, it prints just the next:
+line. An --after past the end of the file or inside a line is an error, and
+so is an events file replaced or removed while --once waits on it.`,
 	Example: `  # Default filter, follow new events from now:
   klaus watch
 
@@ -118,14 +143,24 @@ Both flags are repeatable and use OR semantics within each flag.`,
   klaus watch --since-start
 
   # Raw JSONL passthrough for downstream tools:
-  klaus watch --json`,
+  klaus watch --json
+
+  # Wait for the next events, print them and exit; then run the next: line:
+  klaus watch --once
+  klaus watch --once --after 18342
+
+  # Wait for one run's next event:
+  klaus watch --once --run 20261026-1701-445ec227`,
 	RunE: runWatch,
 }
 
 func init() {
 	watchCmd.Flags().StringSlice("filter", nil, "Event type to include (repeatable, OR semantics). Replaces the default filter when set.")
 	watchCmd.Flags().StringSlice("filter-out", nil, "Event type to exclude (repeatable). Applied after --filter.")
+	watchCmd.Flags().StringSlice("run", nil, "Run ID whose events to include (repeatable; a PR number for pipeline events).")
 	watchCmd.Flags().Bool("since-start", false, "Emit events already in the file before tailing new ones.")
+	watchCmd.Flags().Bool("once", false, "Wait for at least one matching event, print every one that has arrived and the command that waits for the next, then exit.")
+	watchCmd.Flags().Int64("after", 0, "With --once: the byte offset in events.jsonl to read from, as printed on the last watch's next: line.")
 	watchCmd.Flags().Bool("json", false, "Emit raw JSONL lines instead of human-formatted summaries.")
 	watchCmd.Flags().Bool("list-types", false, "Print known event types (live and reserved) and exit.")
 	watchCmd.Flags().String("session-id", "", "Override $KLAUS_SESSION_ID (mainly for testing).")
@@ -141,9 +176,23 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 	filterIn, _ := cmd.Flags().GetStringSlice("filter")
 	filterOut, _ := cmd.Flags().GetStringSlice("filter-out")
+	runs, _ := cmd.Flags().GetStringSlice("run")
 	sinceStart, _ := cmd.Flags().GetBool("since-start")
+	once, _ := cmd.Flags().GetBool("once")
+	after, _ := cmd.Flags().GetInt64("after")
+	hasAfter := cmd.Flags().Changed("after")
 	asJSON, _ := cmd.Flags().GetBool("json")
 	sessionOverride, _ := cmd.Flags().GetString("session-id")
+
+	if hasAfter && !once {
+		return fmt.Errorf("--after needs --once")
+	}
+	if hasAfter && sinceStart {
+		return fmt.Errorf("--after and --since-start are mutually exclusive")
+	}
+	if after < 0 {
+		return fmt.Errorf("--after must not be negative")
+	}
 
 	sessionID := sessionOverride
 	if sessionID == "" {
@@ -157,23 +206,45 @@ func runWatch(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	eventsPath := filepath.Join(sessionsDir, sessionID, "events.jsonl")
+	cmd.SilenceUsage = true // flags are valid; later errors are not usage errors
 
-	flt := buildFilter(filterIn, filterOut)
+	sessionDir := filepath.Join(sessionsDir, sessionID)
+	if _, err := os.Stat(sessionDir); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("unknown session %s: %s does not exist", sessionID, sessionDir)
+	} else if err != nil {
+		return fmt.Errorf("stat session dir: %w", err)
+	}
+	eventsPath := event.NewLog(sessionDir).Path()
+
+	flt := buildFilter(filterIn, filterOut, runs)
 
 	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if once {
+		start := int64(-1) // the end of the file
+		if sinceStart {
+			start = 0
+		}
+		if hasAfter {
+			start = after
+		}
+		next := func(cursor int64) string {
+			return nextWatchCommand(sessionOverride, filterIn, filterOut, runs, asJSON, cursor)
+		}
+		return watchOnce(ctx, eventsPath, flt, start, asJSON, next, cmd.OutOrStdout())
+	}
 	return streamEvents(ctx, eventsPath, flt, sinceStart, asJSON, cmd.OutOrStdout())
 }
 
-// watchFilter decides whether a given event type should be emitted.
+// watchFilter decides whether a given event should be emitted.
 type watchFilter struct {
 	include map[string]struct{} // empty means "match anything"
 	exclude map[string]struct{}
+	runs    map[string]struct{} // empty means every run
 }
 
-func buildFilter(includeFlags, excludeFlags []string) watchFilter {
+func buildFilter(includeFlags, excludeFlags, runFlags []string) watchFilter {
 	include := includeFlags
 	if len(include) == 0 {
 		include = defaultWatchFilter
@@ -194,7 +265,25 @@ func buildFilter(includeFlags, excludeFlags []string) watchFilter {
 		}
 		exc[t] = struct{}{}
 	}
-	return watchFilter{include: inc, exclude: exc}
+	runs := make(map[string]struct{}, len(runFlags))
+	for _, r := range runFlags {
+		r = strings.TrimSpace(r)
+		if r == "" {
+			continue
+		}
+		runs[r] = struct{}{}
+	}
+	return watchFilter{include: inc, exclude: exc, runs: runs}
+}
+
+// accepts reports whether evt passes both the type and the run filters.
+func (f watchFilter) accepts(evt event.Event) bool {
+	if len(f.runs) > 0 {
+		if _, ok := f.runs[evt.RunID]; !ok {
+			return false
+		}
+	}
+	return f.matches(evt.Type)
 }
 
 func (f watchFilter) matches(eventType string) bool {
@@ -210,9 +299,13 @@ func (f watchFilter) matches(eventType string) bool {
 
 // streamEvents waits for the events file to exist, then follows it with
 // fsnotify until ctx is cancelled. New lines that pass the filter are written
-// to out as either formatted summaries or raw JSON.
+// to out as either formatted summaries or raw JSON. A file it had to wait for
+// is new, so it reads that one from the start.
 func streamEvents(ctx context.Context, path string, flt watchFilter, sinceStart, asJSON bool, out io.Writer) error {
-	if err := waitForFile(ctx, path, 10*time.Second); err != nil {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		sinceStart = true
+	}
+	if err := waitForFile(ctx, path); err != nil {
 		return err
 	}
 	// If ctx was cancelled during the wait, exit cleanly without trying to
@@ -268,7 +361,7 @@ func streamEvents(ctx context.Context, path string, flt watchFilter, sinceStart,
 					if len(line) == 0 {
 						continue
 					}
-					if err := emitLine(line, flt, asJSON, out); err != nil {
+					if _, err := emitLine(line, flt, asJSON, out); err != nil {
 						return err
 					}
 				}
@@ -354,15 +447,21 @@ func streamEvents(ctx context.Context, path string, flt watchFilter, sinceStart,
 	}
 }
 
-func emitLine(line []byte, flt watchFilter, asJSON bool, out io.Writer) error {
+// emitLine writes line to out if it is an event that passes flt, and
+// reports whether it did.
+func emitLine(line []byte, flt watchFilter, asJSON bool, out io.Writer) (bool, error) {
 	var evt event.Event
 	if err := json.Unmarshal(line, &evt); err != nil {
 		// Skip malformed lines silently — matches event.Log.Read behavior.
-		return nil
+		return false, nil
 	}
-	if !flt.matches(evt.Type) {
-		return nil
+	if !flt.accepts(evt) {
+		return false, nil
 	}
+	return true, writeEvent(line, evt, asJSON, out)
+}
+
+func writeEvent(line []byte, evt event.Event, asJSON bool, out io.Writer) error {
 	if asJSON {
 		if _, err := out.Write(line); err != nil {
 			return err
@@ -604,18 +703,20 @@ func truncateLine(s string, max int) string {
 	return string(runes[:max-1]) + "…"
 }
 
-// waitForFile blocks until path exists or timeout elapses. Polls every 500ms.
-// Returns nil if the file becomes available.
-func waitForFile(ctx context.Context, path string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+// waitForFile blocks until path exists, polling every 500ms, for as long as
+// the session directory holding it does: a session created before klaus made
+// the file at session start has none until its first event. It returns nil
+// once the file exists or ctx is cancelled, and an error if the session
+// directory is removed.
+func waitForFile(ctx context.Context, path string) error {
 	for {
 		if _, err := os.Stat(path); err == nil {
 			return nil
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("stat events file: %w", err)
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("events file did not appear within %s: %s", timeout, path)
+		if err := checkSessionDir(path); err != nil {
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -623,6 +724,199 @@ func waitForFile(ctx context.Context, path string, timeout time.Duration) error 
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// checkSessionDir returns an error if the session directory holding the
+// events file at path no longer exists.
+func checkSessionDir(path string) error {
+	dir := filepath.Dir(path)
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("session directory %s was removed", dir)
+	} else if err != nil {
+		return fmt.Errorf("stat session dir: %w", err)
+	}
+	return nil
+}
+
+// watchOnce is klaus watch --once. It reads the events file from byte offset
+// start (the end of the file if start is negative) and waits until at least
+// one complete line there is an event that passes flt. It writes every such
+// event in the file at that moment to out, then the next: line, built by
+// next from the offset just past the last complete line it read. The offset
+// only ever advances past whole lines, all of which it has written or
+// filtered out, so starting the next watch from it neither repeats nor skips
+// an event. Cancelling ctx ends the wait early with just the next: line.
+func watchOnce(ctx context.Context, path string, flt watchFilter, start int64, asJSON bool, next func(int64) string, out io.Writer) error {
+	cursor := int64(0)
+	if start > 0 {
+		cursor = start
+	}
+	trailer := func() error {
+		cmdline := next(cursor)
+		if asJSON {
+			data, err := json.Marshal(struct {
+				After int64  `json:"after"`
+				Next  string `json:"next"`
+			}{cursor, cmdline})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(out, string(data))
+			return err
+		}
+		_, err := fmt.Fprintln(out, "next: "+cmdline)
+		return err
+	}
+
+	// Watch the directory before reading, so a write that lands between a
+	// read and the wait still wakes the loop.
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("creating file watcher: %w", err)
+	}
+	defer watcher.Close()
+	if err := watcher.Add(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("watching %s: %w", filepath.Dir(path), err)
+	}
+
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		// No file yet, so the end of the file is its start: every event
+		// that lands in it is new.
+		if start < 0 {
+			start = 0
+		}
+		if err := waitForFile(ctx, path); err != nil {
+			return err
+		}
+		if ctx.Err() != nil {
+			return trailer()
+		}
+		f, err = os.Open(path)
+	}
+	if err != nil {
+		return fmt.Errorf("opening events file: %w", err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat events file: %w", err)
+	}
+	var inode uint64
+	if sys, ok := info.Sys().(*syscall.Stat_t); ok {
+		inode = sys.Ino
+	}
+	switch {
+	case start < 0:
+		cursor = info.Size()
+	case start > info.Size():
+		return fmt.Errorf("--after %d is past the end of %s (%d bytes): pass the offset from the last watch's next: line", start, path, info.Size())
+	case start > 0:
+		// An offset from a next: line is always just past a newline.
+		b := make([]byte, 1)
+		if _, err := f.ReadAt(b, start-1); err != nil {
+			return fmt.Errorf("reading events file: %w", err)
+		}
+		if b[0] != '\n' {
+			return fmt.Errorf("--after %d is not at the start of a line in %s: pass the offset from the last watch's next: line", start, path)
+		}
+	}
+	if _, err := f.Seek(cursor, io.SeekStart); err != nil {
+		return fmt.Errorf("seeking events file: %w", err)
+	}
+
+	// read consumes every complete line from the cursor on, writing those
+	// that pass flt, and reports how many it wrote. A partial last line,
+	// still being written, stays in pending, short of the cursor.
+	var pending []byte
+	buf := make([]byte, 32*1024)
+	read := func() (int, error) {
+		written := 0
+		for {
+			n, err := f.Read(buf)
+			if n > 0 {
+				pending = append(pending, buf[:n]...)
+				for {
+					idx := bytes.IndexByte(pending, '\n')
+					if idx < 0 {
+						break
+					}
+					line := pending[:idx]
+					pending = pending[idx+1:]
+					ok, werr := emitLine(line, flt, asJSON, out)
+					if werr != nil {
+						return written, werr
+					}
+					cursor += int64(idx) + 1
+					if ok {
+						written++
+					}
+				}
+			}
+			if err == io.EOF {
+				return written, nil
+			}
+			if err != nil {
+				return written, fmt.Errorf("reading events file: %w", err)
+			}
+		}
+	}
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		written, err := read()
+		if err != nil {
+			return err
+		}
+		if written > 0 {
+			return trailer()
+		}
+		select {
+		case <-ctx.Done():
+			return trailer()
+		case _, ok := <-watcher.Events:
+			if !ok {
+				return trailer()
+			}
+		case werr, ok := <-watcher.Errors:
+			if !ok {
+				return trailer()
+			}
+			fmt.Fprintf(os.Stderr, "klaus watch: watcher error: %v\n", werr)
+		case <-ticker.C:
+			// Catches a missed notification, and a session or events file
+			// removed under us. Offsets into a file that was replaced say
+			// nothing about the new one, so that ends the watch too.
+			if err := checkSessionDir(path); err != nil {
+				return err
+			}
+			if inode != 0 && statInode(path) != inode {
+				return fmt.Errorf("%s was replaced or removed while this watch read it: its offsets don't apply to the new file", path)
+			}
+		}
+	}
+}
+
+// nextWatchCommand is the klaus watch --once command line that reads on from
+// cursor with the given flags.
+func nextWatchCommand(sessionID string, filterIn, filterOut, runs []string, asJSON bool, cursor int64) string {
+	args := []string{"klaus", "watch", "--once", "--after", strconv.FormatInt(cursor, 10)}
+	if sessionID != "" {
+		args = append(args, "--session-id", shellWord(sessionID))
+	}
+	for _, flag := range []struct {
+		name   string
+		values []string
+	}{{"--filter", filterIn}, {"--filter-out", filterOut}, {"--run", runs}} {
+		for _, v := range flag.values {
+			args = append(args, flag.name, shellWord(v))
+		}
+	}
+	if asJSON {
+		args = append(args, "--json")
+	}
+	return strings.Join(args, " ")
 }
 
 // statInode returns the inode for path, or 0 if unavailable.

@@ -27,6 +27,19 @@ func (l *Log) Path() string {
 	return filepath.Join(l.baseDir, eventsFile)
 }
 
+// Create creates the log file if it doesn't exist, keeping any events already
+// in it, so a reader can open it before the first event is emitted.
+func (l *Log) Create() error {
+	if err := os.MkdirAll(l.baseDir, 0o755); err != nil {
+		return fmt.Errorf("creating event log dir: %w", err)
+	}
+	f, err := os.OpenFile(l.Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("creating event log: %w", err)
+	}
+	return f.Close()
+}
+
 // Emit appends a single event to the log file.
 // Uses file-level locking so multiple concurrent writers are safe.
 func (l *Log) Emit(evt Event) error {

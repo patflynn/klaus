@@ -14,6 +14,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/config"
+	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/nix"
 	"github.com/patflynn/klaus/internal/project"
@@ -144,6 +145,18 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 	}
 	if err := store.EnsureDirs(); err != nil {
 		return err
+	}
+	// The coordinator arms klaus watch at start, before anything has emitted
+	// an event: the file has to be there for it to follow. A coordinator
+	// without Monitor starts its first one-shot watch from the file's size
+	// now, so it misses nothing that lands before it arms the watch.
+	events := event.NewLog(store.BaseDir())
+	if err := events.Create(); err != nil {
+		return err
+	}
+	var watchAfter int64
+	if info, err := os.Stat(events.Path()); err == nil {
+		watchAfter = info.Size()
 	}
 
 	// Keep registered project clones up-to-date with their upstreams in the
@@ -342,17 +355,19 @@ func runSession(cmd *cobra.Command, forceNew bool) error {
 
 	// Render session system prompt
 	sessionPrompt, err := config.RenderSessionPrompt(root, config.PromptVars{
-		RunID:    id,
-		Branch:   branch,
-		RepoName: repoName,
-		Projects: projectList,
+		RunID:       id,
+		Branch:      branch,
+		RepoName:    repoName,
+		Projects:    projectList,
+		Coordinator: string(kind),
+		WatchAfter:  watchAfter,
 	})
 	if err != nil {
 		return fmt.Errorf("rendering session prompt: %w", err)
 	}
 
 	if kind != backend.Claude {
-		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Claude Code Monitor is unavailable. Use klaus watch through your supported background tools, or klaus status and klaus logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
+		sessionPrompt += "\n\nBackend note: You are running " + string(kind) + ". Use klaus status and klaus logs to inspect workers. Do not assume Claude-specific memory or conversation replay."
 	}
 	// Configure tmux window for better situational awareness
 	currentPane := os.Getenv("TMUX_PANE")
