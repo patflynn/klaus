@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/patflynn/klaus/internal/run"
 )
 
 // useWorker makes the fake worker of a backend, claude, codex or agy, print
@@ -170,4 +172,36 @@ func TestChangeForksCodexSession(t *testing.T) {
 		t.Errorf("--no-replay should start a fresh codex worker:\n%s", argv)
 	}
 	h.finishRun(c.ID)
+}
+
+// TestChangeReplayIgnoresTrackRecords: `klaus track` writes a record naming
+// the change, newer than the codex run that made it. That record holds no
+// conversation, so a codex run continuing the change still forks the codex
+// run's session rather than starting fresh as if the latest run were claude's.
+func TestChangeReplayIgnoresTrackRecords(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.useWorker("codex", "codex-thread")
+	a, _ := h.startRun("health.go", "--backend", "codex", "add a health check endpoint")
+	first := h.finishRun(a.ID)
+
+	waitNextSecond()
+	h.SeedState(&run.State{
+		ID:         time.Now().Format("20060102-1504") + "-ffffffff",
+		Type:       "track",
+		TargetRepo: first.TargetRepo,
+		ChangeID:   first.ChangeID,
+		CreatedAt:  time.Now().Format(time.RFC3339),
+	})
+
+	h.resetWorker()
+	b, res := h.launchRun("--backend", "codex", "--change", a.ID, "test the health check")
+	h.WaitForClaudeStart(30 * time.Second)
+	if want := "replay:   forking Codex session codex-thread from run " + a.ID; !strings.Contains(res.Stdout, want) {
+		t.Errorf("launch output missing %q:\n%s", want, res.Stdout)
+	}
+	if b.OriginalRunID == nil || *b.OriginalRunID != a.ID {
+		t.Errorf("run should continue %s, not the track record: %v", a.ID, b.OriginalRunID)
+	}
+	h.finishRun(b.ID)
 }
