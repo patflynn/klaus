@@ -210,6 +210,26 @@ func PaneExists(ctx context.Context, paneID string) bool {
 	return false
 }
 
+// PaneStartedWith reports whether a live pane on the server was started
+// with a command that contains s. A server that isn't running has no such
+// pane; any other failure to ask is an error.
+func PaneStartedWith(ctx context.Context, s string) (bool, error) {
+	out, err := runTmux(ctx, "list-panes", "-a", "-F", "#{pane_dead} #{pane_start_command}")
+	if err != nil {
+		if msg := err.Error(); strings.Contains(msg, "no server running") || strings.Contains(msg, "error connecting to") {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		dead, cmd, _ := strings.Cut(line, " ")
+		if dead != "1" && strings.Contains(cmd, s) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // CapturePane captures the visible content of a pane.
 // history controls how many lines of scrollback to include.
 func CapturePane(ctx context.Context, paneID string, history int) (string, error) {

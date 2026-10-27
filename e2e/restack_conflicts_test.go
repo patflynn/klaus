@@ -129,6 +129,18 @@ func (h *Harness) restackLedger() string {
 // cooldown, as if the time had passed.
 func (h *Harness) ageLedger() {
 	h.t.Helper()
+	h.editLedger(func(entries map[string]*restack.Entry) {
+		for _, e := range entries {
+			for _, a := range e.Actions {
+				a.At = a.At.Add(-2 * restack.Cooldown)
+			}
+		}
+	})
+}
+
+// editLedger rewrites the restack ledger through edit.
+func (h *Harness) editLedger(edit func(map[string]*restack.Entry)) {
+	h.t.Helper()
 	data, err := os.ReadFile(h.restackLedger())
 	if err != nil {
 		h.t.Fatal(err)
@@ -137,11 +149,7 @@ func (h *Harness) ageLedger() {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		h.t.Fatal(err)
 	}
-	for _, e := range entries {
-		if e.Last != nil {
-			e.Last.At = e.Last.At.Add(-2 * restack.Cooldown)
-		}
-	}
+	edit(entries)
 	if data, err = json.Marshal(entries); err != nil {
 		h.t.Fatal(err)
 	}

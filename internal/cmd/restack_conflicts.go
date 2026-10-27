@@ -15,6 +15,7 @@ import (
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/restack"
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/patflynn/klaus/internal/valley"
 	"github.com/spf13/cobra"
 )
@@ -50,10 +51,11 @@ For each such conflict, unless klaus leaves it alone (below), klaus:
   4. launches 'klaus launch [--repo <project>] --change <change-id>
      --run-id <id> --expect-owner <principal> --expect-branch <branch>
      --expect-head <head> --expect-draft --reason restack-conflict <brief>'
-     from a clone of the repo. Launch checks all of it again under its
-     continuation lock, before it creates the worktree and as the worker
-     starts, and fails rather than start a worker on a change that was
-     readied or moved meanwhile. It keeps its own refusals too: a run
+     from a clone of the repo. Launch checks all of it again, fetching the
+     branch and asking the valley under its continuation lock, before it
+     creates the worktree and again as the worker starts, and fails rather
+     than start a worker on a change that was readied or moved meanwhile,
+     or that it couldn't check. It keeps its own refusals too: a run
      already working on the change or its branch, or a branch with work
      origin lacks.
 
@@ -68,16 +70,19 @@ until a report says the change restacked cleanly: one reset per clean
 report, and only while origin still holds that report. It acts once on
 each set of inputs, the change's head and main's tip, whatever came
 between: an unchanged conflict is not retried, nor one that comes back to
-inputs klaus acted on before, nor one whose unready or launch failed. Once
+inputs klaus acted on before, nor one whose unready or launch failed; it
+shows what came of those inputs then. Once
 no run is working on a change whose attempts are spent, klaus says it
 stopped, even if the last run left the conflict as it was.
 
 An attempt is given back only when klaus knows no worker started: it
 stopped before launching, or launch exited with status 3. Any other launch
-failure keeps the attempt and the cooldown. A pass that ends mid-launch
-leaves the launch pending in the ledger; the next pass counts it a
-dispatch once a run by its ID is recorded, treats the change as busy until
-then, and after 10 minutes stops waiting, keeping the attempt.
+failure keeps the attempt and the cooldown, and so does a pass that ends
+mid-launch: either leaves the launch pending in the ledger, and the change
+busy, until a run by its ID is recorded (a dispatch) or klaus proves no
+worker of it runs: no launch holds the clone's continuation lock, no run
+by the ID is recorded, and no live tmux pane's command names it. Time alone
+settles nothing.
 
 klaus leaves a conflict alone when it is in another change below this one
 (a change whose owner isn't klaus is never taken over), or when the change
@@ -87,6 +92,9 @@ Each dispatch emits change:restack-dispatched under the new run's ID; a
 conflict klaus stops short of resolving (attempts spent, unready or launch
 failed) emits change:restack-stalled once. What klaus did is kept in the
 session's restack-dispatches.json; klaus status and the dashboard show it.
+The ledger drops a change's entry once the change lands or is withdrawn,
+unless a launch for it is pending, and keeps what came of a change's latest
+16 sets of inputs; older ones may be acted on again.
 
 Prints one line per conflict on a change klaus owns.`,
 	Args: cobra.NoArgs,
@@ -160,7 +168,7 @@ func restackPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Ch
 			slog.Warn("emitting a restack event", "type", typ, "err", err)
 		}
 	}
-	d := restack.Default(launchResolution, runRecorded, restack.RunningOn(all, run.DefaultTmuxDeps()), emit)
+	d := restack.Default(launchResolution, runRecorded, restack.RunningOn(all, run.DefaultTmuxDeps()), workerGone, emit)
 	return restack.Pass(ctx, d, ledger, repos, listed, act), nil
 }
 
@@ -213,6 +221,29 @@ func launchError(out []byte) string {
 func runRecorded(runID string) bool {
 	states, err := run.ListAllSessions()
 	return err == nil && findRun(states, runID) != nil
+}
+
+// workerGone reports whether klaus can prove that no worker of run runID
+// runs, nor is about to start, from the clone at dir: no launch holds the
+// clone's continuation lock, under which launch checks for live holders,
+// starts its worker and records its run (and stops a worker whose run it
+// couldn't record); no run by the ID is recorded, in any session; and no
+// live tmux pane runs a command that names the run, as every worker's
+// does. A launch still on its way to the lock is no worker yet: under the
+// lock it finds any run recorded meanwhile, and starts none beside it. Any
+// read that fails is doubt: false.
+func workerGone(ctx context.Context, dir, runID string) bool {
+	release, ok := tryLockContinuation(ctx, dir)
+	if !ok {
+		return false
+	}
+	defer release()
+	states, err := run.ListAllSessions()
+	if err != nil || findRun(states, runID) != nil {
+		return false
+	}
+	live, err := tmux.PaneStartedWith(ctx, runID)
+	return err == nil && !live
 }
 
 // restackViews indexes views by change, as the dashboard and status look

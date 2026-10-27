@@ -53,9 +53,9 @@ func (x changeExpectation) validate(changeRef string) error {
 // target repo, and returns an error unless the change stands as expected:
 // listed, by the ID launch resolved; owned, a draft, and with its active
 // version on the branch and at the head expected; and with launch working
-// on that branch, whose tip on origin (as fetched) is that head. A valley
-// that can't be asked fails the check.
-func (x changeExpectation) check(t *changeTarget, list func() (*valley.Changes, error)) error {
+// on that branch, whose tip on origin, tip as the caller just read it, is
+// that head. A valley that can't be asked fails the check.
+func (x changeExpectation) check(t *changeTarget, tip string, list func() (*valley.Changes, error)) error {
 	if t == nil {
 		return errors.New("expectations need a change to check")
 	}
@@ -75,8 +75,8 @@ func (x changeExpectation) check(t *changeTarget, list func() (*valley.Changes, 
 		return fmt.Errorf("change %s's branch is %s, not %s", t.Name, v.Branch, x.Branch)
 	case x.Head != "" && v.Head != x.Head:
 		return fmt.Errorf("change %s's head is %s, not %s", t.Name, shortSHA(v.Head), shortSHA(x.Head))
-	case x.Head != "" && t.Tip != x.Head:
-		return fmt.Errorf("origin's %s is at %s, not change %s's expected head %s", t.Branch, shortSHA(t.Tip), t.Name, shortSHA(x.Head))
+	case x.Head != "" && tip != x.Head:
+		return fmt.Errorf("origin's %s is at %s, not change %s's expected head %s", t.Branch, shortSHA(tip), t.Name, shortSHA(x.Head))
 	}
 	return nil
 }

@@ -132,12 +132,16 @@ func TestDecide(t *testing.T) {
 	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	c := Conflict{Key: Key{"widget", ours}, Head: head2, TargetTip: tipB}
 	a, b := Inputs{head1, tipA}, Inputs{head2, tipB}
-	dispatched := func(ago time.Duration, attempts int, last Inputs, consumed ...Inputs) *Entry {
-		return &Entry{Attempts: attempts, Consumed: append(consumed, last),
-			Last: &Action{At: now.Add(-ago), Head: last.Head, TargetTip: last.TargetTip, RunID: "run-1"}}
+	dispatched := func(ago time.Duration, attempts int, last Inputs, before ...Inputs) *Entry {
+		e := &Entry{Attempts: attempts}
+		for _, in := range before {
+			e.Actions = append(e.Actions, &Action{At: now.Add(-2 * ago), Head: in.Head, TargetTip: in.TargetTip, RunID: "run-0"})
+		}
+		e.Actions = append(e.Actions, &Action{At: now.Add(-ago), Head: last.Head, TargetTip: last.TargetTip, RunID: "run-1"})
+		return e
 	}
 	pending := dispatched(time.Hour, 1, a)
-	pending.Last.Pending = true
+	pending.Last().Pending = true
 	for _, tc := range []struct {
 		name    string
 		c       Conflict
@@ -148,7 +152,7 @@ func TestDecide(t *testing.T) {
 		{"first conflict", c, nil, false, Dispatch},
 		{"held", Conflict{Key: c.Key, Held: "below"}, nil, false, Held},
 		{"same inputs as the last dispatch", c, dispatched(time.Hour, 1, b), false, Acted},
-		{"same inputs as a refusal", c, &Entry{Last: &Action{Head: head2, TargetTip: tipB, Refused: "unready failed"}}, false, Acted},
+		{"same inputs as a refusal", c, &Entry{Actions: []*Action{{Head: head2, TargetTip: tipB, Refused: "unready failed"}}}, false, Acted},
 		{"inputs acted on before the last", c, dispatched(time.Hour, 2, a, b), false, Acted},
 		{"a run is working on it", c, nil, true, Busy},
 		{"a launch is pending, with new inputs", c, pending, false, Busy},
@@ -157,7 +161,7 @@ func TestDecide(t *testing.T) {
 		{"attempts spent", c, dispatched(time.Hour, MaxAttempts, a), false, Stop},
 		{"attempts spent, and the last run left the inputs as they were", c, dispatched(time.Hour, MaxAttempts, b), false, Stop},
 		{"attempts spent, the last run still working", c, dispatched(time.Hour, MaxAttempts, b), true, Acted},
-		{"main moved after a refusal", c, &Entry{Last: &Action{At: now, Head: head2, TargetTip: tipA, Refused: "x"}}, false, Dispatch},
+		{"main moved after a refusal", c, &Entry{Actions: []*Action{{At: now, Head: head2, TargetTip: tipA, Refused: "x"}}}, false, Dispatch},
 	} {
 		if got := Decide(now, tc.c, tc.e, tc.running); got != tc.want {
 			t.Errorf("%s: Decide = %v, want %v", tc.name, got, tc.want)
@@ -230,6 +234,7 @@ type fakeValley struct {
 	unreadyErr error
 	noDraft    bool // unready succeeds and leaves the change ready
 	launchErr  error
+	gone       bool // klaus can prove no worker of a run that wasn't recorded runs
 	// launch, when set, runs as launch does, before it returns launchErr.
 	launch    func(Launch)
 	recorded  map[string]bool // the runs launch recorded, by ID
@@ -285,10 +290,11 @@ func (f *fakeValley) deps(now time.Time) Deps {
 			}
 			return f.launchErr
 		},
-		Started: func(id string) bool { return f.recorded[id] },
-		Running: func(Key, string) bool { return false },
-		Emit:    func(_, typ string, _ map[string]interface{}) { f.events = append(f.events, typ) },
-		Now:     func() time.Time { return now },
+		Started:    func(id string) bool { return f.recorded[id] },
+		Running:    func(Key, string) bool { return false },
+		WorkerGone: func(context.Context, string, string) bool { return f.gone },
+		Emit:       func(_, typ string, _ map[string]interface{}) { f.events = append(f.events, typ) },
+		Now:        func() time.Time { return now },
 	}
 }
 
@@ -330,8 +336,8 @@ func TestPassDispatchesOnce(t *testing.T) {
 	if strings.Join(f.events, " ") != event.ChangeRestackDispatched {
 		t.Errorf("events = %v", f.events)
 	}
-	if e := l.Entry(Key{"widget", ours}); e.Last.Pending || e.Last.RunID != want.RunID {
-		t.Errorf("after the launch the entry is %+v", e.Last)
+	if e := l.Entry(Key{"widget", ours}); e.Last().Pending || e.Last().RunID != want.RunID {
+		t.Errorf("after the launch the entry is %+v", e.Last())
 	}
 
 	// The change is a draft now and its report historical: a later pass
@@ -341,10 +347,14 @@ func TestPassDispatchesOnce(t *testing.T) {
 		t.Fatalf("a later pass should only show the dispatch: %+v, launched %d", views, len(f.launched))
 	}
 
-	// Once the change lands at that head, there is nothing to show.
+	// Once the change lands at that head, there is nothing to show, and
+	// the ledger lets it go.
 	f.repo.Changes[0].Versions[0].Landing = valley.Landed
 	if views = Pass(context.Background(), f.deps(now.Add(time.Hour)), l, widget, nil, true); len(views) != 0 {
 		t.Errorf("a landed change still shows its conflict: %+v", views)
+	}
+	if e := l.Entry(Key{"widget", ours}); e != nil {
+		t.Errorf("the ledger keeps a landed change's entry: %+v", e)
 	}
 }
 
@@ -359,7 +369,7 @@ func TestPassRefuses(t *testing.T) {
 		{"unready fails", fakeValley{unreadyErr: errors.New("valley unready: permission denied")}, "could not return the change to draft", false, 0},
 		{"unready leaves it ready", fakeValley{noDraft: true}, "is ready after valley unready", false, 0},
 		{"launch started no worker", fakeValley{launchErr: fmt.Errorf("klaus launch: %w: change nxvp is ready, not a draft", ErrNotStarted)}, "launch failed, and the change is left a draft", true, 0},
-		{"launch failed after it may have started the worker", fakeValley{launchErr: errors.New("klaus launch: exit status 1: saving state: disk full")}, "may have started its worker", true, 1},
+		{"launch failed after it started a worker that's gone", fakeValley{launchErr: errors.New("klaus launch: exit status 1: saving state: disk full; its worker was stopped"), gone: true}, "no worker of run 20261027-1200-00000001 runs", true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := tc.f
@@ -374,8 +384,8 @@ func TestPassRefuses(t *testing.T) {
 				t.Errorf("launched %v", f.launched)
 			}
 			e := l.Entry(Key{"widget", ours})
-			if e == nil || e.Attempts != tc.attempts || e.Last.Refused == "" || e.Last.Pending || (e.Last.RunID != "") != (tc.attempts > 0) {
-				t.Errorf("ledger entry %+v, last %+v; want %d attempts", e, e.Last, tc.attempts)
+			if e == nil || e.Attempts != tc.attempts || e.Last().Refused == "" || e.Last().Pending || (e.Last().RunID != "") != (tc.attempts > 0) {
+				t.Errorf("ledger entry %+v, last %+v; want %d attempts", e, e.Last(), tc.attempts)
 			}
 			if strings.Join(f.events, " ") != event.ChangeRestackStalled {
 				t.Errorf("events = %v", f.events)
@@ -427,11 +437,17 @@ func TestPassActsOnceOnEachInputsAcrossReloads(t *testing.T) {
 			now = now.Add(2 * Cooldown)
 			before := len(f.unreadied)
 			views := Pass(context.Background(), f.deps(now), reload(t, dir), widget, nil, true)
-			if len(f.unreadied) != before || len(views) != 1 || views[0].State == StateDispatched && views[0].Head == head1 {
+			if len(f.unreadied) != before || len(views) != 1 {
 				t.Fatalf("A again was acted on: %+v, unready %v", views, f.unreadied)
 			}
-			if e := reload(t, dir).Entry(Key{"widget", ours}); len(e.Consumed) != 2 {
-				t.Errorf("the ledger holds %v, want A and B", e.Consumed)
+			// It shows what came of A, not of B, the latest.
+			v := views[0]
+			if refuseA && (v.State != StateRefused || !strings.Contains(v.Detail, "refused") || v.RunID != "") ||
+				!refuseA && (v.State != StateDispatched || v.RunID != "20261027-1200-00000001") || v.Head != head1 {
+				t.Errorf("A again shows %+v, want what came of A", v)
+			}
+			if e := reload(t, dir).Entry(Key{"widget", ours}); len(e.Actions) != 2 {
+				t.Errorf("the ledger holds %v, want A and B", e.Actions)
 			}
 		})
 	}
@@ -500,8 +516,9 @@ func TestPassStaleCleanListingKeepsNewerAttempts(t *testing.T) {
 // the pass that started it ends before it returns, leaving the ledger as
 // it was on disk at that moment. The next pass, after a restart, counts
 // the attempt and keeps the change busy while the launch is pending;
-// counts it a dispatch once its run is recorded; and past the horizon
-// stops waiting, the attempt still counted.
+// counts it a dispatch once its run is recorded; and otherwise keeps
+// waiting, however long, until klaus can prove no worker of it runs, the
+// attempt still counted.
 func TestPassReconcilesALaunchItLostSightOf(t *testing.T) {
 	for _, recorded := range []bool{true, false} {
 		t.Run(fmt.Sprintf("run recorded %v", recorded), func(t *testing.T) {
@@ -531,25 +548,134 @@ func TestPassReconcilesALaunchItLostSightOf(t *testing.T) {
 			views := Pass(context.Background(), d, reload(t, crashed), widget, nil, true)
 			e := reload(t, crashed).Entry(Key{"widget", ours})
 			if recorded {
-				if len(views) != 1 || views[0].State != StateBusy || e.Last.Pending || e.Last.RunID != "20261027-1200-00000001" ||
+				if len(views) != 1 || views[0].State != StateBusy || e.Pending() != nil || e.Last().RunID != "20261027-1200-00000001" ||
 					e.Attempts != 1 || strings.Join(f.events, " ") != event.ChangeRestackDispatched {
-					t.Fatalf("a recorded run should make the launch a dispatch: %+v, %+v, events %v", views, e.Last, f.events)
+					t.Fatalf("a recorded run should make the launch a dispatch: %+v, %+v, events %v", views, e.Last(), f.events)
 				}
 				return
 			}
-			if len(views) != 1 || views[0].State != StateLaunching || len(f.launched) != 1 || e.Attempts != 1 || !e.Last.Pending {
+			if len(views) != 1 || views[0].State != StateLaunching || len(f.launched) != 1 || e.Attempts != 1 || e.Pending() == nil {
 				t.Fatalf("a pending launch should hold the change: %+v, launched %d, entry %+v", views, len(f.launched), e)
 			}
-			Pass(context.Background(), f.deps(now.Add(LaunchHorizon)), reload(t, crashed), widget, nil, false)
-			views = Pass(context.Background(), f.deps(now.Add(LaunchHorizon)), reload(t, crashed), widget, nil, true)
+			// A day on, nothing proves its worker gone: still pending.
+			views = Pass(context.Background(), f.deps(now.Add(24*time.Hour)), reload(t, crashed), widget, nil, true)
+			if e := reload(t, crashed).Entry(Key{"widget", ours}); len(views) != 1 || views[0].State != StateLaunching || e.Pending() == nil || len(f.launched) != 1 {
+				t.Fatalf("time alone settled a pending launch: %+v, %+v", views, e)
+			}
+			// Once klaus can prove it gone, the launch settles, its
+			// attempt kept, and the new inputs dispatch.
+			f.gone = true
+			Pass(context.Background(), f.deps(now.Add(25*time.Hour)), reload(t, crashed), widget, nil, false)
+			views = Pass(context.Background(), f.deps(now.Add(25*time.Hour)), reload(t, crashed), widget, nil, true)
 			e = reload(t, crashed).Entry(Key{"widget", ours})
-			if e.Last.Pending || e.Attempts != 2 || !strings.Contains(e.Consumed[0].Head, head1) {
-				t.Fatalf("past the horizon the launch keeps its attempt and the next inputs dispatch: %+v, %+v", e, views)
+			if e.Pending() != nil || e.Attempts != 2 || e.Actions[0].Head != head1 || !strings.Contains(e.Actions[0].Refused, "no worker of it runs") {
+				t.Fatalf("a launch proved gone keeps its attempt and the next inputs dispatch: %+v, %+v", e, views)
 			}
 			if strings.Join(f.events, " ") != event.ChangeRestackStalled+" "+event.ChangeRestackDispatched {
 				t.Errorf("events = %v, want the lost launch stalled, then the dispatch", f.events)
 			}
 		})
+	}
+}
+
+// TestPassHoldsALaunchThatMayHaveStartedAWorker: launch fails after it may
+// have started the worker, and klaus can't prove the worker gone. The
+// change stays busy, whatever the inputs, until it can; the attempt counts
+// throughout.
+func TestPassHoldsALaunchThatMayHaveStartedAWorker(t *testing.T) {
+	now := time.Now()
+	f := &fakeValley{repo: repoOf(conflictAt(head1, tipA, rep1)), launchErr: errors.New("klaus launch: exit status 1: saving state: disk full")}
+	l := NewLedger()
+	views := Pass(context.Background(), f.deps(now), l, widget, nil, true)
+	e := l.Entry(Key{"widget", ours})
+	if len(views) != 1 || views[0].State != StateLaunching || !strings.Contains(views[0].Summary(), "may have started its worker") ||
+		e.Attempts != 1 || e.Pending() == nil || len(f.events) != 0 {
+		t.Fatalf("an unsure launch should stay pending: %+v, %+v, events %v", views, e, f.events)
+	}
+	f.launchErr = nil
+	f.repo = repoOf(conflictAt(head2, tipB, rec2))
+	views = Pass(context.Background(), f.deps(now.Add(time.Hour)), l, widget, nil, true)
+	if len(views) != 1 || views[0].State != StateLaunching || len(f.launched) != 1 || len(f.unreadied) != 1 {
+		t.Fatalf("new inputs dispatched beside a worker that may run: %+v, launched %d", views, len(f.launched))
+	}
+	f.gone = true
+	views = Pass(context.Background(), f.deps(now.Add(2*time.Hour)), l, widget, nil, true)
+	if len(views) != 1 || views[0].State != StateDispatched || views[0].Attempts != 2 || len(f.launched) != 2 {
+		t.Fatalf("once its worker is proved gone the next inputs dispatch: %+v", views)
+	}
+	if e.Actions[0].Pending || !strings.Contains(e.Actions[0].Refused, "no worker of run 20261027-1200-00000001 runs") ||
+		!strings.Contains(e.Actions[0].Refused, "disk full") {
+		t.Errorf("the settled launch says %q", e.Actions[0].Refused)
+	}
+}
+
+// TestLoadLedgerMigratesALegacyLast reads a ledger an older klaus wrote,
+// whose entry names only its last action, refused, on inputs A, and A
+// consumed before it. Dispatching on B keeps A; A again isn't retried, and
+// shows A's refusal, not B's dispatch.
+func TestLoadLedgerMigratesALegacyLast(t *testing.T) {
+	dir := t.TempDir()
+	legacy := fmt.Sprintf(`{"widget/%s": {"repo": "widget", "change_id": %q, "attempts": 0,
+  "last": {"at": "2026-10-27T11:00:00Z", "report": %q, "version": 1, "head": %q, "target_tip": %q, "refused": "could not return the change to draft: valley unready: refused"},
+  "consumed": [{"head": %q, "target_tip": %q}, {"head": %q, "target_tip": %q}]}}`,
+		ours, ours, rep1, head1, tipA, head2, tipB, head1, tipA)
+	if err := os.WriteFile(filepath.Join(dir, LedgerFile), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e := reload(t, dir).Entry(Key{"widget", ours})
+	if len(e.Actions) != 2 || e.ActionOn(Inputs{head2, tipB}) == nil || !strings.Contains(e.Last().Refused, "valley unready: refused") {
+		t.Fatalf("migrated actions %+v", e.Actions)
+	}
+
+	now := time.Now()
+	f := &fakeValley{repo: repoOf(conflictAt(head2, tipA, rec2))}
+	if v := Pass(context.Background(), f.deps(now), reload(t, dir), widget, nil, true); len(v) != 1 || v[0].State != StateDispatched {
+		t.Fatalf("B: %+v, want a dispatch", v)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, LedgerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), `"last"`) || strings.Contains(string(data), `"consumed"`) {
+		t.Errorf("the ledger is saved in the old form:\n%s", data)
+	}
+
+	f.repo = repoOf(conflictAt(head1, tipA, "ffffffffffffffffffffffffffffffffffffffff"))
+	views := Pass(context.Background(), f.deps(now.Add(2*Cooldown)), reload(t, dir), widget, nil, true)
+	if len(f.unreadied) != 1 || len(views) != 1 || views[0].State != StateRefused || !strings.Contains(views[0].Detail, "valley unready: refused") {
+		t.Fatalf("A again: %+v, unready %v; want A's refusal, not retried", views, f.unreadied)
+	}
+}
+
+// TestLedgerIsBounded: an entry keeps its latest MaxActions actions, and a
+// pass drops the entry of a change that was withdrawn, unless a launch for
+// it is pending.
+func TestLedgerIsBounded(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	f := &fakeValley{unreadyErr: errors.New("valley unready: refused")} // each refusal gives its attempt back
+	for i := 0; i < MaxActions+3; i++ {
+		f.repo = repoOf(conflictAt(fmt.Sprintf("%040x", i+1), tipA, rep1))
+		Pass(context.Background(), f.deps(now), reload(t, dir), widget, nil, true)
+	}
+	e := reload(t, dir).Entry(Key{"widget", ours})
+	if len(f.unreadied) != MaxActions+3 || len(e.Actions) != MaxActions || e.Actions[0].Head != fmt.Sprintf("%040x", 4) ||
+		e.Last().Head != fmt.Sprintf("%040x", MaxActions+3) {
+		t.Fatalf("unready %d times; the entry keeps %d actions, from %s to %s", len(f.unreadied), len(e.Actions), e.Actions[0].Head, e.Last().Head)
+	}
+
+	withdrawn := conflictAt(head1, tipA, rep1)
+	withdrawn.State = valley.StateWithdrawn
+	f.repo = repoOf(withdrawn)
+	l := reload(t, dir)
+	l.Entry(Key{"widget", ours}).Last().Pending = true
+	Pass(context.Background(), f.deps(now), l, widget, nil, true)
+	if l.Entry(Key{"widget", ours}) == nil {
+		t.Fatal("a pass dropped an entry whose launch is pending")
+	}
+	Pass(context.Background(), f.deps(now), reload(t, dir), widget, nil, true)
+	if e := reload(t, dir).Entry(Key{"widget", ours}); e != nil {
+		t.Errorf("the ledger keeps a withdrawn change's entry: %+v", e)
 	}
 }
 
@@ -596,7 +722,7 @@ func TestPassStopsAfterMaxAttempts(t *testing.T) {
 	f := &fakeValley{repo: repoOf(conflictOn(ours, "klaus", head1, rec1, tipA, ours))}
 	l := NewLedger()
 	l.put(&Entry{Repo: "widget", ChangeID: ours, Attempts: MaxAttempts,
-		Last: &Action{At: time.Now().Add(-time.Hour), Head: head2, TargetTip: tipB, RunID: "run-0"}})
+		Actions: []*Action{{At: time.Now().Add(-time.Hour), Head: head2, TargetTip: tipB, RunID: "run-0"}}})
 	for i := 0; i < 2; i++ {
 		views := Pass(context.Background(), f.deps(time.Now()), l, widget, nil, true)
 		if len(views) != 1 || views[0].State != StateStopped {
@@ -657,7 +783,7 @@ func TestPassDoesNothingItCantRecord(t *testing.T) {
 	if len(views) != 1 || views[0].State != StateRefused || len(f.unreadied)+len(f.launched) != 0 {
 		t.Fatalf("with a ledger it can't write, a pass should touch nothing: %+v, unready %v, launched %v", views, f.unreadied, f.launched)
 	}
-	if e := l.Entry(Key{"widget", ours}); e == nil || e.Attempts != 0 || e.Last != nil || len(e.Consumed) != 0 {
+	if e := l.Entry(Key{"widget", ours}); e == nil || e.Attempts != 0 || len(e.Actions) != 0 {
 		t.Errorf("an unsaved dispatch should leave no attempt behind: %+v", e)
 	}
 }

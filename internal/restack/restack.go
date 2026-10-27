@@ -34,13 +34,6 @@ const (
 	MaxAttempts = 3
 	// Cooldown is the least time between two dispatches for one change.
 	Cooldown = 60 * time.Second
-	// LaunchHorizon is how long klaus waits for a launch it started, and
-	// lost sight of, to record its run. A pass that started a launch and
-	// ended before launch returned leaves the launch pending; once a run by
-	// its ID is recorded it is a dispatch, and until then the change is
-	// taken to have a run starting. Past the horizon klaus stops waiting,
-	// and still counts the attempt: nothing proved no worker started.
-	LaunchHorizon = 10 * time.Minute
 )
 
 // Key names a change: the valley's name for its repo, and its change ID.
@@ -70,6 +63,8 @@ type Conflict struct {
 
 	layers []layer
 }
+
+func (c Conflict) inputs() Inputs { return Inputs{Head: c.Head, TargetTip: c.TargetTip} }
 
 // layer is a change a report says it rebased together with the conflict's,
 // bottom first: the record and branch tip the report observed, and the
@@ -221,24 +216,26 @@ const (
 // second run on a change, nor while a launch klaus started is pending;
 // stops once MaxAttempts runs were dispatched, and waits Cooldown after
 // each launch that may have started one; and it never acts twice on one
-// set of inputs, the change's head and the target's tip, whichever came
-// between, so an unchanged conflict isn't retried. Spent attempts come
+// set of inputs it remembers (MaxActions), the change's head and the
+// target's tip, whichever came between, so an unchanged conflict isn't
+// retried. Spent attempts come
 // before that once no run is working on the change, so a last run that
 // left the conflict as it was is seen to have stopped.
 func Decide(now time.Time, c Conflict, e *Entry, running bool) Decision {
 	spent := e != nil && e.Attempts >= MaxAttempts
+	last := e.Last()
 	switch {
 	case c.Held != "":
 		return Held
-	case e != nil && e.Last != nil && e.Last.Pending:
+	case e.Pending() != nil:
 		return Busy
-	case e.consumed(Inputs{Head: c.Head, TargetTip: c.TargetTip}) && (running || !spent):
+	case e.ActionOn(c.inputs()) != nil && (running || !spent):
 		return Acted
 	case running:
 		return Busy
 	case spent:
 		return Stop
-	case e != nil && e.Last != nil && e.Last.RunID != "" && now.Sub(e.Last.At) < Cooldown:
+	case last != nil && last.RunID != "" && now.Sub(last.At) < Cooldown:
 		return Wait
 	}
 	return Dispatch

@@ -267,17 +267,21 @@ With --change naming a full change ID, --expect-owner, --expect-branch,
 changes --json' lists it: its record's owner; its active version's branch,
 which must also be the branch launch works on; its active version's head,
 which must also be origin's tip of that branch and the worktree's start;
-and that it is a draft. Launch asks the valley under the lock it takes for
-continuing a branch, before it creates the worktree, and again after it has
-returned the change to draft and before the worker starts; a valley it can't
-ask, a change that isn't as expected, or a failed 'valley unready' fails the
+and that it is a draft. Under the lock it takes for continuing a branch,
+launch fetches origin's branch and asks the valley, and checks them just
+before it creates the worktree; it asks both again, after it has returned
+the change to draft and set everything else up, just before the worker
+starts. It fails closed: a valley or origin it can't ask, runs it can't read
+to find a live holder, a change that isn't as expected, and a 'valley
+unready' that fails or that the valley on PATH doesn't offer each fail the
 launch. klaus restack-conflicts launches each resolution run this way.
 
 --run-id names the run, in the form run IDs take (YYYYMMDD-HHMM- and 8 hex
 digits), for a dispatcher that records the run before launching it; launch
 refuses an ID a recorded run has. A launch with --run-id that fails before
 starting its worker exits with status 3, so the dispatcher knows no run
-started under the ID; any other failure exits with status 1.
+started under the ID; any other failure exits with status 1. A worker whose
+run launch can't record is stopped, so every worker that runs is recorded.
 
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
@@ -431,7 +435,9 @@ are synced back after completion. Use --local to force local execution, or
 			if id, err = run.GenID(); err != nil {
 				return err
 			}
-		} else if all, _ := run.ListAllSessions(); findRun(all, id) != nil {
+		} else if all, err := run.ListAllSessions(); err != nil {
+			return fmt.Errorf("--run-id: reading the recorded runs: %w", err)
+		} else if findRun(all, id) != nil {
 			return fmt.Errorf("--run-id: a run %s is already recorded", id)
 		}
 
@@ -636,14 +642,15 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}
 		if onChange != nil {
+			// A dispatcher's expectations are of origin as it is, not as
+			// the fetch before the lock found it.
+			if expect.set() && onChange.Branch != "" {
+				if err := git.FetchRemoteBranch(ctx, repoRoot, onChange.Branch); err != nil {
+					return fmt.Errorf("--change: fetching origin's %s: %w", onChange.Branch, err)
+				}
+			}
 			if err := onChange.checkBranch(ctx, repoRoot); err != nil {
 				return fmt.Errorf("%s: %w", continuing, err)
-			}
-		}
-		// A dispatcher's expectations hold before anything is created.
-		if expect.set() {
-			if err := expect.check(onChange, listValley); err != nil {
-				return fmt.Errorf("--change: %w", err)
 			}
 		}
 
@@ -775,6 +782,14 @@ are synced back after completion. Use --local to force local execution, or
 			fmt.Printf("  target:   %s\n", *targetRepo)
 		}
 		if isPRFix || onChange != nil {
+			// A dispatcher's expectations hold, the valley asked now and
+			// origin's branch as fetched under the lock, before anything
+			// is created.
+			if expect.set() {
+				if err := expect.check(onChange, onChange.Tip, listValley); err != nil {
+					return fmt.Errorf("--change: %w", err)
+				}
+			}
 			// Create worktree tracking the PR's or the change's branch
 			if err := gitClient.WorktreeAddTrack(ctx, repoRoot, worktree, branch, forceTakeover); err != nil {
 				var lw *git.LocalWorkError
@@ -797,9 +812,10 @@ are synced back after completion. Use --local to force local execution, or
 		// Clean up the worktree if the launch fails after this point.
 		// This prevents stale worktrees from blocking future dispatch retries.
 		var launchSucceeded bool
+		var keepWorktree bool // a worker may run in it
 		var knotRec *run.Knot // the knot's record once launch claimed it
 		defer func() {
-			if !launchSucceeded {
+			if !launchSucceeded && !keepWorktree {
 				if knotRec != nil {
 					releaseKnot(context.Background(), repoRoot, knotRec, id)
 				}
@@ -869,14 +885,13 @@ are synced back after completion. Use --local to force local execution, or
 		// A follow-up on a valley change takes it back to draft before the
 		// agent starts, so the operator can't approve a head it is replacing.
 		unready := unreadyChange(ctx, worktree, change)
-		// A dispatcher's expectations hold still, the change a draft, as
-		// the worker starts.
+		// A dispatcher's expectations need the change a draft.
 		if expect.set() {
-			if unready != nil && unready.Error != "" {
+			switch {
+			case unready == nil:
+				return fmt.Errorf("--change: could not return change %s to draft: the valley on PATH has no unready, or the worktree's head carries no valley policy", onChange.Name)
+			case unready.Error != "":
 				return fmt.Errorf("--change: could not return change %s to draft: %s", onChange.Name, unready.Error)
-			}
-			if err := expect.check(onChange, listValley); err != nil {
-				return fmt.Errorf("--change: %w", err)
 			}
 		}
 
@@ -1009,6 +1024,21 @@ are synced back after completion. Use --local to force local execution, or
 		// What the clone shares across worktrees, as the agent finds it.
 		sharedGit := snapshotSharedGit(ctx, worktree)
 
+		// A dispatcher's expectations hold still as the worker starts,
+		// after everything else: the valley and origin, asked now. Nothing
+		// here excludes another client meanwhile, but the change is a
+		// draft, which approve refuses, and the worker's push is leased
+		// on the head it starts from.
+		if expect.set() {
+			tip, err := gitClient.RemoteBranchSHA(ctx, repoRoot, branch)
+			if err != nil {
+				return fmt.Errorf("--change: asking origin for %s: %w", branch, err)
+			}
+			if err := expect.check(onChange, tip, listValley); err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
+
 		// Launch the agent's tmux pane. Detached by default (its own window in
 		// the agents session); splitFrom is non-empty only when agent_display
 		// is "pane" and the coordinator's window was split.
@@ -1084,7 +1114,14 @@ are synced back after completion. Use --local to force local execution, or
 		}
 
 		if err := store.Save(state); err != nil {
-			return fmt.Errorf("saving state: %w", err)
+			// A worker no recorded run names escapes every check for one
+			// (a live holder, a dispatcher's pending launch): stop it. One
+			// that can't be stopped keeps its worktree.
+			if kerr := tmuxClient.KillPane(context.Background(), paneID); kerr != nil {
+				keepWorktree = true
+				return fmt.Errorf("saving state: %w; and its worker in pane %s couldn't be stopped: %v", err, paneID, kerr)
+			}
+			return fmt.Errorf("saving state: %w; its worker was stopped", err)
 		}
 
 		// Emit agent:started event
@@ -1180,9 +1217,13 @@ func unreadyChange(ctx context.Context, worktree string, change changeChoice) *r
 // checkNoLiveHolder returns an error naming the run when a live run, in any
 // session, holds the branch a --pr or --change launch is about to work on,
 // or the change it continues, in the target repo. A --pr launch's change is
-// that of the run that opened the PR (prChangeSource).
+// that of the run that opened the PR (prChangeSource). Runs it can't read
+// are an error too: it can't say none of them holds the branch.
 func checkNoLiveHolder(ctx context.Context, tc tmux.Client, branch, prURL string, target *string, onChange *changeTarget) error {
-	states, _ := run.ListAllSessions()
+	states, err := run.ListAllSessions()
+	if err != nil {
+		return fmt.Errorf("reading the recorded runs, to find one still working on branch %s: %w", branch, err)
+	}
 	repos := []string{targetName(target)}
 	var changeID string
 	if onChange != nil {

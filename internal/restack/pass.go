@@ -96,14 +96,19 @@ type Deps struct {
 	// Running reports whether a run, in any session, is working on the
 	// change or its branch.
 	Running func(k Key, branch string) bool
+	// WorkerGone reports whether klaus can prove that no worker of a run
+	// by an ID runs, nor is about to start, from the clone at dir. Any
+	// doubt is false.
+	WorkerGone func(ctx context.Context, dir, runID string) bool
 	// Emit records an event under a run ID.
 	Emit func(runID, typ string, data map[string]interface{})
 	Now  func() time.Time
 }
 
 // Default returns the Deps that run valley and git. launch, started,
-// running and emit are the caller's.
-func Default(launch func(context.Context, Launch) error, started func(string) bool, running func(Key, string) bool, emit func(string, string, map[string]interface{})) Deps {
+// running, gone and emit are the caller's.
+func Default(launch func(context.Context, Launch) error, started func(string) bool, running func(Key, string) bool,
+	gone func(context.Context, string, string) bool, emit func(string, string, map[string]interface{})) Deps {
 	return Deps{
 		List:       valley.ListRepo,
 		Principal:  valley.Principal,
@@ -112,12 +117,13 @@ func Default(launch func(context.Context, Launch) error, started func(string) bo
 			_, err := valley.Unready(ctx, dir, id)
 			return err
 		},
-		NewRunID: run.GenID,
-		Launch:   launch,
-		Started:  started,
-		Running:  running,
-		Emit:     emit,
-		Now:      time.Now,
+		NewRunID:   run.GenID,
+		Launch:     launch,
+		Started:    started,
+		Running:    running,
+		WorkerGone: gone,
+		Emit:       emit,
+		Now:        time.Now,
 	}
 }
 
@@ -141,7 +147,7 @@ func RunningOn(states []*run.State, td run.TmuxDeps) func(Key, string) bool {
 const (
 	StateDue        = "due"        // a run would be dispatched (a pass that doesn't act)
 	StateDispatched = "dispatched" // a run was dispatched for the conflict
-	StateLaunching  = "launching"  // klaus launched a run and hasn't yet seen it start
+	StateLaunching  = "launching"  // klaus launched a run and can't yet tell whether it started
 	StateBusy       = "busy"       // a run is working on the change
 	StateCooldown   = "cooldown"   // a run was dispatched within the cooldown
 	StateStopped    = "stopped"    // the attempts are spent
@@ -179,6 +185,9 @@ func (v View) Summary() string {
 	case StateDispatched:
 		return fmt.Sprintf("resolution run %s dispatched (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
 	case StateLaunching:
+		if v.Detail != "" {
+			return fmt.Sprintf("resolution run %s (attempt %d of %d) may have started its worker: %s; klaus waits until it can tell none runs", v.RunID, v.Attempts, MaxAttempts, v.Detail)
+		}
 		return fmt.Sprintf("launching resolution run %s (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
 	case StateBusy:
 		return "a run is working on the change"
@@ -206,22 +215,27 @@ func (v View) String() string {
 // acted on whose change still stands at the head it acted on. It reads
 // them in listed, a listing already read, as the dashboard's integration
 // check reads one for every repo; with none, it lists each repo itself. With
-// act it first settles the launches an earlier pass left pending
-// (reconcile), then dispatches what Decide says to, and records what it did
-// in the ledger; without, it only reports, leaving the ledger and the
-// valley as they were. A repo the valley can't be asked about is skipped.
+// act, in each repo it first settles the launches the ledger holds pending
+// (reconcile) and drops the entries of changes that landed or were
+// withdrawn (prune), then dispatches what Decide says to, and records what
+// it did in the ledger; without, it only reports, leaving the ledger and
+// the valley as they were. A repo the valley can't be asked about is
+// skipped.
 func Pass(ctx context.Context, d Deps, l *Ledger, repos []Repo, listed *valley.Changes, act bool) []View {
-	if act {
-		d.reconcile(l)
-	}
 	var views []View
 	for _, r := range repos {
+		if act {
+			d.reconcile(ctx, l, r)
+		}
 		vr, ok := repoIn(listed, r)
 		if listed == nil {
 			vr, ok = listRepo(ctx, d, r)
 		}
 		if !ok {
 			continue
+		}
+		if act {
+			d.prune(l, vr)
 		}
 		principal := d.Principal(ctx, r.Dir)
 		conflicts, clean := Scan(vr, principal)
@@ -240,16 +254,18 @@ func Pass(ctx context.Context, d Deps, l *Ledger, repos []Repo, listed *valley.C
 	return views
 }
 
-// reconcile settles the launches the ledger holds pending, which a pass
-// that ended before its launch returned left behind: a launch whose run is
-// recorded is a dispatch. One past LaunchHorizon whose run isn't recorded
-// is taken to have ended, keeping its attempt and its cooldown, since
-// nothing proved no worker started; klaus says it stopped short. The rest
-// stay pending, and their changes busy.
-func (d Deps) reconcile(l *Ledger) {
+// reconcile settles the launches the ledger holds pending in repo r: one a
+// pass left when it ended before its launch returned, or one whose launch
+// failed leaving klaus unsure whether its worker started. A launch whose
+// run is recorded is a dispatch. One whose worker klaus can prove gone
+// (WorkerGone) ended without a run klaus can vouch for, keeping its
+// attempt and its cooldown since a worker may have run; klaus says it
+// stopped short. The rest stay pending, their changes busy, for as long as
+// klaus can't tell: the passing of time proves nothing.
+func (d Deps) reconcile(ctx context.Context, l *Ledger, r Repo) {
 	for _, e := range l.sorted() {
-		a := e.Last
-		if a == nil || !a.Pending {
+		a := e.Pending()
+		if e.Repo != r.Name || a == nil {
 			continue
 		}
 		switch {
@@ -260,14 +276,46 @@ func (d Deps) reconcile(l *Ledger) {
 				continue
 			}
 			d.emitDispatched(e, a)
-		case d.Now().Sub(a.At) >= LaunchHorizon:
+		case d.gone(ctx, r.Dir, a.RunID):
+			failed := a.Refused
 			a.Pending = false
-			a.Refused = fmt.Sprintf("klaus lost sight of its launch of run %s, which recorded no run; the attempt still counts", a.RunID)
+			a.Refused = fmt.Sprintf("klaus lost sight of its launch of run %s, and no worker of it runs; the attempt still counts", a.RunID)
+			if failed != "" {
+				a.Refused = fmt.Sprintf("no worker of run %s runs, and the attempt still counts; %s", a.RunID, failed)
+			}
 			if !d.save(l) {
-				a.Pending, a.Refused = true, ""
+				a.Pending, a.Refused = true, failed
 				continue
 			}
 			d.emitStalled(e, a, a.Refused)
+		}
+	}
+}
+
+// prune drops the entries of vr's changes that landed or were withdrawn:
+// klaus dispatches nothing more for them. An entry with a launch pending
+// stays until it is settled, and one whose change vr doesn't list stays.
+func (d Deps) prune(l *Ledger, vr valley.Repo) {
+	live := make(map[string]bool)
+	listed := make(map[string]bool)
+	for _, ch := range vr.Changes {
+		listed[ch.ChangeID] = true
+		active, ok := activeVersion(ch)
+		landed := ok && (active.Landing == valley.Landed || active.Landing == valley.LandedRecorded)
+		if ch.State != valley.StateWithdrawn && !landed {
+			live[ch.ChangeID] = true
+		}
+	}
+	var dropped []*Entry
+	for _, e := range l.sorted() {
+		if e.Repo == vr.Repo && listed[e.ChangeID] && !live[e.ChangeID] && e.Pending() == nil {
+			l.drop(Key{Repo: e.Repo, ChangeID: e.ChangeID})
+			dropped = append(dropped, e)
+		}
+	}
+	if len(dropped) > 0 && !d.save(l) {
+		for _, e := range dropped {
+			l.put(e)
 		}
 	}
 }
@@ -279,7 +327,7 @@ func (d Deps) reconcile(l *Ledger) {
 // says nothing of the attempts made since.
 func (d Deps) reset(ctx context.Context, l *Ledger, r Repo, k Clean) {
 	e := l.Entry(k.Key)
-	if e == nil || e.Attempts == 0 && e.Stopped == "" || e.Clean == k.Report || e.Last != nil && e.Last.Pending {
+	if e == nil || e.Attempts == 0 && e.Stopped == "" || e.Clean == k.Report || e.Pending() != nil {
 		return
 	}
 	ref := ReportRef(k.Target, k.ChangeID)
@@ -317,8 +365,8 @@ func repoIn(l *valley.Changes, r Repo) (valley.Repo, bool) {
 }
 
 // actedViews returns a view of each change in vr that klaus acted on and
-// that has no current conflict (seen), while it is still at the head klaus
-// acted on, unlanded and not withdrawn, and its latest report is the one
+// that has no current conflict (seen), while it is unlanded, not
+// withdrawn, and its latest report is one klaus acted on, at the head it
 // acted on: after klaus returned it to draft, its report reads historical.
 // Once no run is working on such a change and its attempts are spent, it
 // is stopped, and with act klaus says so once.
@@ -327,19 +375,20 @@ func (d Deps) actedViews(vr valley.Repo, principal string, l *Ledger, seen map[K
 	for _, ch := range vr.Changes {
 		k := Key{Repo: vr.Repo, ChangeID: ch.ChangeID}
 		e := l.Entry(k)
-		if seen[k] || e == nil || e.Last == nil || ch.Owner != principal || ch.Restack == nil || ch.Restack.Commit != e.Last.Report {
+		if seen[k] || e == nil || ch.Owner != principal || ch.Restack == nil {
 			continue
 		}
 		active, ok := activeVersion(ch)
 		landed := active.Landing == valley.Landed || active.Landing == valley.LandedRecorded
-		if !ok || active.Head != e.Last.Head || ch.State == valley.StateWithdrawn || landed {
+		a := e.actionOnReport(ch.Restack.Commit, active.Head)
+		if !ok || a == nil || ch.State == valley.StateWithdrawn || landed {
 			continue
 		}
-		v := viewOf(k, ch.Handle, ch.Active, e)
-		if e.Attempts >= MaxAttempts && !e.Last.Pending && !d.Running(k, active.Branch) {
+		v := viewOf(k, ch.Handle, ch.Active, e, a)
+		if e.Attempts >= MaxAttempts && e.Pending() == nil && !d.Running(k, active.Branch) {
 			v.State, v.Detail = StateStopped, ""
 			if act {
-				d.stop(l, e, e.Last)
+				d.stop(l, e, a)
 			}
 		}
 		views = append(views, v)
@@ -347,15 +396,16 @@ func (d Deps) actedViews(vr valley.Repo, principal string, l *Ledger, seen map[K
 	return views
 }
 
-// viewOf is the view of what the ledger says klaus last did for a change.
-func viewOf(k Key, handle string, version int, e *Entry) View {
-	v := View{Key: k, Handle: handle, Version: version, Head: e.Last.Head, TargetTip: e.Last.TargetTip,
-		RunID: e.Last.RunID, Attempts: e.Attempts, State: StateDispatched}
+// viewOf is the view of what klaus did, a, about one of a change's
+// conflicts, e its entry.
+func viewOf(k Key, handle string, version int, e *Entry, a *Action) View {
+	v := View{Key: k, Handle: handle, Version: version, Head: a.Head, TargetTip: a.TargetTip,
+		RunID: a.RunID, Attempts: e.Attempts, State: StateDispatched}
 	switch {
-	case e.Last.Pending:
-		v.State = StateLaunching
-	case e.Last.Refused != "":
-		v.State, v.Detail = StateRefused, e.Last.Refused
+	case a.Pending:
+		v.State, v.Detail = StateLaunching, a.Refused
+	case a.Refused != "":
+		v.State, v.Detail = StateRefused, a.Refused
 	case e.Stopped != "":
 		v.State = StateStopped
 	}
@@ -384,19 +434,19 @@ func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act boo
 	v := View{Key: c.Key, Handle: c.Handle, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip}
 	if e != nil {
 		v.Attempts = e.Attempts
-		if e.Last != nil {
-			v.RunID = e.Last.RunID
+		if last := e.Last(); last != nil {
+			v.RunID = last.RunID
 		}
 	}
 	switch Decide(d.Now(), c, e, d.Running(c.Key, c.Branch)) {
 	case Held:
 		v.State, v.Detail = StateHeld, c.Held
 	case Acted:
-		v = viewOf(c.Key, c.Handle, c.Version, e)
+		v = viewOf(c.Key, c.Handle, c.Version, e, e.ActionOn(c.inputs()))
 	case Busy:
 		v.State = StateBusy
-		if e != nil && e.Last != nil && e.Last.Pending {
-			v.State = StateLaunching
+		if a := e.Pending(); a != nil {
+			v = viewOf(c.Key, c.Handle, c.Version, e, a)
 		}
 	case Wait:
 		v.State = StateCooldown
@@ -428,7 +478,9 @@ func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act boo
 // worker started: it stopped before launching, or launch says it started
 // none. A failed save later can then only make klaus do less, never act
 // twice on one conflict or run past MaxAttempts, and a pass that ends
-// mid-launch leaves the launch for the next to reconcile.
+// mid-launch leaves the launch for the next to reconcile. So does a launch
+// that fails after it may have started its worker, unless klaus can prove
+// no worker of it runs (WorkerGone): until it can, the change is busy.
 func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View {
 	v := View{Key: c.Key, Handle: c.Handle, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip}
 	if e := l.Entry(c.Key); e != nil {
@@ -449,15 +501,14 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 		e = &Entry{Repo: c.Repo, ChangeID: c.ChangeID}
 		l.put(e)
 	}
-	in := Inputs{Head: c.Head, TargetTip: c.TargetTip}
 	act := &Action{At: d.Now().UTC(), Report: c.Report, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip,
 		RunID: runID, Pending: true}
-	prevLast, prevAttempts, prevHandle, prevConsumed := e.Last, e.Attempts, e.Handle, e.Consumed
-	e.Last, e.Handle = act, c.Handle
+	prevActions, prevAttempts, prevHandle := e.Actions, e.Attempts, e.Handle
+	e.Handle = c.Handle
 	e.Attempts++ // counted up front, and given back once no worker started
-	e.consume(in)
+	e.record(act)
 	if !d.save(l) {
-		e.Last, e.Attempts, e.Handle, e.Consumed = prevLast, prevAttempts, prevHandle, prevConsumed
+		e.Actions, e.Attempts, e.Handle = prevActions, prevAttempts, prevHandle
 		v.State, v.Detail = StateRefused, "klaus couldn't record the dispatch in its ledger"
 		return v
 	}
@@ -509,12 +560,12 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 		return refuse("launch failed, and the change is left a draft: " + firstLine(err.Error()))
 	default:
 		// Launch may have started the worker and failed after: the
-		// attempt and the cooldown stand.
-		act.Pending = false
-		act.Refused = fmt.Sprintf("launch of run %s failed, and may have started its worker: %s", runID, firstLine(err.Error()))
+		// attempt and the cooldown stand, and the launch stays pending
+		// until klaus can prove no worker of it runs.
+		act.Refused = "launch failed: " + firstLine(err.Error())
 		d.save(l)
-		d.emitStalled(e, act, act.Refused)
-		v.State, v.Detail, v.RunID, v.Attempts = StateRefused, act.Refused, runID, e.Attempts
+		d.reconcile(ctx, l, r)
+		v = viewOf(c.Key, c.Handle, c.Version, e, act)
 	}
 	return v
 }
@@ -565,6 +616,11 @@ func (d Deps) emit(runID, typ string, data map[string]interface{}) {
 	if d.Emit != nil {
 		d.Emit(runID, typ, data)
 	}
+}
+
+// gone reports whether klaus can prove no worker of run runID runs.
+func (d Deps) gone(ctx context.Context, dir, runID string) bool {
+	return runID != "" && d.WorkerGone != nil && d.WorkerGone(ctx, dir, runID)
 }
 
 // started reports whether a run by runID is recorded.

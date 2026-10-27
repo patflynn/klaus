@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -61,6 +63,57 @@ func (h *Harness) originCommit(msg string) string {
 	return h.GitOutput(h.OriginDir, "commit-tree", h.gitStdin(h.OriginDir, "", "mktree"), "-m", msg)
 }
 
+// strictChange is a change klaus-env owns that a finished run pushed as v1
+// on branch, with main moved on to tip since, and the change's record and
+// a restack report on origin. The stub valley offers unready.
+type strictChange struct{ id, branch, v1, record, report, tip string }
+
+func (h *Harness) strictChange() strictChange {
+	h.t.Helper()
+	h.installValleyStub()
+	h.joinValley()
+	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.has-unready"), nil, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	h.git(h.RepoDir, "config", "valley.principal", "klaus-env")
+
+	first, _ := h.launchRun("add a greeting")
+	h.WaitForClaudeStart(30 * time.Second)
+	v1 := h.pushWork(first, "greeting.txt", "Add a greeting")
+	first = h.finishRun(first.ID)
+	c := strictChange{id: first.ChangeID, branch: first.Branch, v1: v1}
+	c.tip = h.commitToMain("greeting.txt", "Greet from main\n")
+	c.record, c.report = h.originCommit("record"), h.originCommit("report")
+	h.git(h.OriginDir, "update-ref", restack.RecordRef("main", c.id), c.record)
+	h.git(h.OriginDir, "update-ref", restack.ReportRef("main", c.id), c.report)
+	return c
+}
+
+// listing is the change's listing in state, owned by klaus-env at v1.
+func (c strictChange) listing(state string) map[string]any {
+	return restackListing(c.id, c.branch, c.v1, state, "klaus-env", c.record, c.report, c.tip)
+}
+
+// launchArgs launch a run on the change as a restack pass does: under
+// runID, expecting klaus-env's draft at v1 on its branch.
+func (c strictChange) launchArgs(runID string) []string {
+	return []string{"launch", "--change", c.id, "--run-id", runID, "--expect-owner", "klaus-env",
+		"--expect-branch", c.branch, "--expect-head", c.v1, "--expect-draft", "--", "resolve the conflict"}
+}
+
+// livePanesNaming returns the live panes on the harness's tmux server
+// whose command names s.
+func (h *Harness) livePanesNaming(s string) []string {
+	h.t.Helper()
+	var live []string
+	for _, line := range strings.Split(h.tmux("list-panes", "-a", "-F", "#{pane_dead} #{pane_id} #{pane_start_command}"), "\n") {
+		if strings.HasPrefix(line, "0 ") && strings.Contains(line, s) {
+			live = append(live, line)
+		}
+	}
+	return live
+}
+
 // TestRestackConflictLaunchesStrictly runs against the stub valley, so it
 // runs where no valley is installed. A run pushes v1 of a change klaus-env
 // owns. Launch with the dispatcher's expectations refuses, with status 3,
@@ -74,22 +127,8 @@ func (h *Harness) originCommit(msg string) string {
 func TestRestackConflictLaunchesStrictly(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
-	h.installValleyStub()
-	h.joinValley()
-	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.has-unready"), nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	h.git(h.RepoDir, "config", "valley.principal", "klaus-env")
-
-	first, _ := h.launchRun("add a greeting")
-	h.WaitForClaudeStart(30 * time.Second)
-	v1 := h.pushWork(first, "greeting.txt", "Add a greeting")
-	first = h.finishRun(first.ID)
-	id, branch := first.ChangeID, first.Branch
-	tip := h.commitToMain("greeting.txt", "Greet from main\n")
-	record, report := h.originCommit("record"), h.originCommit("report")
-	h.git(h.OriginDir, "update-ref", restack.RecordRef("main", id), record)
-	h.git(h.OriginDir, "update-ref", restack.ReportRef("main", id), report)
+	c := h.strictChange()
+	id, branch, v1, record, report, tip := c.id, c.branch, c.v1, c.record, c.report, c.tip
 
 	for i, tc := range []struct {
 		name, state, owner, head, want string
@@ -131,8 +170,8 @@ func TestRestackConflictLaunchesStrictly(t *testing.T) {
 		t.Fatalf("the pass launched nothing:\n%s", out)
 	}
 	e := h.restackEntry("widget", id)
-	if e.Last.RunID != resolver.ID || e.Last.Pending || e.Attempts != 1 {
-		t.Errorf("the ledger should hold the launched run %s, settled, as attempt 1: %+v", resolver.ID, e.Last)
+	if e.Last().RunID != resolver.ID || e.Last().Pending || e.Attempts != 1 {
+		t.Errorf("the ledger should hold the launched run %s, settled, as attempt 1: %+v", resolver.ID, e.Last())
 	}
 	if resolver.ChangeID != id || resolver.Branch != branch || resolver.DispatchReason != event.DispatchRestackConflict {
 		t.Errorf("the run is on change %s, branch %s, for %q", resolver.ChangeID, resolver.Branch, resolver.DispatchReason)
@@ -172,10 +211,166 @@ func TestRestackConflictLaunchesStrictly(t *testing.T) {
 		!strings.Contains(out, "is ready, not a draft") {
 		t.Fatalf("a change readied before launch read it got run %v:\n%s", raced, out)
 	}
-	if e := h.restackEntry("widget", id); e.Attempts != 1 || e.Last.RunID != "" || e.Last.Pending {
-		t.Errorf("a launch that started no worker should give its attempt back: attempts %d, %+v", e.Attempts, e.Last)
+	if e := h.restackEntry("widget", id); e.Attempts != 1 || e.Last().RunID != "" || e.Last().Pending {
+		t.Errorf("a launch that started no worker should give its attempt back: attempts %d, %+v", e.Attempts, e.Last())
 	}
 	if _, err := os.Stat(filepath.Join(h.E2EDir, "claude.started")); err == nil {
 		t.Error("a worker started")
+	}
+}
+
+// TestStrictLaunchReadsOriginUnderTheLock: origin's branch moves on, with
+// no new version in the valley, while a strict launch waits for the
+// continuation lock. Launch reads origin under the lock, not as its fetch
+// before it found it, and refuses with status 3 before it creates a
+// worktree.
+func TestStrictLaunchReadsOriginUnderTheLock(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	h.writeValleyChanges(c.listing(valley.StateDraft))
+
+	lock, err := os.OpenFile(filepath.Join(h.RepoDir, ".git", "klaus-continue.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	const runID = "20261027-1200-0000000a"
+	p := h.startKlaus(nil, c.launchArgs(runID)...)
+	p.waitFor(func() bool {
+		_, stderr := p.output()
+		return strings.Contains(stderr, "waiting for another launch")
+	}, "to wait for the continuation lock")
+
+	tree := h.GitOutput(h.OriginDir, "rev-parse", c.v1+"^{tree}")
+	moved := h.GitOutput(h.OriginDir, "commit-tree", tree, "-p", c.v1, "-m", "pushed elsewhere")
+	h.git(h.OriginDir, "update-ref", "refs/heads/"+c.branch, moved)
+	lock.Close() // drops the flock
+
+	res := p.wait()
+	want := fmt.Sprintf("origin's %s is at %s, not change nxvp's expected head %s", c.branch, moved[:7], c.v1[:7])
+	if res.ExitCode != 3 || !strings.Contains(res.Stderr, want) {
+		t.Fatalf("launch exited %d, want 3 saying %q:\n%s", res.ExitCode, want, res.Stderr)
+	}
+	if wt := h.GitOutput(h.RepoDir, "worktree", "list"); strings.Contains(wt, runID) {
+		t.Errorf("launch left a worktree:\n%s", wt)
+	}
+	if n := len(h.valleyCalls("unready")); n != 0 {
+		t.Errorf("launch returned the change to draft before refusing")
+	}
+}
+
+// TestStrictLaunchRefusesAChangeReadiedDuringSetup: a strict launch passes
+// its checks and returns the change to draft, and the change is readied
+// while launch sets the worker up, after the point it used to check last.
+// Launch asks again as the worker starts, and starts none.
+func TestStrictLaunchRefusesAChangeReadiedDuringSetup(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	h.writeValleyChanges(c.listing(valley.StateDraft))
+	h.writeE2EJSON("valley.changes.unready.json", c.listing(valley.StateDraft))
+	h.resetWorker()
+
+	// The last setup step before the worker starts snapshots the clone's
+	// shared git files, its config among them.
+	b := h.gitBarrier()
+	const runID = "20261027-1200-0000000b"
+	p := h.startKlaus(b.pause("config --file * --list -z", 1, false), c.launchArgs(runID)...)
+	b.waitPaused(p)
+	if n := len(h.valleyCalls("unready")); n != 1 {
+		t.Fatalf("held before launch returned the change to draft (%d unready calls)", n)
+	}
+	h.writeE2EJSON("valley.changes.unready.json", c.listing(valley.StateReady))
+	b.release()
+
+	res := p.wait()
+	if res.ExitCode != 3 || !strings.Contains(res.Stderr, "change nxvp is ready, not a draft") {
+		t.Fatalf("launch exited %d, want 3 refusing the readied change:\n%s", res.ExitCode, res.Stderr)
+	}
+	if _, err := os.Stat(filepath.Join(h.E2EDir, "claude.started")); err == nil {
+		t.Error("a worker started")
+	}
+	if slices.Contains(h.RunIDs(), runID) {
+		t.Error("launch recorded the run")
+	}
+	if wt := h.GitOutput(h.RepoDir, "worktree", "list"); strings.Contains(wt, runID) {
+		t.Errorf("launch left a worktree:\n%s", wt)
+	}
+}
+
+// TestRestackLaunchWhoseStateSaveFails: a restack pass launches a run whose
+// worker starts and whose state launch can't save. Launch stops the worker
+// and exits 1, as a worker started; the pass keeps the attempt and, once
+// it proves no worker of the run is left, settles the launch. While a live
+// pane still names the run, the change stays busy whatever its inputs; once
+// none does, the next inputs dispatch.
+func TestRestackLaunchWhoseStateSaveFails(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	h.writeValleyChanges(c.listing(valley.StateReady))
+	h.writeE2EJSON("valley.changes.unready.json", c.listing(valley.StateDraft))
+	h.resetWorker()
+
+	if err := os.Chmod(h.RunsDir(), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(h.RunsDir(), 0o755) })
+	out, launched := h.restackPass()
+	if err := os.Chmod(h.RunsDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := h.restackEntry("widget", c.id)
+	runID := e.Last().RunID
+	if launched != nil || runID == "" || e.Attempts != 1 || e.Last().Pending ||
+		!strings.Contains(e.Last().Refused, "no worker of run "+runID+" runs") || !strings.Contains(e.Last().Refused, "saving state") {
+		t.Fatalf("the pass should keep the attempt and settle a launch whose worker launch stopped: %+v\n%s", e.Last(), out)
+	}
+	if live := h.livePanesNaming(runID); len(live) != 0 {
+		t.Errorf("a worker no run records is left running: %v", live)
+	}
+	if wt := h.GitOutput(h.RepoDir, "worktree", "list"); strings.Contains(wt, runID) {
+		t.Errorf("launch left a worktree:\n%s", wt)
+	}
+
+	// Had its worker been left running, as a pass that lost sight of the
+	// launch finds it, the change is busy: main moves on, and nothing
+	// launches while a live pane names the run.
+	h.editLedger(func(entries map[string]*restack.Entry) {
+		a := entries[restack.Key{Repo: "widget", ChangeID: c.id}.String()].Last()
+		a.Pending, a.Refused = true, ""
+	})
+	h.tmux("new-session", "-d", "-s", "holdout", "sleep 300 # "+runID)
+	if live := h.livePanesNaming(runID); len(live) != 1 {
+		t.Fatalf("the stand-in worker's pane isn't found by its command: %v", live)
+	}
+	c.tip = h.commitToMain("farewell.txt", "Farewell from main\n")
+	c.report = h.originCommit("report 2")
+	h.git(h.OriginDir, "update-ref", restack.ReportRef("main", c.id), c.report)
+	h.writeValleyChanges(c.listing(valley.StateReady))
+	h.writeE2EJSON("valley.changes.unready.json", c.listing(valley.StateDraft))
+	os.Remove(filepath.Join(h.E2EDir, "valley.after-unready")) // the stub lists the ready change until the next unready
+	h.ageLedger()
+	unreadies := len(h.valleyCalls("unready"))
+	out, launched = h.restackPass()
+	if launched != nil || !strings.Contains(out, "launching resolution run "+runID) || len(h.valleyCalls("unready")) != unreadies {
+		t.Fatalf("a change whose worker may run got another run %v:\n%s", launched, out)
+	}
+
+	h.tmux("kill-session", "-t", "holdout")
+	h.resetWorker()
+	out, launched = h.restackPass()
+	if launched == nil {
+		t.Fatalf("once no worker of the lost launch runs, the new inputs should dispatch:\n%s", out)
+	}
+	if e := h.restackEntry("widget", c.id); e.Attempts != 2 || e.Last().RunID != launched.ID {
+		t.Errorf("attempts %d, last %+v; want the lost launch's attempt kept and the new run as attempt 2", e.Attempts, e.Last())
+	}
+	if n := len(h.eventsOfType(event.ChangeRestackStalled)); n != 2 {
+		t.Errorf("%d stalled events, want one for each launch that came to nothing", n)
 	}
 }
