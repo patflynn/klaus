@@ -302,10 +302,17 @@ func resolveReplay(ctx context.Context, p replayParams) replayDecision {
 // replay, newest first, or why there are none.
 func replayCandidates(ctx context.Context, p replayParams) ([]*run.State, string) {
 	if p.Change != nil {
-		if len(p.Change.Runs) == 0 {
+		// A track record (`klaus track`) is no run: it holds no conversation.
+		var runs []*run.State
+		for _, s := range p.Change.Runs {
+			if s.Type != "track" {
+				runs = append(runs, s)
+			}
+		}
+		if len(runs) == 0 {
 			return nil, "no prior run recorded for this change"
 		}
-		return p.Change.Runs, ""
+		return runs, ""
 	}
 
 	// Replay only targets budget-paused PRs unless the user forces it.

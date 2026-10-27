@@ -79,6 +79,10 @@ func TestUnreadyReadsValleysAnswer(t *testing.T) {
 	}{
 		{name: "draft", stdout: "fetching...\\ncosmo nxvp draft\\n", want: Unreadied{Repo: "cosmo", Handle: "nxvp", Draft: true}},
 		{name: "already a draft, said plainly", stdout: "nxvp is already a draft\\n", want: Unreadied{Note: "nxvp is already a draft"}},
+		{name: "draft already, refused (real valley wording)", stderr: "valley: tymm is a draft already; ready it to resume it\\n", code: 1,
+			want: Unreadied{Note: "valley: tymm is a draft already; ready it to resume it"}},
+		{name: "withdrawn, refused (real valley wording)", stderr: "valley: kkkk is withdrawn, and a withdrawn change is never made a draft; ready it to bring it back\\n", code: 1,
+			wantErr: "valley unready: valley: kkkk is withdrawn, and a withdrawn change is never made a draft; ready it to bring it back"},
 		{name: "not ready, refused", stderr: "valley: change nxvp is not ready\\n", code: 1,
 			want: Unreadied{Note: "valley: change nxvp is not ready"}},
 		{name: "no record, refused", stderr: "valley: no change record for nxvp-id\\n", code: 1,

@@ -103,8 +103,10 @@ type Unreadied struct {
 var draftLine = regexp.MustCompile(`^(\S+) (\S+)(?: v\d+)? draft$`)
 
 // notReady matches a message that only says the change wasn't ready to
-// begin with, which leaves it as unready asked.
-var notReady = regexp.MustCompile(`(?i)\bnot ready\b|\balready (a )?draft\b|\bno (change )?record\b`)
+// begin with, which leaves it as unready asked. The valley exits 1 for this
+// refusal as for every other, so only its wording tells them apart: it says
+// "is a draft already; ready it to resume it".
+var notReady = regexp.MustCompile(`(?i)\bnot ready\b|\balready (a )?draft\b|\bdraft already\b|\bno (change )?record\b`)
 
 // Unready runs `valley unready <changeID>` in dir, returning a ready change
 // to draft so approve refuses it while an agent continues it. A change that
