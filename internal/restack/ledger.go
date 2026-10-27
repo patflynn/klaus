@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 )
@@ -19,13 +20,51 @@ type Entry struct {
 	ChangeID string `json:"change_id"`
 	Handle   string `json:"handle,omitempty"`
 	// Attempts counts the resolution runs dispatched since the change last
-	// restacked cleanly.
+	// restacked cleanly, including a launch that may have started a run.
 	Attempts int `json:"attempts"`
 	// Last is the latest conflict klaus acted on.
 	Last *Action `json:"last,omitempty"`
+	// Consumed is every set of inputs klaus acted on, whatever came of it:
+	// klaus acts once on each, so a conflict that comes back to inputs it
+	// acted on before isn't tried again.
+	Consumed []Inputs `json:"consumed,omitempty"`
+	// Clean is the report commit of the last clean restack that gave the
+	// change its attempts back, so one report resets them once.
+	Clean string `json:"clean,omitempty"`
 	// Stopped is when klaus stopped dispatching for the change, its
 	// attempts spent (RFC3339); "" while it hasn't.
 	Stopped string `json:"stopped,omitempty"`
+}
+
+// Inputs are what a resolution run is dispatched on: the change's head and
+// the target's tip. The repo and change are the entry's.
+type Inputs struct {
+	Head      string `json:"head"`
+	TargetTip string `json:"target_tip"`
+}
+
+// consumed reports whether klaus acted on the inputs before. A ledger
+// written before Consumed was kept names only its last action's.
+func (e *Entry) consumed(in Inputs) bool {
+	if e == nil {
+		return false
+	}
+	for _, c := range e.Consumed {
+		if c == in {
+			return true
+		}
+	}
+	return e.Last != nil && e.Last.Head == in.Head && e.Last.TargetTip == in.TargetTip
+}
+
+// consume records that klaus acted on the inputs.
+func (e *Entry) consume(in Inputs) {
+	for _, c := range e.Consumed {
+		if c == in {
+			return
+		}
+	}
+	e.Consumed = append(e.Consumed, in)
 }
 
 // Action is what klaus did about one conflict: the report and the inputs it
@@ -33,10 +72,19 @@ type Entry struct {
 type Action struct {
 	At        time.Time `json:"at"`
 	Report    string    `json:"report"`
+	Version   int       `json:"version,omitempty"`
 	Head      string    `json:"head"`
 	TargetTip string    `json:"target_tip"`
-	RunID     string    `json:"run_id,omitempty"`
-	Refused   string    `json:"refused,omitempty"`
+	// RunID is the run klaus launched, or may have: klaus names the run
+	// before it launches it. "" once it knows no worker started.
+	RunID string `json:"run_id,omitempty"`
+	// Pending is set from before klaus launches RunID until it knows
+	// whether the run started. A pass that finds it set finds the launch
+	// in flight, or the pass that started it gone before it could tell
+	// (reconcile).
+	Pending bool `json:"pending,omitempty"`
+	// Refused says why no run, or no run klaus can vouch for, came of it.
+	Refused string `json:"refused,omitempty"`
 }
 
 // Ledger is the session's record of resolution runs, by change. It outlives
@@ -87,6 +135,20 @@ func Lock(dir string) (unlock func(), err error) {
 
 // Entry returns the entry of a change, or nil for none.
 func (l *Ledger) Entry(k Key) *Entry { return l.entries[k.String()] }
+
+// sorted returns the entries in key order.
+func (l *Ledger) sorted() []*Entry {
+	keys := make([]string, 0, len(l.entries))
+	for k := range l.entries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]*Entry, len(keys))
+	for i, k := range keys {
+		out[i] = l.entries[k]
+	}
+	return out
+}
 
 // put stores an entry.
 func (l *Ledger) put(e *Entry) {

@@ -260,12 +260,39 @@ agents pass ci-fix, review-fix, review-comment-fix or conflict-fix, and klaus
 restack-conflicts passes restack-conflict. 'klaus report time' sums runs and
 follow-ups by reason.
 
+A dispatcher that checked a change before launching a run on it passes what
+it checked, and launch starts no worker unless the change still stands so.
+With --change naming a full change ID, --expect-owner, --expect-branch,
+--expect-head and --expect-draft each require of the change, as 'valley
+changes --json' lists it: its record's owner; its active version's branch,
+which must also be the branch launch works on; its active version's head,
+which must also be origin's tip of that branch and the worktree's start;
+and that it is a draft. Launch asks the valley under the lock it takes for
+continuing a branch, before it creates the worktree, and again after it has
+returned the change to draft and before the worker starts; a valley it can't
+ask, a change that isn't as expected, or a failed 'valley unready' fails the
+launch. klaus restack-conflicts launches each resolution run this way.
+
+--run-id names the run, in the form run IDs take (YYYYMMDD-HHMM- and 8 hex
+digits), for a dispatcher that records the run before launching it; launch
+refuses an ID a recorded run has. A launch with --run-id that fails before
+starting its worker exits with status 3, so the dispatcher knows no run
+started under the ID; any other failure exits with status 1.
+
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results
 are synced back after completion. Use --local to force local execution, or
 --host to override the configured sandbox host.`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		// A dispatcher that named the run learns from the exit status
+		// whether a worker may have started.
+		var workerStarting bool
+		defer func() {
+			if err != nil && !workerStarting && cmd.Flags().Changed("run-id") {
+				err = &exitError{code: exitNoWorker, err: err}
+			}
+		}()
 		promptFile, _ := cmd.Flags().GetString("prompt-file")
 		prompt, err := resolvePrompt(args, promptFile)
 		if err != nil {
@@ -287,6 +314,12 @@ are synced back after completion. Use --local to force local execution, or
 		changeRef, _ := cmd.Flags().GetString("change")
 		forceTakeover, _ := cmd.Flags().GetBool("force-takeover")
 		reasonFlag, _ := cmd.Flags().GetString("reason")
+		runIDFlag, _ := cmd.Flags().GetString("run-id")
+		var expect changeExpectation
+		expect.Owner, _ = cmd.Flags().GetString("expect-owner")
+		expect.Branch, _ = cmd.Flags().GetString("expect-branch")
+		expect.Head, _ = cmd.Flags().GetString("expect-head")
+		expect.Draft, _ = cmd.Flags().GetBool("expect-draft")
 		setupStart := time.Now()
 		ctx := cmd.Context()
 		tmuxClient := tmux.NewExecClient()
@@ -310,6 +343,12 @@ are synced back after completion. Use --local to force local execution, or
 		}
 		if err := checkDispatchReason(reasonFlag); err != nil {
 			return err
+		}
+		if err := expect.validate(changeRef); err != nil {
+			return err
+		}
+		if cmd.Flags().Changed("run-id") && !validRunID(runIDFlag) {
+			return fmt.Errorf("--run-id %q isn't a run ID: YYYYMMDD-HHMM- and 8 hex digits", runIDFlag)
 		}
 		if forceTakeover && prNumber == "" && changeRef == "" && resumeFrom == "" {
 			return fmt.Errorf("--force-takeover takes over a PR's or a change's branch; use it with --pr, --change or --resume-from")
@@ -387,9 +426,13 @@ are synced back after completion. Use --local to force local execution, or
 			return err
 		}
 
-		id, err := run.GenID()
-		if err != nil {
-			return err
+		id := runIDFlag
+		if id == "" {
+			if id, err = run.GenID(); err != nil {
+				return err
+			}
+		} else if all, _ := run.ListAllSessions(); findRun(all, id) != nil {
+			return fmt.Errorf("--run-id: a run %s is already recorded", id)
 		}
 
 		// Determine the target repo for git operations.
@@ -597,6 +640,12 @@ are synced back after completion. Use --local to force local execution, or
 				return fmt.Errorf("%s: %w", continuing, err)
 			}
 		}
+		// A dispatcher's expectations hold before anything is created.
+		if expect.set() {
+			if err := expect.check(onChange, listValley); err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
 
 		// The brief carries the knot as project notes, data rather than
 		// instructions.
@@ -765,6 +814,12 @@ are synced back after completion. Use --local to force local execution, or
 			}
 		}()
 
+		if expect.Head != "" {
+			if head := gitHead(ctx, worktree); head != expect.Head {
+				return fmt.Errorf("--change: the worktree starts at %s, not the expected head %s", shortSHA(head), shortSHA(expect.Head))
+			}
+		}
+
 		fmt.Printf("  worktree: %s\n", worktree)
 		fmt.Printf("  branch:   %s\n", branch)
 		switch {
@@ -814,6 +869,16 @@ are synced back after completion. Use --local to force local execution, or
 		// A follow-up on a valley change takes it back to draft before the
 		// agent starts, so the operator can't approve a head it is replacing.
 		unready := unreadyChange(ctx, worktree, change)
+		// A dispatcher's expectations hold still, the change a draft, as
+		// the worker starts.
+		if expect.set() {
+			if unready != nil && unready.Error != "" {
+				return fmt.Errorf("--change: could not return change %s to draft: %s", onChange.Name, unready.Error)
+			}
+			if err := expect.check(onChange, listValley); err != nil {
+				return fmt.Errorf("--change: %w", err)
+			}
+		}
 
 		// A --pr launch on a budget-paused PR resumes it.
 		var budgetPaused bool
@@ -947,6 +1012,7 @@ are synced back after completion. Use --local to force local execution, or
 		// Launch the agent's tmux pane. Detached by default (its own window in
 		// the agents session); splitFrom is non-empty only when agent_display
 		// is "pane" and the coordinator's window was split.
+		workerStarting = true
 		paneID, splitFrom, err := startAgentPane(ctx, tmuxClient, hostCfg.AgentDisplayMode(),
 			id, worktree, paneCmd, FormatPaneTitle(id, issue, prompt))
 		if err != nil {
@@ -1549,5 +1615,10 @@ func init() {
 	launchCmd.Flags().String("model", "", "Model for the selected backend (default from backends.<backend>.model; legacy default_agent_model for Claude)")
 	launchCmd.Flags().String("effort", "", "Reasoning effort for the selected backend (default from backends.<backend>.effort; valid levels depend on backend)")
 	launchCmd.Flags().String("reason", "", "Why this run is dispatched, recorded on the run and its events, e.g. docs-timer (default: launch, pr-follow-up, change-follow-up, budget-resume or resume, from the other flags)")
+	launchCmd.Flags().String("run-id", "", "Name the run (YYYYMMDD-HHMM- and 8 hex digits) instead of minting an ID, for a dispatcher that records it first; refused if a run has it. Failing before the worker starts then exits with status 3")
+	launchCmd.Flags().String("expect-owner", "", "With --change <change-id>: launch only if the valley lists the change with this record owner")
+	launchCmd.Flags().String("expect-branch", "", "With --change <change-id>: launch only if the change's active version, and the launch, are on this branch")
+	launchCmd.Flags().String("expect-head", "", "With --change <change-id>: launch only if the change's active version, origin's branch and the new worktree are at this commit (full SHA)")
+	launchCmd.Flags().Bool("expect-draft", false, "With --change <change-id>: launch only if the valley lists the change as a draft, before the worktree and again as the worker starts")
 	rootCmd.AddCommand(launchCmd)
 }

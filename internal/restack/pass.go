@@ -2,6 +2,7 @@ package restack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -62,11 +63,20 @@ func Repos(states []*run.State, root string) []Repo {
 	return out
 }
 
-// Launch is a resolution run to launch: klaus launch [--repo Project]
-// --change ChangeID --reason restack-conflict Prompt, in Dir.
+// Launch is a resolution run to launch, in Dir: klaus launch [--repo
+// Project] --change ChangeID --run-id RunID --expect-owner Owner
+// --expect-branch Branch --expect-head Head --expect-draft --reason
+// restack-conflict Prompt. Launch checks the change still stands as klaus
+// checked it, and starts no worker unless it does.
 type Launch struct {
 	Dir, Project, ChangeID, Prompt string
+	RunID                          string // the run's ID, which klaus records before launching it
+	Owner, Branch, Head            string // the change as klaus checked it: its owner, branch and head, a draft
 }
+
+// ErrNotStarted is a launch error that says no worker started: launch
+// failed before starting one.
+var ErrNotStarted = errors.New("launch started no worker")
 
 // Deps are what a pass reads and does. Production uses Default's; tests
 // replace them.
@@ -75,8 +85,14 @@ type Deps struct {
 	Principal  func(ctx context.Context, dir string) string
 	OriginRefs func(ctx context.Context, dir string, refs ...string) (map[string]string, error)
 	Unready    func(ctx context.Context, dir, changeID string) error
-	// Launch launches a resolution run and returns its run ID.
-	Launch func(ctx context.Context, l Launch) (string, error)
+	// NewRunID names a run before it is launched.
+	NewRunID func() (string, error)
+	// Launch launches a resolution run under l.RunID. An error wrapping
+	// ErrNotStarted says no worker started; any other may come after one
+	// did.
+	Launch func(ctx context.Context, l Launch) error
+	// Started reports whether a run by an ID is recorded, in any session.
+	Started func(runID string) bool
 	// Running reports whether a run, in any session, is working on the
 	// change or its branch.
 	Running func(k Key, branch string) bool
@@ -85,9 +101,9 @@ type Deps struct {
 	Now  func() time.Time
 }
 
-// Default returns the Deps that run valley and git. launch, running and
-// emit are the caller's.
-func Default(launch func(context.Context, Launch) (string, error), running func(Key, string) bool, emit func(string, string, map[string]interface{})) Deps {
+// Default returns the Deps that run valley and git. launch, started,
+// running and emit are the caller's.
+func Default(launch func(context.Context, Launch) error, started func(string) bool, running func(Key, string) bool, emit func(string, string, map[string]interface{})) Deps {
 	return Deps{
 		List:       valley.ListRepo,
 		Principal:  valley.Principal,
@@ -96,10 +112,12 @@ func Default(launch func(context.Context, Launch) (string, error), running func(
 			_, err := valley.Unready(ctx, dir, id)
 			return err
 		},
-		Launch:  launch,
-		Running: running,
-		Emit:    emit,
-		Now:     time.Now,
+		NewRunID: run.GenID,
+		Launch:   launch,
+		Started:  started,
+		Running:  running,
+		Emit:     emit,
+		Now:      time.Now,
 	}
 }
 
@@ -123,6 +141,7 @@ func RunningOn(states []*run.State, td run.TmuxDeps) func(Key, string) bool {
 const (
 	StateDue        = "due"        // a run would be dispatched (a pass that doesn't act)
 	StateDispatched = "dispatched" // a run was dispatched for the conflict
+	StateLaunching  = "launching"  // klaus launched a run and hasn't yet seen it start
 	StateBusy       = "busy"       // a run is working on the change
 	StateCooldown   = "cooldown"   // a run was dispatched within the cooldown
 	StateStopped    = "stopped"    // the attempts are spent
@@ -159,6 +178,8 @@ func (v View) Summary() string {
 		return "a resolution run is due"
 	case StateDispatched:
 		return fmt.Sprintf("resolution run %s dispatched (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
+	case StateLaunching:
+		return fmt.Sprintf("launching resolution run %s (attempt %d of %d)", v.RunID, v.Attempts, MaxAttempts)
 	case StateBusy:
 		return "a run is working on the change"
 	case StateCooldown:
@@ -185,10 +206,14 @@ func (v View) String() string {
 // acted on whose change still stands at the head it acted on. It reads
 // them in listed, a listing already read, as the dashboard's integration
 // check reads one for every repo; with none, it lists each repo itself. With
-// act it dispatches what Decide says to, and records what it did in the
-// ledger; without, it only reports, leaving the ledger and the valley as
-// they were. A repo the valley can't be asked about is skipped.
+// act it first settles the launches an earlier pass left pending
+// (reconcile), then dispatches what Decide says to, and records what it did
+// in the ledger; without, it only reports, leaving the ledger and the
+// valley as they were. A repo the valley can't be asked about is skipped.
 func Pass(ctx context.Context, d Deps, l *Ledger, repos []Repo, listed *valley.Changes, act bool) []View {
+	if act {
+		d.reconcile(l)
+	}
 	var views []View
 	for _, r := range repos {
 		vr, ok := repoIn(listed, r)
@@ -202,10 +227,7 @@ func Pass(ctx context.Context, d Deps, l *Ledger, repos []Repo, listed *valley.C
 		conflicts, clean := Scan(vr, principal)
 		if act {
 			for _, k := range clean {
-				if e := l.Entry(k); e != nil && (e.Attempts > 0 || e.Stopped != "") {
-					e.Attempts, e.Stopped = 0, ""
-					d.save(l) // a reset that isn't saved is made again next pass
-				}
+				d.reset(ctx, l, r, k)
 			}
 		}
 		seen := make(map[Key]bool)
@@ -213,9 +235,63 @@ func Pass(ctx context.Context, d Deps, l *Ledger, repos []Repo, listed *valley.C
 			seen[c.Key] = true
 			views = append(views, d.handle(ctx, l, r, c, act))
 		}
-		views = append(views, actedViews(vr, principal, l, seen)...)
+		views = append(views, d.actedViews(vr, principal, l, seen, act)...)
 	}
 	return views
+}
+
+// reconcile settles the launches the ledger holds pending, which a pass
+// that ended before its launch returned left behind: a launch whose run is
+// recorded is a dispatch. One past LaunchHorizon whose run isn't recorded
+// is taken to have ended, keeping its attempt and its cooldown, since
+// nothing proved no worker started; klaus says it stopped short. The rest
+// stay pending, and their changes busy.
+func (d Deps) reconcile(l *Ledger) {
+	for _, e := range l.sorted() {
+		a := e.Last
+		if a == nil || !a.Pending {
+			continue
+		}
+		switch {
+		case d.started(a.RunID):
+			a.Pending = false
+			if !d.save(l) {
+				a.Pending = true
+				continue
+			}
+			d.emitDispatched(e, a)
+		case d.Now().Sub(a.At) >= LaunchHorizon:
+			a.Pending = false
+			a.Refused = fmt.Sprintf("klaus lost sight of its launch of run %s, which recorded no run; the attempt still counts", a.RunID)
+			if !d.save(l) {
+				a.Pending, a.Refused = true, ""
+				continue
+			}
+			d.emitStalled(e, a, a.Refused)
+		}
+	}
+}
+
+// reset gives a change its attempts back after a clean restack, once per
+// clean report, and only while origin still holds that report: the
+// listing may have been read before a pass that dispatched on a newer
+// conflict report took the ledger, and a report origin no longer holds
+// says nothing of the attempts made since.
+func (d Deps) reset(ctx context.Context, l *Ledger, r Repo, k Clean) {
+	e := l.Entry(k.Key)
+	if e == nil || e.Attempts == 0 && e.Stopped == "" || e.Clean == k.Report || e.Last != nil && e.Last.Pending {
+		return
+	}
+	ref := ReportRef(k.Target, k.ChangeID)
+	refs, err := d.OriginRefs(ctx, r.Dir, ref)
+	if err != nil || refs[ref] != k.Report {
+		return
+	}
+	attempts, stopped, clean := e.Attempts, e.Stopped, e.Clean
+	e.Attempts, e.Stopped, e.Clean = 0, "", k.Report
+	if !d.save(l) { // a reset that isn't saved is made again next pass
+		e.Attempts, e.Stopped, e.Clean = attempts, stopped, clean
+	}
 }
 
 // listRepo lists a repo, and returns the listing's entry for it.
@@ -244,7 +320,9 @@ func repoIn(l *valley.Changes, r Repo) (valley.Repo, bool) {
 // that has no current conflict (seen), while it is still at the head klaus
 // acted on, unlanded and not withdrawn, and its latest report is the one
 // acted on: after klaus returned it to draft, its report reads historical.
-func actedViews(vr valley.Repo, principal string, l *Ledger, seen map[Key]bool) []View {
+// Once no run is working on such a change and its attempts are spent, it
+// is stopped, and with act klaus says so once.
+func (d Deps) actedViews(vr valley.Repo, principal string, l *Ledger, seen map[Key]bool, act bool) []View {
 	var views []View
 	for _, ch := range vr.Changes {
 		k := Key{Repo: vr.Repo, ChangeID: ch.ChangeID}
@@ -257,7 +335,14 @@ func actedViews(vr valley.Repo, principal string, l *Ledger, seen map[Key]bool) 
 		if !ok || active.Head != e.Last.Head || ch.State == valley.StateWithdrawn || landed {
 			continue
 		}
-		views = append(views, viewOf(k, ch.Handle, ch.Active, e))
+		v := viewOf(k, ch.Handle, ch.Active, e)
+		if e.Attempts >= MaxAttempts && !e.Last.Pending && !d.Running(k, active.Branch) {
+			v.State, v.Detail = StateStopped, ""
+			if act {
+				d.stop(l, e, e.Last)
+			}
+		}
+		views = append(views, v)
 	}
 	return views
 }
@@ -267,12 +352,29 @@ func viewOf(k Key, handle string, version int, e *Entry) View {
 	v := View{Key: k, Handle: handle, Version: version, Head: e.Last.Head, TargetTip: e.Last.TargetTip,
 		RunID: e.Last.RunID, Attempts: e.Attempts, State: StateDispatched}
 	switch {
+	case e.Last.Pending:
+		v.State = StateLaunching
 	case e.Last.Refused != "":
 		v.State, v.Detail = StateRefused, e.Last.Refused
 	case e.Stopped != "":
 		v.State = StateStopped
 	}
 	return v
+}
+
+// stop records that klaus stopped dispatching for a change whose attempts
+// are spent, on the conflict a names, and says so once: only once it is
+// recorded that it did.
+func (d Deps) stop(l *Ledger, e *Entry, a *Action) {
+	if e.Stopped != "" {
+		return
+	}
+	e.Stopped = d.Now().UTC().Format(time.RFC3339)
+	if !d.save(l) {
+		e.Stopped = ""
+		return
+	}
+	d.emitStalled(e, a, fmt.Sprintf("%d resolution runs did not resolve its restack conflicts", e.Attempts))
 }
 
 // handle decides about one conflict and, with act, carries the decision
@@ -293,18 +395,15 @@ func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act boo
 		v = viewOf(c.Key, c.Handle, c.Version, e)
 	case Busy:
 		v.State = StateBusy
+		if e != nil && e.Last != nil && e.Last.Pending {
+			v.State = StateLaunching
+		}
 	case Wait:
 		v.State = StateCooldown
 	case Stop:
 		v.State = StateStopped
-		if act && e.Stopped == "" {
-			// Said once: only once it is recorded that it was.
-			e.Stopped = d.Now().UTC().Format(time.RFC3339)
-			if d.save(l) {
-				d.emitStalled(c, fmt.Sprintf("%d resolution runs did not resolve its restack conflicts", e.Attempts))
-			} else {
-				e.Stopped = ""
-			}
+		if act {
+			d.stop(l, e, &Action{Report: c.Report, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip})
 		}
 	case Dispatch:
 		if !act {
@@ -319,13 +418,17 @@ func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act boo
 // dispatch reads the change and origin again, returns the change to draft,
 // and launches a resolution run, recording what it did. A report whose
 // inputs moved is skipped and nothing is recorded: the next pass reads
-// whatever replaced it. If the change can't be confirmed a draft, no run
-// launches.
+// whatever replaced it. If the change can't be confirmed a draft, owned by
+// klaus at the head and branch it checked, no run launches; and launch
+// checks all of it again before it starts a worker.
 //
-// The ledger is written ahead: the inputs and the attempt are saved before
-// klaus touches the change, and if they can't be, it does nothing. A
-// failed save later can then only make klaus do less, never act twice on
-// one conflict or run past MaxAttempts.
+// The ledger is written ahead: the inputs, the attempt and the run's ID,
+// pending, are saved before klaus touches the change, and if they can't
+// be, it does nothing. An attempt is given back only once klaus knows no
+// worker started: it stopped before launching, or launch says it started
+// none. A failed save later can then only make klaus do less, never act
+// twice on one conflict or run past MaxAttempts, and a pass that ends
+// mid-launch leaves the launch for the next to reconcile.
 func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View {
 	v := View{Key: c.Key, Handle: c.Handle, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip}
 	if e := l.Entry(c.Key); e != nil {
@@ -335,26 +438,35 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 		v.State, v.Detail = StateStale, why
 		return v
 	}
+	runID, err := d.NewRunID()
+	if err != nil {
+		v.State, v.Detail = StateRefused, "klaus couldn't name the run: "+err.Error()
+		return v
+	}
 
 	e := l.Entry(c.Key)
 	if e == nil {
 		e = &Entry{Repo: c.Repo, ChangeID: c.ChangeID}
 		l.put(e)
 	}
-	act := &Action{At: d.Now().UTC(), Report: c.Report, Head: c.Head, TargetTip: c.TargetTip}
-	prevLast, prevAttempts, prevHandle := e.Last, e.Attempts, e.Handle
+	in := Inputs{Head: c.Head, TargetTip: c.TargetTip}
+	act := &Action{At: d.Now().UTC(), Report: c.Report, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip,
+		RunID: runID, Pending: true}
+	prevLast, prevAttempts, prevHandle, prevConsumed := e.Last, e.Attempts, e.Handle, e.Consumed
 	e.Last, e.Handle = act, c.Handle
-	e.Attempts++ // counted up front, and given back if no run launches
+	e.Attempts++ // counted up front, and given back once no worker started
+	e.consume(in)
 	if !d.save(l) {
-		e.Last, e.Attempts, e.Handle = prevLast, prevAttempts, prevHandle
+		e.Last, e.Attempts, e.Handle, e.Consumed = prevLast, prevAttempts, prevHandle, prevConsumed
 		v.State, v.Detail = StateRefused, "klaus couldn't record the dispatch in its ledger"
 		return v
 	}
+	// refuse gives the attempt back: no worker started.
 	refuse := func(why string) View {
 		e.Attempts--
-		act.Refused = why
+		act.RunID, act.Pending, act.Refused = "", false, why
 		d.save(l)
-		d.emitStalled(c, why)
+		d.emitStalled(e, act, why)
 		v.State, v.Detail, v.Attempts = StateRefused, why, e.Attempts
 		return v
 	}
@@ -375,7 +487,9 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 		return refuse("could not confirm the change is a draft: the valley no longer lists it")
 	case ch.State != valley.StateDraft:
 		return refuse(fmt.Sprintf("the change is %s after valley unready, not a draft", ch.State))
-	case !hasActive || active.Head != c.Head:
+	case ch.Owner != c.Owner:
+		return refuse("the change's owner changed while klaus returned it to draft")
+	case !hasActive || active.Head != c.Head || active.Branch != c.Branch:
 		return refuse("the change's head moved while klaus returned it to draft")
 	}
 
@@ -383,18 +497,25 @@ func (d Deps) dispatch(ctx context.Context, l *Ledger, r Repo, c Conflict) View 
 	if prompt == "" {
 		return refuse("its change ID or heads don't read as klaus expects")
 	}
-	runID, err := d.Launch(ctx, Launch{Dir: r.Dir, Project: r.Project, ChangeID: c.ChangeID, Prompt: prompt})
-	if err != nil {
+	err = d.Launch(ctx, Launch{Dir: r.Dir, Project: r.Project, ChangeID: c.ChangeID, Prompt: prompt,
+		RunID: runID, Owner: c.Owner, Branch: c.Branch, Head: c.Head})
+	switch {
+	case err == nil || d.started(runID):
+		act.Pending = false
+		d.save(l)
+		d.emitDispatched(e, act)
+		v.State, v.RunID, v.Attempts = StateDispatched, runID, e.Attempts
+	case errors.Is(err, ErrNotStarted):
 		return refuse("launch failed, and the change is left a draft: " + firstLine(err.Error()))
+	default:
+		// Launch may have started the worker and failed after: the
+		// attempt and the cooldown stand.
+		act.Pending = false
+		act.Refused = fmt.Sprintf("launch of run %s failed, and may have started its worker: %s", runID, firstLine(err.Error()))
+		d.save(l)
+		d.emitStalled(e, act, act.Refused)
+		v.State, v.Detail, v.RunID, v.Attempts = StateRefused, act.Refused, runID, e.Attempts
 	}
-	act.RunID = runID
-	d.save(l)
-	d.emit(runID, event.ChangeRestackDispatched, map[string]interface{}{
-		"repo": c.Repo, "change_id": c.ChangeID, "handle": c.Handle, "version": c.Version,
-		"head": c.Head, "target_tip": c.TargetTip, "report": c.Report,
-		"attempt": e.Attempts, "max_attempts": MaxAttempts,
-	})
-	v.State, v.RunID, v.Attempts = StateDispatched, runID, e.Attempts
 	return v
 }
 
@@ -446,13 +567,31 @@ func (d Deps) emit(runID, typ string, data map[string]interface{}) {
 	}
 }
 
-// emitStalled says klaus stopped short of resolving a change's conflict.
-// It goes out under the change ID, which no run has.
-func (d Deps) emitStalled(c Conflict, reason string) {
-	d.emit(c.ChangeID, event.ChangeRestackStalled, map[string]interface{}{
-		"repo": c.Repo, "change_id": c.ChangeID, "handle": c.Handle, "version": c.Version,
-		"head": c.Head, "target_tip": c.TargetTip, "report": c.Report, "reason": reason,
+// started reports whether a run by runID is recorded.
+func (d Deps) started(runID string) bool {
+	return runID != "" && d.Started != nil && d.Started(runID)
+}
+
+// emitDispatched says klaus dispatched a's run, under the run's ID.
+func (d Deps) emitDispatched(e *Entry, a *Action) {
+	d.emit(a.RunID, event.ChangeRestackDispatched, map[string]interface{}{
+		"repo": e.Repo, "change_id": e.ChangeID, "handle": e.Handle, "version": a.Version,
+		"head": a.Head, "target_tip": a.TargetTip, "report": a.Report,
+		"attempt": e.Attempts, "max_attempts": MaxAttempts,
 	})
+}
+
+// emitStalled says klaus stopped short of resolving a change's conflict,
+// the one a names. It goes out under the change ID, which no run has.
+func (d Deps) emitStalled(e *Entry, a *Action, reason string) {
+	data := map[string]interface{}{"repo": e.Repo, "change_id": e.ChangeID, "handle": e.Handle, "reason": reason}
+	if a != nil {
+		data["version"], data["head"], data["target_tip"], data["report"] = a.Version, a.Head, a.TargetTip, a.Report
+		if a.RunID != "" {
+			data["run_id"] = a.RunID
+		}
+	}
+	d.emit(e.ChangeID, event.ChangeRestackStalled, data)
 }
 
 func short(sha string) string {

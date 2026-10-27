@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -32,18 +33,29 @@ is klaus's when its record's owner is klaus's principal, the repo's git
 config valley.principal; who uploaded its latest version doesn't count,
 since the restacker uploads the versions it rebases. A report counts only
 while the valley says it is current, and while what the listing shows of
-the change (its record, active version and head) matches the report.
+the change (its record, active version, head and branch) matches the
+report, and each other change the report rebased is listed on the branch
+the report names for it.
 
 For each such conflict, unless klaus leaves it alone (below), klaus:
 
   1. reads the change and origin's refs again: main, the report, and each
-     rebased change's record and branch, and skips the report if any moved;
-  2. returns the change to draft ('valley unready'), and launches nothing
-     unless the valley then lists it as a draft at the same head;
-  3. launches 'klaus launch [--repo <project>] --change <change-id>
-     --reason restack-conflict <brief>' from a clone of the repo, which
-     keeps launch's own refusals: a run already working on the change or
-     its branch, or a branch with work origin lacks.
+     rebased change's record and the branch its record names, and skips
+     the report if any moved;
+  2. records the attempt, and the ID of the run it is about to launch, in
+     its ledger, and does nothing if it can't;
+  3. returns the change to draft ('valley unready'), and launches nothing
+     unless the valley then lists it as klaus's draft at the same head and
+     branch;
+  4. launches 'klaus launch [--repo <project>] --change <change-id>
+     --run-id <id> --expect-owner <principal> --expect-branch <branch>
+     --expect-head <head> --expect-draft --reason restack-conflict <brief>'
+     from a clone of the repo. Launch checks all of it again under its
+     continuation lock, before it creates the worktree and as the worker
+     starts, and fails rather than start a worker on a change that was
+     readied or moved meanwhile. It keeps its own refusals too: a run
+     already working on the change or its branch, or a branch with work
+     origin lacks.
 
 The brief names the change, its version, head and branch, and main's tip:
 what klaus read itself. Nothing a report says is run, and none of its text
@@ -52,11 +64,24 @@ rebased head with the leased push its instructions give.
 
 As the pipeline does for a PR's conflicts, klaus never starts a second run
 on a change, waits 60 seconds after each dispatch, and stops after 3 runs,
-until a report says the change restacked cleanly. It acts once on one set
-of inputs, the change's head and main's tip: an unchanged conflict is not
-retried, nor is one whose unready or launch failed. klaus leaves a conflict
-alone when it is in another change below this one (a change whose owner
-isn't klaus is never taken over), or when the change sits on other changes.
+until a report says the change restacked cleanly: one reset per clean
+report, and only while origin still holds that report. It acts once on
+each set of inputs, the change's head and main's tip, whatever came
+between: an unchanged conflict is not retried, nor one that comes back to
+inputs klaus acted on before, nor one whose unready or launch failed. Once
+no run is working on a change whose attempts are spent, klaus says it
+stopped, even if the last run left the conflict as it was.
+
+An attempt is given back only when klaus knows no worker started: it
+stopped before launching, or launch exited with status 3. Any other launch
+failure keeps the attempt and the cooldown. A pass that ends mid-launch
+leaves the launch pending in the ledger; the next pass counts it a
+dispatch once a run by its ID is recorded, treats the change as busy until
+then, and after 10 minutes stops waiting, keeping the attempt.
+
+klaus leaves a conflict alone when it is in another change below this one
+(a change whose owner isn't klaus is never taken over), or when the change
+sits on other changes.
 
 Each dispatch emits change:restack-dispatched under the new run's ID; a
 conflict klaus stops short of resolving (attempts spent, unready or launch
@@ -135,13 +160,16 @@ func restackPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Ch
 			slog.Warn("emitting a restack event", "type", typ, "err", err)
 		}
 	}
-	d := restack.Default(launchResolution, restack.RunningOn(all, run.DefaultTmuxDeps()), emit)
+	d := restack.Default(launchResolution, runRecorded, restack.RunningOn(all, run.DefaultTmuxDeps()), emit)
 	return restack.Pass(ctx, d, ledger, repos, listed, act), nil
 }
 
-// launchResolution launches a resolution run with this klaus binary, and
-// returns its run ID ("unknown" when launch didn't print it).
-func launchResolution(ctx context.Context, l restack.Launch) (string, error) {
+// launchResolution launches a resolution run with this klaus binary,
+// under the run ID klaus recorded, in launch's strict mode: launch checks
+// the change is still the owner's draft at the branch and head klaus
+// checked before it starts the worker. Launch's exit status 3 says it
+// failed before starting one (restack.ErrNotStarted).
+func launchResolution(ctx context.Context, l restack.Launch) error {
 	self, err := os.Executable()
 	if err != nil {
 		self = "klaus"
@@ -150,23 +178,41 @@ func launchResolution(ctx context.Context, l restack.Launch) (string, error) {
 	if l.Project != "" {
 		args = append(args, "--repo", l.Project)
 	}
-	args = append(args, "--change", l.ChangeID, "--reason", event.DispatchRestackConflict, "--", l.Prompt)
+	args = append(args, "--change", l.ChangeID, "--run-id", l.RunID,
+		"--expect-owner", l.Owner, "--expect-branch", l.Branch, "--expect-head", l.Head, "--expect-draft",
+		"--reason", event.DispatchRestackConflict, "--", l.Prompt)
 	ctx, cancel := context.WithTimeout(ctx, restackLaunchTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self, args...)
 	cmd.Dir = l.Dir
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("klaus launch: %w: %s", err, strings.TrimSpace(string(out)))
+	if err == nil {
+		return nil
 	}
-	for _, line := range strings.Split(string(out), "\n") {
-		if rest, ok := strings.CutPrefix(line, "Launching agent "); ok {
-			if f := strings.Fields(rest); len(f) > 0 {
-				return strings.TrimSuffix(f[0], "..."), nil
-			}
+	why := launchError(out)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == exitNoWorker {
+		return fmt.Errorf("klaus launch: %w: %s", restack.ErrNotStarted, why)
+	}
+	return fmt.Errorf("klaus launch: %w: %s", err, why)
+}
+
+// launchError is what a failed launch's output says went wrong: its
+// "Error: " line, else all of it.
+func launchError(out []byte) string {
+	lines := strings.Split(string(out), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if msg, ok := strings.CutPrefix(lines[i], "Error: "); ok {
+			return msg
 		}
 	}
-	return "unknown", nil
+	return strings.TrimSpace(string(out))
+}
+
+// runRecorded reports whether a run by runID is recorded in any session.
+func runRecorded(runID string) bool {
+	states, err := run.ListAllSessions()
+	return err == nil && findRun(states, runID) != nil
 }
 
 // restackViews indexes views by change, as the dashboard and status look

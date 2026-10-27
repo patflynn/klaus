@@ -151,7 +151,8 @@ func (h *Harness) ageLedger() {
 }
 
 // restackPass runs klaus restack-conflicts, failing the test unless it
-// succeeds, and returns its output and the run it launched, if any.
+// succeeds and launches at most one run, and returns its output and the run
+// it launched, if any.
 func (h *Harness) restackPass() (string, *run.State) {
 	h.t.Helper()
 	known := make(map[string]bool)
@@ -162,16 +163,42 @@ func (h *Harness) restackPass() (string, *run.State) {
 	if res.ExitCode != 0 {
 		h.t.Fatalf("restack-conflicts exited %d\nstdout:\n%s\nstderr:\n%s", res.ExitCode, res.Stdout, res.Stderr)
 	}
+	var launched []*run.State
 	for _, id := range h.RunIDs() {
 		if !known[id] {
 			st, err := h.ReadState(id)
 			if err != nil {
 				h.t.Fatal(err)
 			}
-			return res.Stdout, st
+			launched = append(launched, st)
 		}
 	}
-	return res.Stdout, nil
+	switch len(launched) {
+	case 0:
+		return res.Stdout, nil
+	case 1:
+		return res.Stdout, launched[0]
+	}
+	h.t.Fatalf("one pass launched %d runs, want at most one:\n%s", len(launched), res.Stdout)
+	return "", nil
+}
+
+// restackEntry returns the restack ledger's entry for change id in repo.
+func (h *Harness) restackEntry(repo, id string) *restack.Entry {
+	h.t.Helper()
+	data, err := os.ReadFile(h.restackLedger())
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var entries map[string]*restack.Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		h.t.Fatal(err)
+	}
+	e := entries[restack.Key{Repo: repo, ChangeID: id}.String()]
+	if e == nil {
+		h.t.Fatalf("the restack ledger has no entry for %s/%s: %s", repo, id, data)
+	}
+	return e
 }
 
 // eventsOfType returns the session's events of one type.

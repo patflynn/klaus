@@ -34,6 +34,13 @@ const (
 	MaxAttempts = 3
 	// Cooldown is the least time between two dispatches for one change.
 	Cooldown = 60 * time.Second
+	// LaunchHorizon is how long klaus waits for a launch it started, and
+	// lost sight of, to record its run. A pass that started a launch and
+	// ended before launch returned leaves the launch pending; once a run by
+	// its ID is recorded it is a dispatch, and until then the change is
+	// taken to have a run starting. Past the horizon klaus stops waiting,
+	// and still counts the attempt: nothing proved no worker started.
+	LaunchHorizon = 10 * time.Minute
 )
 
 // Key names a change: the valley's name for its repo, and its change ID.
@@ -47,7 +54,8 @@ type Conflict struct {
 	Key
 	Handle  string
 	Target  string // the branch the change lands on, main
-	Branch  string // the active version's branch
+	Owner   string // the record's owner: klaus's principal
+	Branch  string // the active version's branch, as the record names it
 	Version int    // the active version
 	Head    string // the active version's head
 	Record  string // the change's record commit
@@ -60,7 +68,24 @@ type Conflict struct {
 	// on others.
 	Held string
 
-	layers []valley.RestackLayer
+	layers []layer
+}
+
+// layer is a change a report says it rebased together with the conflict's,
+// bottom first: the record and branch tip the report observed, and the
+// branch the valley's record names for it, which the report's agrees with.
+type layer struct {
+	ChangeID  string
+	Record    string // the record commit the report observed
+	Branch    string // the active version's branch, from the change's record
+	BranchTip *string
+}
+
+// Clean is a current report saying a change klaus owns restacked cleanly.
+type Clean struct {
+	Key
+	Target string
+	Report string // the report's commit
 }
 
 // Scan reads a repo's listing for the restack reports on changes principal
@@ -68,10 +93,11 @@ type Conflict struct {
 // the restacker uploads the versions it rebases. It returns the current
 // conflicts on ready changes, and the changes whose current report says
 // they restacked cleanly. A report klaus's reading of the listing
-// contradicts (its change's layer names another record, version or head)
-// is skipped as stale, whatever the valley says. A principal of "" owns
-// nothing.
-func Scan(repo valley.Repo, principal string) (conflicts []Conflict, clean []Key) {
+// contradicts is skipped as stale, whatever the valley says: its change's
+// layer names another record, version, head or branch, or another layer
+// names a branch its change's record doesn't, or one the listing lacks.
+// A principal of "" owns nothing.
+func Scan(repo valley.Repo, principal string) (conflicts []Conflict, clean []Clean) {
 	if principal == "" || repo.Err() != "" {
 		return nil, nil
 	}
@@ -90,28 +116,50 @@ func Scan(repo valley.Repo, principal string) (conflicts []Conflict, clean []Key
 		}
 		key := Key{Repo: repo.Repo, ChangeID: ch.ChangeID}
 		if rep.Result == valley.RestackComplete {
-			clean = append(clean, key)
+			clean = append(clean, Clean{Key: key, Target: ch.Target, Report: rs.Commit})
 			continue
 		}
 		if rep.Result != valley.RestackConflict || rep.Failing == nil || ch.State != valley.StateReady {
 			continue
 		}
 		active, ok := activeVersion(ch)
-		layer, found := rep.Layer(ch.ChangeID)
+		own, found := rep.Layer(ch.ChangeID)
 		tip := valley.ReportOID(rep.TargetTip)
-		if !ok || !found || tip == "" || layer.Version != ch.Active ||
-			valley.ReportOID(layer.Head) != active.Head || valley.ReportOID(layer.Record) != ch.Record {
+		if !ok || !found || tip == "" || own.Version != ch.Active ||
+			valley.ReportOID(own.Head) != active.Head || valley.ReportOID(own.Record) != ch.Record {
+			continue
+		}
+		layers, agree := checkedLayers(rep.Layers, byID)
+		if !agree {
 			continue
 		}
 		c := Conflict{
-			Key: key, Handle: ch.Handle, Target: ch.Target, Branch: active.Branch,
+			Key: key, Handle: ch.Handle, Target: ch.Target, Owner: ch.Owner, Branch: active.Branch,
 			Version: ch.Active, Head: active.Head, Record: ch.Record,
-			Report: rs.Commit, TargetTip: tip, layers: rep.Layers,
+			Report: rs.Commit, TargetTip: tip, layers: layers,
 		}
 		c.Held = held(c, *rep.Failing, ch, byID, principal)
 		conflicts = append(conflicts, c)
 	}
 	return conflicts, clean
+}
+
+// checkedLayers returns a report's layers with the branch each change's
+// record names, and whether every layer's agrees with it: a branch the
+// report names, or leaves out, is never the one klaus checks for movement
+// unless the record names it too. A layer whose change the listing lacks,
+// or whose record names no branch, can't be checked.
+func checkedLayers(layers []valley.RestackLayer, byID map[string]valley.Change) ([]layer, bool) {
+	out := make([]layer, 0, len(layers))
+	for _, l := range layers {
+		ch, listed := byID[l.ChangeID]
+		v, ok := activeVersion(ch)
+		if !listed || !ok || v.Branch == "" || l.Branch != v.Branch {
+			return nil, false
+		}
+		out = append(out, layer{ChangeID: l.ChangeID, Record: valley.ReportOID(l.Record), Branch: v.Branch, BranchTip: l.BranchTip})
+	}
+	return out, true
 }
 
 // held says why klaus leaves a conflict alone, or "" when it may resolve
@@ -158,7 +206,8 @@ const (
 	// Acted leaves a conflict klaus already acted on: an earlier pass
 	// dispatched for, or refused, the same head and target tip.
 	Acted
-	// Busy leaves a change a run is working on.
+	// Busy leaves a change a run is working on, or one klaus is launching
+	// a run for.
 	Busy
 	// Stop leaves a change whose attempts are spent.
 	Stop
@@ -169,19 +218,25 @@ const (
 // Decide is what a pass does about conflict c at now, given the ledger's
 // entry for its change (nil for none) and whether a run is working on the
 // change. As the pipeline does for a PR's conflicts, it never starts a
-// second run on a change, stops once MaxAttempts runs were dispatched,
-// and waits Cooldown after each; and it never acts twice on one set of
-// inputs, the change's head and the target's tip, so an unchanged conflict
-// isn't retried.
+// second run on a change, nor while a launch klaus started is pending;
+// stops once MaxAttempts runs were dispatched, and waits Cooldown after
+// each launch that may have started one; and it never acts twice on one
+// set of inputs, the change's head and the target's tip, whichever came
+// between, so an unchanged conflict isn't retried. Spent attempts come
+// before that once no run is working on the change, so a last run that
+// left the conflict as it was is seen to have stopped.
 func Decide(now time.Time, c Conflict, e *Entry, running bool) Decision {
+	spent := e != nil && e.Attempts >= MaxAttempts
 	switch {
 	case c.Held != "":
 		return Held
-	case e != nil && e.Last != nil && e.Last.Head == c.Head && e.Last.TargetTip == c.TargetTip:
+	case e != nil && e.Last != nil && e.Last.Pending:
+		return Busy
+	case e.consumed(Inputs{Head: c.Head, TargetTip: c.TargetTip}) && (running || !spent):
 		return Acted
 	case running:
 		return Busy
-	case e != nil && e.Attempts >= MaxAttempts:
+	case spent:
 		return Stop
 	case e != nil && e.Last != nil && e.Last.RunID != "" && now.Sub(e.Last.At) < Cooldown:
 		return Wait
@@ -192,8 +247,8 @@ func Decide(now time.Time, c Conflict, e *Entry, running bool) Decision {
 // Stale compares a conflict's report with origin's refs as klaus read them
 // itself (refs, by name, as OriginRefs returns them), and says which input
 // moved, or "" when every one still holds: the target's tip, the report
-// itself, and for each layer its record and its branch's tip (or the
-// branch's absence).
+// itself, and for each layer its record and the tip (or the absence) of
+// the branch its record names.
 func Stale(c Conflict, refs map[string]string) string {
 	switch {
 	case refs["refs/heads/"+c.Target] != c.TargetTip:
@@ -202,11 +257,8 @@ func Stale(c Conflict, refs map[string]string) string {
 		return "a newer report replaced it"
 	}
 	for _, l := range c.layers {
-		if refs[RecordRef(c.Target, l.ChangeID)] != valley.ReportOID(l.Record) {
+		if refs[RecordRef(c.Target, l.ChangeID)] != l.Record {
 			return "the record of " + l.ChangeID + " moved since the report"
-		}
-		if l.Branch == "" {
-			continue
 		}
 		tip, present := refs["refs/heads/"+l.Branch]
 		switch {
@@ -223,10 +275,7 @@ func Stale(c Conflict, refs map[string]string) string {
 func Refs(c Conflict) []string {
 	refs := []string{"refs/heads/" + c.Target, ReportRef(c.Target, c.ChangeID)}
 	for _, l := range c.layers {
-		refs = append(refs, RecordRef(c.Target, l.ChangeID))
-		if l.Branch != "" {
-			refs = append(refs, "refs/heads/"+l.Branch)
-		}
+		refs = append(refs, RecordRef(c.Target, l.ChangeID), "refs/heads/"+l.Branch)
 	}
 	return refs
 }

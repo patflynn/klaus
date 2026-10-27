@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
@@ -29,6 +30,25 @@ a fresh session.`,
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// exitError is an error that sets klaus's exit status.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e *exitError) Error() string { return e.err.Error() }
+func (e *exitError) Unwrap() error { return e.err }
+
+// ExitCode is the exit status for an error Execute returned: the one the
+// error asks for, else 1.
+func ExitCode(err error) int {
+	var e *exitError
+	if errors.As(err, &e) {
+		return e.code
+	}
+	return 1
 }
 
 func init() {

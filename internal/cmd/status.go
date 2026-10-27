@@ -97,12 +97,13 @@ A valley's restacker rebases ready changes onto main after each landing,
 and reports a rebase that conflicts. For a change klaus owns (its record's
 owner is the repo's valley.principal), CONFLICTS reads restack while the
 conflict stands, and a list after the table says where each stands: a
-resolution run due, dispatched (attempt n of 3), waiting out the cooldown,
-a run already working on the change, stopped after 3 runs, not dispatched
-(and why: the change couldn't be returned to draft, or the launch failed),
-or left alone (the conflict is in a change below it, or the change sits on
-other changes). klaus restack-conflicts, which the dashboard runs, does the
-dispatching; status only reads.
+resolution run due, dispatched (attempt n of 3), being launched (klaus
+hasn't yet seen the run start), waiting out the cooldown, a run already
+working on the change, stopped after 3 runs, not dispatched (and why: the
+change couldn't be returned to draft, or the launch failed, perhaps after
+starting its worker), or left alone (the conflict is in a change below it,
+or the change sits on other changes). klaus restack-conflicts, which the
+dashboard runs, does the dispatching; status only reads.
 
 After the runs, a jobs table lists the session's consults and reviews (see
 klaus jobs): every one running, and those that finished in the last 3 hours,

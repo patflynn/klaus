@@ -649,6 +649,8 @@ klaus launch --effort <level> ...             # effort: agy low|medium|high; Cod
 klaus launch --local ...                      # force local execution even if a sandbox is configured
 klaus launch --host <name> ...                # override the configured sandbox host
 klaus launch --reason <reason> ...            # why the run is dispatched, for its events (default from the flags: launch, pr-follow-up, ...)
+klaus launch --change <id> --expect-owner <p> --expect-branch <b> --expect-head <sha> --expect-draft ...  # launch only if the valley still lists the change so (klaus restack-conflicts uses these)
+klaus launch --run-id <id> ...                # name the run for a dispatcher that records it first; exits 3 when no worker started
 ` + "```" + `
 
 **Always use --issue when working on a GitHub issue.** The agent needs the issue context.
