@@ -10,6 +10,7 @@ import (
 	"context"
 
 	"github.com/patflynn/klaus/internal/run"
+	"github.com/patflynn/klaus/internal/valley"
 )
 
 // Verdict is what a check observed about one pushed run.
@@ -153,6 +154,12 @@ type Report struct {
 	// change stands; a run's own result says only where its version does.
 	// nil when no valley was asked, or it couldn't be.
 	Changes map[ChangeKey]Result
+	// Listing is the valley's listing the check read, as it read it; nil
+	// when no valley was asked, or it couldn't be.
+	Listing *valley.Changes
+	// Asked is set when the check asked a valley, whether or not it could
+	// be asked.
+	Asked bool
 }
 
 // Checker observes integration for a set of pushed runs.

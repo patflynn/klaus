@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
+	"github.com/patflynn/klaus/internal/restack"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/webhook"
 )
@@ -36,6 +38,9 @@ type integrationTickMsg struct{}
 type integrationMsg struct {
 	results map[string]integration.Result
 	changes map[integration.ChangeKey]integration.Result
+	// restacks is where each restack conflict on a change klaus owns
+	// stands after the check's restack pass; nil when none ran.
+	restacks map[integration.ChangeKey]restack.View
 }
 
 type fsEventMsg struct{}
@@ -154,10 +159,15 @@ const integrationTimeout = 5 * time.Minute
 // checkIntegrationCmd checks, in the background, the runs that are waiting
 // for their pushed branch to be integrated, and the tracked valley changes.
 // With a ValleyChecker that is at most one `valley changes` for all of them. Then, with a store, it settles
-// the knots of runs whose change the check found landed (settleKnots). The
-// next check starts only once this one is done, so no two settle a knot at
-// once.
-func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore) tea.Cmd {
+// the knots of runs whose change the check found landed (settleKnots).
+// With restacks and a session directory, it then runs a restack pass, as
+// klaus restack-conflicts does, dispatching resolution runs for the restack
+// conflicts on changes klaus owns: on the check's valley listing, or, when
+// the check asked no valley, listing each repo itself; a valley the check
+// couldn't ask isn't asked again. The next
+// check starts only once this one is done, so no two settle a knot, or
+// dispatch, at once.
+func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore, restacks bool) tea.Cmd {
 	if checker == nil {
 		return nil
 	}
@@ -175,7 +185,15 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 		if store != nil {
 			settleKnots(ctx, store, pushed, rep.Runs, rep.Changes)
 		}
-		return integrationMsg{results: rep.Runs, changes: rep.Changes}
+		msg := integrationMsg{results: rep.Runs, changes: rep.Changes}
+		if hds, ok := store.(*run.HomeDirStore); ok && restacks && (rep.Listing != nil || !rep.Asked) {
+			views, err := restackPass(ctx, hds, rep.Listing, true)
+			if err != nil {
+				slog.Warn("restack pass failed", "err", err)
+			}
+			msg.restacks = restackViews(views)
+		}
+		return msg
 	}
 }
 

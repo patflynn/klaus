@@ -314,7 +314,8 @@ func runningLabel(running []*run.State) string {
 // agent running on it; a bare agent reads RUNNING while it runs. A
 // valley change shows its version and head, any other pushed branch its
 // name and head. A valley verdict kept from an earlier check says so, and a
-// run whose change finalize couldn't mark ready says why.
+// run whose change finalize couldn't mark ready says why. A restack conflict
+// on a change klaus owns says where its resolution stands.
 func bareAgentParts(r dashRow) []string {
 	s := r.state()
 	var parts []string
@@ -331,6 +332,9 @@ func bareAgentParts(r dashRow) []string {
 	}
 	if r.changeID != "" && len(r.running) > 0 {
 		parts = append(parts, runningLabel(r.running))
+	}
+	if v := r.restack; v != nil {
+		parts = append(parts, redStyle.Render("restack conflict"), dimStyle.Render(v.Summary()))
 	}
 	switch c := r.change; {
 	case c != nil && c.Version > 0:

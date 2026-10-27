@@ -256,8 +256,9 @@ timer's launch: lowercase letters, digits and hyphens. It is recorded on the
 run and its events (dispatch_reason). Without it the reason is launch,
 pr-follow-up (--pr), budget-resume (--pr on a budget-paused PR),
 change-follow-up (--change) or resume (--resume-from); the pipeline's fix
-agents pass ci-fix, review-fix, review-comment-fix or conflict-fix. 'klaus
-report time' sums runs and follow-ups by reason.
+agents pass ci-fix, review-fix, review-comment-fix or conflict-fix, and klaus
+restack-conflicts passes restack-conflict. 'klaus report time' sums runs and
+follow-ups by reason.
 
 When sandbox_host is configured in ~/.klaus/config.json, agents run remotely
 via SSH on the sandbox host. The worktree is synced before launch and results

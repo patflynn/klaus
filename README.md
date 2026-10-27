@@ -320,9 +320,23 @@ Pipeline stages per PR: `ci_pending` → `ci_passed` → `approved` → `merged`
 
 You can also drive the pipeline manually with `klaus approve` and `klaus merge`.
 
+### Restack conflicts on valley changes
+
+A [valley](#repos-that-deliver-to-a-valley)'s restacker rebases ready changes onto main after each landing. When a rebase conflicts, it writes a report beside the change (`refs/the-valley/restack/main/<change-id>`), and `valley changes --json` lists the latest one with the change, saying whether it is current: whether every ref it observed still holds what it observed. After each integration check, about once a minute, the dashboard reads those reports for the valley repos its runs deliver to, and dispatches a run to resolve each current conflict on a change klaus owns, the way the pipeline dispatches a rebase agent for a PR. `klaus restack-conflicts` does the same once, for a session with no dashboard.
+
+- **Ownership** — a change is klaus's when its record's owner is klaus's principal (the repo's git config `valley.principal`). The latest version's uploader doesn't count: the restacker uploads the versions it rebases.
+- **Only current reports, read again** — a report counts while the valley says it is current and the change's record, active version and head match it. Before dispatching, klaus reads the change and origin's refs itself (main, the report, and each rebased change's record and branch) and skips the report if any moved.
+- **Draft first** — klaus returns the change to draft (`valley unready`) and launches nothing unless the valley then lists it as a draft at the same head. A failed unready leaves the change as it was, and klaus says why.
+- **The dispatch** — `klaus launch [--repo <project>] --change <change-id> --reason restack-conflict "<brief>"`, from a clone of the repo. Launch's own refusals still hold: a run working on the change or its branch, or a branch with work origin lacks. The run rebases onto `origin/main` and pushes with the leased push its prompt gives (see [`klaus launch --change`](#klaus-launch---change)); finalize marks the rebased head ready.
+- **Nothing from the report is run or passed on** — the brief names the change, its version, head and branch, and main's tip, as klaus read them. The report's conflict paths and refusal text stay out; the run finds the conflicts by rebasing.
+- **Limits** — as for a PR's conflicts: no second run on a change, 60 seconds between dispatches, and at most 3 runs until a report says the change restacked cleanly. klaus acts once on one set of inputs (the change's head and main's tip), so an unchanged conflict isn't retried, nor one whose unready or launch failed.
+- **Left alone** — a conflict in another change below this one (klaus never takes over a change it doesn't own), and a conflict in a change that sits on other changes.
+
+Each dispatch emits `change:restack-dispatched` under the new run's ID; a conflict klaus stops short of resolving (attempts spent, unready or launch failed) emits `change:restack-stalled` once. What klaus did is kept in the session's `restack-dispatches.json`. `klaus status` lists where each conflict stands below its runs table and shows `restack` in the CONFLICTS column; the dashboard shows `restack conflict` on the change's row, and a conflict klaus stopped short of resolving makes the row yours.
+
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them. Each PR's `pr:approved` and `pr:merged` fire once, across dashboard restarts; a PR already merged when klaus first sees it emits neither.
+Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors, restack conflicts dispatched or stalled), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them. Each PR's `pr:approved` and `pr:merged` fire once, across dashboard restarts; a PR already merged when klaus first sees it emits neither.
 
 ```bash
 klaus watch                          # default filter, follow new events
@@ -364,7 +378,7 @@ Every run event (`agent:*`, `phase:*`, `check:*`, and `pr:approval-changed` from
 
 The pipeline's PR events (`pr:approved`, `pr:merged`, `agent:ci-*`, ...) carry `repo_key` and `key` when their PR URL is known; `review:*` events carry them for the reviewed PR, and `consult:*` events carry `repo_key` for the consult's workspace. Fields that aren't known are left out, and no existing field changed.
 
-The dispatch reason is `launch` for new work, `pr-follow-up` for `--pr`, `budget-resume` for `--pr` on a budget-paused PR, `change-follow-up` for `--change` and `resume` for `--resume-from`; the pipeline's fix agents are `ci-fix`, `review-fix` (changes requested), `review-comment-fix` (a trusted reviewer's comments) and `conflict-fix`. `klaus launch --reason <reason>` names any other, such as `docs-timer` for a timer's launch.
+The dispatch reason is `launch` for new work, `pr-follow-up` for `--pr`, `budget-resume` for `--pr` on a budget-paused PR, `change-follow-up` for `--change` and `resume` for `--resume-from`; the pipeline's fix agents are `ci-fix`, `review-fix` (changes requested), `review-comment-fix` (a trusted reviewer's comments) and `conflict-fix`, and a run resolving a valley change's restack conflict is `restack-conflict`. `klaus launch --reason <reason>` names any other, such as `docs-timer` for a timer's launch.
 
 Each run's phases are events too: `phase:completed` with `phase: setup` (launch's work before the agent starts: fetch, worktree, hooks, pane), then `phase:started`/`phase:completed` for `agent` (pane start to finalize; with `cost_usd` where the backend reports it) and `finalize` (up to killing the pane). Each `phase:completed` carries `started_at`, `ended_at` and `duration_ms`. A launch that fails records no run, so setup has only a completion.
 
@@ -656,6 +670,7 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --reason <reason> "<prompt>"` | Say why the run is dispatched (e.g. `docs-timer`), for its events and `klaus report time` |
 | `klaus target owner/repo` | Set session-level default target repo |
 | `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns), then running and recent consults and reviews |
+| `klaus restack-conflicts` | Dispatch runs for the restack conflicts a valley reports on changes klaus owns (the dashboard does this every minute; see [Restack conflicts on valley changes](#restack-conflicts-on-valley-changes)) |
 | `klaus track <ref>...` | Track existing PRs (number, URL, `owner/repo#N`) or valley changes (handle, change ID, `<project>:<handle>`) on the dashboard and in `klaus status` (see [`klaus track`](#klaus-track)) |
 | `klaus untrack <ref>...` | Stop tracking PRs or valley changes |
 | `klaus jobs [--all]` | List running and recent consults and reviews |
@@ -833,7 +848,7 @@ The status dashboard shows these columns for each run:
 | CHANGE | `#N` / handle / change ID prefix / `-` | The change the run belongs to: its PR's number, else the number of its change's PR (the newest run of the change with a PR), else its valley change's handle, else the first 8 characters of its change ID, as the dashboard names the change's row. Every run of a change shows the same handle, running or not: the valley listing's, else one a run of the change recorded at ready or unready |
 | PROMPT | text | The prompt, or the title of the run's change on a valley, cut at 40 characters |
 | CI | `passing` / `failing` / `pending` / `unknown` | CI check status for the PR |
-| CONFLICTS | `none` / `yes` / `unknown` | Whether the PR has merge conflicts |
+| CONFLICTS | `none` / `yes` / `unknown` / `restack` | Whether the PR has merge conflicts; `restack` for a run of a valley change klaus owns that has a current restack conflict, which a list after the table details (see [Restack conflicts on valley changes](#restack-conflicts-on-valley-changes)) |
 | BEHIND | `-` / `N` | Commits the base branch has that the PR head lacks (stale-but-mergeable when >0) |
 | MERGE | `ready` / `behind N` / `blocked` / `pending` | Overall merge readiness (combines CI, conflicts, behind-ness, and review status) |
 

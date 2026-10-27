@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SchemaV1 is the schema of the machine view `valley changes --json` prints.
@@ -76,6 +77,105 @@ type Change struct {
 	// (valley:<repo>/<change ID>), active first; a valley from before plan
 	// graphs lists none.
 	Knots []ChangeKnot `json:"knots"`
+	// Restack is the latest report the host's restacker wrote about the
+	// change, or nil for none; a valley from before restack reports lists
+	// none.
+	Restack *Restack `json:"restack"`
+}
+
+// Restack is a change's latest restack report as the valley lists it: its
+// ref and commit on origin, whether it is current (every ref it observed
+// still holds what it observed), and what it says.
+type Restack struct {
+	Ref     string         `json:"ref"`
+	Commit  string         `json:"commit"`
+	Current bool           `json:"current"`
+	Report  *RestackReport `json:"report"`
+}
+
+// RestackSchema is the schema of a restack report.
+const RestackSchema = "valley-restack-report/v1"
+
+// What came of a restack attempt.
+const (
+	RestackConflict   = "conflict"   // a layer's rebase conflicted; nothing was published
+	RestackBlocked    = "blocked"    // integration requests held it back
+	RestackPartial    = "partial"    // branches moved, and not every version was added
+	RestackComplete   = "complete"   // every layer was rebased and versioned
+	RestackSuperseded = "superseded" // its inputs moved while it ran
+)
+
+// RestackReport is what the restacker observed when it tried to rebase a
+// ready change onto its target (valley-restack-report/v1). It is an
+// observation, not evidence: klaus compares its inputs with what origin
+// holds before acting on it, and never runs or relays its free text.
+// Heads and commits carry the "git-sha1:" prefix.
+type RestackReport struct {
+	Schema    string         `json:"schema"`
+	ChangeID  string         `json:"change_id"`
+	Target    string         `json:"target"`
+	TargetTip string         `json:"target_tip"`
+	Operation string         `json:"operation"`
+	Result    string         `json:"result"`
+	Layers    []RestackLayer `json:"layers"` // the changes rebased together, bottom first
+	Failing   *string        `json:"failing_layer"`
+	Conflicts []string       `json:"conflict_paths"`
+	Refusal   *string        `json:"refusal"`
+}
+
+// RestackLayer is one change a restack attempt rebased, as it read it.
+// BranchTip is nil when origin had no such branch.
+type RestackLayer struct {
+	ChangeID  string            `json:"change_id"`
+	Record    string            `json:"record"`
+	Version   int               `json:"version"`
+	Head      string            `json:"head"`
+	Branch    string            `json:"branch"`
+	BranchTip *string           `json:"branch_tip"`
+	Published *RestackPublished `json:"published"`
+}
+
+// RestackPublished is what an attempt published for a layer.
+type RestackPublished struct {
+	Head    string  `json:"head"`
+	Version *int    `json:"version"`
+	Record  *string `json:"record"`
+}
+
+// Layer returns the report's layer for the change id.
+func (r *RestackReport) Layer(id string) (RestackLayer, bool) {
+	for _, l := range r.Layers {
+		if l.ChangeID == id {
+			return l, true
+		}
+	}
+	return RestackLayer{}, false
+}
+
+// headPrefix opens every head and commit a restack report names.
+const headPrefix = "git-sha1:"
+
+// ReportOID returns the object ID a report names, without its "git-sha1:"
+// prefix, or "" when s isn't one: the prefix and 40 lowercase hex digits.
+func ReportOID(s string) string {
+	oid, ok := strings.CutPrefix(s, headPrefix)
+	if !ok || !IsOID(oid) {
+		return ""
+	}
+	return oid
+}
+
+// IsOID reports whether s is a full SHA-1 object ID in lowercase hex.
+func IsOID(s string) bool {
+	if len(s) != 40 {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ChangeKnot is a knot that links a change.

@@ -15,6 +15,7 @@ import (
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/pipeline"
+	"github.com/patflynn/klaus/internal/restack"
 	"github.com/patflynn/klaus/internal/run"
 )
 
@@ -92,6 +93,9 @@ type dashRow struct {
 	// outdated marks a verdict and change kept from an earlier check because
 	// the latest couldn't ask the valley (integration.Result.Outdated).
 	outdated bool
+	// restack is where a restack conflict the valley reports on the change
+	// stands, when klaus owns the change; nil for none.
+	restack *restack.View
 	// review marks a valley change whose version finalize left a draft
 	// awaiting review (awaitsReview): it reads REVIEW, not DRAFT.
 	review bool
@@ -293,16 +297,22 @@ func (m dashboardModel) changeStandsAlone(runs []*run.State) bool {
 // PR holds (any on a change, a run without a PR on a PR's row), or
 // attention a run on a PR's row took on with other runs' work (TookOver),
 // makes it yours; then merged, closed, no access, integrated, gone,
-// withdrawn or superseded make it done; then needs attention, a pushed
+// withdrawn or superseded make it done; then needs attention (a run's, a
+// stalled PR's, or a restack conflict klaus stopped short of resolving), a pushed
 // branch (to approve or submit, a draft, or whose change the integrator
 // turned down or the valley is unsure of) or a PR ready to approve make it
 // yours, except a change already approved or awaiting review, which is the
 // pipeline's like any other open PR; an exited agent is done.
 func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
+	merged, attention, owed := false, false, false
 	if r.changeID != "" {
 		m.placeChange(r)
+		if v, ok := m.restacks[valleyKey(r.runs[0])]; ok {
+			r.restack = &v
+			// klaus stopped short of resolving it: the operator's.
+			attention = v.State == restack.StateStopped || v.State == restack.StateRefused
+		}
 	}
-	merged, attention, owed := false, false, false
 	for _, s := range r.runs {
 		if m.agentRunning(s) {
 			r.running = append(r.running, s)

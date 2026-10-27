@@ -119,6 +119,7 @@ var followUpReasons = map[string]bool{
 	event.DispatchReviewFix:        true,
 	event.DispatchReviewCommentFix: true,
 	event.DispatchConflictFix:      true,
+	event.DispatchRestackConflict:  true,
 }
 
 // runInfo is what one run's events say about it.

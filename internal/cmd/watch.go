@@ -27,22 +27,24 @@ import (
 // types that aren't emitted yet (reserved entries) so the filter remains
 // forward-compatible as the pipeline grows.
 var defaultWatchFilter = []string{
-	event.ConsultStarted,      // live
-	event.ConsultCompleted,    // live
-	event.ReviewStarted,       // live
-	event.ReviewCompleted,     // live
-	event.AgentPRCreated,      // live
-	event.AgentBranchPushed,   // live
-	event.AgentChangeReady,    // live
-	event.AgentChangeDraft,    // live
-	event.AgentNeedsAttention, // live
-	"agent:error",             // reserved
-	event.PRApproved,          // live
-	event.PRMerged,            // live
-	event.PipelineStalled,     // live
-	"ci:failed",               // reserved (closest live equivalent: agent:ci-failed)
-	"ci:passed",               // reserved (closest live equivalent: agent:ci-passed)
-	"pr:comment",              // reserved
+	event.ConsultStarted,          // live
+	event.ConsultCompleted,        // live
+	event.ReviewStarted,           // live
+	event.ReviewCompleted,         // live
+	event.AgentPRCreated,          // live
+	event.AgentBranchPushed,       // live
+	event.AgentChangeReady,        // live
+	event.AgentChangeDraft,        // live
+	event.AgentNeedsAttention,     // live
+	"agent:error",                 // reserved
+	event.PRApproved,              // live
+	event.PRMerged,                // live
+	event.PipelineStalled,         // live
+	event.ChangeRestackDispatched, // live
+	event.ChangeRestackStalled,    // live
+	"ci:failed",                   // reserved (closest live equivalent: agent:ci-failed)
+	"ci:passed",                   // reserved (closest live equivalent: agent:ci-passed)
+	"pr:comment",                  // reserved
 }
 
 // knownEventTypes maps event types to a one-line description and whether the
@@ -67,6 +69,8 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRMerged, "live", "A PR merged"},
 	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
+	{event.ChangeRestackDispatched, "live", "klaus launched a run to resolve a restack conflict the valley reported on a change klaus owns"},
+	{event.ChangeRestackStalled, "live", "klaus stopped short of resolving a change's restack conflict (attempts spent, unready or launch failed)"},
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
@@ -658,6 +662,17 @@ func eventSummary(evt event.Event) string {
 			status = "failed"
 		}
 		return truncateLine(fmt.Sprintf("%s (%sms) %s: %s", get("kind"), get("duration_ms"), status, get("command")), 160)
+	case event.ChangeRestackDispatched, event.ChangeRestackStalled:
+		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
+		if v := get("version"); v != "" {
+			msg += " v" + v
+		}
+		if evt.Type == event.ChangeRestackDispatched {
+			msg += fmt.Sprintf(": resolving its restack conflict (attempt %s of %s)", get("attempt"), get("max_attempts"))
+		} else {
+			msg += ": restack conflict left unresolved — " + get("reason")
+		}
+		return truncateLine(msg, 160)
 	case event.PipelineStalled:
 		reason := get("reason")
 		switch {

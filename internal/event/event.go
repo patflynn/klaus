@@ -72,6 +72,18 @@ const (
 	// ready, emitting agent:change-ready. It follows agent:branch-pushed and
 	// carries what agent:change-ready does.
 	AgentChangeDraft = "agent:change-draft"
+	// ChangeRestackDispatched signals that klaus launched a run to resolve
+	// a restack conflict the valley reported on a change klaus owns (klaus
+	// restack-conflicts, which the dashboard runs). It goes out under the
+	// new run's ID and carries repo, change_id, handle, version, head,
+	// target_tip, report (the report commit), attempt and max_attempts.
+	ChangeRestackDispatched = "change:restack-dispatched"
+	// ChangeRestackStalled signals that klaus stopped short of resolving a
+	// change's restack conflict: its attempts are spent, it couldn't
+	// return the change to draft, or the launch failed. It goes out under
+	// the change ID, once per conflict, and carries what
+	// change:restack-dispatched does, with reason in place of the attempt.
+	ChangeRestackStalled = "change:restack-stalled"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.
@@ -119,6 +131,7 @@ const (
 	DispatchReviewFix        = "review-fix"         // the pipeline, for changes requested
 	DispatchReviewCommentFix = "review-comment-fix" // the pipeline, for a trusted reviewer's comments
 	DispatchConflictFix      = "conflict-fix"       // the pipeline, for merge conflicts
+	DispatchRestackConflict  = "restack-conflict"   // klaus restack-conflicts, for a valley change's restack conflict
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have
