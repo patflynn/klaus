@@ -56,6 +56,13 @@ func FetchBranch(ctx context.Context, repoDir, branch string) error {
 	return err
 }
 
+// FetchRemoteBranch updates origin's branch, as repoDir tracks it in
+// refs/remotes/origin, to what origin holds now.
+func FetchRemoteBranch(ctx context.Context, repoDir, branch string) error {
+	_, err := runGitNetwork(ctx, repoDir, "fetch", "--quiet", "origin", "+refs/heads/"+branch+":refs/remotes/origin/"+branch)
+	return err
+}
+
 // FetchDataRef updates the local data ref from origin. It is best-effort:
 // callers should ignore the error (there may be no remote, the ref may not
 // exist remotely, or the local ref may already be current). When the local

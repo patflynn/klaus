@@ -564,7 +564,7 @@ func TestDashboardOctober12(t *testing.T) {
 	}
 	check := func(m dashboardModel) dashboardModel {
 		t.Helper()
-		msg := checkIntegrationCmd(m.checker, m.states, nil)()
+		msg := checkIntegrationCmd(m.checker, m.states, nil, false)()
 		if _, ok := msg.(integrationMsg); !ok {
 			t.Fatalf("integration check returned %T", msg)
 		}
@@ -833,7 +833,7 @@ func TestValleyChangeOutlivesOutageAndDeletedBranch(t *testing.T) {
 		return send(m, tea.WindowSizeMsg{Width: 160, Height: 20})
 	}
 	check := func(m dashboardModel) dashboardModel {
-		return send(m, checkIntegrationCmd(m.checker, m.states, nil)())
+		return send(m, checkIntegrationCmd(m.checker, m.states, nil, false)())
 	}
 	expect := func(m dashboardModel, step string, want ...string) {
 		t.Helper()
@@ -919,7 +919,7 @@ func TestChangeRowShowsValleysActiveVersion(t *testing.T) {
 			hideAfter: defaultHideFinishedAfter, checker: integration.NewValleyChecker(nil),
 			approveTemplate: "valley approve {handle} --head {head} # {branch}"}
 		m = send(m, tea.WindowSizeMsg{Width: 200, Height: 20})
-		m = send(m, checkIntegrationCmd(m.checker, m.states, nil)())
+		m = send(m, checkIntegrationCmd(m.checker, m.states, nil, false)())
 		rows := m.buildRows()
 		if len(rows) != 1 {
 			t.Fatalf("%d rows, want the change's one", len(rows))

@@ -23,8 +23,11 @@ import (
 // absent, fails as an unreachable valley does. Its help lists unready only
 // when valley.has-unready exists; unready answers "widget nxvp v1 draft" or,
 // when valley.unready-refuse exists, refuses with its contents, and creates
-// valley.unready-late if the fake agent had already started. Its knot verbs
-// serve the knots writeKnot wrote (see there).
+// valley.unready-late if the fake agent had already started. After an
+// unready, the n-th changes answers with valley.changes.unready.<n>.json, or
+// valley.changes.unready.json, when one exists, so a test can say what the
+// valley lists once a change is a draft. Its knot verbs serve the knots
+// writeKnot wrote (see there).
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
@@ -73,9 +76,17 @@ ready)
 unready)
   if [ -f "$dir/claude.started" ]; then : > "$dir/valley.unready-late"; fi
   if [ -f "$dir/valley.unready-refuse" ]; then cat "$dir/valley.unready-refuse" >&2; exit 1; fi
+  : > "$dir/valley.after-unready"
   echo "widget nxvp v1 draft"
   ;;
 changes)
+  if [ -f "$dir/valley.after-unready" ]; then
+    echo >> "$dir/valley.after-unready"
+    n=$(wc -l < "$dir/valley.after-unready" | tr -d ' ')
+    for f in "$dir/valley.changes.unready.$n.json" "$dir/valley.changes.unready.json"; do
+      if [ -f "$f" ]; then cat "$f"; exit 0; fi
+    done
+  fi
   if [ -f "$dir/valley.changes.json" ]; then cat "$dir/valley.changes.json"; exit 0; fi
   echo "valley: cannot reach classic-laddie" >&2
   exit 1

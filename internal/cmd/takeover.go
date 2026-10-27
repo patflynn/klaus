@@ -28,15 +28,7 @@ var continuationLockWait = 5 * time.Minute
 // then finds the first run registered and refuses. It waits up to
 // continuationLockWait, saying so on stderr. The returned func releases it.
 func lockContinuation(ctx context.Context, repoRoot string) (func(), error) {
-	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-common-dir").Output()
-	if err != nil {
-		return nil, fmt.Errorf("finding the git directory of %s: %w", repoRoot, err)
-	}
-	dir := strings.TrimSpace(string(out))
-	if !filepath.IsAbs(dir) {
-		dir = filepath.Join(repoRoot, dir)
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "klaus-continue.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	f, err := openContinuationLock(ctx, repoRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -64,6 +56,34 @@ func lockContinuation(ctx context.Context, repoRoot string) (func(), error) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+}
+
+// tryLockContinuation takes the lock lockContinuation takes, if no launch
+// holds it; ok is false when one does, or the lock can't be taken.
+func tryLockContinuation(ctx context.Context, repoRoot string) (release func(), ok bool) {
+	f, err := openContinuationLock(ctx, repoRoot)
+	if err != nil {
+		return nil, false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, false
+	}
+	return func() { f.Close() }, true
+}
+
+// openContinuationLock opens the continuation lock's file, in the clone's
+// common git directory, which its worktrees share.
+func openContinuationLock(ctx context.Context, repoRoot string) (*os.File, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return nil, fmt.Errorf("finding the git directory of %s: %w", repoRoot, err)
+	}
+	dir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(repoRoot, dir)
+	}
+	return os.OpenFile(filepath.Join(dir, "klaus-continue.lock"), os.O_CREATE|os.O_RDWR, 0o644)
 }
 
 // occupantError is the refusal to create a worktree on branch while the

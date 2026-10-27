@@ -23,6 +23,7 @@ import (
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/jobs"
 	"github.com/patflynn/klaus/internal/pipeline"
+	"github.com/patflynn/klaus/internal/restack"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/patflynn/klaus/internal/webhook"
@@ -312,6 +313,8 @@ type dashboardModel struct {
 	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
 	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
 	integrationOn   bool                                         // the integration check loop has started
+	restackOn       bool                                         // each integration check runs a restack pass
+	restacks        map[integration.ChangeKey]restack.View       // where each restack conflict on a change klaus owns stands
 	approveTemplate string                                       // dashboard.approve_command, or the deprecated submit_command
 	recentErrors    []dashboardError                             // last N pipeline errors shown in TUI
 	jobsDir         string                                       // the session's job records; "" outside a session
@@ -395,6 +398,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		pipelineStates:  make(map[string]*pipeline.PRPipelineState),
 		noAccessAt:      make(map[string]time.Time),
 		checker:         integration.NewValleyChecker(logger),
+		restackOn:       ledgerPath != "", // a restack pass keeps its ledger in the session directory
 		approveTemplate: cfg.Dashboard.ApproveTemplate(),
 		hideAfter:       hideFinishedAfter(cfg.Dashboard),
 		logFile:         logFile,
@@ -551,16 +555,19 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The first load starts the integration check loop; it then
 			// re-arms itself each time a check completes.
 			m.integrationOn = true
-			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store))
+			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store, m.restackOn))
 		}
 		return m, cmd
 
 	case integrationTickMsg:
-		return m, checkIntegrationCmd(m.checker, m.states, m.store)
+		return m, checkIntegrationCmd(m.checker, m.states, m.store, m.restackOn)
 
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
 		m.changes = keepChangeViews(m.changes, msg.changes)
+		if msg.restacks != nil {
+			m.restacks = msg.restacks
+		}
 		return m, integrationTickAfterCmd()
 
 	case ghStatusMsg:

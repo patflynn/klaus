@@ -50,7 +50,7 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 	changes, err := valley.List(ctx, dir)
 	if err != nil {
 		c.logger.Debug("valley check failed; judging runs by git", "dir", dir, "err", err)
-		return Report{Runs: c.judgeByGit(ctx, runs)}
+		return Report{Runs: c.judgeByGit(ctx, runs), Asked: true}
 	}
 	for _, vr := range changes.Repos {
 		if e := vr.Err(); e != "" {
@@ -69,7 +69,7 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 	for id, r := range c.judgeByGit(ctx, rest) {
 		out[id] = r
 	}
-	return Report{Runs: out, Changes: activeVersions(changes)}
+	return Report{Runs: out, Changes: activeVersions(changes), Listing: changes, Asked: true}
 }
 
 // judgeByGit asks the GitChecker about runs the valley didn't place. A run

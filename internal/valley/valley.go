@@ -254,6 +254,37 @@ func HasPolicy(ctx context.Context, dir, head string) bool {
 	return false
 }
 
+// Principal returns the name the valley knows the repo in dir's pusher by:
+// its git config valley.principal, which the host sets. "" when unset.
+func Principal(ctx context.Context, dir string) string {
+	p, err := gitOutput(ctx, dir, "config", "--get", "valley.principal")
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// OriginRefs reads where each of refs is on the origin of the repo in dir,
+// with one ls-remote. A ref origin lacks is missing from the map.
+func OriginRefs(ctx context.Context, dir string, refs ...string) (map[string]string, error) {
+	out, err := gitOutput(ctx, dir, append([]string{"ls-remote", "origin"}, refs...)...)
+	if err != nil {
+		return nil, fmt.Errorf("reading origin's refs: %w", err)
+	}
+	want := make(map[string]bool, len(refs))
+	for _, r := range refs {
+		want[r] = true
+	}
+	got := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		oid, ref, ok := strings.Cut(line, "\t")
+		if ok && want[ref] {
+			got[ref] = oid
+		}
+	}
+	return got, nil
+}
+
 // command runs valley and returns its stdout, or an *Error.
 func command(ctx context.Context, dir string, timeout time.Duration, args ...string) ([]byte, error) {
 	return commandInput(ctx, dir, timeout, nil, args...)

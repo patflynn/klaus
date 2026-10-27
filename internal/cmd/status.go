@@ -11,6 +11,7 @@ import (
 	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/jobs"
+	"github.com/patflynn/klaus/internal/restack"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
 	"github.com/spf13/cobra"
@@ -91,6 +92,18 @@ per repo). If the valley can't be asked, its runs are checked against their
 clones. If the check can't complete, the run stays awaiting-integration (or
 awaiting-approval, or awaiting-review). A deleted branch alone never settles a valley change: it
 stays awaiting-approval rather than branch-gone.
+
+A valley's restacker rebases ready changes onto main after each landing,
+and reports a rebase that conflicts. For a change klaus owns (its record's
+owner is the repo's valley.principal), CONFLICTS reads restack while the
+conflict stands, and a list after the table says where each stands: a
+resolution run due, dispatched (attempt n of 3), being launched (klaus
+hasn't yet seen the run start), waiting out the cooldown, a run already
+working on the change, stopped after 3 runs, not dispatched (and why: the
+change couldn't be returned to draft, or the launch failed, perhaps after
+starting its worker), or left alone (the conflict is in a change below it,
+or the change sits on other changes). klaus restack-conflicts, which the
+dashboard runs, does the dispatching; status only reads.
 
 After the runs, a jobs table lists the session's consults and reviews (see
 klaus jobs): every one running, and those that finished in the last 3 hours,
@@ -173,6 +186,15 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
 	handles := changeHandles(states, report.Changes)
 	prs := changePRs(states)
+	// The restack conflicts on changes klaus owns, and what klaus did
+	// about them; reading them changes nothing.
+	var restackList []restack.View
+	if hds, ok := store.(*run.HomeDirStore); ok && (report.Listing != nil || !report.Asked) {
+		if restackList, err = restackPass(ctx, hds, report.Listing, false); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reading restack conflicts: %v\n", err)
+		}
+	}
+	restacks := restackViews(restackList)
 
 	// The changes some run is still running on: any other run of one
 	// that isn't done is working.
@@ -252,6 +274,10 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			}
 		}
 
+		if _, ok := restacks[valleyKey(s)]; ok && s.ChangeID != "" && conflicts == "-" {
+			conflicts = "restack"
+		}
+
 		if k, ok := changeOf(s); ok && busy[k] && live(status) && !s.SharedGitChanged() {
 			status = "working"
 		}
@@ -273,6 +299,14 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		}
 		fmt.Fprintf(os.Stdout, "%s changed its clone's shared git files while it ran: %s (in %s); check them before running git in that clone\n",
 			s.ID, strings.Join(s.SharedGit.Changed, ", "), s.SharedGit.Dir)
+	}
+
+	if len(restackList) > 0 {
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout, "Restack conflicts on changes klaus owns:")
+		for _, v := range restackList {
+			fmt.Fprintf(os.Stdout, "  %s\n", v)
+		}
 	}
 
 	return nil
