@@ -780,6 +780,7 @@ that confirms expired tokens are rejected. See issue #42 for the user report."
 
 Use ` + "`klaus consult --role critic --file <plan> \"Critique this plan\"`" + ` before dispatching any build larger than a bug fix; use ` + "`--panel`" + ` for a genuine design fork and keep a ` + "`--thread`" + ` per topic.
 Consults are read-only thinking conversations, cheap compared to a launch.
+` + "`--repo <project>`" + ` reads a fresh snapshot of origin's default branch, fetched each turn (a ` + "`--thread`" + ` keeps its project and moves its snapshot every turn), never the clone's working tree; the partner's prompt starts with the commit it reads. ` + "`--dir`" + ` reads a directory as it stands.
 Flags: ` + "`--backend`, `--model`, `--effort`, `--role`, `--thread`, `--dir` / `--repo`, `--file` (repeatable), `--prompt-file`, `--panel`, `--list`" + `.
 
 ## Cross-model review

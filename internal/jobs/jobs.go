@@ -61,6 +61,7 @@ type Job struct {
 	Effort  string `json:"effort,omitempty"`
 	Dir     string `json:"dir,omitempty"`    // a consult's workspace
 	Repo    string `json:"repo,omitempty"`   // a consult's --repo, or a review's owner/repo
+	Commit  string `json:"commit,omitempty"` // the commit a --repo consult read
 	PR      string `json:"pr,omitempty"`     // a review's PR, owner/repo#N
 	Prompt  string `json:"prompt,omitempty"` // first line of a consult's question
 
