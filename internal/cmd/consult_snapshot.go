@@ -79,7 +79,12 @@ func oneShotSnapshotDir(name string) (parent, dir string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	return parent, filepath.Join(parent, filepath.Base(name)), nil
+	// A name such as ".." must not lead outside parent, which goes with it.
+	base := filepath.Base(name)
+	if base == "." || base == ".." || base == string(filepath.Separator) {
+		base = "workspace"
+	}
+	return parent, filepath.Join(parent, base), nil
 }
 
 // removeConsultSnapshots removes the snapshot of every consult thread in

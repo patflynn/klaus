@@ -171,6 +171,18 @@ echo 'session id: snapshot-thread' >&2
 		if list := snapshotGit(t, clone, "worktree", "list", "--porcelain"); strings.Contains(list, parent) {
 			t.Errorf("clone still lists the one-shot snapshot:\n%s", list)
 		}
+		// A dot name stays inside its own directory, sparing other snapshots.
+		other := filepath.Join(parent, "consult-other")
+		if err := os.MkdirAll(other, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := e.run(t, "--backend", "codex", "--repo", "..", "question"); err == nil {
+			t.Errorf("--repo .. succeeded: %s", out)
+		}
+		if _, err := os.Stat(other); err != nil {
+			t.Errorf("--repo .. removed another snapshot: %v", err)
+		}
+		os.RemoveAll(other)
 	})
 
 	t.Run("panel members share a snapshot", func(t *testing.T) {
