@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/patflynn/klaus/internal/consult"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/tmux"
@@ -18,8 +19,10 @@ var cleanupCmd = &cobra.Command{
 	Long: `Cleans up a run by killing its tmux pane, removing its worktree,
 deleting local branches, and removing state files.
 
-Use --all to clean up all runs. Runs with active tmux panes are skipped
-by default; pass --force to remove them anyway. With --all, the detached
+Use --all to clean up all runs, and the session's consult thread snapshots
+(see klaus consult --repo) not in use; a thread makes a new one on its next
+turn. Runs with active tmux panes are skipped by default; pass --force to
+remove them anyway. With --all, the detached
 agents tmux session is removed too — but only once no remaining run holds a
 pane in it and no pane in it is still running a command, so a session with
 live agents is never torn down.`,
@@ -40,6 +43,9 @@ live agents is never torn down.`,
 		}
 
 		if all {
+			if hs, ok := store.(*run.HomeDirStore); ok {
+				removeConsultSnapshots(ctx, consult.NewStore(hs.BaseDir()), cmd.OutOrStdout())
+			}
 			return cleanupAll(ctx, root, store, gitClient, force, deps, tmuxClient)
 		}
 

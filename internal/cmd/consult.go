@@ -19,8 +19,8 @@ import (
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/consult"
 	"github.com/patflynn/klaus/internal/event"
+	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/jobs"
-	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +42,18 @@ these threads. One-shot questions also work without a Klaus session.
 so the partner needn't open them; for agy, which can't open a path outside its
 workspace, each sits between BEGIN and END lines. Attachment and prompt-file
 paths are relative to the invoking directory. --dir selects the partner's
-workspace; --repo selects a registered local project. --panel queries all
+workspace, read as it stands. --repo selects a registered local project and
+reads a snapshot of origin's default branch (default_branch in the project's
+config, else main), fetched at the start of the turn: a detached worktree of
+the project's clone under ~/.klaus, never the clone's working tree. A
+--repo thread keeps the project and its own snapshot, which every later turn
+fetches and moves to the current origin branch; a one-shot consult's snapshot,
+shared by a panel, is removed when it ends. The prompt's first line names the
+commit read ("Workspace: <project> at origin/<branch> <commit>"), and the
+thread, the consult:started event and the job record keep it. When the fetch
+fails, a thread reads its last snapshot, with a warning naming its commit; with
+no snapshot yet, the consult fails. klaus cleanup --all removes threads'
+snapshots. --panel queries all
 installed model families other than the caller concurrently and groups their
 answers by backend. Panel answers are buffered to keep each response together.
 Each backend has a 10-minute deadline; use --timeout to change it. Timed-out
@@ -63,8 +74,8 @@ way 'klaus jobs show <id> --answer' prints it.`,
 	f.String("effort", "", "Reasoning effort (default: backends.<kind>.effort)")
 	f.String("role", "", "partner, critic, reviewer, or a verbatim system prompt (default: consult.default_role)")
 	f.String("thread", "", "Continue a named conversation in the current or most recent Klaus session")
-	f.String("dir", "", "Read-only workspace (default: cwd, or saved thread directory)")
-	f.String("repo", "", "Registered local project name to consult")
+	f.String("dir", "", "Read-only workspace, read as it stands (default: cwd, or saved thread directory)")
+	f.String("repo", "", "Registered local project to read, as a fresh snapshot of origin's default branch")
 	f.StringArray("file", nil, "Inline a file in the prompt; repeatable, 200KB total")
 	f.String("prompt-file", "", "Read the question from a file instead of a positional argument")
 	f.Duration("timeout", 10*time.Minute, "Deadline per backend call (positive duration, e.g. 30s or 10m)")
@@ -149,14 +160,37 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		}
 	}
 	dir := str("dir")
-	if str("repo") != "" {
-		reg, err := project.Load()
-		if err != nil {
-			return err
+	repo := str("repo")
+	if saved != nil && (saved.Repo != "" || repo != "") {
+		switch {
+		case saved.Repo == "" || cmd.Flags().Changed("dir"):
+			return fmt.Errorf("workspace conflicts with saved thread %q", name)
+		case repo != "" && repo != saved.Repo:
+			return fmt.Errorf("--repo conflicts with saved thread %q", name)
 		}
-		_, dir = resolveRepoTarget(str("repo"), "", reg)
-		if dir == "" {
-			return fmt.Errorf("project %q is not registered; use klaus project add or --dir", str("repo"))
+		repo = saved.Repo
+	}
+	// A --repo consult reads a snapshot of origin's default branch, fetched
+	// now: a thread's at a path of its own that every turn moves, a one-shot
+	// consult's (shared by a panel's members) in a directory removed after.
+	var snap *repoSnapshot
+	if repo != "" {
+		if name != "" {
+			if dir, err = store.WorkspaceDir(name); err != nil {
+				return err
+			}
+		} else {
+			var parent string
+			if parent, dir, err = oneShotSnapshotDir(repo); err != nil {
+				return err
+			}
+			defer func() {
+				warnSnapshot(cmd.ErrOrStderr(), git.RemoveSnapshot(context.Background(), dir))
+				os.RemoveAll(parent)
+			}()
+		}
+		if snap, err = prepareRepoSnapshot(cmd.Context(), repo, dir, cmd.ErrOrStderr()); err != nil {
+			return err
 		}
 	}
 	if dir == "" && saved != nil {
@@ -241,7 +275,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	threads := make([]*consult.Thread, 0, len(kinds))
 	for _, kind := range kinds {
 		defaults := cfg.AgentDefaults(string(kind))
-		t := &consult.Thread{Backend: kind, Model: defaults.Model, Effort: defaults.Effort, Role: role, Dir: dir, CreatedAt: time.Now().UTC()}
+		t := &consult.Thread{Backend: kind, Model: defaults.Model, Effort: defaults.Effort, Role: role, Dir: dir, Repo: repo, CreatedAt: time.Now().UTC()}
 		if cmd.Flags().Changed("model") {
 			t.Model = str("model")
 		}
@@ -254,6 +288,9 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		if err := kind.ValidateEffort(t.Effort); err != nil {
 			return err
 		}
+		if snap != nil {
+			t.Commit = snap.commit
+		}
 		threads = append(threads, t)
 	}
 	panelID := ""
@@ -262,6 +299,9 @@ func runConsult(cmd *cobra.Command, args []string) error {
 	}
 	ask := func(t *consult.Thread, out, errOut io.Writer) (askErr error) {
 		prompt := consult.InlineFiles(t.Backend, question, files)
+		if snap != nil {
+			prompt = snap.workspaceLine() + "\n\n" + prompt
+		}
 		callCtx, cancel := context.WithTimeout(cmd.Context(), timeout)
 		defer cancel()
 		start := time.Now()
@@ -270,8 +310,9 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		var result consult.Result
 		if baseDir != "" {
 			consultID, data := consultEventID(), map[string]interface{}{"backend": t.Backend, "model": t.Model, "effort": t.Effort, "role": t.Role, "thread": name, "dir": t.Dir, "panel": panel, "prompt": excerpt}
-			if str("repo") != "" {
-				data["repo"] = str("repo")
+			if snap != nil {
+				data["repo"] = snap.project
+				data["commit"] = snap.commit
 			}
 			if str("prompt-file") != "" {
 				data["prompt_file"] = str("prompt-file")
@@ -280,7 +321,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 				data["repo_key"] = key
 			}
 			job = &jobs.Job{ID: consultID, Kind: jobs.KindConsult, Panel: panelID, Thread: name, Role: t.Role,
-				Backend: string(t.Backend), Model: t.Model, Effort: t.Effort, Dir: t.Dir, Repo: str("repo"), Prompt: excerpt}
+				Backend: string(t.Backend), Model: t.Model, Effort: t.Effort, Dir: t.Dir, Repo: repo, Commit: t.Commit, Prompt: excerpt}
 			warnJob(errOut, job, jobStore.Start(job))
 			emitEvent(baseDir, consultID, event.ConsultStarted, data)
 			// SIGINT/SIGTERM cancel cmd.Context() rather than killing the
@@ -306,9 +347,13 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			id = genUUIDv4()
 		}
 		if name != "" {
-			revision, _ := exec.CommandContext(callCtx, "git", "-C", t.Dir, "rev-parse", "--short", "HEAD").Output()
+			revision := t.Commit
+			if snap == nil {
+				out, _ := exec.CommandContext(callCtx, "git", "-C", t.Dir, "rev-parse", "--short", "HEAD").Output()
+				revision = strings.TrimSpace(string(out))
+			}
 			var err error
-			turn, err = store.BeginTurn(name, t, prompt, strings.TrimSpace(string(revision)))
+			turn, err = store.BeginTurn(name, t, prompt, revision)
 			if err != nil {
 				return err
 			}
@@ -376,6 +421,14 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// warnSnapshot reports a one-shot consult's snapshot that couldn't be
+// removed; the answer stands.
+func warnSnapshot(w io.Writer, err error) {
+	if err != nil {
+		fmt.Fprintf(w, "warning: %v\n", err)
+	}
 }
 
 // consultEventID identifies one backend call in events.jsonl and its job

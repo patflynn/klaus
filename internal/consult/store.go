@@ -20,10 +20,15 @@ type Thread struct {
 	Effort           string       `json:"effort,omitempty"`
 	BackendSessionID string       `json:"backend_session_id"`
 	Dir              string       `json:"dir"`
-	Role             string       `json:"role"`
-	CreatedAt        time.Time    `json:"created_at"`
-	LastUsed         time.Time    `json:"last_used"`
-	Turns            int          `json:"turns"`
+	// Repo is the registered project a --repo thread reads. Its Dir is then
+	// the thread's snapshot (WorkspaceDir), which every turn moves to
+	// origin's default branch, and Commit is the commit the last turn read.
+	Repo      string    `json:"repo,omitempty"`
+	Commit    string    `json:"commit,omitempty"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+	LastUsed  time.Time `json:"last_used"`
+	Turns     int       `json:"turns"`
 }
 
 type Store struct{ Dir string }
@@ -38,6 +43,10 @@ func (s Store) path(name, ext string) (string, error) {
 	}
 	return filepath.Join(s.Dir, name+ext), nil
 }
+
+// WorkspaceDir is where a --repo thread's snapshot lives. It doesn't
+// change between turns, so the thread's workspace stays the same.
+func (s Store) WorkspaceDir(name string) (string, error) { return s.path(name, ".workspace") }
 
 func (s Store) Lock(name string) (func(), error) {
 	path, err := s.path(name, ".lock")

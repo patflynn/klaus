@@ -264,6 +264,7 @@ func showJob(w io.Writer, store jobs.Store, j *jobs.Job, now time.Time) error {
 	if j.PR == "" {
 		add("repo", j.Repo)
 	}
+	add("commit", j.Commit)
 	add("dir", j.Dir)
 	add("started", j.StartedAt.Local().Format("2006-01-02 15:04:05"))
 	if j.FinishedAt != nil {
