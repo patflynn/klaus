@@ -205,20 +205,40 @@ and search. The agy definition is removed after the call. Every backend reads
 the question on stdin, so no prompt meets the OS argument-size limit.
 
 Roles are `partner`, `critic`, `reviewer`, or your own system-prompt text.
-`--dir` selects a workspace (default: cwd); `--repo` resolves a registered local
-project. Repeat `--file` to inline attachments, up to 200KB total, or supply the
+`--dir` selects a workspace (default: cwd), read as it stands. Repeat `--file` to inline attachments, up to 200KB total, or supply the
 question via `--prompt-file`. File paths resolve from the invoking directory.
 Each attachment goes in the prompt under a header with its path, so the partner
 needn't open it. Headless agy can't read a path outside its workspace, and a
 denied read ends its turn with no answer, so for agy each file sits between
 BEGIN and END lines, behind a note that it is there in full.
 
+`--repo NAME` reads a registered local project as origin has it, never the
+clone's working tree, which may sit on an old agent branch: at the start of
+each turn klaus fetches origin's default branch (the project's `default_branch`,
+else `main`) into the clone and checks it out, detached, in a snapshot
+worktree of the clone under `~/.klaus`, so the partner still has `git log` and
+`git blame`. The first line of the prompt names what it reads, as
+`Workspace: <project> at origin/<branch> <commit>`, and the commit is recorded
+in the thread, the `consult:started` event and the job record. A one-shot
+consult's snapshot, which a `--panel`'s members share, is in
+`~/.klaus/consult-snapshots/` and is removed when the consult ends. A thread
+started with `--repo` keeps the project and a snapshot of its own, at
+`~/.klaus/sessions/<session-id>/consults/NAME.workspace`; every later turn,
+with or without `--repo`, moves it to the current origin branch before the
+partner runs. If the fetch fails (offline, auth), klaus says so on stderr and
+the thread reads its last snapshot, naming its commit; a first turn with no
+snapshot fails. `klaus cleanup --all` removes the session's thread snapshots
+(the next turn makes a new one), and one deleted by hand is pruned from the
+clone and made again on the next turn. A snapshot is detached, so it never
+holds a branch a launch needs.
+
 Keep a `--thread NAME` per topic. Threads retain their backend, model, effort,
 role, and workspace; incompatible overrides are rejected. Metadata and readable
 transcripts live in `~/.klaus/sessions/<session-id>/consults/NAME.{json,log}`.
 New transcript turns are JSON lines, persisted as `pending` before the backend
 starts and atomically updated to `ok` or `error: <message>`. Each records backend,
-model, resume ID, repository revision, and session-ID source (`stderr`,
+model, resume ID, repository revision (a `--repo` thread's full snapshot
+commit), and session-ID source (`stderr`,
 `stdout-json`, `diagnostic-log`, or `text`; `assigned`/`resume` identify known IDs).
 An interrupted turn stays `pending`; legacy transcript text is retained. Failed
 turns preserve stdout/stderr in `NAME.<turn>.raw`, and extraction errors report
@@ -242,7 +262,8 @@ before the model runs and a `consult:completed` event when it ends; both appear
 in the default `klaus watch` filter. The pair shares a `run_id` of the form
 `consult-YYYYMMDD-HHMM-xxxxxxxx`, and a panel emits one pair per member. Both
 events carry `backend`, `model`, `effort` and `role` (after defaults), `thread`
-(empty for one-shot), `dir` (absolute workspace), `repo` (with `--repo`),
+(empty for one-shot), `dir` (absolute workspace), `repo` and `commit` (with `--repo`, or a
+`--repo` thread),
 `panel`, `prompt` (first line, up to 120 characters) and `prompt_file` (with
 `--prompt-file`). `consult:completed` adds `duration_ms`, `success`, and on
 failure a short `error` such as `timeout after 10m0s` or `interrupted`; it never
@@ -256,7 +277,8 @@ again when it ends, so you can see what is running and how it ended: `klaus
 status` and the dashboard list every running job and those that finished in the
 last 3 hours, and `klaus jobs` lists them on their own (`--all` for every record
 kept). A record holds `kind` (`consult` or `review`), `thread` and `turn`,
-`role`, `backend`, `model`, `effort`, `dir` or `repo` (a review's `pr`), the
+`role`, `backend`, `model`, `effort`, `dir`, `repo` and the `commit` a
+`--repo` consult read (a review's `pr`), the
 `prompt` excerpt, `started_at` and `finished_at`, the klaus `pid` (with its
 start time from `/proc/<pid>/stat` on Linux, so a reused PID isn't mistaken
 for it), and `status`: `running`, `succeeded`, `failed`, `timed out` or
