@@ -42,6 +42,13 @@ var defaultWatchFilter = []string{
 	event.PipelineStalled,         // live
 	event.ChangeRestackDispatched, // live
 	event.ChangeRestackStalled,    // live
+	event.ChangeApproved,          // live
+	event.ChangeIntegrated,        // live
+	event.ChangeStale,             // live
+	event.ChangeRejected,          // live
+	event.ChangeFailed,            // live
+	event.ChangeWithdrawn,         // live
+	event.ChangeNewVersion,        // live
 	"ci:failed",                   // reserved (closest live equivalent: agent:ci-failed)
 	"ci:passed",                   // reserved (closest live equivalent: agent:ci-passed)
 	"pr:comment",                  // reserved
@@ -71,6 +78,13 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
 	{event.ChangeRestackDispatched, "live", "klaus launched a run to resolve a restack conflict the valley reported on a change klaus owns"},
 	{event.ChangeRestackStalled, "live", "klaus stopped short of resolving a change's restack conflict (attempts spent, unready or launch failed)"},
+	{event.ChangeApproved, "live", "A ready version of a valley change got an integration request (the operator approved it)"},
+	{event.ChangeIntegrated, "live", "A valley change landed"},
+	{event.ChangeStale, "live", "The integrator found a valley change's approved version stale"},
+	{event.ChangeRejected, "live", "The integrator rejected a valley change's approved version"},
+	{event.ChangeFailed, "live", "The integrator failed to land a valley change's approved version"},
+	{event.ChangeWithdrawn, "live", "A valley change was withdrawn"},
+	{event.ChangeNewVersion, "live", "A valley change got a version this session didn't record (the valley's restacker, or a human)"},
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
@@ -99,10 +113,23 @@ Events are read from ~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl,
 followed via fsnotify, and emitted to stdout one line at a time. The default
 filter selects events the coordinator typically wants to react to:
 
-  agent:pr-created, agent:branch-pushed, agent:needs-attention,
-  agent:error, pr:approved, pr:merged, pipeline:stalled,
+  agent:pr-created, agent:branch-pushed, agent:change-ready,
+  agent:change-draft, agent:needs-attention, agent:error,
+  pr:approved, pr:merged, pipeline:stalled,
+  change:approved, change:integrated, change:stale, change:rejected,
+  change:failed, change:withdrawn, change:new-version,
+  change:restack-dispatched, change:restack-stalled,
   consult:started, consult:completed, review:started, review:completed,
   ci:failed, ci:passed, pr:comment
+
+A valley change's transitions (change:approved, change:integrated,
+change:stale, change:rejected, change:failed, change:withdrawn and
+change:new-version) report its life as pr:approved and pr:merged report a
+PR's: the dashboard reads them off the valley's listing in its integration
+check, once a minute, and reports each transition once, under the change's
+handle. Without a dashboard nothing reports them; klaus status only reads.
+A change the dashboard sees for the first time is recorded as it stands,
+without events.
 
 Some of those types are reserved (not currently emitted) but kept in the
 default filter so this command stays forward-compatible. Run 'klaus watch
@@ -111,7 +138,8 @@ default filter so this command stays forward-compatible. Run 'klaus watch
 Passing --filter REPLACES the default. --filter-out is always subtracted.
 Both flags are repeatable and use OR semantics within each flag. --run keeps
 only the events of the given runs (repeatable; a pipeline event's run is its
-PR's number).
+PR's number, and a valley change's transition's, change:approved and the
+like, is the change's handle).
 
 klaus session creates the events file when it creates or resumes a session.
 In a session that has none yet, watch waits for it as long as the session's
@@ -161,7 +189,7 @@ so is an events file replaced or removed while --once waits on it.`,
 func init() {
 	watchCmd.Flags().StringSlice("filter", nil, "Event type to include (repeatable, OR semantics). Replaces the default filter when set.")
 	watchCmd.Flags().StringSlice("filter-out", nil, "Event type to exclude (repeatable). Applied after --filter.")
-	watchCmd.Flags().StringSlice("run", nil, "Run ID whose events to include (repeatable; a PR number for pipeline events).")
+	watchCmd.Flags().StringSlice("run", nil, "Run ID whose events to include (repeatable; a PR number for pipeline events, a change's handle for its transitions).")
 	watchCmd.Flags().Bool("since-start", false, "Emit events already in the file before tailing new ones.")
 	watchCmd.Flags().Bool("once", false, "Wait for at least one matching event, print every one that has arrived and the command that waits for the next, then exit.")
 	watchCmd.Flags().Int64("after", 0, "With --once: the byte offset in events.jsonl to read from, as printed on the last watch's next: line.")
@@ -650,6 +678,33 @@ func eventSummary(evt event.Event) string {
 			return fmt.Sprintf("PR #%s merged", prNum)
 		}
 		return "PR merged"
+	case event.ChangeApproved, event.ChangeIntegrated, event.ChangeStale, event.ChangeRejected,
+		event.ChangeFailed, event.ChangeWithdrawn, event.ChangeNewVersion:
+		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
+		if v := get("version"); v != "" {
+			msg += " v" + v
+		}
+		switch evt.Type {
+		case event.ChangeIntegrated:
+			msg += " integrated"
+			if c := get("landed_commit"); c != "" {
+				msg += " as " + shortSHA(c)
+			}
+		case event.ChangeNewVersion:
+			msg += " new version"
+			if h := get("head"); h != "" {
+				msg += " at " + shortSHA(h)
+			}
+			if u := get("uploader"); u != "" {
+				msg += " by " + u
+			}
+		default:
+			msg += " " + strings.TrimPrefix(evt.Type, "change:")
+		}
+		if title := get("title"); title != "" {
+			msg += ": " + title
+		}
+		return truncateLine(msg, 160)
 	case event.PhaseStarted:
 		return get("phase")
 	case event.PhaseCompleted:
