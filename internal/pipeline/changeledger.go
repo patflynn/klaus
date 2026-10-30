@@ -99,6 +99,11 @@ var outcomeEvents = map[string]string{
 //     decision on a ready change's active version, which didn't land, is a
 //     new one, or is on a later version than the last.
 //
+// A listing whose active version is below the highest the ledger holds was
+// read before the one that recorded that version, and reports only a
+// landing: its approval, outcome or withdrawal is old news, and changes
+// nothing.
+//
 // A change the ledger holds nothing for is recorded as it stands, and
 // returns none: a first look at a session's changes reports no history.
 // As with Ledger.record, the file stays locked from reading it to renaming
@@ -148,7 +153,10 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 	if !ok {
 		return out, l.saved(changed, lockErr, loadErr)
 	}
-	if ch.State == valley.StateReady && active.Request != nil && (e.Approved == nil || e.Approved.Version < active.N) {
+	// Only a landing is news from an older listing: a version that landed
+	// stays landed.
+	superseded := active.N < e.Version.Version
+	if !superseded && ch.State == valley.StateReady && active.Request != nil && (e.Approved == nil || e.Approved.Version < active.N) {
 		mark(&e.Approved, ChangeMark{Version: active.N, Head: active.Head},
 			ChangeTransition{Type: event.ChangeApproved, Version: active})
 	}
@@ -161,7 +169,7 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 			ChangeTransition{Type: event.ChangeIntegrated, Version: v, Commit: commit})
 	}
 	switch {
-	case landed(active):
+	case landed(active), superseded:
 	case ch.State == valley.StateWithdrawn:
 		if e.Withdrawn == nil {
 			mark(&e.Withdrawn, ChangeMark{Version: active.N, Head: active.Head},
@@ -169,8 +177,6 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		}
 	case ch.State == valley.StateReady:
 		d := outcomeOf(active)
-		// A listing read before the one that recorded a later version's
-		// outcome is old news.
 		if d != "" && (e.Outcome == nil || e.Outcome.Version < active.N ||
 			e.Outcome.Version == active.N && e.Outcome.Decision != d) {
 			mark(&e.Outcome, ChangeMark{Version: active.N, Head: active.Head, Decision: d},
