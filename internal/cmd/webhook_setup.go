@@ -67,7 +67,6 @@ func DefaultWebhookDeps() WebhookDeps {
 	}
 }
 
-
 var webhookCmd = &cobra.Command{
 	Use:   "webhook",
 	Short: "Manage GitHub webhooks for registered projects",

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"github.com/patflynn/klaus/internal/review"
 	"io"
 	"os"
 	"strings"
@@ -155,10 +156,10 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 
 	ghClient := gh.NewGHCLIClient("")
 
-	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-		"RUN ID", "STATUS", "BACKEND", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
-		"------", "------", "-------", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
+	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"RUN ID", "STATUS", "MODEL", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
+	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		"------", "------", "-----", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 	statuses := make([]string, len(states))
 	running := make(map[string]bool)
@@ -282,7 +283,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			status = "working"
 		}
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-8s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
 			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, changeOf, prs, handles), ci, conflicts, behind, merge, prompt)
 	}
 
@@ -576,8 +577,19 @@ func runBackendName(s *run.State) string {
 	if s.Type == "track" {
 		return "-"
 	}
-	if s.Backend == "" {
-		return "claude"
+	return runBackendModel(s)
+}
+
+// runBackendModel is a run's backend and model: the model the worker
+// reported, else the one launched with, else "(default model)".
+func runBackendModel(s *run.State) string {
+	b := s.Backend
+	if b == "" {
+		b = "claude"
 	}
-	return s.Backend
+	model := s.ResolvedModel
+	if model == "" && s.Model != nil {
+		model = *s.Model
+	}
+	return review.BackendModel(b, model)
 }

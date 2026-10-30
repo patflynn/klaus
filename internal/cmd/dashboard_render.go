@@ -351,6 +351,9 @@ func bareAgentParts(r dashRow) []string {
 	if v := s.Valley; v != nil && v.Error != "" && r.change == nil {
 		parts = append(parts, redStyle.Render(v.Error))
 	}
+	if s.Type != "track" {
+		parts = append(parts, dimStyle.Render(runBackendModel(s)))
+	}
 	return parts
 }
 

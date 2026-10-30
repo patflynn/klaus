@@ -244,13 +244,19 @@ func buildPRReview(r *ReviewResult, lines map[string]map[int]bool, m Marker) rev
 	return req
 }
 
-func prReviewBody(r *ReviewResult, folded []Finding, m Marker) string {
-	model := m.Model
+// BackendModel names a backend and the model it ran, e.g. "codex gpt-6" or
+// "agy (default model)" when none was set. Reviews, status and the dashboard
+// all use it so they read alike.
+func BackendModel(backend, model string) string {
 	if model == "" {
-		model = "default model"
+		model = "(default model)"
 	}
+	return backend + " " + model
+}
+
+func prReviewBody(r *ReviewResult, folded []Finding, m Marker) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**Cross-model review** by %s (%s): a second opinion for the operator, not an approval.\n\n", m.Backend, model)
+	fmt.Fprintf(&b, "**Cross-model review** by %s: a second opinion for the operator, not an approval.\n\n", BackendModel(m.Backend, m.Model))
 	if r.Verdict != "" {
 		fmt.Fprintf(&b, "**Verdict:** %s\n\n", r.Verdict)
 	}

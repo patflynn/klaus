@@ -132,7 +132,7 @@ var preReviewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Peer Review (reviewer: %s %s; author: %s):\n", kind, modelLabel(model), author)
+		fmt.Printf("Peer Review (reviewer: %s; author: %s):\n", review.BackendModel(string(kind), model), author)
 		check.data["reviewer"] = string(kind)
 		check.data["lint_ms"] = time.Since(check.start).Milliseconds()
 		reviewStart := time.Now()
@@ -240,13 +240,6 @@ func (c *preReviewCheck) finish(success bool, extra map[string]interface{}) {
 		return
 	}
 	c.run.emit(event.CheckCompleted, data)
-}
-
-func modelLabel(model string) string {
-	if model == "" {
-		return "(default model)"
-	}
-	return model
 }
 
 func printFindings(w io.Writer, findings []review.Finding) {
