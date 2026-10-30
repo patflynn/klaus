@@ -359,7 +359,7 @@ Each dispatch emits `change:restack-dispatched` under the new run's ID; a confli
 
 ### Real-time event channel
 
-Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, agents needing attention, agent errors, restack conflicts dispatched or stalled), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them. Each PR's `pr:approved` and `pr:merged` fire once, across dashboard restarts; a PR already merged when klaus first sees it emits neither.
+Pipeline events (PR created/approved/merged, CI passed/failed, branches pushed without a PR, valley changes marked ready, approved, integrated, stale, rejected, failed, withdrawn or given a new version, agents needing attention, agent errors, restack conflicts dispatched or stalled), consult events (`consult:started`, `consult:completed`) and review events (`review:started`, `review:completed`) are appended to `~/.klaus/sessions/$KLAUS_SESSION_ID/events.jsonl` and exposed as a streaming channel via `klaus watch`. It's designed for [Claude Code's Monitor tool](https://docs.anthropic.com/en/docs/claude-code) — each matching event becomes a notification injected into the coordinator's context between turns, so the coordinator can react to merges or CI failures without you having to mention them. Each PR's `pr:approved` and `pr:merged` fire once, across dashboard restarts; a PR already merged when klaus first sees it emits neither. A valley change's `change:approved`, `change:integrated`, `change:stale`, `change:rejected`, `change:failed`, `change:withdrawn` and `change:new-version` do the same, from the dashboard's integration check (see [Repos that deliver to a valley](#repos-that-deliver-to-a-valley)): wait on `change:integrated` for a landing rather than polling `valley status`.
 
 ```bash
 klaus watch                          # default filter, follow new events
@@ -368,7 +368,7 @@ klaus watch --filter pr:merged       # narrow to a single event type (repeatable
 klaus watch --filter-out pr:approved # subtract from the default filter
 klaus watch --filter pipeline:stalled # only PRs the pipeline gave up on
 klaus watch --json                   # raw JSONL passthrough
-klaus watch --run <run-id>           # only one run's events (a PR number for pipeline events)
+klaus watch --run <run-id>           # only one run's events (a PR number for pipeline events, a handle for a change's)
 klaus watch --list-types             # show live and reserved event types
 klaus watch --once                   # wait for the next events, print them, exit
 klaus watch --once --after 18342     # ...from where the last one's next: line left off
@@ -399,7 +399,7 @@ Every run event (`agent:*`, `phase:*`, `check:*`, and `pr:approval-changed` from
 | `dispatch_reason` | Why the run was launched (below) |
 | `head_sha` | The branch tip finalize found on `origin`, else the worktree's `HEAD` when the agent finished, else when it started |
 
-The pipeline's PR events (`pr:approved`, `pr:merged`, `agent:ci-*`, ...) carry `repo_key` and `key` when their PR URL is known; `review:*` events carry them for the reviewed PR, and `consult:*` events carry `repo_key` for the consult's workspace. Fields that aren't known are left out, and no existing field changed.
+The pipeline's PR events (`pr:approved`, `pr:merged`, `agent:ci-*`, ...) carry `repo_key` and `key` when their PR URL is known, and a valley change's transitions (`change:approved`, `change:integrated`, ...) carry them for the change; `review:*` events carry them for the reviewed PR, and `consult:*` events carry `repo_key` for the consult's workspace. Fields that aren't known are left out, and no existing field changed.
 
 The dispatch reason is `launch` for new work, `pr-follow-up` for `--pr`, `budget-resume` for `--pr` on a budget-paused PR, `change-follow-up` for `--change` and `resume` for `--resume-from`; the pipeline's fix agents are `ci-fix`, `review-fix` (changes requested), `review-comment-fix` (a trusted reviewer's comments) and `conflict-fix`, and a run resolving a valley change's restack conflict is `restack-conflict`. `klaus launch --reason <reason>` names any other, such as `docs-timer` for a timer's launch.
 
@@ -530,6 +530,18 @@ It marks the change's current head ready (`valley ready --change <change_id> --h
 | `DRAFT` | `draft` | yours | the change was returned to draft (`valley unready`), as launch does for a follow-up run, and no run of it is running; whatever the valley says of its active version short of landing, even `uncertain`, there is nothing for you to do: approve refuses it until a head is ready again |
 
 A change in a state klaus doesn't know isn't matched. A version that landed shows `INTEGRATED` even after a later version replaced it, or its change went back to draft. The valley is asked only when finalize found one for some run. If valley fails, or a run isn't in its listing, the run is checked against its clone as described above, and a change waiting on that check reads `READY` (`awaiting-approval`), or `REVIEW` (`awaiting-review`) when finalize left it a draft. A deleted branch alone never settles a change finalize marked ready: it stays yours (`awaiting-approval`) rather than `GONE`. When the dashboard has seen the valley's record of a change and a later check can't place it, the row keeps that last verdict, marked `(last known)`, unless git finds the work landed. The dashboard logs a failed listing at debug level.
+
+The dashboard also reports each change's transitions as events, as the pipeline reports a PR's `pr:approved` and `pr:merged` (see [Real-time event channel](#real-time-event-channel)). Its check reads, for the changes of the session's runs and tracked changes, the change's own record in the listing, whatever became of any one run's version, and records what it saw in the session's `change-transitions.json`: the highest version and its head, the version first seen approved, the landing and its commit, the last outcome (stale, rejected, failed or uncertain), and the withdrawal, each with when it was first seen. A mark the file didn't hold is reported once, under the change's handle:
+
+| Event | When |
+|-------|------|
+| `change:approved` | a ready version has an integration request: you approved it |
+| `change:integrated` | the change landed (`landed` or `landed-recorded`); carries `landed_commit` |
+| `change:stale`, `change:rejected`, `change:failed` | the integrator's decision on the active version's request; again only for a new version or a new decision |
+| `change:withdrawn` | the change was withdrawn |
+| `change:new-version` | a version neither this session's finalize nor its `klaus ready` recorded: the valley's restacker's, or a human's; carries `uploader` |
+
+Each carries `repo`, `handle`, `change_id`, and the `version`, `head` and `title` of the version it concerns, with `repo_key` (`valley:<repo>`) and `key` (`valley:<repo>@<change_id>`) as run events name the change. A version is this session's when one of its runs pushed its head or records it. A change the file holds nothing for, as on a session's first dashboard start, is recorded as it stands, with no events, so a restart reports nothing again and a first start reports no history. Dashboards on one session share the file, locking `change-transitions.json.lock` while they update it, so only one of them reports each transition. The events come off the dashboard's check, once a minute; `klaus status` only reads, so without a dashboard nothing reports them.
 
 ##### Follow-up runs on a change
 
