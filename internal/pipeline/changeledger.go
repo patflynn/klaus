@@ -97,7 +97,7 @@ var outcomeEvents = map[string]string{
 //     version didn't land;
 //   - change:stale, change:rejected or change:failed when the integrator's
 //     decision on a ready change's active version, which didn't land, is a
-//     new one, or is on a new version.
+//     new one, or is on a later version than the last.
 //
 // A change the ledger holds nothing for is recorded as it stands, and
 // returns none: a first look at a session's changes reports no history.
@@ -169,7 +169,10 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		}
 	case ch.State == valley.StateReady:
 		d := outcomeOf(active)
-		if d != "" && (e.Outcome == nil || e.Outcome.Version != active.N || e.Outcome.Decision != d) {
+		// A listing read before the one that recorded a later version's
+		// outcome is old news.
+		if d != "" && (e.Outcome == nil || e.Outcome.Version < active.N ||
+			e.Outcome.Version == active.N && e.Outcome.Decision != d) {
 			mark(&e.Outcome, ChangeMark{Version: active.N, Head: active.Head, Decision: d},
 				ChangeTransition{Type: outcomeEvents[d], Version: active})
 		}

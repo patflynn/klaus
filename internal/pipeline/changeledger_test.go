@@ -61,12 +61,17 @@ func TestChangeLedgerSharedByTwoDashboards(t *testing.T) {
 	observe("a sees the restacker's version", a, change(stale, v2), event.ChangeNewVersion)
 	observe("b sees it after a", b, change(stale, v2))
 
+	rejected := v2
+	rejected.Request, rejected.Outcome = &valley.Request{Ref: "refs/valley/requests/nxvp"}, &valley.Outcome{Decision: "rejected"}
+	observe("a sees v2 approved and rejected", a, change(stale, rejected), event.ChangeApproved, event.ChangeRejected)
+	observe("b, with a listing read before a's, sees v1 stale", b, change(stale))
+
 	// A third dashboard, started now, reads what the two recorded.
 	c, err := LoadChangeLedger(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	observe("a restarted dashboard", c, change(stale, v2))
+	observe("a restarted dashboard", c, change(stale, rejected))
 }
 
 // TestChangeLedgerLandingBeforeANewVersion: a version that landed is the
