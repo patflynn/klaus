@@ -313,6 +313,7 @@ type dashboardModel struct {
 	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
 	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
 	integrationOn   bool                                         // the integration check loop has started
+	changeLedger    *pipeline.ChangeLedger                       // the valley change transitions seen and reported; nil outside a session
 	restackOn       bool                                         // each integration check runs a restack pass
 	restacks        map[integration.ChangeKey]restack.View       // where each restack conflict on a change klaus owns stands
 	approveTemplate string                                       // dashboard.approve_command, or the deprecated submit_command
@@ -363,6 +364,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	var logWriter io.Writer = io.Discard
 	var logFile *os.File
 	var eventsPath, jobsDir, ledgerPath string
+	var changeLedger *pipeline.ChangeLedger
 	if hds, ok := store.(*run.HomeDirStore); ok {
 		eventLog = event.NewLog(hds.BaseDir())
 		eventsPath = eventLog.Path()
@@ -385,6 +387,11 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 			logger.Error("reading the PR transition ledger", "err", err)
 		}
 		ctrl.SetLedger(ledger)
+		// The change ledger does the same for valley changes.
+		changeLedger, err = pipeline.LoadChangeLedger(filepath.Join(filepath.Dir(ledgerPath), pipeline.ChangeLedgerFile))
+		if err != nil {
+			logger.Error("reading the change transition ledger", "err", err)
+		}
 	}
 
 	return dashboardModel{
@@ -398,6 +405,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		pipelineStates:  make(map[string]*pipeline.PRPipelineState),
 		noAccessAt:      make(map[string]time.Time),
 		checker:         integration.NewValleyChecker(logger),
+		changeLedger:    changeLedger,
 		restackOn:       ledgerPath != "", // a restack pass keeps its ledger in the session directory
 		approveTemplate: cfg.Dashboard.ApproveTemplate(),
 		hideAfter:       hideFinishedAfter(cfg.Dashboard),
@@ -555,12 +563,12 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// The first load starts the integration check loop; it then
 			// re-arms itself each time a check completes.
 			m.integrationOn = true
-			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store, m.restackOn))
+			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store, m.changeLedger, m.restackOn))
 		}
 		return m, cmd
 
 	case integrationTickMsg:
-		return m, checkIntegrationCmd(m.checker, m.states, m.store, m.restackOn)
+		return m, checkIntegrationCmd(m.checker, m.states, m.store, m.changeLedger, m.restackOn)
 
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
