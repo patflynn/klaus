@@ -90,11 +90,14 @@ var outcomeEvents = map[string]string{
 //     holds that own says this session didn't record;
 //   - change:approved when the active version of a ready change has an
 //     integration request, and no version at or above it was approved;
-//   - change:integrated once, when the active version landed;
-//   - change:withdrawn once, when the change was withdrawn without landing;
+//   - change:integrated once, when a version landed: the active one, or
+//     else the latest that did, as when another became active before the
+//     check saw the landing;
+//   - change:withdrawn once, when the change was withdrawn and its active
+//     version didn't land;
 //   - change:stale, change:rejected or change:failed when the integrator's
-//     decision on a ready change's active version is a new one, or is on a
-//     new version.
+//     decision on a ready change's active version, which didn't land, is a
+//     new one, or is on a new version.
 //
 // A change the ledger holds nothing for is recorded as it stands, and
 // returns none: a first look at a session's changes reports no history.
@@ -145,21 +148,20 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 	if !ok {
 		return out, l.saved(changed, lockErr, loadErr)
 	}
-	landed := active.Landing == valley.Landed || active.Landing == valley.LandedRecorded
 	if ch.State == valley.StateReady && active.Request != nil && (e.Approved == nil || e.Approved.Version < active.N) {
 		mark(&e.Approved, ChangeMark{Version: active.N, Head: active.Head},
 			ChangeTransition{Type: event.ChangeApproved, Version: active})
 	}
-	switch {
-	case landed:
-		if e.Landed == nil {
-			commit := active.Head
-			if active.LandedCommit != nil && *active.LandedCommit != "" {
-				commit = *active.LandedCommit
-			}
-			mark(&e.Landed, ChangeMark{Version: active.N, Head: active.Head, Commit: commit},
-				ChangeTransition{Type: event.ChangeIntegrated, Version: active, Commit: commit})
+	if v, ok := landedVersion(versions, ch.Active); ok && e.Landed == nil {
+		commit := v.Head
+		if v.LandedCommit != nil && *v.LandedCommit != "" {
+			commit = *v.LandedCommit
 		}
+		mark(&e.Landed, ChangeMark{Version: v.N, Head: v.Head, Commit: commit},
+			ChangeTransition{Type: event.ChangeIntegrated, Version: v, Commit: commit})
+	}
+	switch {
+	case landed(active):
 	case ch.State == valley.StateWithdrawn:
 		if e.Withdrawn == nil {
 			mark(&e.Withdrawn, ChangeMark{Version: active.N, Head: active.Head},
@@ -173,6 +175,30 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		}
 	}
 	return out, l.saved(changed, lockErr, loadErr)
+}
+
+// landed reports whether the valley says v landed.
+func landed(v valley.Version) bool {
+	return v.Landing == valley.Landed || v.Landing == valley.LandedRecorded
+}
+
+// landedVersion is the version among versions that landed: the active one
+// if it did, else the latest that did.
+func landedVersion(versions []valley.Version, active int) (valley.Version, bool) {
+	var found valley.Version
+	ok := false
+	for _, v := range versions {
+		if !landed(v) {
+			continue
+		}
+		if v.N == active {
+			return v, true
+		}
+		if !ok || v.N > found.N {
+			found, ok = v, true
+		}
+	}
+	return found, ok
 }
 
 // outcomeOf is what the integrator decided on v's request, for a version

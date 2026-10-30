@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -66,4 +67,33 @@ func TestChangeLedgerSharedByTwoDashboards(t *testing.T) {
 		t.Fatal(err)
 	}
 	observe("a restarted dashboard", c, change(stale, v2))
+}
+
+// TestChangeLedgerLandingBeforeANewVersion: a version that landed is the
+// change's landing even when another version became active before the
+// ledger saw it land.
+func TestChangeLedgerLandingBeforeANewVersion(t *testing.T) {
+	l, err := LoadChangeLedger(filepath.Join(t.TempDir(), ChangeLedgerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := func(valley.Version) bool { return false }
+	commit := "c1"
+	v1 := valley.Version{N: 1, Head: "h1", Landing: valley.NotLanded, Request: &valley.Request{Ref: "r"}}
+	if _, err := l.Observe("cosmo", valley.Change{ChangeID: "x", State: valley.StateReady, Active: 1, Versions: []valley.Version{v1}}, own); err != nil {
+		t.Fatal(err)
+	}
+	v1.Landing, v1.LandedCommit = valley.Landed, &commit
+	v2 := valley.Version{N: 2, Head: "h2", Landing: valley.NotLanded}
+	ts, err := l.Observe("cosmo", valley.Change{ChangeID: "x", State: valley.StateReady, Active: 2, Versions: []valley.Version{v1, v2}}, own)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, tr := range ts {
+		got = append(got, fmt.Sprintf("%s v%d %s", tr.Type, tr.Version.N, tr.Commit))
+	}
+	if want := []string{event.ChangeNewVersion + " v2 ", event.ChangeIntegrated + " v1 c1"}; !slices.Equal(got, want) {
+		t.Errorf("transitions %q, want %q", got, want)
+	}
 }
