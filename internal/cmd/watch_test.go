@@ -587,6 +587,53 @@ func TestWatchStreamsBranchPushed(t *testing.T) {
 	p.stopSIGTERM(t)
 }
 
+// TestWatchStreamsChangeTransitions: a valley change's transitions pass the
+// default filter, each on a line that names the change's version, as
+// pr:merged names its PR.
+func TestWatchStreamsChangeTransitions(t *testing.T) {
+	bin := klausBinary(t)
+	home, sessionID, sessionDir := setupSessionDir(t)
+	em := newEmitter(sessionDir)
+	change := func(version int, extra ...string) map[string]interface{} {
+		d := map[string]interface{}{"repo": "cosmo", "handle": "nxvp", "change_id": "nxvpkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+			"version": version, "head": strings.Repeat("1", 40), "title": "Tune the cache"}
+		for i := 0; i+1 < len(extra); i += 2 {
+			d[extra[i]] = extra[i+1]
+		}
+		return d
+	}
+	em.emit(t, "nxvp", event.ChangeApproved, change(1))
+	em.emit(t, "nxvp", event.ChangeStale, change(1))
+	em.emit(t, "nxvp", event.ChangeNewVersion, change(2, "uploader", "restacker"))
+	em.emit(t, "nxvp", event.ChangeRejected, change(2))
+	em.emit(t, "nxvp", event.ChangeFailed, change(2))
+	em.emit(t, "nxvp", event.ChangeWithdrawn, change(2))
+	em.emit(t, "nxvp", event.ChangeIntegrated, change(2, "landed_commit", strings.Repeat("2", 40)))
+
+	out, stderr, err := runKlaus(t, bin, home, "watch", "--session-id", sessionID, "--once", "--since-start")
+	if err != nil {
+		t.Fatalf("watch: %v\n%s", err, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	want := []string{
+		"nxvp  change:approved         cosmo nxvp v1 approved: Tune the cache",
+		"nxvp  change:stale            cosmo nxvp v1 stale: Tune the cache",
+		"nxvp  change:new-version      cosmo nxvp v2 new version at 1111111 by restacker: Tune the cache",
+		"nxvp  change:rejected         cosmo nxvp v2 rejected: Tune the cache",
+		"nxvp  change:failed           cosmo nxvp v2 failed: Tune the cache",
+		"nxvp  change:withdrawn        cosmo nxvp v2 withdrawn: Tune the cache",
+		"nxvp  change:integrated       cosmo nxvp v2 integrated as 2222222: Tune the cache",
+	}
+	if len(lines) != len(want)+1 {
+		t.Fatalf("watch printed %d lines, want %d events and its next: line:\n%s", len(lines), len(want), out)
+	}
+	for i, w := range want {
+		if !strings.HasSuffix(lines[i], w) {
+			t.Errorf("line %d = %q, want it to end %q", i, lines[i], w)
+		}
+	}
+}
+
 // runKlaus runs the real binary with HOME set, waiting up to 10s for it to
 // exit, and returns its stdout, stderr and exit error.
 func runKlaus(t *testing.T, bin, home string, args ...string) (string, string, error) {

@@ -144,11 +144,27 @@ func place(changes *valley.Changes, s *run.State) (Result, bool) {
 
 // activeVersions is the valley's view of every change it lists in a repo it
 // could read and a state klaus knows: the change's active version, and what
-// the valley's record of it says. A change whose active version isn't
-// listed has none. Where a repo lists a change ID more than once (under
-// several targets), a withdrawn record gives way to another.
+// the valley's record of it says (ListedChanges).
 func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
 	out := make(map[ChangeKey]Result)
+	for k, ch := range ListedChanges(changes) {
+		v, _ := ActiveVersion(ch)
+		out[k] = Result{Verdict: verdictOf(ch, v), Change: changeAt(k.Repo, ch, v)}
+	}
+	return out
+}
+
+// ListedChanges is the valley's record of every change it lists in a repo
+// it could read and a state klaus knows, by change: the record that decides
+// where the change stands, whatever became of any one run's version. A
+// change whose active version isn't listed has none. Where a repo lists a
+// change ID more than once (under several targets), a withdrawn record
+// gives way to another.
+func ListedChanges(changes *valley.Changes) map[ChangeKey]valley.Change {
+	out := make(map[ChangeKey]valley.Change)
+	if changes == nil {
+		return out
+	}
 	for _, vr := range changes.Repos {
 		if vr.Err() != "" {
 			continue
@@ -158,18 +174,28 @@ func activeVersions(changes *valley.Changes) map[ChangeKey]Result {
 				continue
 			}
 			k := ChangeKey{Repo: vr.Repo, ChangeID: ch.ChangeID}
-			if prev, ok := out[k]; ok && prev.Verdict != Withdrawn {
-				continue
-			}
-			for _, v := range ch.Versions {
-				if v.N == ch.Active {
-					out[k] = Result{Verdict: verdictOf(ch, v), Change: changeAt(vr.Repo, ch, v)}
-					break
+			if prev, ok := out[k]; ok {
+				if v, _ := ActiveVersion(prev); verdictOf(prev, v) != Withdrawn {
+					continue
 				}
+			}
+			if _, ok := ActiveVersion(ch); ok {
+				out[k] = ch
 			}
 		}
 	}
 	return out
+}
+
+// ActiveVersion returns ch's active version; ok is false when it isn't
+// listed.
+func ActiveVersion(ch valley.Change) (valley.Version, bool) {
+	for _, v := range ch.Versions {
+		if v.N == ch.Active {
+			return v, true
+		}
+	}
+	return valley.Version{}, false
 }
 
 // changeAt is how the valley knows version v of change ch in repo.

@@ -160,6 +160,8 @@ const integrationTimeout = 5 * time.Minute
 // for their pushed branch to be integrated, and the tracked valley changes.
 // With a ValleyChecker that is at most one `valley changes` for all of them. Then, with a store, it settles
 // the knots of runs whose change the check found landed (settleKnots).
+// With a change ledger and a session directory, it emits the transitions
+// the valley's listing shows for those runs' changes (reportChangeTransitions).
 // With restacks and a session directory, it then runs a restack pass, as
 // klaus restack-conflicts does, dispatching resolution runs for the restack
 // conflicts on changes klaus owns: on the check's valley listing, or, when
@@ -167,7 +169,7 @@ const integrationTimeout = 5 * time.Minute
 // couldn't ask isn't asked again. The next
 // check starts only once this one is done, so no two settle a knot, or
 // dispatch, at once.
-func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore, restacks bool) tea.Cmd {
+func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore, ledger *pipeline.ChangeLedger, restacks bool) tea.Cmd {
 	if checker == nil {
 		return nil
 	}
@@ -185,8 +187,12 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 		if store != nil {
 			settleKnots(ctx, store, pushed, rep.Runs, rep.Changes)
 		}
+		hds, ok := store.(*run.HomeDirStore)
+		if ok && ledger != nil && rep.Listing != nil {
+			reportChangeTransitions(hds, ledger, pushed, rep.Listing)
+		}
 		msg := integrationMsg{results: rep.Runs, changes: rep.Changes}
-		if hds, ok := store.(*run.HomeDirStore); ok && restacks && (rep.Listing != nil || !rep.Asked) {
+		if ok && restacks && (rep.Listing != nil || !rep.Asked) {
 			views, err := restackPass(ctx, hds, rep.Listing, true)
 			if err != nil {
 				slog.Warn("restack pass failed", "err", err)

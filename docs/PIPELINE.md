@@ -191,6 +191,17 @@ Key behaviors:
   starts. When GitHub can't be asked for a PR's state (a timeout or rate
   limit), the pipeline leaves the PR as it was rather than taking it for open.
 
+- **Valley change edges** — a valley change's transitions are events too:
+  `change:approved`, `change:integrated`, `change:stale`, `change:rejected`,
+  `change:failed`, `change:withdrawn` and `change:new-version` (a version
+  neither this session's finalize nor its `klaus ready` recorded, as the
+  valley's restacker's). The dashboard's integration check, once a minute,
+  reads each followed change's own record in the valley's listing and
+  reports each mark once, under the change's handle, recording them in
+  `change-transitions.json` beside `pr-transitions.json`, under the same
+  kind of lock. A change the file holds nothing for is recorded as it
+  stands, with no events. `klaus status` only reads, and reports none.
+
 ## 4. Review & Approval
 
 Klaus distinguishes between GitHub review approval and internal approval:

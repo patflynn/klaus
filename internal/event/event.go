@@ -84,6 +84,33 @@ const (
 	// the change ID, once per conflict, and carries what
 	// change:restack-dispatched does, with reason in place of the attempt.
 	ChangeRestackStalled = "change:restack-stalled"
+	// The change:* types below report a valley change's life as the
+	// valley lists it, as pr:approved and pr:merged report a PR's: the
+	// dashboard's integration check reads the listing and emits each once,
+	// through the change ledger (pipeline.ChangeLedger), for the changes
+	// of the session's runs and tracked changes. A change the ledger hasn't
+	// seen before is recorded as it stands, with no event. Each goes out
+	// under the change's handle and carries repo, handle, change_id,
+	// version, head and title: those of the version it concerns.
+	//
+	// ChangeApproved signals that a ready version of a change has an
+	// integration request: the operator approved it.
+	ChangeApproved = "change:approved"
+	// ChangeIntegrated signals that a change landed. It carries
+	// landed_commit too.
+	ChangeIntegrated = "change:integrated"
+	// ChangeStale, ChangeRejected and ChangeFailed signal the integrator's
+	// decision on the request for a change's active version. Each goes out
+	// again only for a new version or a new decision.
+	ChangeStale    = "change:stale"
+	ChangeRejected = "change:rejected"
+	ChangeFailed   = "change:failed"
+	// ChangeWithdrawn signals that a change was withdrawn.
+	ChangeWithdrawn = "change:withdrawn"
+	// ChangeNewVersion signals a version of a change that neither this
+	// session's finalize nor its klaus ready recorded: the valley's
+	// restacker's, or a human's. It carries uploader too.
+	ChangeNewVersion = "change:new-version"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.

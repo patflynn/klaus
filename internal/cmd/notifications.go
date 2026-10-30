@@ -93,6 +93,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 		ciFailed       []string
 		ciPassed       []string
 		prMerged       []string
+		// A valley change's transitions, as its change:* events report them.
+		changeTurnedBack []string // stale, rejected or failed
+		changeApproved   []string
+		changeVersions   []string
+		changeLanded     []string
+		changeWithdrawn  []string
 	)
 
 	for _, evt := range events {
@@ -163,6 +169,20 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 				prURL = ""
 			}
 			prMerged = append(prMerged, fmt.Sprintf("#%s", prNumberFromURL(prURL)))
+		case event.ChangeStale, event.ChangeRejected, event.ChangeFailed:
+			changeTurnedBack = append(changeTurnedBack, changeNote(evt)+" "+strings.TrimPrefix(evt.Type, "change:"))
+		case event.ChangeApproved:
+			changeApproved = append(changeApproved, changeNote(evt))
+		case event.ChangeNewVersion:
+			note := changeNote(evt)
+			if u, _ := evt.Data["uploader"].(string); u != "" {
+				note += " by " + u
+			}
+			changeVersions = append(changeVersions, note)
+		case event.ChangeIntegrated:
+			changeLanded = append(changeLanded, changeNote(evt))
+		case event.ChangeWithdrawn:
+			changeWithdrawn = append(changeWithdrawn, changeNote(evt))
 		}
 	}
 
@@ -172,6 +192,9 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 		for _, s := range needsAttention {
 			fmt.Printf("  %s\n", s)
 		}
+	}
+	if len(changeTurnedBack) > 0 {
+		fmt.Printf("%d change(s) stale, rejected or failed: %s\n", len(changeTurnedBack), strings.Join(changeTurnedBack, ", "))
 	}
 	if len(prsReady) > 0 {
 		fmt.Printf("%d PR(s) awaiting approval: %s\n", len(prsReady), strings.Join(prsReady, ", "))
@@ -192,6 +215,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 	if len(drafts) > 0 {
 		fmt.Printf("%d change(s) awaiting review: %s\n", len(drafts), strings.Join(drafts, ", "))
 	}
+	if len(changeApproved) > 0 {
+		fmt.Printf("%d change(s) approved: %s\n", len(changeApproved), strings.Join(changeApproved, ", "))
+	}
+	if len(changeVersions) > 0 {
+		fmt.Printf("%d new change version(s): %s\n", len(changeVersions), strings.Join(changeVersions, ", "))
+	}
 	// A branch recorded as a change is listed once, as the change.
 	var awaiting []string
 	for _, b := range branchPushed {
@@ -211,6 +240,12 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 	if len(prMerged) > 0 {
 		fmt.Printf("%d PR(s) merged: %s\n", len(prMerged), strings.Join(prMerged, ", "))
 	}
+	if len(changeLanded) > 0 {
+		fmt.Printf("%d change(s) integrated: %s\n", len(changeLanded), strings.Join(changeLanded, ", "))
+	}
+	if len(changeWithdrawn) > 0 {
+		fmt.Printf("%d change(s) withdrawn: %s\n", len(changeWithdrawn), strings.Join(changeWithdrawn, ", "))
+	}
 	if len(completed) > 0 {
 		var totalCost float64
 		for _, c := range completed {
@@ -218,6 +253,15 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 		}
 		fmt.Printf("%d agent(s) completed since last check ($%.2f total)\n", len(completed), totalCost)
 	}
+}
+
+// changeNote names the change version a change:* event concerns:
+// "<repo> <handle> v<version>".
+func changeNote(evt event.Event) string {
+	repo, _ := evt.Data["repo"].(string)
+	handle, _ := evt.Data["handle"].(string)
+	version, _ := evt.Data["version"].(float64)
+	return fmt.Sprintf("%s %s v%d", repo, handle, int(version))
 }
 
 // runNote is a summary line's entry for one run.

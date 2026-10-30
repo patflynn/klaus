@@ -822,17 +822,17 @@ You do NOT need to manually monitor CI or dispatch fix agents — the pipeline h
 
 ## Real-time pipeline event channel
 {{if eq .Coordinator "claude"}}
-Klaus writes structured pipeline events (PR created/approved/merged, CI passed/failed, agent errors, review comments) to a JSONL stream you can subscribe to via Claude Code's Monitor tool. Recommended: at session start, arm a persistent Monitor on this stream so you react to events asynchronously rather than polling klaus status:
+Klaus writes structured pipeline events (PR created/approved/merged, valley changes approved, integrated, stale, rejected, failed, withdrawn or given a new version, CI passed/failed, agent errors, review comments) to a JSONL stream you can subscribe to via Claude Code's Monitor tool. Recommended: at session start, arm a persistent Monitor on this stream so you react to events asynchronously rather than polling klaus status:
 
 Command to arm in Monitor (set persistent: true):
 
   klaus watch
 
-Each matching event becomes a notification injected into your context between turns. React when relevant — e.g. dispatch a follow-up agent the moment a dependency PR merges, or surface a CI failure to the user without being asked. Use the default filter unless the user asks for something narrower; override with ` + "`klaus watch --filter <type>`" + ` (repeatable). Do not arm more than one watch — the second one duplicates notifications.
+Each matching event becomes a notification injected into your context between turns. React when relevant — e.g. dispatch a follow-up agent the moment a dependency PR merges or a dependency valley change lands (change:integrated, so you never poll valley status for a landing), or surface a CI failure, or a stale or rejected change, to the user without being asked. Use the default filter unless the user asks for something narrower; override with ` + "`klaus watch --filter <type>`" + ` (repeatable). Do not arm more than one watch — the second one duplicates notifications.
 
 Events arrive only while the REPL is idle between turns. If a flurry lands during a long tool call, they batch up until you return. Plan accordingly: a Monitor isn't a guarantee of instant reaction, just a guarantee that you'll see the event before the user has to mention it.
 {{else}}
-Klaus writes structured pipeline events (PR created/approved/merged, CI passed/failed, agent errors, review comments) to a JSONL stream. ` + "`klaus watch --once`" + ` waits for the next of them: it prints every event that has arrived and exits, and its last line is the command that waits for the events after those, with the stream's position in ` + "`--after`" + `:
+Klaus writes structured pipeline events (PR created/approved/merged, valley changes approved, integrated, stale, rejected, failed, withdrawn or given a new version, CI passed/failed, agent errors, review comments) to a JSONL stream. ` + "`klaus watch --once`" + ` waits for the next of them: it prints every event that has arrived and exits, and its last line is the command that waits for the events after those, with the stream's position in ` + "`--after`" + `:
 
   next: klaus watch --once --after 18342
 {{if eq .Coordinator "agy"}}
@@ -841,7 +841,7 @@ Your background tasks (run_command in the background) hand you their output only
 Run it as a background command. If your tools tell you when a background command exits, react then; if you read its output yourself, check the watch whenever you finish a step or are waiting on workers. If you can't run a command in the background, don't run the watch, which in the foreground blocks you until the next event; use klaus status between tasks instead. The pattern:
 {{end}}
 1. At session start, start ` + "`klaus watch --once --after {{.WatchAfter}}`" + ` as a background task. Its ` + "`--after`" + ` is where the stream stood when this session started, so it also prints any event since then.
-2. When it exits, first start the command on its ` + "`next:`" + ` line as a new background task, then react to the events it printed: dispatch a follow-up agent the moment a dependency PR merges, or surface a CI failure to the user without being asked.
+2. When it exits, first start the command on its ` + "`next:`" + ` line as a new background task, then react to the events it printed: dispatch a follow-up agent the moment a dependency PR merges or a dependency valley change lands (change:integrated, so you never poll valley status for a landing), or surface a CI failure, or a stale or rejected change, to the user without being asked.
 3. Do the same each time a watch exits.
 
 Events that land while you react, or between one watch exiting and the next starting, are past the cursor in ` + "`--after`" + `, so the next watch prints them at once: none is lost, and none is printed twice, as long as you keep to these rules:
@@ -851,7 +851,7 @@ Events that land while you react, or between one watch exiting and the next star
 - If a watch exits without a ` + "`next:`" + ` line (it was killed, or failed), start the command you last started again. It prints the same events, so none is lost.
 - When the session resumes, the last session's watch is gone: start the command on the latest ` + "`next:`" + ` line you have again, or the command in step 1 if you have none.
 
-Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled). The ` + "`next:`" + ` line keeps the flags you gave.
+Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled; a valley change's handle for change:approved, change:integrated, change:stale, change:rejected, change:failed, change:withdrawn and change:new-version). The ` + "`next:`" + ` line keeps the flags you gave.
 {{end}}
 ## State and tracking
 
