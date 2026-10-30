@@ -13,6 +13,7 @@ import (
 
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/jobs"
+	"github.com/patflynn/klaus/internal/run"
 )
 
 // jobRecords reads the session's job records as they are on disk, keyed by
@@ -95,7 +96,7 @@ func TestConsultJobRecords(t *testing.T) {
 			t.Errorf("jobs show --answer: %q, %v", out, err)
 		}
 		out, err := e.klaus(t, "jobs", "show", j.ID)
-		for _, want := range []string{"job:        " + j.ID, "status:     succeeded", "backend:    codex/gpt-9, effort high, role critic", "\nthe answer is 42\n"} {
+		for _, want := range []string{"job:        " + j.ID, "status:     succeeded", "backend:    codex gpt-9, effort high, role critic", "\nthe answer is 42\n"} {
 			if err != nil || !strings.Contains(out, want) {
 				t.Errorf("jobs show missing %q: %s, %v", want, out, err)
 			}
@@ -375,9 +376,9 @@ func TestStatusListsJobs(t *testing.T) {
 		t.Fatalf("status layout:\n%s", out)
 	}
 	for i, want := range [][]string{
-		{"consult-20261017-1000-aaaa0001", "consult", "design", "codex/gpt-9", "running", "12m", "Design the jobs table"},
-		{"review-20261017-0900-bbbb0002", "review", "acme/widget#7", "claude", "succeeded", "3m"},
-		{"consult-20261017-0800-cccc0003", "consult", " - ", "agy", "timed out", "10m", "Too slow"},
+		{"consult-20261017-1000-aaaa0001", "consult", "design", "codex gpt-9", "running", "12m", "Design the jobs table"},
+		{"review-20261017-0900-bbbb0002", "review", "acme/widget#7", "claude (default model)", "succeeded", "3m"},
+		{"consult-20261017-0800-cccc0003", "consult", " - ", "agy (default model)", "timed out", "10m", "Too slow"},
 	} {
 		for _, w := range want {
 			if !strings.Contains(lines[4+i], w) {
@@ -390,5 +391,45 @@ func TestStatusListsJobs(t *testing.T) {
 	}
 	if all, err := e.klaus(t, "jobs", "--all"); err != nil || !strings.Contains(all, "Long ago") {
 		t.Errorf("jobs --all: %s, %v", all, err)
+	}
+}
+
+// TestStatusShowsRunModels runs the real `klaus status` over runs launched
+// without a model, with one, and with a model the worker reported.
+func TestStatusShowsRunModels(t *testing.T) {
+	bin := klausBinary(t)
+	e := newConsultEnv(t, bin, "session-status-models")
+	store := run.NewHomeDirStoreFromPath(e.sessionDir())
+	opus, haiku := "opus", "haiku"
+	for _, s := range []*run.State{
+		{ID: "20261030-1000-aaaa0001", Backend: "agy", CreatedAt: "2026-10-30T10:00:00Z"},
+		{ID: "20261030-1001-bbbb0002", Model: &opus, CreatedAt: "2026-10-30T10:01:00Z"},
+		{ID: "20261030-1002-cccc0003", Model: &haiku, ResolvedModel: "claude-haiku-5-5", CreatedAt: "2026-10-30T10:02:00Z"},
+	} {
+		if err := store.Save(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err := e.klaus(t, "status")
+	if err != nil {
+		t.Fatalf("status: %s, %v", out, err)
+	}
+	for id, want := range map[string]string{
+		"aaaa0001": "agy (default model)",
+		"bbbb0002": "claude opus",
+		"cccc0003": "claude claude-haiku-5-5",
+	} {
+		found := false
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, id) && strings.Contains(l, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no status line for %s with %q:\n%s", id, want, out)
+		}
+	}
+	if !strings.Contains(out, "MODEL") {
+		t.Errorf("status header lacks MODEL:\n%s", out)
 	}
 }

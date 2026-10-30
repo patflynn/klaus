@@ -126,7 +126,7 @@ Examples:
 		}
 
 		out := cmd.OutOrStdout()
-		fmt.Fprintf(out, "Cross-model review of %s#%s (author: %s; reviewer: %s %s)\n", ownerRepo, prNumber, author, reviewer, modelLabel(model))
+		fmt.Fprintf(out, "Cross-model review of %s#%s (author: %s; reviewer: %s)\n", ownerRepo, prNumber, author, review.BackendModel(string(reviewer), model))
 		finish := startReviewJob(store, ownerRepo, prNumber, author, reviewer, model, post, cmd.ErrOrStderr())
 		result, err := review.RunPRReview(ctx, ownerRepo, prNumber, review.PROptions{
 			Backend: reviewer, Model: model, Post: post, MaxRounds: cfg.CrossReviewMaxRounds(),

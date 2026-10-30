@@ -71,7 +71,7 @@ func TestDashboardJobsSection(t *testing.T) {
 		t.Fatalf("jobs section should follow the run rows:\n%s", view)
 	}
 	for i, want := range [][]string{
-		{"consult:0001", "design", "codex/gpt-9", "RUNNING", "12m", "Design the jobs table"},
+		{"consult:0001", "design", "codex gpt-9", "RUNNING", "12m", "Design the jobs table"},
 		{"consult:0002", "-", "claude", "FAILED", "1m", "Why did it break"},
 		{"review:0003", "acme/widget#7", "agy", "SUCCEEDED", "3m"},
 		{"consult:0004", "-", "codex", "SUCCEEDED", "1m", "Answer me"},

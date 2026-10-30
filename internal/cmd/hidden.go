@@ -897,6 +897,7 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 			ExitCode     int      `json:"exit_code"`
 			Subtype      string   `json:"subtype"`
 			SessionID    string   `json:"session_id"`
+			Model        string   `json:"model"`
 			TotalCostUSD float64  `json:"total_cost_usd"`
 			DurationMS   int64    `json:"duration_ms"`
 			IsError      bool     `json:"is_error"`
@@ -918,6 +919,9 @@ func finalizeFromLog(store run.StateStore, state *run.State) (string, error) {
 
 		if ev.SessionID != "" && !isClaudeRun(state) {
 			state.BackendSessionID = stringPtr(ev.SessionID)
+		}
+		if ev.Type == "system" && ev.Subtype == "init" && ev.Model != "" && isClaudeRun(state) {
+			state.ResolvedModel = ev.Model
 		}
 		switch ev.Type {
 		case "klaus_exit":

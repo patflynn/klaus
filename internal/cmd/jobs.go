@@ -188,10 +188,7 @@ func jobTarget(j *jobs.Job) string {
 
 // jobBackendModel is a job's backend and model, e.g. codex/gpt-5.5.
 func jobBackendModel(j *jobs.Job) string {
-	if j.Model == "" {
-		return j.Backend
-	}
-	return j.Backend + "/" + j.Model
+	return review.BackendModel(j.Backend, j.Model)
 }
 
 // jobTime is how long a running job has run, or how long a finished one

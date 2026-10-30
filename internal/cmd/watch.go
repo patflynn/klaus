@@ -602,6 +602,9 @@ func eventSummary(evt event.Event) string {
 		return truncateLine(fmt.Sprintf("%s (%sms) %s", head, get("duration_ms"), status), 160)
 	case event.AgentStarted:
 		prompt := get("prompt")
+		if m := get("model"); m != "" {
+			prompt = "[" + m + "] " + prompt
+		}
 		if prompt != "" {
 			return truncateLine(prompt, 80)
 		}

@@ -499,6 +499,9 @@ func TestFinalizeFromLog(t *testing.T) {
 		assertPRURL(t, state, "https://github.com/patflynn/klaus/pull/42")
 		assertCost(t, state, 1.5)
 		assertDuration(t, state, 30000)
+			if state.ResolvedModel != "claude-sonnet-4-5-20250929" {
+			t.Errorf("ResolvedModel = %q, want the init event's model", state.ResolvedModel)
+		}
 	})
 
 	t.Run("extracts PR URL from tool_result event", func(t *testing.T) {

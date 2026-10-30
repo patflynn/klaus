@@ -37,7 +37,7 @@ klaus launch --backend agy --effort high "Implement the settings page"
 and `--agent-backend` for the session's worker default. `klaus launch` and
 `klaus scaffold` accept `--backend` for that worker. Automatic CI/review fix
 agents use the saved session worker default too. `klaus status` includes a
-BACKEND column.
+MODEL column: the backend and the model the run used (the one the worker reported, else the one launched with, else `(default model)`), as review jobs show it.
 
 Set persistent defaults in `~/.klaus/config.json` or `.klaus/config.json`:
 

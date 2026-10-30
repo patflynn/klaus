@@ -1129,6 +1129,7 @@ are synced back after completion. Use --local to force local execution, or
 			startedData := map[string]interface{}{
 				"id":     id,
 				"prompt": prompt,
+				"model":  runBackendModel(state),
 			}
 			if issue != "" {
 				startedData["issue"] = issue

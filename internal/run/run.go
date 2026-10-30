@@ -47,6 +47,7 @@ type State struct {
 	PushedSHA        *string  `json:"pushed_sha,omitempty"`        // origin's tip of PushedBranch at finalize
 	PushedSubject    string   `json:"pushed_subject,omitempty"`    // the subject of the commit at PushedSHA, when finalize had it
 	Model            *string  `json:"model,omitempty"`             // claude --model the agent ran with (unset → claude's default)
+	ResolvedModel    string   `json:"resolved_model,omitempty"`    // the model the worker reported using (claude's stream-json init event), set at finalize; preferred over Model
 	Effort           *string  `json:"effort,omitempty"`            // claude --effort the agent ran with (unset → claude's default)
 	ChangeID         string   `json:"change_id,omitempty"`         // the change the run's commits belong to (their Change-Id trailer): launch's, until finalize finds the run pushed another (see Branch); empty in state that predates change IDs
 	Valley           *Valley  `json:"valley,omitempty"`            // set when finalize found the pushed branch's repo delivers to a valley

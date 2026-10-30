@@ -156,10 +156,10 @@ func TestResumeClaudeArgs(t *testing.T) {
 		wantNotContain  string
 	}{
 		{
-			name:           "new session gets --session-id",
-			resuming:       false,
+			name:            "new session gets --session-id",
+			resuming:        false,
 			claudeSessionID: "",
-			wantContains:   "--session-id",
+			wantContains:    "--session-id",
 		},
 		{
 			name:            "resume with session ID",

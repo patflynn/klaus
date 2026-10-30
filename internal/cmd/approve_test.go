@@ -277,4 +277,3 @@ func TestApproveByPRNumbersEmitsEvent(t *testing.T) {
 		t.Errorf("expected %s event for PR #42, got events: %v", event.PRApprovalChanged, events)
 	}
 }
-

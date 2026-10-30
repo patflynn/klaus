@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -69,17 +70,27 @@ func statusLine(t *testing.T, out, runID string) string {
 	return ""
 }
 
+// statusCellSep is the gap between `klaus status` columns: at least two
+// spaces, as a cell may hold single spaces ("claude (default model)").
+var statusCellSep = regexp.MustCompile(` {2,}`)
+
+// statusCells splits runID's row in `klaus status` output into its columns.
+func statusCells(t *testing.T, out, runID string) []string {
+	t.Helper()
+	return statusCellSep.Split(statusLine(t, out, runID), -1)
+}
+
 // statusOf returns the STATUS column of runID's row in `klaus status` output.
 func statusOf(t *testing.T, out, runID string) string {
 	t.Helper()
-	return strings.Fields(statusLine(t, out, runID))[1]
+	return statusCells(t, out, runID)[1]
 }
 
 // changeColumn returns the CHANGE column of runID's row in `klaus status`
 // output: its PR's number, its valley handle, or its change ID's prefix.
 func changeColumn(t *testing.T, out, runID string) string {
 	t.Helper()
-	return strings.Fields(statusLine(t, out, runID))[7]
+	return statusCells(t, out, runID)[7]
 }
 
 // TestStatusShowsIntegration runs the real `klaus status` over pushed runs
