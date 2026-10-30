@@ -73,12 +73,14 @@ func followedChanges(states []*run.State) []integration.ChangeKey {
 }
 
 // recordsVersion reports whether a run among states pushed version v of
-// change k, or records it as the version its pushed head became. A tracked
-// change's record names the version klaus track found, which it didn't
-// record.
+// change k, or records it as the version its pushed head became. A run
+// whose recorded valley repo is another pushed another repo's change; one
+// finalize hasn't recorded a version for yet counts by its pushed head. A
+// tracked change's record names the version klaus track found, which it
+// didn't record.
 func recordsVersion(states []*run.State, k integration.ChangeKey, v valley.Version) bool {
 	for _, s := range states {
-		if s.ChangeID != k.ChangeID || s.Type == "track" {
+		if s.ChangeID != k.ChangeID || s.Type == "track" || s.Valley != nil && s.Valley.Repo != "" && s.Valley.Repo != k.Repo {
 			continue
 		}
 		if s.PushedSHA != nil && *s.PushedSHA == v.Head ||

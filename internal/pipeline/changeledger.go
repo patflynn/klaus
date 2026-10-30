@@ -47,7 +47,7 @@ type ChangeMark struct {
 	Head     string `json:"head,omitempty"`
 	Commit   string `json:"commit,omitempty"`   // Landed's landed commit
 	Decision string `json:"decision,omitempty"` // Outcome's
-	At       string `json:"at"`                 // when it was first seen (RFC3339)
+	At       string `json:"at"`                 // when it was first seen (RFC3339, with nanoseconds)
 }
 
 // ChangeTransition is a mark a check found that the ledger didn't hold, and
@@ -119,7 +119,7 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		e = &changeEntry{}
 		l.changes[key] = e
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var out []ChangeTransition
 	changed := false
 	mark := func(field **ChangeMark, m ChangeMark, t ChangeTransition) {
@@ -249,8 +249,9 @@ func (l *ChangeLedger) lock() (unlock func(), err error) {
 
 // mergeFromDisk adds the marks in the ledger file to the ones in memory,
 // keeping the later of two: the higher version, or for an outcome on the
-// same version, the one seen last. The caller holds l.mu and the file lock,
-// except in LoadChangeLedger.
+// same version, the one seen last. Every write merges the file first, so
+// the file is never older than what a ledger holds, and wins a tie. The
+// caller holds l.mu and the file lock, except in LoadChangeLedger.
 func (l *ChangeLedger) mergeFromDisk() error {
 	data, err := os.ReadFile(l.path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -281,13 +282,19 @@ func (l *ChangeLedger) mergeFromDisk() error {
 	return nil
 }
 
-// later sets *m to d when d is the later mark.
+// later sets *m to d unless *m is the later mark.
 func later(m **ChangeMark, d *ChangeMark) {
 	switch {
 	case d == nil:
-	case *m == nil, d.Version > (*m).Version, d.Version == (*m).Version && d.At > (*m).At:
+	case *m == nil, d.Version > (*m).Version, d.Version == (*m).Version && !d.seen().Before((*m).seen()):
 		*m = d
 	}
+}
+
+// seen is when the mark was first seen; the zero time if that can't be read.
+func (m *ChangeMark) seen() time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, m.At)
+	return t
 }
 
 // save writes the ledger through a temporary file in the same directory, so
