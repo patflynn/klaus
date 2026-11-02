@@ -27,7 +27,10 @@ import (
 // unready, the n-th changes answers with valley.changes.unready.<n>.json, or
 // valley.changes.unready.json, when one exists, so a test can say what the
 // valley lists once a change is a draft. Its knot verbs serve the knots
-// writeKnot wrote (see there).
+// writeKnot wrote (see there). Its telemetry verb is unknown, as in a valley
+// without telemetry, until valley.has-telemetry exists; then a follow prints
+// a header, the records of valley.telemetry.jsonl once that appears (one
+// follow takes them), and an end line with a cursor, within 2s.
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
@@ -78,6 +81,15 @@ unready)
   if [ -f "$dir/valley.unready-refuse" ]; then cat "$dir/valley.unready-refuse" >&2; exit 1; fi
   : > "$dir/valley.after-unready"
   echo "widget nxvp v1 draft"
+  ;;
+telemetry)
+  if [ ! -f "$dir/valley.has-telemetry" ]; then echo "valley: unknown verb $1" >&2; exit 2; fi
+  printf '{"kind":"header","format":"valley-telemetry/v1","op":"follow"}\n'
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if mv "$dir/valley.telemetry.jsonl" "$dir/valley.telemetry.$$" 2>/dev/null; then cat "$dir/valley.telemetry.$$"; break; fi
+    sleep 0.2
+  done
+  printf '{"kind":"end","cursor":"c%%s","truncated":false}\n' "$$"
   ;;
 changes)
   if [ -f "$dir/valley.after-unready" ]; then
@@ -507,5 +519,85 @@ func TestDashboardValleyFailureFallsBackToGit(t *testing.T) {
 	}
 	if calls := h.valleyCalls("changes"); len(calls) != 1 {
 		t.Errorf("valley changes calls = %q, want one failed attempt", calls)
+	}
+}
+
+// TestDashboardWakesOnValleyDecision runs the real dashboard over a valley
+// change while the fake valley's telemetry reports a landing: the decision
+// wakes the integration check at once, well before the minute's check, a
+// burst of records costs one check, and each follow resumes from the cursor
+// the last one ended with. The listing, not the record, says the change
+// landed.
+func TestDashboardWakesOnValleyDecision(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.installValleyStub()
+	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.has-telemetry"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	head := strings.Repeat("1", 40)
+	st := h.valleyRun("20261102-2047-0001", "prompt one", "nxvp", "Add a health check", 1, head, time.Now().Add(-5*time.Minute))
+	listing := func(landing string) map[string]any {
+		return map[string]any{
+			"schema": "valley-changes/v1",
+			"host":   "classic-laddie",
+			"repos": []any{map[string]any{
+				"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil,
+				"changes":  []any{change(st, "ready", 1, version(1, head, "Add a health check", landing))},
+				"branches": []any{},
+			}},
+		}
+	}
+	h.writeValleyChanges(listing("not-landed"))
+
+	_, screen := h.startDashboard(170)
+	screen("READY  v1@1111111")
+	// Both sources are followed, from the run's clone.
+	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		var integrator, worker bool
+		for _, c := range h.valleyCalls("telemetry") {
+			integrator = integrator || strings.HasPrefix(c, h.RepoDir+": telemetry --json follow --source integrator")
+			worker = worker || strings.HasPrefix(c, h.RepoDir+": telemetry --json follow --source worker")
+		}
+		if integrator && worker {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the dashboard should follow the integrator and worker sources; valley calls: %q", h.valleyCalls(""))
+		}
+	}
+	if calls := h.valleyCalls("changes"); len(calls) != 1 {
+		t.Fatalf("valley changes calls = %q, want the first check's alone", calls)
+	}
+
+	// The integrator lands the change: its decision and the worker's
+	// evidence arrive together.
+	h.writeValleyChanges(listing("landed"))
+	records := `{"kind":"record","stream":"integrator","seq":8,"type":"decision","project":"widget","change":"` + st.ChangeID + `","data":{"outcome":"land"}}
+{"kind":"record","stream":"worker","seq":920,"type":"evidence.stored","data":{}}
+{"kind":"record","stream":"worker","seq":921,"type":"batch.end","data":{}}
+`
+	tmp := filepath.Join(h.E2EDir, "telemetry.tmp")
+	if err := os.WriteFile(tmp, []byte(records), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	woke := time.Now()
+	if err := os.Rename(tmp, filepath.Join(h.E2EDir, "valley.telemetry.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	screen("INTEGRATED")
+	if d := time.Since(woke); d > 20*time.Second {
+		t.Errorf("the change read INTEGRATED %s after the decision; a decision should wake the check at once", d)
+	}
+	time.Sleep(3 * time.Second) // room for any further check
+	if calls := h.valleyCalls("changes"); len(calls) != 2 {
+		t.Errorf("valley changes calls = %q, want one more check for the burst", calls)
+	}
+	resumed := false
+	for _, c := range h.valleyCalls("telemetry") {
+		resumed = resumed || strings.Contains(c, " --since c")
+	}
+	if !resumed {
+		t.Errorf("a follow should resume from the last one's cursor; valley calls: %q", h.valleyCalls("telemetry"))
 	}
 }
