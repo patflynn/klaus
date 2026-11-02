@@ -160,6 +160,18 @@ type Report struct {
 	// Asked is set when the check asked a valley, whether or not it could
 	// be asked.
 	Asked bool
+	// ValleyErr is why the valley couldn't be asked, in one line; "" when
+	// it was asked and answered, or not asked. The runs were judged by git.
+	ValleyErr string
+}
+
+// ValleyNote is the one-line note for a failed valley check, "" when err is
+// empty.
+func ValleyNote(err string) string {
+	if err == "" {
+		return ""
+	}
+	return "valley unreachable: " + err + "; showing git's view"
 }
 
 // Checker observes integration for a set of pushed runs.

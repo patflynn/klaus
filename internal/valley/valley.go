@@ -25,8 +25,6 @@ const (
 	ReadyTimeout = 30 * time.Second
 	// UnreadyTimeout bounds `valley unready`.
 	UnreadyTimeout = 30 * time.Second
-	// ListTimeout bounds `valley changes`.
-	ListTimeout = time.Minute
 	// helpTimeout bounds `valley help`.
 	helpTimeout = 10 * time.Second
 	// gitTimeout bounds each git command detection runs.
@@ -34,6 +32,10 @@ const (
 	// maxReason caps the length of a failure's reason.
 	maxReason = 200
 )
+
+// ListTimeout bounds `valley changes`. A listing of a large valley can take
+// more than a minute; it is a variable so tests can shorten it.
+var ListTimeout = 3 * time.Minute
 
 // Error is a valley command that failed: it refused (exited non-zero), timed
 // out, couldn't start, or printed something klaus can't read. Reason is

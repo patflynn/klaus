@@ -316,6 +316,7 @@ type dashboardModel struct {
 	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
 	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
 	integrationOn   bool                                         // the integration check loop has started
+	valleyErr       string                                       // why the latest valley check failed; "" when it didn't
 	checking        bool                                         // an integration check is running
 	checkAgain      bool                                         // a wake came during the running check: run one more after it
 	wakeHeld        bool                                         // a wake waits wakeSettle for the rest of its burst
@@ -613,6 +614,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
 		m.changes = keepChangeViews(m.changes, msg.changes)
+		m.valleyErr = msg.valleyErr
 		if msg.restacks != nil {
 			m.restacks = msg.restacks
 		}
@@ -890,6 +892,8 @@ func (m dashboardModel) View() string {
 				style = dimRedStyle
 			}
 			return style.Render(truncateLine("  "+m.binNotice, max(width-1, 1)))
+		case chromeValley:
+			return yellowStyle.Render(truncateLine("  "+integration.ValleyNote(m.valleyErr), max(width-1, 1)))
 		case chromeJobs:
 			return renderJobsHeader(v)
 		case chromeJob:

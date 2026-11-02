@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/valley"
@@ -20,8 +22,9 @@ import (
 // the listed repo that is the run's own. A run whose repo klaus doesn't know
 // is never placed, and neither is any run in a repo the valley couldn't read
 // or whose change is in a state klaus doesn't know.
-// If valley fails or prints a schema klaus doesn't know, the check is logged
-// at debug level and every run is judged by git.
+// If valley fails or prints a schema klaus doesn't know, every run is judged
+// by git and the report says why (ValleyErr). The failure is logged at warn
+// level once per streak of failures, and the recovery once.
 //
 // Git can't settle a change finalize marked ready: a deleted branch says
 // nothing about a change the valley still holds as uncertain or rejected. For
@@ -29,10 +32,13 @@ import (
 type ValleyChecker struct {
 	git    *GitChecker
 	logger *slog.Logger
+
+	mu      sync.Mutex
+	failing bool // the previous check failed: log the next failure only after a success
 }
 
-// NewValleyChecker returns a ValleyChecker that logs failed checks at debug
-// level to logger (slog.Default when nil).
+// NewValleyChecker returns a ValleyChecker that logs failed checks to logger
+// (slog.Default when nil).
 func NewValleyChecker(logger *slog.Logger) *ValleyChecker {
 	if logger == nil {
 		logger = slog.Default()
@@ -47,10 +53,11 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 	if !ok {
 		return Report{Runs: c.judgeByGit(ctx, runs)}
 	}
+	start := time.Now()
 	changes, err := valley.List(ctx, dir)
+	c.note(dir, err, time.Since(start))
 	if err != nil {
-		c.logger.Debug("valley check failed; judging runs by git", "dir", dir, "err", err)
-		return Report{Runs: c.judgeByGit(ctx, runs), Asked: true}
+		return Report{Runs: c.judgeByGit(ctx, runs), Asked: true, ValleyErr: oneLine(err)}
 	}
 	for _, vr := range changes.Repos {
 		if e := vr.Err(); e != "" {
@@ -70,6 +77,30 @@ func (c *ValleyChecker) Check(ctx context.Context, runs []*run.State) Report {
 		out[id] = r
 	}
 	return Report{Runs: out, Changes: activeVersions(changes), Listing: changes, Asked: true}
+}
+
+// note logs a check's outcome when it starts or ends a streak of failures.
+func (c *ValleyChecker) note(dir string, err error, took time.Duration) {
+	c.mu.Lock()
+	was := c.failing
+	c.failing = err != nil
+	c.mu.Unlock()
+	switch {
+	case err != nil && !was:
+		c.logger.Warn("valley check failed; judging runs by git", "dir", dir, "err", err, "took", took.Round(time.Millisecond))
+	case err == nil && was:
+		c.logger.Warn("valley check recovered", "dir", dir, "took", took.Round(time.Millisecond))
+	}
+}
+
+// oneLine is err's message on one line, without the "valley changes: "
+// prefix a valley.Error carries.
+func oneLine(err error) string {
+	msg := err.Error()
+	if ve, ok := err.(*valley.Error); ok {
+		msg = ve.Reason
+	}
+	return strings.Join(strings.Fields(msg), " ")
 }
 
 // judgeByGit asks the GitChecker about runs the valley didn't place. A run

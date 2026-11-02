@@ -42,6 +42,8 @@ type integrationMsg struct {
 	// restacks is where each restack conflict on a change klaus owns
 	// stands after the check's restack pass; nil when none ran.
 	restacks map[integration.ChangeKey]restack.View
+	// valleyErr is why the check couldn't ask the valley; "" when it could.
+	valleyErr string
 }
 
 type fsEventMsg struct{}
@@ -194,7 +196,7 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 		if ok && ledger != nil && rep.Listing != nil {
 			reportChangeTransitions(hds, ledger, pushed, rep.Listing)
 		}
-		msg := integrationMsg{results: rep.Runs, changes: rep.Changes}
+		msg := integrationMsg{results: rep.Runs, changes: rep.Changes, valleyErr: rep.ValleyErr}
 		if ok && restacks && (rep.Listing != nil || !rep.Asked) {
 			views, err := restackPass(ctx, hds, rep.Listing, true)
 			if err != nil {
