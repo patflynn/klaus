@@ -1,11 +1,15 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/patflynn/klaus/internal/valley"
@@ -229,4 +233,63 @@ func TestValleyCheckerFallsBackToGit(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(map[*run.State]Verdict{dark: Awaiting, orphan: Awaiting, gone: Unknown, plain: Gone})
+}
+
+// TestValleyCheckerSaysWhyAndLogsOncePerStreak runs the checker against a
+// fake valley that hangs past a short timeout, then exits non-zero, then
+// answers: each failed report names the reason, the log has one warning for
+// the streak and one for the recovery.
+func TestValleyCheckerSaysWhyAndLogsOncePerStreak(t *testing.T) {
+	f := newFixture(t)
+	bin := t.TempDir()
+	mode := filepath.Join(bin, "mode")
+	writeFile(t, bin, "mode", "hang")
+	script := `#!/bin/sh
+case "$(cat '` + mode + `')" in
+hang) exec sleep 30 ;;
+fail) echo 'valley: cannot reach classic-laddie' >&2; exit 1 ;;
+*) echo '{"schema":"valley-changes/v1","host":"h","repos":[]}' ;;
+esac
+`
+	writeFile(t, bin, "valley", script)
+	if err := os.Chmod(filepath.Join(bin, "valley"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := valley.ListTimeout
+	valley.ListTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { valley.ListTimeout = old })
+
+	s := f.agentPush("a", "agent/a", "a.txt")
+	s.ChangeID = "a-id"
+	s.Valley = &run.Valley{Repo: "cosmo", Handle: "a", Version: 1}
+
+	var logs bytes.Buffer
+	c := NewValleyChecker(slog.New(slog.NewTextHandler(&logs, nil)))
+	check := func() Report { return c.Check(context.Background(), []*run.State{s}) }
+
+	if r := check(); !strings.Contains(r.ValleyErr, "timed out after 300ms") || !r.Asked {
+		t.Errorf("hung valley: ValleyErr = %q, Asked = %v", r.ValleyErr, r.Asked)
+	}
+	writeFile(t, bin, "mode", "fail")
+	if r := check(); !strings.Contains(r.ValleyErr, "cannot reach classic-laddie") {
+		t.Errorf("failing valley: ValleyErr = %q", r.ValleyErr)
+	}
+	if n := strings.Count(logs.String(), "level=WARN msg=\"valley check failed"); n != 1 {
+		t.Errorf("failure streak logged %d warnings, want 1:\n%s", n, logs.String())
+	}
+	if !strings.Contains(logs.String(), "took=") || !strings.Contains(logs.String(), "dir=") {
+		t.Errorf("warning should carry the directory and duration:\n%s", logs.String())
+	}
+	writeFile(t, bin, "mode", "ok")
+	if r := check(); r.ValleyErr != "" || r.Listing == nil {
+		t.Errorf("recovered valley: ValleyErr = %q, Listing = %v", r.ValleyErr, r.Listing)
+	}
+	if n := strings.Count(logs.String(), "valley check recovered"); n != 1 {
+		t.Errorf("recovery logged %d times, want 1:\n%s", n, logs.String())
+	}
+	check()
+	if n := strings.Count(logs.String(), "level=WARN"); n != 2 {
+		t.Errorf("a healthy check should log nothing; %d warnings:\n%s", n, logs.String())
+	}
 }

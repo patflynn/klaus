@@ -42,6 +42,7 @@ const (
 	chromeBlank                     // spacing
 	chromeError                     // a recent pipeline error
 	chromeNotice                    // a new klaus to restart onto, or why that failed
+	chromeValley                    // the latest valley check failed; rows show git's view
 	chromeJobs                      // the jobs section's header line
 	chromeJob                       // a consult or review in the jobs section
 	chromeFooter                    // agent count and key help
@@ -68,7 +69,7 @@ func dropRank(k chromeKind) int {
 		return 5
 	case chromeError:
 		return 4
-	case chromeFooter, chromeNotice:
+	case chromeFooter, chromeNotice, chromeValley:
 		return 3
 	case chromeHeader:
 		return 2
@@ -102,6 +103,9 @@ func (m dashboardModel) fitLayout(nRows, nJobs int) ([]chromeItem, int) {
 	}
 	if m.binNotice != "" {
 		items = append(items, chromeItem{kind: chromeNotice})
+	}
+	if m.valleyErr != "" {
+		items = append(items, chromeItem{kind: chromeValley})
 	}
 	items = append(items, chromeItem{kind: chromeFooter})
 

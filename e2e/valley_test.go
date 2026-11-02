@@ -517,8 +517,23 @@ func TestDashboardValleyFailureFallsBackToGit(t *testing.T) {
 	if !strings.Contains(refusedRow, "SUBMIT  agent/refused@"+refusedSHA[:7]) || !strings.Contains(refusedRow, "valley ready: refused: no principal") {
 		t.Errorf("a run finalize couldn't mark ready should show SUBMIT and why: %q\n%s", refusedRow, s)
 	}
+	if !strings.Contains(s, "valley unreachable: valley: cannot reach classic-laddie; showing git's view") {
+		t.Errorf("the dashboard should say the valley check failed:\n%s", s)
+	}
 	if calls := h.valleyCalls("changes"); len(calls) != 1 {
 		t.Errorf("valley changes calls = %q, want one failed attempt", calls)
+	}
+
+	res := h.RunKlaus("status")
+	if res.ExitCode != 0 {
+		t.Fatalf("status exited %d\n%s%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if !strings.Contains(res.Stderr, "valley unreachable: valley: cannot reach classic-laddie; showing git's view") {
+		t.Errorf("status should note the failed valley check on stderr: %q", res.Stderr)
+	}
+	h.writeValleyChanges(map[string]any{"schema": "valley-changes/v1", "host": "h", "repos": []any{}})
+	if res := h.RunKlaus("status"); strings.Contains(res.Stderr, "valley unreachable") {
+		t.Errorf("status should not note a valley that answered: %q", res.Stderr)
 	}
 }
 

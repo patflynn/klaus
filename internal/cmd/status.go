@@ -185,6 +185,9 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	// valley knows and the tracked valley changes, one check per repo
 	// against each run's own clone for the rest.
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
+	if note := integration.ValleyNote(report.ValleyErr); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
 	handles := changeHandles(states, report.Changes)
 	prs := changePRs(states)
 	// The restack conflicts on changes klaus owns, and what klaus did
