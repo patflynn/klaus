@@ -95,9 +95,10 @@ re-checked every 30 minutes.
 A run whose repo delivers to a valley shows as its change: the repo (always
 shown), the change's handle and its title, then the version and head (e.g.
 v2@1a2b3c4). Finalize marked the pushed head ready, or, with
-"ready_at_finalize": false in config, left it a draft awaiting review. Every
-minute, one "valley changes --all --json" for all such runs says where each
-stands: REVIEW (a draft finalize left that awaits review; approve refuses it,
+"ready_at_finalize": false in config, left it a draft awaiting review. One
+"valley changes --all --json" for all such runs says where each stands. It
+runs at once when the valley host reports a decision or new evidence, and
+otherwise every minute: REVIEW (a draft finalize left that awaits review; approve refuses it,
 and the footer offers the 'klaus ready <handle> --head <head>' that marks the
 head on screen ready once its review passes), READY (ready and waiting for you), APPROVED, INTEGRATED
 (landed), UNCERTAIN (no landing evidence: look), STALE, REJECTED or FAILED
@@ -254,6 +255,8 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 			model.pollEnabled = true
 		}
 
+		model.waker = startValleyWaker(ctx, model.logger)
+
 		p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(ctx))
 		finalModel, err := p.Run()
 		cancel()
@@ -313,6 +316,12 @@ type dashboardModel struct {
 	integration     map[string]integration.Result                // run ID -> latest check; nil before the first check
 	changes         map[integration.ChangeKey]integration.Result // the valley's view of each change's active version
 	integrationOn   bool                                         // the integration check loop has started
+	checking        bool                                         // an integration check is running
+	checkAgain      bool                                         // a wake came during the running check: run one more after it
+	wakeHeld        bool                                         // a wake waits wakeSettle for the rest of its burst
+	checkSeq        int                                          // the latest arming of the integration timer
+	waker           *valleyWaker                                 // follows valley hosts' telemetry; nil when not started
+	logger          *slog.Logger                                 // writes dashboard.log
 	changeLedger    *pipeline.ChangeLedger                       // the valley change transitions seen and reported; nil outside a session
 	restackOn       bool                                         // each integration check runs a restack pass
 	restacks        map[integration.ChangeKey]restack.View       // where each restack conflict on a change klaus owns stands
@@ -412,6 +421,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 		logFile:         logFile,
 		eventsPath:      eventsPath,
 		jobsDir:         jobsDir,
+		logger:          logger,
 	}
 }
 
@@ -430,6 +440,9 @@ func (m dashboardModel) Init() tea.Cmd {
 	}
 	if m.internalEventCh != nil {
 		cmds = append(cmds, waitForInternalEventCmd(m.internalEventCh))
+	}
+	if m.waker != nil {
+		cmds = append(cmds, m.waker.waitCmd())
 	}
 	return tea.Batch(cmds...)
 }
@@ -558,17 +571,44 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				markRunFailed(m.store, s)
 			}
 		}
+		// Follow the valley hosts of the changes the check asks about, so
+		// the host's decisions wake it.
+		m.waker.Track(valleyCheckouts(m.states))
 		cmd := m.fetchGHStatusCmd(m.states)
 		if !m.integrationOn {
 			// The first load starts the integration check loop; it then
 			// re-arms itself each time a check completes.
 			m.integrationOn = true
-			cmd = tea.Batch(cmd, checkIntegrationCmd(m.checker, m.states, m.store, m.changeLedger, m.restackOn))
+			var check tea.Cmd
+			m, check = m.startIntegrationCheck()
+			cmd = tea.Batch(cmd, check)
 		}
 		return m, cmd
 
 	case integrationTickMsg:
-		return m, checkIntegrationCmd(m.checker, m.states, m.store, m.changeLedger, m.restackOn)
+		if msg.seq != m.checkSeq || m.checking {
+			return m, nil // a woken check took this tick's place
+		}
+		return m.startIntegrationCheck()
+
+	case valleyWakeMsg:
+		cmd := m.waker.waitCmd()
+		if !m.wakeHeld {
+			m.wakeHeld = true
+			cmd = tea.Batch(cmd, tea.Tick(wakeSettle, func(time.Time) tea.Msg { return valleyWakeCheckMsg{} }))
+		}
+		return m, cmd
+
+	case valleyWakeCheckMsg:
+		m.wakeHeld = false
+		if m.checking {
+			m.checkAgain = true
+			return m, nil
+		}
+		if !m.integrationOn {
+			return m, nil // the first load's check is yet to start
+		}
+		return m.startIntegrationCheck()
 
 	case integrationMsg:
 		m.integration = keepValleyViews(m.integration, msg.results)
@@ -576,7 +616,13 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.restacks != nil {
 			m.restacks = msg.restacks
 		}
-		return m, integrationTickAfterCmd()
+		m.checking = false
+		if m.checkAgain {
+			m.checkAgain = false
+			return m.startIntegrationCheck()
+		}
+		m.checkSeq++
+		return m, integrationTickAfterCmd(m.checkSeq)
 
 	case ghStatusMsg:
 		now := time.Now()

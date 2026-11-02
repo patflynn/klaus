@@ -31,8 +31,9 @@ type ghStatusMsg struct {
 	statuses map[string]*prStatus // keyed by PR URL
 }
 
-// integrationTickMsg starts an integration check of pushed runs.
-type integrationTickMsg struct{}
+// integrationTickMsg starts an integration check of pushed runs, unless a
+// later check re-armed the timer: seq is the arming it came from.
+type integrationTickMsg struct{ seq int }
 
 // integrationMsg carries the results of an integration check, by run ID.
 type integrationMsg struct {
@@ -150,7 +151,9 @@ func fetchGHStatusCmd(client gh.Client, states []*run.State, skip map[string]boo
 }
 
 // integrationInterval is how often the dashboard checks whether pushed runs
-// have landed. It is independent of GitHub polling.
+// have landed. It is independent of GitHub polling. Where a valley host's
+// telemetry can be followed, a check also starts as soon as the host reports
+// a decision or new evidence (valleyWaker), and the interval is the fallback.
 const integrationInterval = time.Minute
 
 // integrationTimeout bounds one integration check.
@@ -203,6 +206,15 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 	}
 }
 
+// startIntegrationCheck starts an integration check of the model's runs. The
+// model notes it runs until its integrationMsg arrives, so a wake meanwhile
+// asks for one more check after it rather than one beside it.
+func (m dashboardModel) startIntegrationCheck() (dashboardModel, tea.Cmd) {
+	cmd := checkIntegrationCmd(m.checker, m.states, m.store, m.changeLedger, m.restackOn)
+	m.checking = cmd != nil
+	return m, cmd
+}
+
 // keepValleyViews returns a check's results, except where the valley placed
 // a run before and git judged it now (the valley couldn't be asked, or
 // couldn't read the repo): unless git found it landed, the run keeps the
@@ -236,9 +248,9 @@ func keepChangeViews(prev, next map[integration.ChangeKey]integration.Result) ma
 	return next
 }
 
-func integrationTickAfterCmd() tea.Cmd {
+func integrationTickAfterCmd(seq int) tea.Cmd {
 	return tea.Tick(integrationInterval, func(time.Time) tea.Msg {
-		return integrationTickMsg{}
+		return integrationTickMsg{seq: seq}
 	})
 }
 
