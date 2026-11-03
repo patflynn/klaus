@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -473,12 +474,15 @@ func TestDashboardClosesALandedKnot(t *testing.T) {
 		}
 	}
 	// The close holds only while the status, the claim and the links are
-	// what klaus read.
+	// what klaus read. The knots settle in the order the runs list, newest
+	// first, and the seeded runs' second-resolution creation times may differ,
+	// so the order isn't checked.
 	wantSets := []string{
-		"knot set oc-000000a status=done --if status=in-progress --if claimed_by= --if changes=" + link(outcome) + " --project widget",
 		"knot set bd-000000b status=closed --if status=open --if claimed_by= --if changes=" + link(bug) + " --project widget",
 		"knot set oc-0000006 status=done --if status=in-progress --if claimed_by= --if changes=" + link(raced) + " --project widget",
+		"knot set oc-000000a status=done --if status=in-progress --if claimed_by= --if changes=" + link(outcome) + " --project widget",
 	}
+	sort.Strings(sets)
 	if strings.Join(sets, "\n") != strings.Join(wantSets, "\n") {
 		t.Errorf("knot set calls:\n%s\nwant:\n%s", strings.Join(sets, "\n"), strings.Join(wantSets, "\n"))
 	}
