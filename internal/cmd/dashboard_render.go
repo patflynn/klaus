@@ -389,9 +389,9 @@ func changeStatus(r dashRow) string {
 	label := r.statusLabel()
 	var status string
 	switch {
-	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed:
+	case r.attention || r.verdict == integration.Rejected || r.verdict == integration.Failed || r.verdict == integration.ChecksFailed:
 		status = redStyle.Render(label)
-	case r.verdict == integration.Stale || r.verdict == integration.Uncertain:
+	case r.verdict == integration.Stale || r.verdict == integration.Conflicting || r.verdict == integration.Uncertain:
 		status = yellowStyle.Render(label)
 	case r.category == catYours || r.verdict == integration.Approved || r.review:
 		status = cyanStyle.Render(label)

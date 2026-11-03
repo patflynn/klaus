@@ -265,3 +265,125 @@ func TestValleyChecksFlagRefusedFallsBackToPlainListing(t *testing.T) {
 		t.Errorf("klaus asked with --checks %d times, want it tried per process (status, failed-checks):\n%s", withFlag, argv)
 	}
 }
+
+// serveStale has the stub valley list c as ready with an integration
+// request the integrator judged stale, its checks as chk (nil lists none)
+// and the change's restack report as restack (nil lists none).
+func (h *Harness) serveStale(c strictChange, chk map[string]any, restack map[string]any) {
+	h.t.Helper()
+	l := checksListing(c, "ready", chk)
+	ch := l["repos"].([]any)[0].(map[string]any)["changes"].([]any)[0].(map[string]any)
+	v := ch["versions"].([]any)[0].(map[string]any)
+	v["request"] = map[string]any{"id": "req-1"}
+	v["outcome"] = map[string]any{"decision": "stale", "head": c.v1, "tip": strings.Repeat("c", 40)}
+	if restack != nil {
+		ch["restack"] = restack
+	}
+	h.writeValleyChanges(l)
+}
+
+// TestValleyApprovedStaleOnPendingChecksStaysApproved runs the real klaus against
+// a fake valley whose integrator judges an approved change stale. While its
+// checks are pending, the dashboard shows APPROVED with CI pending and reports change:approved
+// but no change:stale. Failed checks show as checks failed, a current restack
+// conflict as conflicting, and passed checks (or none listed) as stale, which
+// reports change:stale once.
+func TestValleyApprovedStaleOnPendingChecksStaysApproved(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	sessionDir := filepath.Join(h.Home, ".klaus", "sessions", h.SessionID)
+	if err := os.WriteFile(filepath.Join(sessionDir, "events.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	count := func(typ string) int {
+		n := 0
+		for _, e := range h.runEvents("nxvp") {
+			if e.Type == typ {
+				n++
+			}
+		}
+		return n
+	}
+	status := func() string {
+		res := h.RunKlaus("status")
+		if res.ExitCode != 0 {
+			t.Fatalf("status exited %d: %s", res.ExitCode, res.Stderr)
+		}
+		return res.Stdout
+	}
+	look := func(want string) {
+		t.Helper()
+		_, screen := h.startDashboard(220)
+		screen(want)
+		h.tmux("kill-session", "-t", "dash")
+	}
+	conflict := map[string]any{"ref": "refs/valley/restack/x", "commit": strings.Repeat("d", 40), "current": true,
+		"report": map[string]any{"schema": "valley-restack-report/v1", "change_id": c.id, "result": "conflict"}}
+
+	// The first look records the change as ready.
+	h.serve(c, nil)
+	look("READY")
+
+	// Approved, judged stale, checks pending: still approved, CI pending.
+	h.serveStale(c, checks("pending", "pending", ""), nil)
+	look("APPROVED")
+	if out := status(); !strings.Contains(out, "approved") || !strings.Contains(out, "pending") || strings.Contains(out, "stale") {
+		t.Errorf("status should read approved with CI pending:\n%s", out)
+	}
+	if count(event.ChangeApproved) != 1 || count(event.ChangeStale) != 0 {
+		t.Errorf("approved: %d approved, %d stale events, want 1 and 0", count(event.ChangeApproved), count(event.ChangeStale))
+	}
+
+	// A current restack conflict is not approved. status only: the
+	// dashboard would dispatch a fix for failed checks.
+	h.serveStale(c, checks("pending", "pending", ""), conflict)
+	if out := status(); !strings.Contains(out, "conflicting") {
+		t.Errorf("status should read conflicting:\n%s", out)
+	}
+	h.serveStale(c, checks("failed", "failed", "go test failed"), nil)
+	if out := status(); !strings.Contains(out, "checks-failed") {
+		t.Errorf("status should read checks-failed:\n%s", out)
+	}
+
+	// Passed checks and still stale: stale, reported once.
+	h.serveStale(c, checks("passed", "passed", ""), nil)
+	for i := 0; i < 2; i++ {
+		look("STALE")
+	}
+	if out := status(); !strings.Contains(out, "stale") {
+		t.Errorf("status should read stale:\n%s", out)
+	}
+	if count(event.ChangeStale) != 1 || count(event.ChangeApproved) != 1 {
+		t.Errorf("stale: %d stale, %d approved events, want 1 and 1", count(event.ChangeStale), count(event.ChangeApproved))
+	}
+}
+
+// With no checks listed (an older valley), a stale decision is stale as
+// before, and change:stale is reported.
+func TestValleyApprovedStaleWithoutChecksStaysStale(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	sessionDir := filepath.Join(h.Home, ".klaus", "sessions", h.SessionID)
+	if err := os.WriteFile(filepath.Join(sessionDir, "events.jsonl"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.serve(c, nil)
+	_, screen := h.startDashboard(220)
+	screen("READY")
+	h.tmux("kill-session", "-t", "dash")
+	h.serveStale(c, nil, nil)
+	_, screen = h.startDashboard(220)
+	screen("STALE")
+	h.tmux("kill-session", "-t", "dash")
+	n := 0
+	for _, e := range h.runEvents("nxvp") {
+		if e.Type == event.ChangeStale {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d change:stale events, want 1", n)
+	}
+}

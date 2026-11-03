@@ -193,6 +193,11 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		}
 	case ch.State == valley.StateReady:
 		d := outcomeOf(active)
+		// A stale decision that only waits for checks is not news, and is
+		// not recorded: a later stale for another reason still is.
+		if d == "stale" && integration.StaleReason(ch, active) == integration.Approved {
+			d = ""
+		}
 		if d != "" && (e.Outcome == nil || e.Outcome.Version < active.N ||
 			e.Outcome.Version == active.N && e.Outcome.Decision != d) {
 			mark(&e.Outcome, ChangeMark{Version: active.N, Head: active.Head, Decision: d},

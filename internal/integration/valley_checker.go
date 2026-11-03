@@ -317,7 +317,7 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	case v.Outcome != nil:
 		switch strings.ToLower(v.Outcome.Decision) {
 		case "stale":
-			return Stale
+			return StaleReason(ch, v)
 		case "rejected":
 			return Rejected
 		case "failed":
@@ -332,4 +332,25 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	default:
 		return Ready
 	}
+}
+
+// StaleReason says what a stale decision on version v of change ch means. A
+// conflict in the change's current restack report is Conflicting. Else the
+// checks decide: pending ones leave the change Approved (the integrator
+// re-judges the request when the evidence arrives), failed ones ChecksFailed. Passed
+// checks, or none listed (an older valley), leave Stale: the evidence was
+// found lacking for another reason.
+func StaleReason(ch valley.Change, v valley.Version) Verdict {
+	if rs := ch.Restack; rs != nil && rs.Current && rs.Report != nil && rs.Report.Result == valley.RestackConflict {
+		return Conflicting
+	}
+	if v.Checks != nil {
+		switch v.Checks.State {
+		case valley.ChecksPending:
+			return Approved
+		case valley.ChecksFailed:
+			return ChecksFailed
+		}
+	}
+	return Stale
 }

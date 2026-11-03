@@ -100,6 +100,10 @@ func pushedLabel(v integration.Verdict, valley bool) string {
 		return "UNCERTAIN"
 	case integration.Stale:
 		return "STALE"
+	case integration.ChecksFailed:
+		return "CHECKS FAILED"
+	case integration.Conflicting:
+		return "CONFLICTING"
 	case integration.Rejected:
 		return "REJECTED"
 	case integration.Failed:
