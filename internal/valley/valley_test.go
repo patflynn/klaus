@@ -118,3 +118,51 @@ func alive(pid int) bool {
 	i := strings.LastIndexByte(string(stat), ')')
 	return i < 0 || !strings.HasPrefix(string(stat[i+1:]), " Z")
 }
+
+// A CLI that refuses --checks is listed again without it, and not asked with
+// it again until the refusal is forgotten; a refusal of anything else, or
+// another failure, is an error, never a listing without checks.
+func TestListChecksFallsBackOnRefusal(t *testing.T) {
+	dir, bin := t.TempDir(), t.TempDir()
+	script := `#!/bin/sh
+echo "$@" >> ` + filepath.Join(dir, "argv") + `
+for a in "$@"; do
+  if [ "$a" = --checks ]; then
+    if [ -f ` + filepath.Join(dir, "other") + ` ]; then echo "valley: cannot reach host" >&2; else echo "valley: changes does not take --checks" >&2; fi
+    exit 1
+  fi
+done
+echo '{"schema":"valley-changes/v1","host":"h","repos":[]}'
+`
+	if err := os.WriteFile(filepath.Join(bin, "valley"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	checksRefused.Lock()
+	checksRefused.at, checksRefused.logged = time.Time{}, false
+	checksRefused.Unlock()
+	argv := func() string {
+		b, _ := os.ReadFile(filepath.Join(dir, "argv"))
+		return string(b)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := List(context.Background(), dir); err != nil {
+			t.Fatalf("List = %v, want the plain listing", err)
+		}
+	}
+	if got, want := argv(), "changes --all --json --checks\nchanges --all --json\nchanges --all --json\n"; got != want {
+		t.Errorf("valley ran:\n%s\nwant:\n%s", got, want)
+	}
+
+	// Once forgotten, the flag is tried again; another failure is an error.
+	old := ChecksRefusalMemory
+	ChecksRefusalMemory = 0
+	defer func() { ChecksRefusalMemory = old }()
+	if err := os.WriteFile(filepath.Join(dir, "other"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := List(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "cannot reach host") {
+		t.Errorf("List = %v, want the valley's own failure", err)
+	}
+}

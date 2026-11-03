@@ -213,8 +213,10 @@ func TestTrackValleyChange(t *testing.T) {
 	landed["versions"].([]any)[0].(map[string]any)["landing"] = "landed"
 	h.writeValleyChanges(listing(landed))
 	status("integrated", " vpkz ")
-	if err := os.Remove(filepath.Join(h.E2EDir, "valley.changes.json")); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"valley.changes.json", "valley.changes.checks.json"} {
+		if err := os.Remove(filepath.Join(h.E2EDir, f)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	status("tracking", " vpkz ")
 

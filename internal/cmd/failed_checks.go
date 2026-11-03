@@ -111,7 +111,7 @@ func checksPass(ctx context.Context, store *run.HomeDirStore, listed *valley.Cha
 		all = states
 	}
 	d := checksfix.Deps{
-		List:      valley.ListRepo,
+		List:      valley.ListRepoChecks,
 		Principal: valley.Principal,
 		NewRunID:  run.GenID,
 		Launch:    launchChecksFix,

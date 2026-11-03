@@ -454,8 +454,10 @@ func TestStatusNamesEveryRunOfAChangeAlike(t *testing.T) {
 	}
 	check("valley listing", want)
 	// The valley goes down: the handles recorded on the changes' runs.
-	if err := os.Remove(filepath.Join(h.E2EDir, "valley.changes.json")); err != nil {
-		t.Fatal(err)
+	for _, f := range []string{"valley.changes.json", "valley.changes.checks.json"} {
+		if err := os.Remove(filepath.Join(h.E2EDir, f)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	check("valley down", want)
 }

@@ -220,3 +220,48 @@ func TestValleyChecksFailedDispatchesAFix(t *testing.T) {
 		t.Errorf("notifications should list the checks:\n%s", res.Stdout)
 	}
 }
+
+// A valley CLI from before `changes --checks` refuses the flag. klaus lists
+// again without it, so the change's landing state still shows, its checks
+// don't, and nothing is dispatched from them. The refusal is remembered, so
+// a second check lists once, not twice.
+func TestValleyChecksFlagRefusedFallsBackToPlainListing(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	c := h.strictChange()
+	h.serve(c, checks("failed", "failed", "go test ./web/... failed"))
+	h.writeE2EJSON("valley.checks-refuse", map[string]any{})
+
+	res := h.RunKlaus("status")
+	if res.ExitCode != 0 {
+		t.Fatalf("status exited %d: %s", res.ExitCode, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "awaiting-approval") || strings.Contains(res.Stdout, "failing") ||
+		strings.Contains(res.Stdout, "valley-request") {
+		t.Errorf("status should read awaiting-approval with no checks shown:\n%s", res.Stdout)
+	}
+	if out, fix := h.failedChecks(); fix != nil || !strings.Contains(out, "No failed checks") {
+		t.Fatalf("with --checks refused, failed-checks launched %v:\n%s", fix, out)
+	}
+	argv, err := os.ReadFile(filepath.Join(h.E2EDir, "valley.argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var withFlag, plain int
+	for _, l := range strings.Split(string(argv), "\n") {
+		if !strings.Contains(l, " changes ") {
+			continue
+		}
+		if strings.Contains(l, "--checks") {
+			withFlag++
+		} else {
+			plain++
+		}
+	}
+	if plain == 0 {
+		t.Errorf("klaus never listed without --checks:\n%s", argv)
+	}
+	if withFlag == 0 || withFlag > 2 {
+		t.Errorf("klaus asked with --checks %d times, want it tried per process (status, failed-checks):\n%s", withFlag, argv)
+	}
+}
