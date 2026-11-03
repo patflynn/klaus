@@ -197,6 +197,59 @@ type Version struct {
 	LandedCommit *string  `json:"landed_commit"`
 	Request      *Request `json:"request"` // the integration request filed for it, if any
 	Outcome      *Outcome `json:"outcome"` // the integrator's decision on that request, if any
+	// Checks is where the host's check worker stands on the version's
+	// required checks. The valley lists it on a ready change's active
+	// version only; nil means unknown: the change isn't ready, or the
+	// valley is from before checks were listed.
+	Checks *Checks `json:"checks"`
+}
+
+// The states of a version's checks, and of each required check.
+const (
+	ChecksPassed  = "passed"
+	ChecksFailed  = "failed"
+	ChecksPending = "pending"
+	// ChecksOther is a required check on a runner the host's worker
+	// doesn't run. It never decides the overall state.
+	ChecksOther = "other"
+)
+
+// Checks is the host's check worker's view of a version's required checks.
+type Checks struct {
+	State    string  `json:"state"` // ChecksPassed, ChecksFailed or ChecksPending
+	Tree     string  `json:"tree"`  // the digest of the head's tree the checks ran on
+	Required []Check `json:"required"`
+}
+
+// Check is one required check.
+type Check struct {
+	Name   string `json:"name"`
+	State  string `json:"state"` // ChecksPassed, ChecksFailed, ChecksPending or ChecksOther
+	Signer string `json:"signer,omitempty"`
+	Why    string `json:"why,omitempty"` // why it failed, as the worker says
+}
+
+// Failed returns the required checks that failed, in listed order.
+func (c *Checks) Failed() []Check {
+	if c == nil {
+		return nil
+	}
+	var out []Check
+	for _, r := range c.Required {
+		if r.State == ChecksFailed {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// FailedNames returns the names of the required checks that failed.
+func (c *Checks) FailedNames() []string {
+	var out []string
+	for _, r := range c.Failed() {
+		out = append(out, r.Name)
+	}
+	return out
 }
 
 // Request is an integration request.

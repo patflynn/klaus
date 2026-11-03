@@ -195,7 +195,11 @@ Key behaviors:
   `change:approved`, `change:integrated`, `change:stale`, `change:rejected`,
   `change:failed`, `change:withdrawn` and `change:new-version` (a version
   neither this session's finalize nor its `klaus ready` recorded, as the
-  valley's restacker's). The dashboard's integration check, once a minute,
+  valley's restacker's), and `change:checks-failed` and
+  `change:checks-passed` for the host's checks of a ready change's active
+  version, a valley change's `agent:ci-failed` and `agent:ci-passed`; the
+  dashboard then dispatches a fix run for each failed head of a change klaus
+  owns, with the CI fix agent's guards (`klaus failed-checks`). The dashboard's integration check, once a minute,
   reads each followed change's own record in the valley's listing and
   reports each mark once, under the change's handle, recording them in
   `change-transitions.json` beside `pr-transitions.json`, under the same

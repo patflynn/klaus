@@ -39,6 +39,7 @@ type changeEntry struct {
 	Landed    *ChangeMark `json:"landed,omitempty"`    // the version that landed, and its landed commit
 	Outcome   *ChangeMark `json:"outcome,omitempty"`   // the last outcome: stale, rejected, failed or uncertain
 	Withdrawn *ChangeMark `json:"withdrawn,omitempty"` // the version active when the change was withdrawn
+	Checks    *ChangeMark `json:"checks,omitempty"`    // the last verdict of a version's checks: passed or failed
 }
 
 // ChangeMark is a mark the ledger keeps for a change.
@@ -46,7 +47,7 @@ type ChangeMark struct {
 	Version  int    `json:"version"`
 	Head     string `json:"head,omitempty"`
 	Commit   string `json:"commit,omitempty"`   // Landed's landed commit
-	Decision string `json:"decision,omitempty"` // Outcome's
+	Decision string `json:"decision,omitempty"` // Outcome's decision, or Checks' state
 	At       string `json:"at"`                 // when it was first seen (RFC3339, with nanoseconds)
 }
 
@@ -58,6 +59,9 @@ type ChangeTransition struct {
 	// Commit is the commit the version landed as, for
 	// event.ChangeIntegrated: its landed_commit, else its head.
 	Commit string
+	// Failed names the version's failed checks, for
+	// event.ChangeChecksFailed and event.ChangeChecksPassed.
+	Failed []string
 }
 
 // LoadChangeLedger reads the change ledger at path; a missing file is an
@@ -82,6 +86,13 @@ var outcomeEvents = map[string]string{
 	"failed":   event.ChangeFailed,
 }
 
+// checksEvents maps the state of a version's checks to the event that
+// reports it. Pending is reported by none, nor recorded.
+var checksEvents = map[string]string{
+	valley.ChecksFailed: event.ChangeChecksFailed,
+	valley.ChecksPassed: event.ChangeChecksPassed,
+}
+
 // Observe records where the valley's listing says change ch, in the repo the
 // valley calls repo, stands, and returns the transitions the ledger didn't
 // hold, in order:
@@ -97,7 +108,12 @@ var outcomeEvents = map[string]string{
 //     version didn't land;
 //   - change:stale, change:rejected or change:failed when the integrator's
 //     decision on a ready change's active version, which didn't land, is a
-//     new one, or is on a later version than the last.
+//     new one, or is on a later version than the last;
+//   - change:checks-failed or change:checks-passed when the checks of a
+//     ready change's active version, which didn't land, failed or passed,
+//     and the last verdict the ledger holds is on an earlier version or
+//     head, or is the other one. A listing with no checks, or pending
+//     ones, changes nothing.
 //
 // A listing whose active version is below the highest the ledger holds was
 // read before the one that recorded that version, and reports only a
@@ -181,6 +197,12 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 			e.Outcome.Version == active.N && e.Outcome.Decision != d) {
 			mark(&e.Outcome, ChangeMark{Version: active.N, Head: active.Head, Decision: d},
 				ChangeTransition{Type: outcomeEvents[d], Version: active})
+		}
+		if c := active.Checks; c != nil && checksEvents[c.State] != "" &&
+			(e.Checks == nil || e.Checks.Version < active.N ||
+				e.Checks.Version == active.N && (e.Checks.Head != active.Head || e.Checks.Decision != c.State)) {
+			mark(&e.Checks, ChangeMark{Version: active.N, Head: active.Head, Decision: c.State},
+				ChangeTransition{Type: checksEvents[c.State], Version: active, Failed: c.FailedNames()})
 		}
 	}
 	return out, l.saved(changed, lockErr, loadErr)
@@ -287,6 +309,7 @@ func (l *ChangeLedger) mergeFromDisk() error {
 		later(&e.Landed, d.Landed)
 		later(&e.Outcome, d.Outcome)
 		later(&e.Withdrawn, d.Withdrawn)
+		later(&e.Checks, d.Checks)
 	}
 	return nil
 }

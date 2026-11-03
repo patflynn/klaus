@@ -162,3 +162,33 @@ func TestChangeLedgerLandingBeforeANewVersion(t *testing.T) {
 		t.Errorf("transitions %q, want %q", got, want)
 	}
 }
+
+// TestChangeLedgerChecks: a version's checks are reported once per verdict.
+// A re-run that goes pending and fails again is no news; a new version's
+// failure is; a listing read before the one that recorded a later version
+// reports nothing of an older version's checks.
+func TestChangeLedgerChecks(t *testing.T) {
+	l, err := LoadChangeLedger(filepath.Join(t.TempDir(), ChangeLedgerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observe := observer(t)
+	at := func(v valley.Version, state string) valley.Version {
+		v.Checks = &valley.Checks{State: state, Required: []valley.Check{{Name: "web-unit", State: state}}}
+		return v
+	}
+	v1 := valley.Version{N: 1, Head: "h1", Landing: valley.NotLanded}
+	v2 := valley.Version{N: 2, Head: "h2", Landing: valley.NotLanded}
+
+	observe("the first look", l, change(v1))
+	observe("pending", l, change(at(v1, valley.ChecksPending)))
+	observe("failed", l, change(at(v1, valley.ChecksFailed)), event.ChangeChecksFailed)
+	observe("re-run, pending", l, change(at(v1, valley.ChecksPending)))
+	observe("failed again", l, change(at(v1, valley.ChecksFailed)))
+	observe("v2 failed", l, change(v1, at(v2, valley.ChecksFailed)), event.ChangeNewVersion, event.ChangeChecksFailed)
+	observe("an older listing's v1 passed", l, change(at(v1, valley.ChecksPassed)))
+	observe("v2 passed", l, change(v1, at(v2, valley.ChecksPassed)), event.ChangeChecksPassed)
+	draft := change(v1, at(v2, valley.ChecksFailed))
+	draft.State = valley.StateDraft
+	observe("a draft's checks", l, draft)
+}

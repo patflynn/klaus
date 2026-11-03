@@ -107,6 +107,11 @@ launch does when a follow-up run continues the change, and no run of it is
 running). If valley can't be asked, the git check above decides, and a change
 waiting on it reads READY, or REVIEW when finalize left it a draft. A run
 whose change finalize couldn't mark ready shows SUBMIT and the reason.
+A ready change's row shows its required checks as a PR row shows CI: CI …
+(pending), CI ✗ and the failed checks' names, or CI ✓. They don't change
+READY: you may approve before they finish. After each check the dashboard
+dispatches a run to fix a failed head of a change klaus owns, as
+'klaus failed-checks' does.
 
 A change's row is built like a PR's. It shows the valley's handle, else the
 first 8 characters of the change ID; the valley's title, else the subject

@@ -110,6 +110,12 @@ func changeTransitionData(repo string, ch valley.Change, t pipeline.ChangeTransi
 		d["landed_commit"] = t.Commit
 	case event.ChangeNewVersion:
 		d["uploader"] = t.Version.Uploader
+	case event.ChangeChecksFailed, event.ChangeChecksPassed:
+		failed := t.Failed
+		if failed == nil {
+			failed = []string{}
+		}
+		d["failed"] = failed
 	}
 	return d
 }

@@ -232,7 +232,7 @@ func ActiveVersion(ch valley.Change) (valley.Version, bool) {
 // changeAt is how the valley knows version v of change ch in repo.
 func changeAt(repo string, ch valley.Change, v valley.Version) *Change {
 	c := &Change{Repo: repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
-		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active}
+		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active, Checks: v.Checks}
 	if v.Landing == valley.Landed || v.Landing == valley.LandedRecorded {
 		c.LandedCommit = v.Head
 		if v.LandedCommit != nil && *v.LandedCommit != "" {

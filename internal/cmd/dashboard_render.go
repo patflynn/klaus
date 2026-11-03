@@ -340,6 +340,14 @@ func bareAgentParts(r dashRow) []string {
 	if v := r.restack; v != nil {
 		parts = append(parts, redStyle.Render("restack conflict"), dimStyle.Render(v.Summary()))
 	}
+	if c := r.change; c != nil {
+		if ci := checksCI(c.Checks); ci != "" {
+			parts = append(parts, ciLabel(ci))
+		}
+		if names := c.Checks.FailedNames(); len(names) > 0 && checksCI(c.Checks) == "failing" {
+			parts = append(parts, redStyle.Render(truncateLine(strings.Join(names, ","), maxFailedChecksW)))
+		}
+	}
 	switch c := r.change; {
 	case c != nil && c.Version > 0:
 		parts = append(parts, fmt.Sprintf("v%d@%s", c.Version, shortSHA(c.Head)))

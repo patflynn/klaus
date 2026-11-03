@@ -851,7 +851,7 @@ Events that land while you react, or between one watch exiting and the next star
 - If a watch exits without a ` + "`next:`" + ` line (it was killed, or failed), start the command you last started again. It prints the same events, so none is lost.
 - When the session resumes, the last session's watch is gone: start the command on the latest ` + "`next:`" + ` line you have again, or the command in step 1 if you have none.
 
-Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled; a valley change's handle for change:approved, change:integrated, change:stale, change:rejected, change:failed, change:withdrawn and change:new-version). The ` + "`next:`" + ` line keeps the flags you gave.
+Use the default filter unless the user asks for something narrower; ` + "`--filter <type>`" + ` (repeatable) replaces it and ` + "`--filter-out <type>`" + ` subtracts from it. ` + "`--run <run-id>`" + ` narrows a watch to one run's events (a PR's number for pr:approved, pr:merged and pipeline:stalled; a valley change's handle for change:approved, change:integrated, change:stale, change:rejected, change:failed, change:withdrawn, change:new-version, change:checks-failed and change:checks-passed). The ` + "`next:`" + ` line keeps the flags you gave.
 {{end}}
 ## State and tracking
 

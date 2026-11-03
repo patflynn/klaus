@@ -137,6 +137,10 @@ type Change struct {
 	// Knots are the IDs of the knots in the repo's plan graph that link the
 	// change, as the valley lists them.
 	Knots []string
+	// Checks is the host's check worker's view of the version's required
+	// checks, which the valley lists on a ready change's active version;
+	// nil when unknown.
+	Checks *valley.Checks
 }
 
 // ChangeKey identifies a change across runs and in a valley's listing: the
