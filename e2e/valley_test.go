@@ -38,7 +38,10 @@ func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
-{ printf '%%s:' "$PWD"; for a in "$@"; do printf ' %%s' "$a"; done; printf '\n'; } >> "$dir/valley.argv"
+# One write per call, so calls made at once (a follow per telemetry source)
+# don't interleave their words.
+line="$PWD:"; for a in "$@"; do line="$line $a"; done
+printf '%%s\n' "$line" >> "$dir/valley.argv"
 case "$1" in
 help)
   printf 'usage: valley <verb> [args]\n\n  ready --change <id> --head <sha> <branch>\n  changes [--all] [--json]\n  approve <change>\n'
