@@ -934,10 +934,12 @@ Keyboard shortcuts:
 | `o` | open the selected PR in a browser |
 | `tab` | select a job in the jobs section / go back to the runs |
 | `enter` | read the selected job's record and answer (`esc` goes back) |
-| `r` | force refresh |
+| `r` | refresh, and redraw the whole screen |
 | `q` | quit |
 
-The dashboard follows klaus on PATH. Every 30 seconds it resolves `klaus` on PATH, symlinks and all, and compares it with the binary it runs. When PATH names a different file that runs `--version`, as after `klaus self-update`, the footer says `klaus updated to <version>; restarting`, and once no key has been pressed for 10 seconds the dashboard shuts down as on `q`, closing its watcher, its log and its webhook server, and execs the new klaus with the same arguments and environment. The restarted dashboard rebuilds its view from the state on disk. If the exec fails, the dashboard keeps running on the old klaus, shows the error in the footer, and doesn't try that file again.
+While it runs, the dashboard writes its notes, such as a valley that refuses `changes --checks`, to `dashboard.log` in the session directory, never to the screen. Anything else that writes to its pane stays on screen until `r`.
+
+The dashboard follows klaus on PATH. Every 30 seconds it resolves `klaus` on PATH, symlinks and all, and compares it with the binary it runs. When PATH names a different file that runs `--version`, as after `klaus self-update`, the footer says `klaus updated to <version>; restarting`, and once no key has been pressed for 10 seconds the dashboard shuts down as on `q`, closing its watcher, its log and its webhook server, and execs the new klaus with the same arguments and environment. The restarted dashboard clears the screen and rebuilds its view from the state on disk. If the exec fails, the dashboard keeps running on the old klaus, shows the error in the footer, and doesn't try that file again.
 
 When webhook mode is enabled, the data-source line shows a freshness indicator for the most recent webhook delivery (e.g. `· last event 5m`), color-coded as it ages (dim under 30m, yellow under 2h, red beyond). Note this surfaces the age of the last delivery, not delivery health — a long silence can mean a quiet repo or a broken delivery path, so it's a hint for a human to judge rather than a definitive check.
 
