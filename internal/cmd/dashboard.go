@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -170,7 +171,7 @@ Keyboard shortcuts:
   o               open the selected PR in a browser
   tab             select a job / back to the runs
   enter           read the selected job's answer (esc to go back)
-  r               force refresh
+  r               refresh, and redraw the whole screen
   q               quit`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		bin := newBinCheck()
@@ -215,6 +216,7 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 		model.shutdownCancel = cancel
 		model.bin = bin
 		model.binNotice, model.binNoticeErr = notice, notice != ""
+		defer logTo(model.logger)()
 
 		// Tail the session event log so klaus-internal commands (e.g.
 		// `klaus approve`) can wake the dashboard FSM without waiting for
@@ -226,7 +228,7 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 			go func() {
 				defer close(internalCh)
 				if err := event.Tail(ctx, model.eventsPath, internalCh); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: event tail stopped: %v\n", err)
+					model.logger.Warn("event tail stopped", "err", err)
 				}
 			}()
 		}
@@ -253,7 +255,7 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 
 			go func() {
 				if err := webhookSrv.Serve(); err != nil && err != http.ErrServerClosed {
-					fmt.Fprintf(os.Stderr, "webhook server error: %v\n", err)
+					model.logger.Error("webhook server", "err", err)
 				}
 			}()
 		} else {
@@ -295,6 +297,21 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 
 func init() {
 	rootCmd.AddCommand(dashboardCmd)
+}
+
+// logTo sends what slog's and log's default loggers write to logger until
+// the returned func restores them. Nothing may write to the terminal under
+// the dashboard: a line there scrolls the pane, and the renderer, which
+// redraws only the lines that changed, would leave the scrolled lines on
+// screen for good.
+func logTo(logger *slog.Logger) (restore func()) {
+	prev, out, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(logger)
+	return func() {
+		slog.SetDefault(prev)
+		log.SetOutput(out)
+		log.SetFlags(flags)
+	}
 }
 
 // dashboardModel is the bubbletea model for the dashboard.
@@ -433,6 +450,8 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 
 func (m dashboardModel) Init() tea.Cmd {
 	cmds := []tea.Cmd{
+		// Start on a clear screen, as after a restart onto a new klaus.
+		tea.ClearScreen,
 		loadStatesCmd(m.store),
 		loadJobsCmd(m.jobsDir),
 		startWatcherCmd(m.store, m.jobsDir),
@@ -492,7 +511,10 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "r":
+			// Redraw every line: the renderer redraws only the lines that
+			// changed, so whatever else wrote to the pane stays until then.
 			return m, tea.Batch(
+				tea.ClearScreen,
 				loadStatesCmd(m.store),
 				loadJobsCmd(m.jobsDir),
 				m.fetchGHStatusCmd(m.states),
@@ -935,8 +957,10 @@ func (m dashboardModel) View() string {
 		}
 	}
 
-	// Never wrap: a wrapped line would push rows off the bottom of the pane.
+	// One line each, never wrapped: a line break or a wrapped line would
+	// push rows off the bottom of the pane.
 	for i, l := range lines {
+		l, _, _ = strings.Cut(l, "\n")
 		lines[i] = ansi.Truncate(l, width, "…")
 	}
 	return strings.Join(lines, "\n")

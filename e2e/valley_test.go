@@ -23,7 +23,7 @@ import (
 // absent, fails as an unreachable valley does. A listing's versions carry
 // their checks only when changes is given --checks (see writeValleyChanges),
 // and changes --checks is refused as an older CLI does when
-// valley.checks-refuse exists. Its help lists unready only
+// valley.checks-refuse exists, once valley.checks-hold doesn't. Its help lists unready only
 // when valley.has-unready exists; unready answers "widget nxvp v1 draft" or,
 // when valley.unready-refuse exists, refuses with its contents, and creates
 // valley.unready-late if the fake agent had already started. After an
@@ -100,7 +100,10 @@ telemetry)
 changes)
   checks=
   for a in "$@"; do if [ "$a" = --checks ]; then checks=1; fi; done
-  if [ -n "$checks" ] && [ -f "$dir/valley.checks-refuse" ]; then echo "valley: changes does not take --checks" >&2; exit 1; fi
+  if [ -n "$checks" ] && [ -f "$dir/valley.checks-refuse" ]; then
+    while [ -f "$dir/valley.checks-hold" ]; do sleep 0.1; done
+    echo "valley: changes does not take --checks" >&2; exit 1
+  fi
   if [ -n "$checks" ] && [ -f "$dir/valley.changes.checks.json" ]; then cat "$dir/valley.changes.checks.json"; exit 0; fi
   if [ -f "$dir/valley.after-unready" ]; then
     echo >> "$dir/valley.after-unready"

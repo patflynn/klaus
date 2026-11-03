@@ -158,3 +158,122 @@ func TestDashboardShowsRunningConsult(t *testing.T) {
 	h.tmux("send-keys", "-t", pane, "Enter")
 	screen("status:     succeeded", "the e2e answer", "esc back")
 }
+
+// TestDashboardScreenStaysWhole runs the real dashboard over a valley change
+// in a pane its view fills, while the valley on PATH refuses `changes
+// --checks`, as one from before the flag does. klaus notes the refusal in
+// dashboard.log, not on the screen: a line written under the dashboard
+// scrolls the pane, and the renderer, which redraws only the lines that
+// changed, would leave the scrolled lines on screen for good. Output from
+// outside klaus does the same; r redraws the whole screen.
+func TestDashboardScreenStaysWhole(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.installValleyStub()
+	sha := strings.Repeat("1", 40)
+	ready := h.valleyRun("20261103-1644-0001", "prompt one", "nxvp", "Add a health check", 1, sha, time.Now().Add(-5*time.Minute))
+	h.writeValleyChanges(map[string]any{
+		"schema": "valley-changes/v1", "host": "classic-laddie",
+		"repos": []any{map[string]any{
+			"repo": "widget", "url": "git@classic-laddie:widget.git", "error": nil, "branches": []any{},
+			"changes": []any{change(ready, "ready", 1, version(1, sha, "Add a health check", "not-landed"))},
+		}},
+	})
+	hold := filepath.Join(h.E2EDir, "valley.checks-hold")
+	for _, f := range []string{"valley.checks-refuse", "valley.checks-hold"} {
+		if err := os.WriteFile(filepath.Join(h.E2EDir, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 7 lines: header, source, summary, blank, the row, blank, footer.
+	pane := strings.TrimSpace(h.tmux("new-session", "-d", "-s", "dash", "-x", "120", "-y", "7", "-c", h.RepoDir,
+		"-P", "-F", "#{pane_id}", "env KLAUS_SESSION_ID="+h.SessionID+" klaus dashboard"))
+	capture := func() []string {
+		return strings.Split(strings.TrimRight(h.tmux("capture-pane", "-p", "-t", pane), "\n"), "\n")
+	}
+	// whole says what is wrong with the screen, if anything: each line in
+	// its place, once.
+	whole := func(lines []string) string {
+		count := func(s string) int {
+			n := 0
+			for _, l := range lines {
+				if strings.Contains(l, s) {
+					n++
+				}
+			}
+			return n
+		}
+		switch {
+		case len(lines) != 7:
+			return fmt.Sprintf("%d lines, want 7", len(lines))
+		case !strings.Contains(lines[0], "klaus dashboard"):
+			return "the header isn't the first line"
+		case !strings.Contains(lines[1], "polling: 30s"):
+			return "the source line isn't the second line"
+		case !strings.Contains(lines[2], "1–1 of 1") || count("1–1 of 1") != 1:
+			return "the summary isn't the third line, once"
+		case !strings.HasPrefix(lines[4], "> widget  nxvp") || count("nxvp") != 1:
+			return "the row isn't the fifth line, once"
+		case !strings.Contains(lines[6], "q quit"):
+			return "the footer isn't the last line"
+		case count("does not take") > 0 || count("stray") > 0:
+			return "output from under the dashboard is on screen"
+		}
+		return ""
+	}
+	waitWhole := func(after string) {
+		t.Helper()
+		var lines []string
+		for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(200 * time.Millisecond) {
+			if lines = capture(); whole(lines) == "" {
+				return
+			}
+		}
+		t.Fatalf("%s: %s:\n%s", after, whole(lines), strings.Join(lines, "\n"))
+	}
+
+	// The valley refuses --checks once the dashboard is on screen, as one
+	// that takes seconds to list does; the refusal comes before the listing
+	// without --checks.
+	waitWhole("at start")
+	if err := os.Remove(hold); err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		plain := 0
+		for _, c := range h.valleyCalls("changes") {
+			if !strings.Contains(c, "--checks") {
+				plain++
+			}
+		}
+		if plain > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the dashboard never listed changes without --checks: %q", h.valleyCalls("changes"))
+		}
+	}
+	waitWhole("after the valley refused --checks")
+	if log, _ := os.ReadFile(filepath.Join(h.Home, ".klaus", "sessions", h.SessionID, "dashboard.log")); !strings.Contains(string(log), "does not take --checks") {
+		t.Errorf("dashboard.log should note the refusal:\n%s", log)
+	}
+
+	// Something else writes to the pane: the view scrolls up under it.
+	tty, err := os.OpenFile(strings.TrimSpace(h.tmux("display-message", "-p", "-t", pane, "#{pane_tty}")), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tty.WriteString("stray output\r\n")
+	tty.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); whole(capture()) == ""; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the stray output never showed; the test can't tell r redraws the screen")
+		}
+	}
+	h.tmux("send-keys", "-t", pane, "r")
+	waitWhole("after r")
+}
