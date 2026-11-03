@@ -362,7 +362,7 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	case attention:
 		r.category = catYours
 		r.attention = true
-	case r.pushed && (r.verdict == integration.Approved || r.verdict == integration.Waiting || r.review):
+	case r.pushed && (r.verdict == integration.Approved || r.review):
 		// Approved, and approved with its checks pending, wait on the integrator; a draft awaiting review on its
 		// reviewer, who marks it ready with klaus ready.
 		r.category = catPipeline

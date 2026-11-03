@@ -41,7 +41,8 @@ const (
 	// awaiting the operator's approval.
 	Ready
 	// Approved means an integration request is filed for the version and the
-	// integrator hasn't decided it yet.
+	// integrator hasn't decided it yet, or it judged the request stale only
+	// because the host's checks are pending (see StaleReason).
 	Approved
 	// Uncertain means a request for the version was consumed or failed with
 	// no landing evidence, or the valley's record says something klaus
@@ -52,10 +53,6 @@ const (
 	Stale
 	Rejected
 	Failed
-	// Waiting is a stale decision that only waits: the host's check worker
-	// has not finished the version's checks (see StaleReason). Stale,
-	// ChecksFailed and Conflicting are the other reasons a request is stale.
-	Waiting
 	// ChecksFailed is a stale decision on a version whose checks failed.
 	ChecksFailed
 	// Conflicting is a stale decision on a change whose current restack
@@ -101,8 +98,6 @@ func (v Verdict) String() string {
 		return "uncertain"
 	case Stale:
 		return "stale"
-	case Waiting:
-		return "waiting"
 	case ChecksFailed:
 		return "checks-failed"
 	case Conflicting:

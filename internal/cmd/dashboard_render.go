@@ -393,7 +393,7 @@ func changeStatus(r dashRow) string {
 		status = redStyle.Render(label)
 	case r.verdict == integration.Stale || r.verdict == integration.Conflicting || r.verdict == integration.Uncertain:
 		status = yellowStyle.Render(label)
-	case r.category == catYours || r.verdict == integration.Approved || r.verdict == integration.Waiting || r.review:
+	case r.category == catYours || r.verdict == integration.Approved || r.review:
 		status = cyanStyle.Render(label)
 	case r.verdict.Landed():
 		status = greenStyle.Render(label)

@@ -282,13 +282,13 @@ func (h *Harness) serveStale(c strictChange, chk map[string]any, restack map[str
 	h.writeValleyChanges(l)
 }
 
-// TestValleyApprovedStaleOnPendingChecksIsWaiting runs the real klaus against
+// TestValleyApprovedStaleOnPendingChecksStaysApproved runs the real klaus against
 // a fake valley whose integrator judges an approved change stale. While its
-// checks are pending, the dashboard shows WAITING and reports change:approved
+// checks are pending, the dashboard shows APPROVED with CI pending and reports change:approved
 // but no change:stale. Failed checks show as checks failed, a current restack
 // conflict as conflicting, and passed checks (or none listed) as stale, which
 // reports change:stale once.
-func TestValleyApprovedStaleOnPendingChecksIsWaiting(t *testing.T) {
+func TestValleyApprovedStaleOnPendingChecksStaysApproved(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
 	c := h.strictChange()
@@ -325,17 +325,17 @@ func TestValleyApprovedStaleOnPendingChecksIsWaiting(t *testing.T) {
 	h.serve(c, nil)
 	look("READY")
 
-	// Approved, judged stale, checks pending: waiting.
+	// Approved, judged stale, checks pending: still approved, CI pending.
 	h.serveStale(c, checks("pending", "pending", ""), nil)
-	look("WAITING")
-	if out := status(); !strings.Contains(out, "waiting") {
-		t.Errorf("status should read waiting:\n%s", out)
+	look("APPROVED")
+	if out := status(); !strings.Contains(out, "approved") || !strings.Contains(out, "pending") || strings.Contains(out, "stale") {
+		t.Errorf("status should read approved with CI pending:\n%s", out)
 	}
 	if count(event.ChangeApproved) != 1 || count(event.ChangeStale) != 0 {
-		t.Errorf("waiting: %d approved, %d stale events, want 1 and 0", count(event.ChangeApproved), count(event.ChangeStale))
+		t.Errorf("approved: %d approved, %d stale events, want 1 and 0", count(event.ChangeApproved), count(event.ChangeStale))
 	}
 
-	// A current restack conflict is not waiting. status only: the
+	// A current restack conflict is not approved. status only: the
 	// dashboard would dispatch a fix for failed checks.
 	h.serveStale(c, checks("pending", "pending", ""), conflict)
 	if out := status(); !strings.Contains(out, "conflicting") {
