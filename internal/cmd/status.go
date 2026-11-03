@@ -57,8 +57,15 @@ says the change stands:
   approved              approved; the integrator hasn't decided
   uncertain             a request was consumed or failed with no landing
                         evidence: look at it
-  stale, rejected,      the integrator's decision on the request
-  failed
+  waiting               approved, and the integrator judged it stale only
+                        because its checks are still running; it re-judges
+                        when they finish. Nothing to do
+  checks-failed         stale, and the version's checks failed
+  conflicting           stale, and the change's current restack report
+                        says a rebase conflicted
+  stale, rejected,      the integrator's decision on the request (stale
+  failed                with passed checks, or on a valley that lists
+                        none, is for you to look at)
   withdrawn             the change was withdrawn
   superseded            another version of the change is the active one
   draft                 returned to draft ('valley unready'), as launch
@@ -403,7 +410,7 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 func live(status string) bool {
 	switch status {
 	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-review", "awaiting-approval",
-		"approved", "uncertain", "stale", "rejected", "failed", "draft":
+		"approved", "waiting", "checks-failed", "conflicting", "uncertain", "stale", "rejected", "failed", "draft":
 		return true
 	}
 	return false
@@ -427,8 +434,8 @@ func pushedStatus(v integration.Verdict, valley bool) string {
 		}
 		return "awaiting-integration"
 	}
-	// approved, uncertain, stale, rejected, failed, withdrawn, superseded,
-	// draft
+	// approved, waiting, checks-failed, conflicting, uncertain, stale, rejected,
+	// failed, withdrawn, superseded, draft
 	return v.String()
 }
 

@@ -52,6 +52,15 @@ const (
 	Stale
 	Rejected
 	Failed
+	// Waiting is a stale decision that only waits: the host's check worker
+	// has not finished the version's checks (see StaleReason). Stale,
+	// ChecksFailed and Conflicting are the other reasons a request is stale.
+	Waiting
+	// ChecksFailed is a stale decision on a version whose checks failed.
+	ChecksFailed
+	// Conflicting is a stale decision on a change whose current restack
+	// report says a rebase conflicted.
+	Conflicting
 	// Withdrawn means the change was withdrawn.
 	Withdrawn
 	// Superseded means another version of the change is the active one.
@@ -92,6 +101,12 @@ func (v Verdict) String() string {
 		return "uncertain"
 	case Stale:
 		return "stale"
+	case Waiting:
+		return "waiting"
+	case ChecksFailed:
+		return "checks-failed"
+	case Conflicting:
+		return "conflicting"
 	case Rejected:
 		return "rejected"
 	case Failed:
