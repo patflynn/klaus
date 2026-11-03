@@ -77,7 +77,7 @@ var knownEventTypes = []eventTypeInfo{
 	{event.PRApprovalChanged, "live", "Klaus-internal approval state for a PR changed (e.g. via klaus approve)"},
 	{event.PipelineStalled, "live", "The pipeline gave up on a PR after exhausting its retry budget"},
 	{event.ChangeRestackDispatched, "live", "klaus launched a run to resolve a restack conflict the valley reported on a change klaus owns"},
-	{event.ChangeRestackStalled, "live", "klaus stopped short of resolving a change's restack conflict (attempts spent, unready or launch failed)"},
+	{event.ChangeRestackStalled, "live", "The change needs the coordinator: klaus will not resolve its restack conflict (attempts spent, unready or launch failed, or left alone: sits on other changes, or the conflict is in a change below)"},
 	{event.ChangeApproved, "live", "A ready version of a valley change got an integration request (the operator approved it)"},
 	{event.ChangeIntegrated, "live", "A valley change landed"},
 	{event.ChangeStale, "live", "The integrator found a valley change's approved version stale"},

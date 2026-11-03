@@ -28,6 +28,12 @@ type Entry struct {
 	// again, and shows what came of them then. It keeps the latest
 	// MaxActions.
 	Actions []*Action `json:"actions,omitempty"`
+	// LeftAlone are the sets of inputs klaus said it leaves alone (held),
+	// oldest first, so it says so once for each. They are no action: they
+	// count no attempt and don't stop a later pass dispatching on the same
+	// inputs should the conflict stop being held. It keeps the latest
+	// MaxActions.
+	LeftAlone []*Left `json:"left_alone,omitempty"`
 	// Clean is the report commit of the last clean restack that gave the
 	// change its attempts back, so one report resets them once.
 	Clean string `json:"clean,omitempty"`
@@ -40,6 +46,28 @@ type Entry struct {
 	// moves them into Actions.
 	OldLast     *Action  `json:"last,omitempty"`
 	OldConsumed []Inputs `json:"consumed,omitempty"`
+}
+
+// Left is a conflict klaus left alone, and why, on one set of inputs.
+type Left struct {
+	At        time.Time `json:"at"`
+	Report    string    `json:"report"`
+	Head      string    `json:"head"`
+	TargetTip string    `json:"target_tip"`
+	Reason    string    `json:"reason"`
+}
+
+// leftOn is the record of leaving the inputs alone, or nil.
+func (e *Entry) leftOn(in Inputs) *Left {
+	if e == nil {
+		return nil
+	}
+	for _, x := range e.LeftAlone {
+		if (Inputs{Head: x.Head, TargetTip: x.TargetTip}) == in {
+			return x
+		}
+	}
+	return nil
 }
 
 // MaxActions is how many actions the ledger keeps for one change, its
