@@ -193,10 +193,17 @@ func launchResolution(ctx context.Context, l restack.Launch) error {
 	args = append(args, "--change", l.ChangeID, "--run-id", l.RunID,
 		"--expect-owner", l.Owner, "--expect-branch", l.Branch, "--expect-head", l.Head, "--expect-draft",
 		"--reason", event.DispatchRestackConflict, "--", l.Prompt)
+	return runLaunch(ctx, self, l.Dir, args)
+}
+
+// runLaunch runs launch with this klaus binary, self, in dir, and says why
+// it failed. An error wrapping restack.ErrNotStarted says launch exited
+// with status 3, before it started a worker.
+func runLaunch(ctx context.Context, self, dir string, args []string) error {
 	ctx, cancel := context.WithTimeout(ctx, restackLaunchTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, self, args...)
-	cmd.Dir = l.Dir
+	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		return nil

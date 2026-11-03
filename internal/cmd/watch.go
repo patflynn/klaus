@@ -49,6 +49,8 @@ var defaultWatchFilter = []string{
 	event.ChangeFailed,            // live
 	event.ChangeWithdrawn,         // live
 	event.ChangeNewVersion,        // live
+	event.ChangeChecksFailed,      // live
+	event.ChangeChecksPassed,      // live
 	"ci:failed",                   // reserved (closest live equivalent: agent:ci-failed)
 	"ci:passed",                   // reserved (closest live equivalent: agent:ci-passed)
 	"pr:comment",                  // reserved
@@ -85,6 +87,8 @@ var knownEventTypes = []eventTypeInfo{
 	{event.ChangeFailed, "live", "The integrator failed to land a valley change's approved version"},
 	{event.ChangeWithdrawn, "live", "A valley change was withdrawn"},
 	{event.ChangeNewVersion, "live", "A valley change got a version this session didn't record (the valley's restacker, or a human)"},
+	{event.ChangeChecksFailed, "live", "The valley host's check worker failed a required check of a ready change's active version (a valley change's agent:ci-failed)"},
+	{event.ChangeChecksPassed, "live", "Every required check of a ready valley change's active version passed (a valley change's agent:ci-passed)"},
 	{event.AgentSharedGitChanged, "live", "A run's clone's shared git files (config, info/attributes, hooks) changed while it ran; the run needs attention"},
 	{event.PhaseStarted, "live", "A run entered a phase (agent, finalize); not in the default filter"},
 	{event.PhaseCompleted, "live", "A run finished a phase (setup, agent, finalize), with its duration; not in the default filter"},
@@ -118,13 +122,14 @@ filter selects events the coordinator typically wants to react to:
   pr:approved, pr:merged, pipeline:stalled,
   change:approved, change:integrated, change:stale, change:rejected,
   change:failed, change:withdrawn, change:new-version,
+  change:checks-failed, change:checks-passed,
   change:restack-dispatched, change:restack-stalled,
   consult:started, consult:completed, review:started, review:completed,
   ci:failed, ci:passed, pr:comment
 
 A valley change's transitions (change:approved, change:integrated,
-change:stale, change:rejected, change:failed, change:withdrawn and
-change:new-version) report its life as pr:approved and pr:merged report a
+change:stale, change:rejected, change:failed, change:withdrawn,
+change:new-version, change:checks-failed and change:checks-passed) report its life as pr:approved and pr:merged report a
 PR's: the dashboard reads them off the valley's listing in its integration
 check, once a minute, and reports each transition once, under the change's
 handle. Without a dashboard nothing reports them; klaus status only reads.
@@ -682,7 +687,8 @@ func eventSummary(evt event.Event) string {
 		}
 		return "PR merged"
 	case event.ChangeApproved, event.ChangeIntegrated, event.ChangeStale, event.ChangeRejected,
-		event.ChangeFailed, event.ChangeWithdrawn, event.ChangeNewVersion:
+		event.ChangeFailed, event.ChangeWithdrawn, event.ChangeNewVersion,
+		event.ChangeChecksFailed, event.ChangeChecksPassed:
 		msg := strings.TrimSpace(get("repo") + " " + get("handle"))
 		if v := get("version"); v != "" {
 			msg += " v" + v
@@ -693,6 +699,13 @@ func eventSummary(evt event.Event) string {
 			if c := get("landed_commit"); c != "" {
 				msg += " as " + shortSHA(c)
 			}
+		case event.ChangeChecksFailed:
+			msg += " checks failed"
+			if names := checkNames(evt.Data["failed"]); names != "" {
+				msg += ": " + names
+			}
+		case event.ChangeChecksPassed:
+			msg += " checks passed"
 		case event.ChangeNewVersion:
 			msg += " new version"
 			if h := get("head"); h != "" {
@@ -1034,4 +1047,17 @@ func printKnownEventTypes(out io.Writer) {
 	def := append([]string{}, defaultWatchFilter...)
 	sort.Strings(def)
 	fmt.Fprintln(out, "  "+strings.Join(def, ", "))
+}
+
+// checkNames joins the check names an event's failed field carries, as
+// JSON decodes them.
+func checkNames(v interface{}) string {
+	list, _ := v.([]interface{})
+	var names []string
+	for _, n := range list {
+		if s, ok := n.(string); ok && s != "" {
+			names = append(names, s)
+		}
+	}
+	return strings.Join(names, ", ")
 }

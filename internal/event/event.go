@@ -111,6 +111,14 @@ const (
 	// session's finalize nor its klaus ready recorded: the valley's
 	// restacker's, or a human's. It carries uploader too.
 	ChangeNewVersion = "change:new-version"
+	// ChangeChecksFailed and ChangeChecksPassed signal that the host's
+	// check worker failed, or passed, the required checks of a ready
+	// change's active version, as agent:ci-failed and agent:ci-passed do
+	// a PR's CI. Each goes out once per version, and again only when the
+	// checks of that version change their verdict. They carry failed:
+	// the names of the failed checks.
+	ChangeChecksFailed = "change:checks-failed"
+	ChangeChecksPassed = "change:checks-passed"
 	// PhaseStarted and PhaseCompleted bracket a phase of a run (Phase*
 	// below). phase:completed carries the phase's started_at, ended_at and
 	// duration_ms, so a reader needn't pair it with its start.
@@ -159,6 +167,7 @@ const (
 	DispatchReviewCommentFix = "review-comment-fix" // the pipeline, for a trusted reviewer's comments
 	DispatchConflictFix      = "conflict-fix"       // the pipeline, for merge conflicts
 	DispatchRestackConflict  = "restack-conflict"   // klaus restack-conflicts, for a valley change's restack conflict
+	DispatchChecksFailed     = "checks-failed"      // klaus failed-checks, for a ready valley change's failed checks
 )
 
 // BudgetPausedLabel is the GitHub label applied to PRs whose agents have

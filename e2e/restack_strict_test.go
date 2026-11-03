@@ -190,7 +190,7 @@ func TestRestackConflictLaunchesStrictly(t *testing.T) {
 	before := len(h.valleyCalls("changes"))
 	_, screen := h.startDashboard(220)
 	screen("restack conflict", "resolution run "+resolver.ID+" dispatched (attempt 1 of 3)")
-	if calls := h.valleyCalls("changes")[before:]; len(calls) != 1 || !strings.HasSuffix(calls[0], ": changes --all --json") {
+	if calls := h.valleyCalls("changes")[before:]; len(calls) != 1 || !strings.HasSuffix(calls[0], ": changes --all --json --checks") {
 		t.Errorf("valley changes calls from the dashboard = %q, want one listing for every repo", calls)
 	}
 	h.tmux("kill-session", "-t", "dash")

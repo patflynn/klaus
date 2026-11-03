@@ -169,6 +169,14 @@ func printSummary(events []event.Event, superseded map[string]bool) {
 				prURL = ""
 			}
 			prMerged = append(prMerged, fmt.Sprintf("#%s", prNumberFromURL(prURL)))
+		case event.ChangeChecksPassed:
+			ciPassed = append(ciPassed, changeNote(evt))
+		case event.ChangeChecksFailed:
+			note := changeNote(evt)
+			if names := checkNames(evt.Data["failed"]); names != "" {
+				note += ": " + names
+			}
+			ciFailed = append(ciFailed, note)
 		case event.ChangeStale, event.ChangeRejected, event.ChangeFailed:
 			changeTurnedBack = append(changeTurnedBack, changeNote(evt)+" "+strings.TrimPrefix(evt.Type, "change:"))
 		case event.ChangeApproved:

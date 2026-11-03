@@ -20,7 +20,10 @@ import (
 // each call ("<cwd>: <args>") to valley.argv, answers ready with
 // "widget nxvp v1 ready" or, when valley.refuse exists, refuses with its
 // contents, and answers changes with valley.changes.json or, when that is
-// absent, fails as an unreachable valley does. Its help lists unready only
+// absent, fails as an unreachable valley does. A listing's versions carry
+// their checks only when changes is given --checks (see writeValleyChanges),
+// and changes --checks is refused as an older CLI does when
+// valley.checks-refuse exists. Its help lists unready only
 // when valley.has-unready exists; unready answers "widget nxvp v1 draft" or,
 // when valley.unready-refuse exists, refuses with its contents, and creates
 // valley.unready-late if the fake agent had already started. After an
@@ -35,7 +38,10 @@ func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
-{ printf '%%s:' "$PWD"; for a in "$@"; do printf ' %%s' "$a"; done; printf '\n'; } >> "$dir/valley.argv"
+# One write per call, so calls made at once (a follow per telemetry source)
+# don't interleave their words.
+line="$PWD:"; for a in "$@"; do line="$line $a"; done
+printf '%%s\n' "$line" >> "$dir/valley.argv"
 case "$1" in
 help)
   printf 'usage: valley <verb> [args]\n\n  ready --change <id> --head <sha> <branch>\n  changes [--all] [--json]\n  approve <change>\n'
@@ -92,6 +98,10 @@ telemetry)
   printf '{"kind":"end","cursor":"c%%s","truncated":false}\n' "$$"
   ;;
 changes)
+  checks=
+  for a in "$@"; do if [ "$a" = --checks ]; then checks=1; fi; done
+  if [ -n "$checks" ] && [ -f "$dir/valley.checks-refuse" ]; then echo "valley: changes does not take --checks" >&2; exit 1; fi
+  if [ -n "$checks" ] && [ -f "$dir/valley.changes.checks.json" ]; then cat "$dir/valley.changes.checks.json"; exit 0; fi
   if [ -f "$dir/valley.after-unready" ]; then
     echo >> "$dir/valley.after-unready"
     n=$(wc -l < "$dir/valley.after-unready" | tr -d ' ')
@@ -146,8 +156,38 @@ func (h *Harness) writeValleyChanges(v any) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.changes.json"), data, 0o644); err != nil {
+	// The plain listing leaves out checks; --checks adds them.
+	var plain any
+	if err := json.Unmarshal(data, &plain); err != nil {
 		h.t.Fatal(err)
+	}
+	dropChecks(plain)
+	plainData, err := json.Marshal(plain)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.changes.json"), plainData, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.E2EDir, "valley.changes.checks.json"), data, 0o644); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// dropChecks removes the checks of every version in a decoded listing.
+func dropChecks(v any) {
+	switch v := v.(type) {
+	case map[string]any:
+		if _, ok := v["head"]; ok {
+			delete(v, "checks")
+		}
+		for _, c := range v {
+			dropChecks(c)
+		}
+	case []any:
+		for _, c := range v {
+			dropChecks(c)
+		}
 	}
 }
 
@@ -445,7 +485,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 	// minute, for every run.
 	h.tmux("send-keys", "-t", pane, "j")
 	screen("> widget  uncr")
-	if calls := h.valleyCalls("changes"); len(calls) != 1 || !strings.HasSuffix(calls[0], ": changes --all --json") {
+	if calls := h.valleyCalls("changes"); len(calls) != 1 || !strings.HasSuffix(calls[0], ": changes --all --json --checks") {
 		t.Errorf("valley changes calls = %q, want one", calls)
 	}
 

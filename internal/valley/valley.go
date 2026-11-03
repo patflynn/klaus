@@ -9,11 +9,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -139,20 +142,66 @@ func parseUnready(out []byte) (Unreadied, error) {
 	return Unreadied{}, &Error{Verb: "unready", Reason: "unexpected output: " + shortReason(out)}
 }
 
-// List runs `valley changes --all --json` in dir: one process for every repo
-// the valley serves.
+// ChecksRefusalMemory is how long klaus remembers that the valley CLI refused
+// --checks before it tries the flag again; the CLI updates itself. It is a
+// variable so tests can shorten it.
+var ChecksRefusalMemory = 10 * time.Minute
+
+var checksRefused struct {
+	sync.Mutex
+	at     time.Time
+	logged bool
+}
+
+// List runs `valley changes --all --json --checks` in dir: one process for
+// every repo the valley serves, with each ready change's checks.
 func List(ctx context.Context, dir string) (*Changes, error) {
-	out, err := command(ctx, dir, ListTimeout, "changes", "--all", "--json")
+	return listChecks(ctx, dir, "changes", "--all", "--json")
+}
+
+// ListRepo runs `valley changes --json` in dir: the valley's view of the
+// repo in dir alone. It leaves out checks, which cost the host time to
+// compute; ListRepoChecks asks for them.
+func ListRepo(ctx context.Context, dir string) (*Changes, error) {
+	out, err := command(ctx, dir, ListTimeout, "changes", "--json")
 	if err != nil {
 		return nil, err
 	}
 	return Decode(out)
 }
 
-// ListRepo runs `valley changes --json` in dir: the valley's view of the
-// repo in dir alone.
-func ListRepo(ctx context.Context, dir string) (*Changes, error) {
-	out, err := command(ctx, dir, ListTimeout, "changes", "--json")
+// ListRepoChecks is ListRepo with each ready change's checks.
+func ListRepoChecks(ctx context.Context, dir string) (*Changes, error) {
+	return listChecks(ctx, dir, "changes", "--json")
+}
+
+// listChecks runs the listing args with --checks. A CLI from before the flag
+// refuses it; klaus then lists without it, so the changes carry no checks,
+// and remembers the refusal for ChecksRefusalMemory. Any other failure is
+// returned as it is.
+func listChecks(ctx context.Context, dir string, args ...string) (*Changes, error) {
+	checksRefused.Lock()
+	skip := !checksRefused.at.IsZero() && time.Since(checksRefused.at) < ChecksRefusalMemory
+	checksRefused.Unlock()
+	if !skip {
+		out, err := command(ctx, dir, ListTimeout, append(slices.Clone(args), "--checks")...)
+		if err == nil {
+			return Decode(out)
+		}
+		var ve *Error
+		if !errors.As(err, &ve) || !ve.exited || !strings.Contains(ve.Reason, "--checks") {
+			return nil, err
+		}
+		checksRefused.Lock()
+		checksRefused.at = time.Now()
+		first := !checksRefused.logged
+		checksRefused.logged = true
+		checksRefused.Unlock()
+		if first {
+			slog.Info("valley changes does not take --checks; listing without it, so checks are not shown", "reason", ve.Reason)
+		}
+	}
+	out, err := command(ctx, dir, ListTimeout, args...)
 	if err != nil {
 		return nil, err
 	}

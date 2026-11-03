@@ -94,6 +94,16 @@ clones. If the check can't complete, the run stays awaiting-integration (or
 awaiting-approval, or awaiting-review). A deleted branch alone never settles a valley change: it
 stays awaiting-approval rather than branch-gone.
 
+A valley's host runs a ready change's required checks. CI reads where they
+stand on the change's active version, as it reads a PR's CI: pending,
+failing or passing, and a list after the table names each change's failed
+checks. CI reads - while the change isn't ready, or the valley lists no
+checks (one from before it listed them). The checks don't change the
+status: a ready change reads awaiting-approval whatever they say, since you
+may approve it before they finish, and it lands once both hold. The
+dashboard dispatches a run to fix a failed head of a change klaus owns (see
+klaus failed-checks).
+
 A valley's restacker rebases ready changes onto main after each landing,
 and reports a rebase that conflicts. For a change klaus owns (its record's
 owner is the repo's valley.principal), CONFLICTS reads restack while the
@@ -278,6 +288,14 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			}
 		}
 
+		if s.ChangeID != "" && ci == "-" {
+			if view := report.Changes[valleyKey(s)]; view.Change != nil {
+				if c := checksCI(view.Change.Checks); c != "" {
+					ci = c
+				}
+			}
+		}
+
 		if _, ok := restacks[valleyKey(s)]; ok && s.ChangeID != "" && conflicts == "-" {
 			conflicts = "restack"
 		}
@@ -303,6 +321,14 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 		}
 		fmt.Fprintf(os.Stdout, "%s changed its clone's shared git files while it ran: %s (in %s); check them before running git in that clone\n",
 			s.ID, strings.Join(s.SharedGit.Changed, ", "), s.SharedGit.Dir)
+	}
+
+	if failing := failingChecks(states, report.Changes); len(failing) > 0 {
+		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(os.Stdout, "Failed valley checks:")
+		for _, f := range failing {
+			fmt.Fprintf(os.Stdout, "  %s\n", f)
+		}
 	}
 
 	if len(restackList) > 0 {

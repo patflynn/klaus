@@ -171,7 +171,9 @@ const integrationTimeout = 5 * time.Minute
 // klaus restack-conflicts does, dispatching resolution runs for the restack
 // conflicts on changes klaus owns: on the check's valley listing, or, when
 // the check asked no valley, listing each repo itself; a valley the check
-// couldn't ask isn't asked again. The next
+// couldn't ask isn't asked again. With a listing it then runs a checks
+// pass, as klaus failed-checks does, dispatching fix runs for the failed
+// checks of ready changes klaus owns. The next
 // check starts only once this one is done, so no two settle a knot, or
 // dispatch, at once.
 func checkIntegrationCmd(checker integration.Checker, states []*run.State, store run.StateStore, ledger *pipeline.ChangeLedger, restacks bool) tea.Cmd {
@@ -203,6 +205,11 @@ func checkIntegrationCmd(checker integration.Checker, states []*run.State, store
 				slog.Warn("restack pass failed", "err", err)
 			}
 			msg.restacks = restackViews(views)
+		}
+		if ok && restacks && rep.Listing != nil {
+			if _, err := checksPass(ctx, hds, rep.Listing); err != nil {
+				slog.Warn("checks pass failed", "err", err)
+			}
 		}
 		return msg
 	}
