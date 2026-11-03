@@ -310,7 +310,7 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 		if v, ok := m.restacks[valleyKey(r.runs[0])]; ok {
 			r.restack = &v
 			// klaus stopped short of resolving it: the operator's.
-			attention = v.State == restack.StateStopped || v.State == restack.StateRefused
+			attention = v.State == restack.StateStopped || v.State == restack.StateRefused || v.State == restack.StateHeld
 		}
 	}
 	for _, s := range r.runs {
