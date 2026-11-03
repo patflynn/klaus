@@ -60,6 +60,8 @@ type Conflict struct {
 	// resolve it: the failing layer is another change, or the change sits
 	// on others.
 	Held string
+	// HeldReason is Held in a few words, as change:restack-stalled gives it.
+	HeldReason string
 
 	layers []layer
 }
@@ -133,7 +135,7 @@ func Scan(repo valley.Repo, principal string) (conflicts []Conflict, clean []Cle
 			Version: ch.Active, Head: active.Head, Record: ch.Record,
 			Report: rs.Commit, TargetTip: tip, layers: layers,
 		}
-		c.Held = held(c, *rep.Failing, ch, byID, principal)
+		c.Held, c.HeldReason = held(c, *rep.Failing, ch, byID, principal)
 		conflicts = append(conflicts, c)
 	}
 	return conflicts, clean
@@ -162,7 +164,7 @@ func checkedLayers(layers []valley.RestackLayer, byID map[string]valley.Change) 
 // what the restacker rebased: a conflict in a change below belongs to that
 // change, and klaus never takes over another owner's change; and a change
 // that sits on other changes can't be rebased onto main on its own.
-func held(c Conflict, failing string, ch valley.Change, byID map[string]valley.Change, principal string) string {
+func held(c Conflict, failing string, ch valley.Change, byID map[string]valley.Change, principal string) (detail, reason string) {
 	if failing != c.ChangeID {
 		name := failing
 		f, listed := byID[failing]
@@ -170,14 +172,14 @@ func held(c Conflict, failing string, ch valley.Change, byID map[string]valley.C
 			name = f.Handle
 		}
 		if listed && f.Owner == principal {
-			return "the conflict is in " + name + ", a change below it, which is resolved first"
+			return "the conflict is in " + name + ", a change below it, which is resolved first", "left-alone: conflict in a change below"
 		}
-		return "the conflict is in " + name + ", a change below it that klaus doesn't own"
+		return "the conflict is in " + name + ", a change below it that klaus doesn't own", "left-alone: conflict in a change below"
 	}
 	if len(c.layers) > 0 && c.layers[0].ChangeID != c.ChangeID || len(ch.Includes) > 0 {
-		return "it sits on other changes; klaus resolves a conflict only in a change that sits on main"
+		return "it sits on other changes; klaus resolves a conflict only in a change that sits on main", "left-alone: sits on other changes"
 	}
-	return ""
+	return "", ""
 }
 
 // activeVersion returns a change's active version.

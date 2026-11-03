@@ -787,3 +787,50 @@ func TestPassDoesNothingItCantRecord(t *testing.T) {
 		t.Errorf("an unsaved dispatch should leave no attempt behind: %+v", e)
 	}
 }
+
+// TestPassSaysOnceThatItLeavesAConflictAlone: a conflict in a change that
+// sits on others is left alone, and change:restack-stalled says so once for
+// each set of inputs, across ledger reloads; it counts no attempt and
+// launches nothing.
+func TestPassSaysOnceThatItLeavesAConflictAlone(t *testing.T) {
+	stacked := func(head, tip, report string) valley.Repo {
+		ch := conflictAt(head, tip, report)
+		ch.Includes = []string{theirs}
+		return repoOf(ch)
+	}
+	dir := t.TempDir()
+	f := &fakeValley{repo: stacked(head1, tipA, rep1)}
+	var evs []map[string]interface{}
+	pass := func() []View {
+		d := f.deps(time.Now())
+		d.Emit = func(_, typ string, data map[string]interface{}) {
+			if typ == event.ChangeRestackStalled {
+				evs = append(evs, data)
+			}
+		}
+		l := reload(t, dir)
+		l.path = dir + "/" + LedgerFile
+		return Pass(context.Background(), d, l, widget, nil, true)
+	}
+	for i := 0; i < 3; i++ {
+		if views := pass(); len(views) != 1 || views[0].State != StateHeld || !strings.Contains(views[0].String(), "left alone: it sits on other changes") {
+			t.Fatalf("views = %+v, want held", views)
+		}
+		if len(evs) != 1 || evs[0]["reason"] != "left-alone: sits on other changes" || evs[0]["head"] != head1 || evs[0]["handle"] != "nxvp" {
+			t.Fatalf("pass %d: events %+v, want one stalled event with the left-alone reason", i+1, evs)
+		}
+	}
+	if len(f.unreadied)+len(f.launched) != 0 {
+		t.Errorf("unready %v, launched %v; want nothing", f.unreadied, f.launched)
+	}
+	if e := reload(t, dir).Entry(Key{"widget", ours}); e == nil || e.Attempts != 0 || len(e.Actions) != 0 {
+		t.Errorf("entry %+v; want no attempt or action", e)
+	}
+
+	// Main's tip moves: new inputs, a new event.
+	f.repo = stacked(head1, tipB, "ffffffffffffffffffffffffffffffffffffffff")
+	pass()
+	if len(evs) != 2 || evs[1]["target_tip"] != tipB {
+		t.Fatalf("after main moved: events %+v, want a second", evs)
+	}
+}

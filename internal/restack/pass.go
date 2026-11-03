@@ -427,6 +427,36 @@ func (d Deps) stop(l *Ledger, e *Entry, a *Action) {
 	d.emitStalled(e, a, fmt.Sprintf("%d resolution runs did not resolve its restack conflicts", e.Attempts))
 }
 
+// leave records that klaus leaves conflict c alone, and says so once for its
+// inputs: only once it is recorded that it did. The coordinator learns of
+// it from change:restack-stalled; the change doesn't move unless someone
+// steps in.
+func (d Deps) leave(l *Ledger, c Conflict) {
+	e := l.Entry(c.Key)
+	if e.leftOn(c.inputs()) != nil {
+		return
+	}
+	created := e == nil
+	if created {
+		e = &Entry{Repo: c.Repo, ChangeID: c.ChangeID}
+		l.put(e)
+	}
+	prevLeft, prevHandle := e.LeftAlone, e.Handle
+	e.Handle = c.Handle
+	e.LeftAlone = append(e.LeftAlone, &Left{At: d.Now().UTC(), Report: c.Report, Head: c.Head, TargetTip: c.TargetTip, Reason: c.HeldReason})
+	if len(e.LeftAlone) > MaxActions {
+		e.LeftAlone = e.LeftAlone[len(e.LeftAlone)-MaxActions:]
+	}
+	if !d.save(l) {
+		e.LeftAlone, e.Handle = prevLeft, prevHandle
+		if created {
+			l.drop(c.Key)
+		}
+		return
+	}
+	d.emitStalled(e, &Action{Report: c.Report, Version: c.Version, Head: c.Head, TargetTip: c.TargetTip}, c.HeldReason)
+}
+
 // handle decides about one conflict and, with act, carries the decision
 // out.
 func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act bool) View {
@@ -441,6 +471,9 @@ func (d Deps) handle(ctx context.Context, l *Ledger, r Repo, c Conflict, act boo
 	switch Decide(d.Now(), c, e, d.Running(c.Key, c.Branch)) {
 	case Held:
 		v.State, v.Detail = StateHeld, c.Held
+		if act {
+			d.leave(l, c)
+		}
 	case Acted:
 		v = viewOf(c.Key, c.Handle, c.Version, e, e.ActionOn(c.inputs()))
 	case Busy:

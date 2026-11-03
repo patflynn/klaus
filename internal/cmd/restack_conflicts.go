@@ -88,10 +88,14 @@ klaus leaves a conflict alone when it is in another change below this one
 (a change whose owner isn't klaus is never taken over), or when the change
 sits on other changes.
 
-Each dispatch emits change:restack-dispatched under the new run's ID; a
-conflict klaus stops short of resolving (attempts spent, unready or launch
-failed) emits change:restack-stalled once. What klaus did is kept in the
-session's restack-dispatches.json; klaus status and the dashboard show it.
+Each dispatch emits change:restack-dispatched under the new run's ID. A
+conflict klaus stops short of resolving, or leaves alone (above), emits
+change:restack-stalled once for each set of inputs: the change needs the
+coordinator, as klaus will not resolve it. Its reason says why: attempts
+spent, unready or launch failed, or "left-alone: sits on other changes" or
+"left-alone: conflict in a change below". What klaus did is kept in the
+session's restack-dispatches.json; klaus status and the dashboard show it, a conflict left
+alone as needing help.
 The ledger drops a change's entry once the change lands or is withdrawn,
 unless a launch for it is pending, and keeps what came of a change's latest
 16 sets of inputs; older ones may be acted on again.
