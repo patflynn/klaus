@@ -53,8 +53,12 @@ func Load(ctx context.Context, cfg *config.HouseRulesConfig, reg *project.Regist
 		return r
 	}
 	commit := git.RefCommit(ctx, clone, "refs/remotes/origin/"+branch)
-	text, err := git.ShowFile(ctx, clone, "refs/remotes/origin/"+branch, cfg.Path)
-	if commit == "" || err != nil {
+	if commit == "" {
+		r.Reason = fmt.Sprintf("origin/%s not found", branch)
+		return r
+	}
+	text, err := git.ShowFile(ctx, clone, commit, cfg.Path)
+	if err != nil {
 		r.Reason = fmt.Sprintf("origin/%s has no readable %s", branch, cfg.Path)
 		return r
 	}
