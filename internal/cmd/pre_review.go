@@ -19,7 +19,7 @@ import (
 
 var preReviewCmd = &cobra.Command{
 	Use:    "_pre-review",
-	Short:  "Run pre-PR linting and peer review",
+	Short:  "Run pre-PR linting, peer review and prose rewrites",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		dir, _ := cmd.Flags().GetString("dir")
@@ -139,6 +139,7 @@ var preReviewCmd = &cobra.Command{
 		reviewStart := time.Now()
 		reg, _ := project.Load()
 		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
+		printProse := startProsePass(cmd.Context(), dir, cfg, author)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
@@ -146,10 +147,12 @@ var preReviewCmd = &cobra.Command{
 			HouseRules:   houseRules,
 		}, reviewBase)
 		if err != nil {
+			printProse(os.Stdout)
 			return fmt.Errorf("running peer review: %w", err)
 		}
 		printFindings(os.Stdout, result.Findings)
 		fmt.Println()
+		printProse(os.Stdout)
 
 		// Determine if we should block
 		blockOn := cfg.PreReviewBlockOn()

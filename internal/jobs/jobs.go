@@ -1,6 +1,7 @@
 // Package jobs records the read-only background jobs a coordinator runs
 // beside its agents: one record per klaus consult backend call (a panel is
-// one per member, grouped by a panel ID) and one per klaus review. A record
+// one per member, grouped by a panel ID), one per klaus review, and one per
+// prose pass of a worker's _pre-review. A record
 // is written when the job starts and again when it ends, so klaus status
 // and the dashboard can show what is running now and how recent jobs ended.
 package jobs
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/patflynn/klaus/internal/prose"
 	"github.com/patflynn/klaus/internal/review"
 )
 
@@ -24,6 +26,7 @@ import (
 const (
 	KindConsult = "consult"
 	KindReview  = "review"
+	KindProse   = "prose"
 )
 
 // Status is how a job stands.
@@ -50,7 +53,7 @@ const Retention = 7 * 24 * time.Hour
 // consult:completed events; a review's, that of its review events.
 type Job struct {
 	ID    string `json:"id"`
-	Kind  string `json:"kind"`            // consult or review
+	Kind  string `json:"kind"`            // consult, review or prose
 	Panel string `json:"panel,omitempty"` // shared by the members of one --panel consult
 
 	Thread  string `json:"thread,omitempty"`
@@ -64,6 +67,7 @@ type Job struct {
 	Commit  string `json:"commit,omitempty"` // the commit a --repo consult read
 	PR      string `json:"pr,omitempty"`     // a review's PR, owner/repo#N
 	Prompt  string `json:"prompt,omitempty"` // first line of a consult's question
+	Run     string `json:"run,omitempty"`    // the run whose _pre-review ran a prose pass
 
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
@@ -82,6 +86,9 @@ type Job struct {
 	AnswerFile string  `json:"answer_file,omitempty"`
 	RawOutput  string  `json:"raw_output,omitempty"`
 	Review     *Review `json:"review,omitempty"`
+	// Prose is a prose pass's proposal, with the patch and commit message
+	// beside the record.
+	Prose *prose.Result `json:"prose,omitempty"`
 }
 
 // Review is what a review found.
@@ -274,7 +281,7 @@ func (s Store) Prune(now time.Time) {
 		if !j.Finished() || now.Sub(j.Settled()) <= Retention {
 			continue
 		}
-		for _, ext := range []string{".answer", ".raw", ".json"} {
+		for _, ext := range []string{".answer", ".raw", ".patch", ".msg", ".json"} {
 			if path, err := s.path(j.ID, ext); err == nil {
 				_ = os.Remove(path)
 			}

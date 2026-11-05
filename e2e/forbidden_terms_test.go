@@ -28,12 +28,16 @@ func (h *Harness) forbidTerms(key string) {
 }
 
 // stubReviewer makes _pre-review's peer review a claude stub that finds
-// nothing, and returns the file the stub creates when it runs.
+// nothing, and returns the file the stub creates when it runs. It turns the
+// prose pass off, which would otherwise ask the real agy or codex on PATH.
 func (h *Harness) stubReviewer() string {
 	h.t.Helper()
 	marker := filepath.Join(h.E2EDir, "reviewed")
 	h.WriteStub("claude", "#!/usr/bin/env bash\ncat >/dev/null\ntouch "+marker+"\necho '{\"findings\": [], \"summary\": \"No issues found.\"}'\n")
-	h.AmendRepoConfig(map[string]any{"backends": map[string]any{"claude": map[string]any{"review_backend": "claude"}}})
+	h.AmendRepoConfig(map[string]any{
+		"backends":   map[string]any{"claude": map[string]any{"review_backend": "claude"}},
+		"pre_review": map[string]any{"prose": map[string]any{"enabled": false}},
+	})
 	return marker
 }
 

@@ -209,11 +209,43 @@ func (s *SelfUpdateConfig) BranchName() string {
 
 // PreReviewConfig configures the pre-PR review checks.
 type PreReviewConfig struct {
-	Enabled      *bool    `json:"enabled,omitempty"`        // default: true
-	Linters      []string `json:"linters,omitempty"`        // default: auto-detect from project
-	ReviewModel  string   `json:"review_model,omitempty"`   // default: "haiku"
-	MaxFixRounds int      `json:"max_fix_rounds,omitempty"` // default: 2
-	BlockOn      string   `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
+	Enabled      *bool        `json:"enabled,omitempty"`        // default: true
+	Linters      []string     `json:"linters,omitempty"`        // default: auto-detect from project
+	ReviewModel  string       `json:"review_model,omitempty"`   // default: "haiku"
+	MaxFixRounds int          `json:"max_fix_rounds,omitempty"` // default: 2
+	BlockOn      string       `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
+	Prose        *ProseConfig `json:"prose,omitempty"`
+}
+
+// ProseConfig configures _pre-review's prose pass.
+type ProseConfig struct {
+	Enabled        *bool    `json:"enabled,omitempty"`         // default: true
+	Order          []string `json:"order,omitempty"`           // writer preference; default: agy, codex, claude
+	Paths          []string `json:"paths,omitempty"`           // files beyond Markdown and READMEs whose added lines are prose
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // per model call; default: 180
+	MaxInputBytes  int      `json:"max_input_bytes,omitempty"` // diff sent to the models; default: 40000
+}
+
+// Prose returns the prose pass's config with its defaults filled in.
+func (c *Config) Prose() ProseConfig {
+	p := ProseConfig{}
+	if c.PreReview != nil && c.PreReview.Prose != nil {
+		p = *c.PreReview.Prose
+	}
+	if p.Enabled == nil {
+		on := true
+		p.Enabled = &on
+	}
+	if len(p.Order) == 0 {
+		p.Order = []string{"agy", "codex", "claude"}
+	}
+	if p.TimeoutSeconds <= 0 {
+		p.TimeoutSeconds = 180
+	}
+	if p.MaxInputBytes <= 0 {
+		p.MaxInputBytes = 40000
+	}
+	return p
 }
 
 // CrossReviewConfig picks a reviewer family that differs from the PR author's.
@@ -557,12 +589,12 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 // WorkerRules states the mechanics every worker backend shares, in any
 // repository: the run ends with the agent's turn; scratch and build output
 // stay out of the worktree, whose uncommitted files finalize salvages into a
-// commit; a worker whose environment is broken stops and reports instead of
-// writing outside its worktree, to shared configuration, to get around it;
-// processes are never killed by a broad pattern; and the final report has
-// fixed headings. Taste (tests, writing, carrying cost) belongs to the
-// operator's house rules. It is not part of the templates, so a custom
-// .klaus/prompt.md cannot drop it.
+// commit; the author decides on _pre-review's prose rewrites; a worker whose
+// environment is broken stops and reports instead of writing outside its
+// worktree, to shared configuration, to get around it; processes are never
+// killed by a broad pattern; and the final report has fixed headings. Taste
+// (tests, writing, carrying cost) belongs to the operator's house rules. It
+// is not part of the templates, so a custom .klaus/prompt.md cannot drop it.
 const WorkerRules = `## Non-interactive run
 You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
 - Run long builds and tests in the foreground with a generous timeout, or wait for them in a foreground loop that exits when they finish.
@@ -571,6 +603,9 @@ You run non-interactively: your run ends when your turn ends. Nothing wakes you 
 ## Scratch files
 - Build output, test binaries and other scratch files go under $KLAUS_SCRATCH, never in the worktree: for example, ` + "`go build -o \"$KLAUS_SCRATCH/<name>\" ./<pkg>`" + `. $KLAUS_SCRATCH is outside the worktree, and klaus removes it when the run ends; where it is unset, use a directory from ` + "`mktemp -d`" + `.
 - To check that Go code compiles, run ` + "`go vet ./...`" + ` or ` + "`go test ./...`" + `, or build into $KLAUS_SCRATCH as above. Never leave a binary in the worktree.
+
+## Prose rewrites
+- ` + "`klaus _pre-review`" + ` may propose rewrites of your change's prose from another model, with a fact check by a third. Apply them unless the fact check or your own knowledge says the meaning changed, and say in your final report what you applied and why you rejected anything.
 
 ## A broken environment
 - If your environment keeps you from working (commands fail to start, the shell or a tool you need is missing, a tool's permissions block you), stop and report what fails, with the error, and end your turn. Don't work around it.

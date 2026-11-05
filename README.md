@@ -127,6 +127,35 @@ family. All three backends can review. The model is
 The same choice drives the `_pre-review` agents run before opening a PR; it
 prints the reviewer it used.
 
+### Prose rewrites
+
+Beside its peer review, `_pre-review` has another model family rewrite the
+prose the change adds, and a third fact-check the rewrite, so a worker's docs
+and commit messages say what the code can't, not what it already shows:
+
+```json
+{
+  "pre_review": { "prose": { "enabled": true, "order": ["agy", "codex", "claude"],
+    "paths": ["internal/cmd/*.go"], "timeout_seconds": 180, "max_input_bytes": 40000 } }
+}
+```
+
+Prose is the added lines of Markdown files and READMEs, of files `paths`
+matches (a pattern without a slash matches a file name anywhere; `dir/**`
+matches a tree), and the head commit's message. A change with no prose beyond
+a short commit message is skipped. The writer is the first installed family
+in `order` that isn't the author's; the fact checker is the next, else the
+author's. The writer lists each passage's claims and conditions in a ledger
+before rewriting, using the writing sections of the repo's `AGENTS.md` and
+`CLAUDE.md`; the checker reports each rewrite that changes the meaning.
+
+`_pre-review` prints each rewrite with any fact-check failure, and saves the
+ones that passed as a patch for `git apply` and a commit message for
+`git commit --amend -F`. Nothing is applied for the worker, and the pass never
+fails `_pre-review`: a missing, slow or failing model is reported and skipped.
+Each pass is a `prose` job (see `klaus jobs`); when the run finalizes, each
+rewrite is marked applied or rejected by whether the worktree has it.
+
 `klaus review <pr>` gets a second opinion on an open PR:
 
 ```bash
@@ -713,13 +742,13 @@ The coordinator session uses these — you generally don't run them directly:
 | `klaus launch --model <name> --effort <level> "<prompt>"` | Pick the model and reasoning effort for the agent |
 | `klaus launch --reason <reason> "<prompt>"` | Say why the run is dispatched (e.g. `docs-timer`), for its events and `klaus report time` |
 | `klaus target owner/repo` | Set session-level default target repo |
-| `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns), then running and recent consults and reviews |
+| `klaus status` | Dashboard of all runs (with CI, conflict, and merge-readiness columns), then running and recent jobs |
 | `klaus failed-checks` | Dispatch runs to fix the valley checks that failed on ready changes klaus owns (the dashboard does this every minute; see [Failed checks on valley changes](#failed-checks-on-valley-changes)) |
 | `klaus restack-conflicts` | Dispatch runs for the restack conflicts a valley reports on changes klaus owns (the dashboard does this every minute; see [Restack conflicts on valley changes](#restack-conflicts-on-valley-changes)) |
 | `klaus track <ref>...` | Track existing PRs (number, URL, `owner/repo#N`) or valley changes (handle, change ID, `<project>:<handle>`) on the dashboard and in `klaus status` (see [`klaus track`](#klaus-track)) |
 | `klaus untrack <ref>...` | Stop tracking PRs or valley changes |
-| `klaus jobs [--all]` | List running and recent consults and reviews |
-| `klaus jobs show <id> [--answer]` | Print a consult's or review's record and its answer |
+| `klaus jobs [--all]` | List running and recent consults, reviews and prose passes |
+| `klaus jobs show <id> [--answer]` | Print a job's record and its answer |
 | `klaus report time [--since 7d] [--repo <r>] [--current] [--json]` | Where agent wall-clock time went, per repo and overall (see [Where agent time goes](#where-agent-time-goes)) |
 | `klaus logs <id>` | View agent output (live, replay, or raw) |
 | `klaus cleanup <id>\|--all` | Tear down worktrees, panes, and state |
@@ -919,7 +948,7 @@ Done rows older than an hour are hidden by default; the position line says how m
 
 Set `"dashboard": {"approve_command": "cd ~/hack/{repo} && valley approve {handle} --head {head}"}` and the footer shows the expanded command (`approve: …`) whenever a `READY` row is selected, and `submit: …` for a `SUBMIT` row. `{repo}` is the repo as the row names it (the valley's name for a valley change, else the short project name), `{branch}` the pushed branch, `{change}` the full change ID, `{handle}` the change's handle and `{head}` the pushed head, so the approval binds the head you saw. Each value is shell-quoted unless it is only letters, digits and `._/-`, so a branch name can't inject commands; don't put quotes around placeholders in the template. A row with no value for a placeholder the template uses, such as `{handle}` on a branch no valley knows, shows no command, and neither does a `DRAFT` row or one with an agent running on it. It's there to copy and run on your own machine; the dashboard never runs it. `submit_command` is the deprecated name of `approve_command` and is read only when `approve_command` is unset.
 
-Below the run rows, a jobs section lists the session's consults and reviews, as `klaus status` does: every running job (`RUNNING`, with how long it has run), and those that finished in the last 3 hours (`SUCCEEDED`, `FAILED`, `TIMED OUT`, `INTERRUPTED`, or `DIED` when the job's klaus was killed without recording its end). Jobs don't join the change and PR rows. The section follows the job records through the same file watcher as the runs, and re-reads them every 30 seconds, which also notices a job that died. Press `tab` to select a job: the footer says how it stands, with its error and where its raw output was saved, and `enter` opens its record and answer as `klaus jobs show` prints them, in place of the list (`j`/`k` scroll, `esc` goes back).
+Below the run rows, a jobs section lists the session's consults, reviews and prose passes, as `klaus status` does: every running job (`RUNNING`, with how long it has run), and those that finished in the last 3 hours (`SUCCEEDED`, `FAILED`, `TIMED OUT`, `INTERRUPTED`, or `DIED` when the job's klaus was killed without recording its end). Jobs don't join the change and PR rows. The section follows the job records through the same file watcher as the runs, and re-reads them every 30 seconds, which also notices a job that died. Press `tab` to select a job: the footer says how it stands, with its error and where its raw output was saved, and `enter` opens its record and answer as `klaus jobs show` prints them, in place of the list (`j`/`k` scroll, `esc` goes back).
 
 On a narrow or short pane the layout degrades rather than wrapping: the prompt column shrinks and long lines are cut at the edge, then spacing, status, job and help lines are dropped, before any rows are.
 

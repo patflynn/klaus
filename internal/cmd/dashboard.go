@@ -126,7 +126,7 @@ over: the footer notes it ("a newer push 1a2b3c4 isn't ready"). While an agent r
 and the footer says which agent is working on it. Once it exits, the row
 goes back to where the PR or change stands.
 
-Below the run rows, a jobs section lists the session's consults and reviews,
+Below the run rows, a jobs section lists the session's consults, reviews and prose passes,
 as klaus status does: every running job, with how long it has run, and those
 that finished in the last 3 hours, with how long they took and how they
 ended (SUCCEEDED, FAILED, TIMED OUT, INTERRUPTED, or DIED when the job's klaus
