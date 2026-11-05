@@ -1039,7 +1039,7 @@ func TestDefaultPromptFollowsOriginDelivery(t *testing.T) {
 			t.Errorf("direct-push prompt should not contain %q:\n%s", want, valley)
 		}
 	}
-	for _, want := range []string{"Do not create a PR", "head SHA", "diff summary", "Every check and test you ran", "Reference issue #42"} {
+	for _, want := range []string{"Do not create a PR", "head SHA", "the operator reviews from your final report", "Reference issue #42"} {
 		if !strings.Contains(valley, want) {
 			t.Errorf("direct-push prompt missing %q:\n%s", want, valley)
 		}
@@ -1051,8 +1051,6 @@ func TestDefaultPromptFollowsOriginDelivery(t *testing.T) {
 	for _, want := range []string{
 		"Run: 20261011-1905-7f6906fc",
 		"`git push -u origin HEAD`",
-		"## Testing",
-		"Run the project's test suite before pushing",
 		"Before pushing, run `klaus _pre-review`",
 		"Never commit directly to the default branch",
 		"## Documentation",

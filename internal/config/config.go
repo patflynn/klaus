@@ -476,10 +476,12 @@ Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
 
 You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
 {{- if and .Valley .Head}}
-Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
-If the brief asks you to rebase the change, or it conflicts with origin/main, restack it instead: rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts, test it, and push it to the same branch with a lease on the head this run started from:
+The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
+Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
+If the brief asks you to rebase the change, or it conflicts with origin/main, rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts and test it.
+Push to the same branch with a lease on the head this run started from, instead of step 5:
 ` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
-After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so the rebase loses nothing. Never force-push any other way, and do not rewrite pushed commits for any other reason. If the push is refused, someone else moved the branch: stop and say so in your report.
+After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so amending or rebasing loses nothing. Never force-push any other way. If the push is refused, someone else moved the branch: stop and say so in your report.
 {{- else}}
 Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
 {{- end}}
@@ -493,11 +495,10 @@ This run works knot {{.Knot}} of the project's plan graph. The brief carries the
 klaus has claimed the knot for this run, links your change to it when the run ends and closes it once the change lands, so don't run ` + "`valley knot`" + ` writes yourself.
 {{- end}}
 
-End your turn with a final report the operator can review from, since there is no PR:
+There is no PR, so the operator reviews from your final report. Start it with:
 - Run: {{.RunID}}
 - The branch name and the head SHA you pushed (` + "`git rev-parse HEAD`" + `)
-- A diff summary: the files changed (` + "`git diff --stat`" + ` against the branch you started from) and what changed and why
-- Every check and test you ran, each with its result
+Base its diff summary on ` + "`git diff --stat`" + ` against the branch you started from.
 {{else}}
 6. Create a PR. Include the following footer at the bottom of the PR body:
    Run: {{.RunID}}{{if .Issue}}
@@ -511,13 +512,6 @@ Commit on top of it, push fast-forward to the same branch and open the PR from i
 {{end}}
 {{- end}}
 Do not include any AI attribution or 'Generated with Claude Code' lines in {{if .DirectPush}}commit messages or the report{{else}}the PR body{{end}}.
-
-## Testing
-- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
-- Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
-- A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
-- Run ` + "`go build ./...`" + ` before committing to verify compilation.
-- Run the project's test suite before pushing, and fix any failures.
 
 ## Pre-push Review
 - Before pushing, run ` + "`klaus _pre-review`" + ` in your worktree.
@@ -546,13 +540,6 @@ Just commit and push — the PR will update automatically.**
 {{if .Issue}}
 Reference issue #{{.Issue}} in your commit messages where appropriate.
 {{end}}
-## Testing
-- Prefer integration and e2e tests that exercise real behavior over unit tests with mocked internals.
-- Only unit test genuinely tricky logic. Don't write tests that just mirror the implementation.
-- A few tests that run the real binary or real commands are worth more than many tests with injected fakes.
-- Run ` + "`go build ./...`" + ` before committing to verify compilation.
-- Run the project's test suite before pushing. Fix failures before pushing.
-
 ## Conventions
 - Never commit directly to the default branch — always use a PR branch.
 
@@ -573,12 +560,24 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
 }
 
-// WorkerRules states the run contract every worker backend shares: the run
-// ends with the agent's turn, scratch files stay out of the worktree, whose
-// uncommitted files finalize salvages into a commit, and a worker whose
-// environment is broken stops and reports instead of writing outside its
-// worktree, to shared configuration, to get around it. It is not part of
-// the templates, so a custom .klaus/prompt.md cannot drop it.
+// testRules is the test guidance every worker gets in WorkerRules and the
+// coordinator gets in its session prompt.
+const testRules = `Tests should ensure the behavior of the module is correct and serve the agent to satisfy themselves of that. They shouldn't be mirrors of implementations trying to get 100% code coverage. e2e tests are great, but if every layer of the onion defines its own e2e and tries to comprehensively test that layer, the cost explodes.
+- Give each user-visible behaviour one end-to-end path, at the outermost layer that shows it.
+- Give inner layers focused tests of their own logic.
+- Don't write tests that re-prove upstream software.
+- A test's cost, in run time and check time, is part of the change.
+- Run the project's test suite before pushing, and fix any failures.
+`
+
+// WorkerRules states the rules every worker backend shares: the run ends
+// with the agent's turn; the test guidance; scratch and build output stay
+// out of the worktree, whose uncommitted files finalize salvages into a
+// commit; a worker whose environment is broken stops and reports instead of
+// writing outside its worktree, to shared configuration, to get around it; a
+// change out of proportion to what it delivers stops and reports what it
+// taught; and the final report has fixed headings. It is not part of the
+// templates, so a custom .klaus/prompt.md cannot drop it.
 const WorkerRules = `## Non-interactive run
 You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
 - Run long builds and tests in the foreground with a generous timeout, or wait for them in a foreground loop that exits when they finish.
@@ -586,10 +585,25 @@ You run non-interactively: your run ends when your turn ends. Nothing wakes you 
 
 ## Scratch files
 - Build output, test binaries and other scratch files go under $KLAUS_SCRATCH, never in the worktree: for example, ` + "`go build -o \"$KLAUS_SCRATCH/<name>\" ./<pkg>`" + `. $KLAUS_SCRATCH is outside the worktree, and klaus removes it when the run ends; where it is unset, use a directory from ` + "`mktemp -d`" + `.
+- To check that Go code compiles, run ` + "`go vet ./...`" + ` or ` + "`go test ./...`" + `, or build into $KLAUS_SCRATCH as above. Never leave a binary in the worktree.
 
+## Tests
+` + testRules + `
 ## A broken environment
 - If your environment keeps you from working (commands fail to start, the shell or a tool you need is missing, a tool's permissions block you), stop and report what fails, with the error, and end your turn. Don't work around it.
 - Never edit files outside your worktree and $KLAUS_SCRATCH to get past a problem: not the clone's git configuration, attributes or hooks, not your home directory, shell profiles or package profiles, not system files. Other workers and the operator share them.
+
+## Proportion
+The code and tests a change adds are carried for the project's lifetime. When a change's cost in code, tests, check time or new concepts is out of proportion to what it delivers, stop instead of pushing through. Report what the implementation revealed about the problem or the platform, and what you would change higher up. That is a successful outcome.
+
+## Final report
+End your turn with a short report under these headings, so it can become the change's description:
+- **Intent:** what the change does and why, in two or three sentences.
+- **Decisions:** the choices you made, the alternatives you rejected, and why.
+- **Shape:** the new data, powers, controllers, options or interfaces it adds, or "none".
+- **What the implementation taught us:** design insights about the problem or the platform, or "none".
+- **Checks:** each check and test you ran, with its result.
+- **Diff summary:** the files changed, and what changed in each.
 `
 
 // WithWorkerRules appends WorkerRules to a worker system prompt.
@@ -919,11 +933,9 @@ These projects are available by name with ` + "`klaus launch --repo <name>`" + `
 {{.Projects}}
 {{end}}
 ## Testing guidance for agents
-- Ensure launched agents prefer integration and e2e tests over mocked unit tests.
-- Tests should exercise real behavior — a few tests that run the real binary are worth more than many with injected fakes.
-- Only unit test genuinely tricky logic.
-- Agents must run the project's test suite before creating a PR and fix any failures.
-`
+Every worker's rules carry this guidance, so a brief need not repeat it:
+
+` + testRules
 
 // RenderSessionPrompt renders the session coordinator system prompt.
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.

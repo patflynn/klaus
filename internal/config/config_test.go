@@ -298,20 +298,88 @@ func TestRenderPromptFromFileReadError(t *testing.T) {
 	}
 }
 
-func TestRenderPromptDefaultContainsTesting(t *testing.T) {
-	dir := t.TempDir()
+// TestEveryWorkerGetsTheRules renders each kind of worker prompt as launch
+// does, with WorkerRules appended. The test guidance, the build rule, the
+// proportion rule and the final report's headings reach every kind, custom
+// template included; only a valley change's run is told to keep the change's
+// head message true to the whole change; and the coordinator's testing
+// section carries the workers' test guidance.
+func TestEveryWorkerGetsTheRules(t *testing.T) {
+	shared := []string{
+		"one end-to-end path, at the outermost layer that shows it",
+		"focused tests of their own logic",
+		"Don't write tests that re-prove upstream software.",
+		"A test's cost, in run time and check time, is part of the change.",
+		"Run the project's test suite before pushing",
+		"run `go vet ./...` or `go test ./...`, or build into $KLAUS_SCRATCH",
+		"carried for the project's lifetime",
+		"stop instead of pushing through",
+		"That is a successful outcome.",
+		"**Intent:**", "**Decisions:**", "**Shape:**", "**What the implementation taught us:**", "**Checks:**", "**Diff summary:**",
+	}
+	never := []string{"`go build ./...`", "Prefer integration and e2e tests"}
+	valleyFollowUp := []string{
+		"Amend the change's head commit",
+		"end with a commit whose message describes the whole change",
+		"keep the head message accurate for the whole change",
+		"Push to the same branch with a lease on the head this run started from",
+	}
+	custom := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(custom, ".klaus"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(custom, ".klaus", "prompt.md"), []byte("House rules for {{.RunID}}.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valley := PromptVars{RunID: "r", Branch: "b", DirectPush: true, Change: "kkkk", Valley: true, Head: strings.Repeat("a", 40)}
+	for _, tc := range []struct {
+		name         string
+		dir          string
+		vars         PromptVars
+		want, absent []string
+	}{
+		{"plain", t.TempDir(), PromptVars{RunID: "r", Branch: "b"}, nil, valleyFollowUp},
+		{"--pr", t.TempDir(), PromptVars{RunID: "r", Branch: "b", PR: "7"}, nil, valleyFollowUp},
+		{"--change on a valley", t.TempDir(), valley, valleyFollowUp, []string{"push fast-forward", "do not rewrite pushed commits"}},
+		{"--change on GitHub", t.TempDir(), PromptVars{RunID: "r", Branch: "b", Change: "kkkk"},
+			[]string{"push fast-forward to the same branch and open the PR from it"}, valleyFollowUp},
+		{"overridden template", custom, valley, []string{"House rules for r."}, valleyFollowUp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			render := RenderPrompt
+			if tc.vars.PR != "" {
+				render = RenderPRFixPrompt
+			}
+			prompt, err := render(tc.dir, tc.vars)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prompt = WithWorkerRules(prompt)
+			for _, want := range append(shared, tc.want...) {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, absent := range append(never, tc.absent...) {
+				if strings.Contains(prompt, absent) {
+					t.Errorf("prompt should not contain %q:\n%s", absent, prompt)
+				}
+			}
+		})
+	}
 
-	vars := PromptVars{RunID: "test-123"}
-	prompt, err := RenderPrompt(dir, vars)
+	session, err := RenderSessionPrompt(t.TempDir(), PromptVars{RunID: "s"})
 	if err != nil {
-		t.Fatalf("RenderPrompt() error: %v", err)
+		t.Fatal(err)
 	}
-
-	if !strings.Contains(prompt, "## Testing") {
-		t.Error("default prompt should contain testing section")
+	_, section, _ := strings.Cut(session, "## Testing guidance for agents\n")
+	for _, line := range strings.Split(strings.TrimSpace(testRules), "\n") {
+		if !strings.Contains(section, line+"\n") {
+			t.Errorf("coordinator's testing section missing %q:\n%s", line, section)
+		}
 	}
-	if !strings.Contains(prompt, "unit tests") {
-		t.Error("default prompt should mention unit tests")
+	if strings.Contains(session, "prefer integration and e2e tests") {
+		t.Errorf("coordinator prompt still prefers e2e tests:\n%s", section)
 	}
 }
 

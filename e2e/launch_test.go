@@ -428,7 +428,7 @@ func TestLaunchDeliveryFollowsOrigin(t *testing.T) {
 	}{
 		{
 			name:       "direct-push origin",
-			wantPrompt: []string{"Do not create a PR", "head SHA", "Every check and test you ran"},
+			wantPrompt: []string{"Do not create a PR", "head SHA", "the operator reviews from your final report"},
 			noPrompt:   []string{"Create a PR.", "--reviewer"},
 		},
 		{
