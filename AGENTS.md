@@ -20,19 +20,9 @@ klaus launches coding agents in isolated worktrees and follows them to a valley 
 - `.gitignore` ignores `*.jsonl` and `*.log` everywhere; `git add -f` such fixtures.
 
 ## Tests
-Test behaviour to satisfy yourself the module works, not to mirror code or chase 100% coverage; comprehensive e2e suites at every layer explode cost.
 - Give each user-visible behaviour one e2e path at the outermost layer showing it (`make test-e2e` on the real binary).
-- Focus inner-layer tests on their own logic.
-- Don't re-prove upstream software (`git`, `tmux`, `gh`, `cobra`).
-- Count test runtime and check time in the change's cost.
-- New behaviour needs a test at the right layer.
 - Run `go test ./...` before pushing, and `make test-e2e` when touching behaviour the e2e suite covers.
-
-## Writing
-- Write what a reader can't infer from the code (purpose, reasons, constraints, non-obvious consequences); leave out details, boundary conditions and machinery the code already shows.
-- Committed text (docs, comments) states the current design in present tense, never how it used to be.
-- Docs and comments speak in one voice and carry no history: no dates, change or issue numbers, quotes attributed to people, or "previously"/"no longer". The reasons for a change go in its commit message; when behaviour changes, rewrite the affected text as if it had been designed that way, rather than appending.
-- Update Cobra help when commands or flags change, and `README.md` for user-facing behaviour; keep comments accurate.
+- Committed docs and comments state the current design in present tense and carry no history; update Cobra help when commands or flags change, and `README.md` for user-facing behaviour.
 
 ## Commits and PRs
 - No AI attribution or Claude/Anthropic `Co-Authored-By` lines in commit messages or PR descriptions; the `Klaus-Run:` trailer klaus adds records provenance.

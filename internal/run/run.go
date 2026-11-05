@@ -64,9 +64,19 @@ type State struct {
 	// branch) holding their pushed heads, and at finalize when the head it
 	// left on origin contains theirs. Their attention is then this run's.
 	TookOver []string `json:"took_over,omitempty"`
+	// HouseRules records the house rules the worker was given: where they were
+	// read from and their digest, or that they were configured but missing.
+	HouseRules *HouseRules `json:"house_rules,omitempty"`
 	// SharedGit is launch's snapshot of the files the run's clone shares
 	// across its worktrees, and what finalize found changed.
 	SharedGit *SharedGit `json:"shared_git,omitempty"`
+}
+
+// HouseRules is the house rules file a run's prompt carried.
+type HouseRules struct {
+	Source  string `json:"source"`
+	Digest  string `json:"digest,omitempty"`
+	Missing bool   `json:"missing,omitempty"`
 }
 
 // SharedGit records the files of a run's clone that every worktree of the

@@ -1144,3 +1144,9 @@ func LsRemote(ctx context.Context, repo, ref string, env ...string) (string, err
 	}
 	return "", nil
 }
+
+// ShowFile returns the content of path at ref, as git show reads it from the
+// object store, never from a working tree.
+func ShowFile(ctx context.Context, repoDir, ref, path string) (string, error) {
+	return runGit(ctx, repoDir, "show", ref+":"+path)
+}

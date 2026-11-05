@@ -15,6 +15,9 @@ import (
 )
 
 type Thread struct {
+	// HouseRules is the operator's house rules text, added to the system
+	// prompt. Each turn sets it afresh; it is never saved.
+	HouseRules       string       `json:"-"`
 	Backend          backend.Kind `json:"backend"`
 	Model            string       `json:"model"`
 	Effort           string       `json:"effort,omitempty"`

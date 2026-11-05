@@ -64,6 +64,18 @@ type Config struct {
 	// does. The list is private, so it is read only from the host config,
 	// ~/.klaus/config.json: Load ignores it in a repo's .klaus/config.json.
 	ForbiddenTerms map[string]ForbiddenTermsConfig `json:"forbidden_terms,omitempty"`
+	// HouseRules names a file, in a registered project's repository, of the
+	// rules the operator holds across all projects. klaus adds it to every
+	// worker's context and to the consults and reviews it runs over a
+	// repository. A repo's .klaus/config.json may name another.
+	HouseRules *HouseRulesConfig `json:"house_rules,omitempty"`
+}
+
+// HouseRulesConfig locates the house rules: Path in the repository of the
+// registered project Repo, read at origin's default branch.
+type HouseRulesConfig struct {
+	Repo string `json:"repo"`
+	Path string `json:"path"`
 }
 
 // ForbiddenTermsConfig is one repo's forbidden_terms entry. Each term matches
@@ -560,24 +572,15 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
 }
 
-// testRules is the test guidance every worker gets in WorkerRules and the
-// coordinator gets in its session prompt.
-const testRules = `Tests should ensure the behavior of the module is correct and serve the agent to satisfy themselves of that. They shouldn't be mirrors of implementations trying to get 100% code coverage. e2e tests are great, but if every layer of the onion defines its own e2e and tries to comprehensively test that layer, the cost explodes.
-- Give each user-visible behaviour one end-to-end path, at the outermost layer that shows it.
-- Give inner layers focused tests of their own logic.
-- Don't write tests that re-prove upstream software.
-- A test's cost, in run time and check time, is part of the change.
-- Run the project's test suite before pushing, and fix any failures.
-`
-
-// WorkerRules states the rules every worker backend shares: the run ends
-// with the agent's turn; the test guidance; scratch and build output stay
-// out of the worktree, whose uncommitted files finalize salvages into a
+// WorkerRules states the mechanics every worker backend shares, in any
+// repository: the run ends with the agent's turn; scratch and build output
+// stay out of the worktree, whose uncommitted files finalize salvages into a
 // commit; a worker whose environment is broken stops and reports instead of
-// writing outside its worktree, to shared configuration, to get around it; a
-// change out of proportion to what it delivers stops and reports what it
-// taught; and the final report has fixed headings. It is not part of the
-// templates, so a custom .klaus/prompt.md cannot drop it.
+// writing outside its worktree, to shared configuration, to get around it;
+// processes are never killed by a broad pattern; and the final report has
+// fixed headings. Taste (tests, writing, carrying cost) belongs to the
+// operator's house rules. It is not part of the templates, so a custom
+// .klaus/prompt.md cannot drop it.
 const WorkerRules = `## Non-interactive run
 You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
 - Run long builds and tests in the foreground with a generous timeout, or wait for them in a foreground loop that exits when they finish.
@@ -587,14 +590,12 @@ You run non-interactively: your run ends when your turn ends. Nothing wakes you 
 - Build output, test binaries and other scratch files go under $KLAUS_SCRATCH, never in the worktree: for example, ` + "`go build -o \"$KLAUS_SCRATCH/<name>\" ./<pkg>`" + `. $KLAUS_SCRATCH is outside the worktree, and klaus removes it when the run ends; where it is unset, use a directory from ` + "`mktemp -d`" + `.
 - To check that Go code compiles, run ` + "`go vet ./...`" + ` or ` + "`go test ./...`" + `, or build into $KLAUS_SCRATCH as above. Never leave a binary in the worktree.
 
-## Tests
-` + testRules + `
 ## A broken environment
 - If your environment keeps you from working (commands fail to start, the shell or a tool you need is missing, a tool's permissions block you), stop and report what fails, with the error, and end your turn. Don't work around it.
 - Never edit files outside your worktree and $KLAUS_SCRATCH to get past a problem: not the clone's git configuration, attributes or hooks, not your home directory, shell profiles or package profiles, not system files. Other workers and the operator share them.
 
-## Proportion
-The code and tests a change adds are carried for the project's lifetime. When a change's cost in code, tests, check time or new concepts is out of proportion to what it delivers, stop instead of pushing through. Report what the implementation revealed about the problem or the platform, and what you would change higher up. That is a successful outcome.
+## Processes
+Never kill processes by a broad pattern (` + "`pkill -f`, `killall`" + `): other workers and the operator run the same programs. Kill only a process you started, by its PID.
 
 ## Final report
 End your turn with a short report under these headings, so it can become the change's description:
@@ -931,11 +932,7 @@ Each costs a relaunch (new worktree, new pane). None costs a cold re-exploration
 
 These projects are available by name with ` + "`klaus launch --repo <name>`" + ` or ` + "`klaus target <name>`" + `:
 {{.Projects}}
-{{end}}
-## Testing guidance for agents
-Every worker's rules carry this guidance, so a brief need not repeat it:
-
-` + testRules
+{{end}}`
 
 // RenderSessionPrompt renders the session coordinator system prompt.
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.
