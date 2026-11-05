@@ -91,9 +91,9 @@ func (h *Harness) finishRun(id string) *run.State {
 // and finalize marks it ready and stores its conversation. A --change
 // <run-id> follow-up runs on the first run's branch at v1 with its change
 // ID, returns the change to draft, replays the first run's conversation, is
-// told it continues the change, and shares the change's dashboard row; it
-// pushes fast-forward to the same branch and finalize readies the new head
-// there. A --change <handle> --no-replay run resolves the handle through the
+// told it continues the change and to keep its head message true to the
+// whole change, and shares the change's dashboard row; it pushes to the same
+// branch and finalize readies the new head there. A --change <handle> --no-replay run resolves the handle through the
 // recorded runs, starts at the follow-up's head, and starts fresh. The
 // follow-ups target the repo by the name the valley gives it, widget: the
 // sandbox's own name is its origin's path.
@@ -152,7 +152,7 @@ func TestChangeContinuesAChange(t *testing.T) {
 		t.Errorf("claude should resume the first run's conversation:\n%s", argv)
 	}
 	want := "You are continuing an existing change, nxvp. This worktree is on its branch, " + first.Branch + ", which already holds the earlier work."
-	if sys := h.WorkerSystemPrompt(); !strings.Contains(sys, want) || !strings.Contains(sys, "push fast-forward to the same branch") {
+	if sys := h.WorkerSystemPrompt(); !strings.Contains(sys, want) || !strings.Contains(sys, "keep the head message accurate for the whole change") {
 		t.Errorf("worker prompt should say it continues the change on its branch:\n%s", sys)
 	}
 

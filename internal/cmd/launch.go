@@ -128,11 +128,13 @@ Launch fails, naming the change and its last known head, when that branch
 isn't on origin. The run keeps the change ID, returns the change to draft as
 below, continues the conversation of the change's most recent run when its
 backend can (below), and is told to push fast-forward to the same branch;
-finalize marks the new head ready. In a repo that delivers to a valley, the
-agent is also told never to merge another branch into the change, and that
-when the brief asks it to rebase, or the change conflicts with origin/main,
-it may restack it: rebase it onto origin/main and push it to the same branch
-with 'git push --force-with-lease=refs/heads/<branch>:<head> origin
+finalize marks the new head ready. In a repo that delivers to a valley,
+which lands a change as one commit under its head commit's message, the
+agent is instead told to amend the change's head commit or end with a commit
+whose message describes the whole change, never to merge another branch into
+it, to rebase it onto origin/main when the brief asks it to or the change
+conflicts with origin/main, and to push it to the same branch with 'git push
+--force-with-lease=refs/heads/<branch>:<head> origin
 HEAD:refs/heads/<branch>', <head> being the branch's tip on origin when
 launch checked it, which the worktree starts from. Finalize marks the rebased
 head ready as the next version of the same change. Every backend keeps the
