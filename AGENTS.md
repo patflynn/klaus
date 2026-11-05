@@ -31,6 +31,7 @@ Test behaviour to satisfy yourself the module works, not to mirror code or chase
 ## Writing
 - Write what a reader can't infer from the code (purpose, reasons, constraints, non-obvious consequences); leave out details, boundary conditions and machinery the code already shows.
 - Committed text (docs, comments) states the current design in present tense, never how it used to be.
+- Docs and comments speak in one voice and carry no history: no dates, change or issue numbers, quotes attributed to people, or "previously"/"no longer". The reasons for a change go in its commit message; when behaviour changes, rewrite the affected text as if it had been designed that way, rather than appending.
 - Update Cobra help when commands or flags change, and `README.md` for user-facing behaviour; keep comments accurate.
 
 ## Commits and PRs
