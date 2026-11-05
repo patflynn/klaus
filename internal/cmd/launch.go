@@ -707,6 +707,12 @@ are synced back after completion. Use --local to force local execution, or
 				}
 			}
 			sysPrompt, err = config.RenderPrompt(repoRoot, vars)
+			if err == nil {
+				var section string
+				if section, err = config.RenderDelivery(vars); err == nil {
+					sysPrompt = strings.TrimRight(sysPrompt, "\n") + "\n\n" + section
+				}
+			}
 		}
 		if err != nil {
 			return fmt.Errorf("rendering prompt: %w", err)

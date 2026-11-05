@@ -57,7 +57,7 @@ func TestBuildScaffoldPrompt(t *testing.T) {
 		{"principles", "## Test Principles"},
 		{"principles content", "Use Go"},
 		{"flake.nix", "flake.nix"},
-		{"CLAUDE.md", "CLAUDE.md"},
+		{"AGENTS.md", "AGENTS.md"},
 		{"push to main", "push directly to main"},
 		{"no PR", "Do NOT create a PR"},
 		{"description tag", "<user-description>"},

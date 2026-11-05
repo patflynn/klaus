@@ -377,7 +377,11 @@ func TestLaunchSizeGuard(t *testing.T) {
 	if res.ExitCode == 0 {
 		t.Fatalf("launch should fail the size guard\nstdout:\n%s", res.Stdout)
 	}
-	wantSize := fmt.Sprintf("the worker system prompt is %d bytes", len(config.WithWorkerRules(sysPrompt)))
+	delivery, err := config.RenderDelivery(config.PromptVars{DirectPush: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSize := fmt.Sprintf("the worker system prompt is %d bytes", len(config.WithWorkerRules(strings.TrimRight(sysPrompt, "\n")+"\n\n"+delivery)))
 	for _, want := range []string{"over the 12000-byte limit", wantSize} {
 		if !strings.Contains(res.Stderr, want) {
 			t.Errorf("stderr missing %q:\n%s", want, res.Stderr)
