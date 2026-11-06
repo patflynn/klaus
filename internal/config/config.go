@@ -479,25 +479,11 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 2. Run ` + "`git add`" + ` on any new files.
 3. Test your changes.
 4. Create a focused git commit.
-5. Push your branch: ` + "`git push -u origin HEAD`" + `
+5. Push your branch: ` + "{{if and .Change .Valley .Head}}as the Delivery section below directs{{else if .Change}}`git push origin HEAD`, fast-forward to the same branch{{else}}`git push -u origin HEAD`{{end}}" + `
 {{- if .DirectPush}}
 
 This repository's origin is not on GitHub. Pushing the branch is the delivery: the operator integrates it from there.
 Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
-{{- if .Change}}
-
-You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
-{{- if and .Valley .Head}}
-The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
-Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
-If the brief asks you to rebase the change, or it conflicts with origin/main, rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts and test it.
-Push to the same branch with a lease on the head this run started from, instead of step 5:
-` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
-After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so amending or rebasing loses nothing. Never force-push any other way. If the push is refused, someone else moved the branch: stop and say so in your report.
-{{- else}}
-Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
-{{- end}}
-{{- end}}
 {{- if .Issue}}
 Reference issue #{{.Issue}} in your commit message.
 {{- end}}
@@ -517,10 +503,6 @@ Base its diff summary on ` + "`git diff --stat`" + ` against the branch you star
    Fixes #{{.Issue}}{{end}}
 {{if .Reviewer}}
 Use --reviewer {{.Reviewer}} when creating the PR.
-{{end}}
-{{- if .Change}}
-You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
-Commit on top of it, push fast-forward to the same branch and open the PR from it. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
 {{end}}
 {{- end}}
 Do not include any AI attribution or 'Generated with Claude Code' lines in {{if .DirectPush}}commit messages or the report{{else}}the PR body{{end}}.
@@ -606,6 +588,33 @@ End your turn with a short report under these headings, so it can become the cha
 - **Checks:** each check and test you ran, with its result.
 - **Diff summary:** the files changed, and what changed in each.
 `
+
+// deliveryTemplate is the Delivery section of a run's system prompt: the
+// push and continuation instructions that depend on the run, appended after
+// whatever template rendered, so a repository's own .klaus/prompt.md gets
+// them too.
+const deliveryTemplate = `## Delivery
+{{- if not .Change}}
+{{if .DirectPush}}Deliver by pushing your branch: ` + "`git push -u origin HEAD`" + `. Do not create a PR.{{else}}Deliver by pushing your branch (` + "`git push -u origin HEAD`" + `) and opening a PR from it.{{end}}
+{{- else}}
+You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
+{{- if and .Valley .Head}}
+The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
+Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
+If the brief asks you to rebase the change, or it conflicts with origin/main, rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts and test it.
+Push to the same branch with a lease on the head this run started from:
+` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
+After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so amending or rebasing loses nothing. Never force-push any other way. If the push is refused, someone else moved the branch: stop and say so in your report.
+{{- else}}
+Commit on top of it and push fast-forward to the same branch {{if .DirectPush}}(` + "`git push origin HEAD`" + `){{else}}and open the PR from it{{end}}. Do not create a new branch. Do not rebase, amend pushed commits or force-push.
+{{- end}}
+{{- end}}
+`
+
+// RenderDelivery renders the Delivery section for a run's vars.
+func RenderDelivery(vars PromptVars) (string, error) {
+	return renderTemplate(deliveryTemplate, vars)
+}
 
 // WithWorkerRules appends WorkerRules to a worker system prompt.
 func WithWorkerRules(systemPrompt string) string {
@@ -1222,7 +1231,7 @@ const DefaultPrinciples = `# Project Principles
 - Three lines of duplicated code beats a premature abstraction
 
 ## Project Setup
-- CLAUDE.md with project conventions and rules
+- AGENTS.md with project conventions and rules (read natively by Claude Code, Codex and agy)
 - .klaus/config.json for klaus integration
 - README.md with setup instructions
 - .gitignore appropriate to the language

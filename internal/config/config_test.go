@@ -333,10 +333,13 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 	}{
 		{"plain", t.TempDir(), PromptVars{RunID: "r", Branch: "b"}, nil, valleyFollowUp},
 		{"--pr", t.TempDir(), PromptVars{RunID: "r", Branch: "b", PR: "7"}, nil, valleyFollowUp},
-		{"--change on a valley", t.TempDir(), valley, valleyFollowUp, []string{"push fast-forward", "do not rewrite pushed commits"}},
+		{"--change on a valley", t.TempDir(), valley, append([]string{"5. Push your branch: as the Delivery section below directs"}, valleyFollowUp...),
+			[]string{"push fast-forward", "git push -u origin HEAD"}},
 		{"--change on GitHub", t.TempDir(), PromptVars{RunID: "r", Branch: "b", Change: "kkkk"},
-			[]string{"push fast-forward to the same branch and open the PR from it"}, valleyFollowUp},
-		{"overridden template", custom, valley, []string{"House rules for r."}, valleyFollowUp},
+			[]string{"push fast-forward to the same branch and open the PR from it"}, append([]string{"git push -u origin HEAD"}, valleyFollowUp...)},
+		{"overridden template", custom, valley, append([]string{"House rules for r.", "## Delivery",
+			"--force-with-lease=refs/heads/b:" + strings.Repeat("a", 40) + " origin HEAD:refs/heads/b"}, valleyFollowUp...),
+			[]string{"git push -u origin HEAD"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			render := RenderPrompt
@@ -346,6 +349,13 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 			prompt, err := render(tc.dir, tc.vars)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.vars.PR == "" {
+				delivery, err := RenderDelivery(tc.vars)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prompt += "\n\n" + delivery
 			}
 			prompt = WithWorkerRules(prompt)
 			for _, want := range append(shared, tc.want...) {
@@ -1133,7 +1143,7 @@ func TestRestackPushQuotesTheBranch(t *testing.T) {
 	dir := t.TempDir()
 	head := strings.Repeat("a", 40)
 	for _, branch := range []string{"add-a-greeting-1a2b3c4d", `x$(touch pwned);'y`} {
-		prompt, err := RenderPrompt(dir, PromptVars{RunID: "r", Branch: branch, DirectPush: true, Change: "kkkk", Valley: true, Head: head})
+		prompt, err := RenderDelivery(PromptVars{RunID: "r", Branch: branch, DirectPush: true, Change: "kkkk", Valley: true, Head: head})
 		if err != nil {
 			t.Fatal(err)
 		}

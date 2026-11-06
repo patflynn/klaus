@@ -271,7 +271,7 @@ Your task:
 1. Initialize the project structure appropriate for a %s project
 2. Create flake.nix with a dev shell (include klaus as a flake input from github:patflynn/klaus)
 3. Set up GitHub Actions CI pipeline following the principles above
-4. Create CLAUDE.md with project conventions
+4. Create AGENTS.md with project conventions
 5. Create .klaus/config.json
 6. Write a basic README.md
 7. Use Tailwind CSS with the Vite plugin for styling (web projects only)
