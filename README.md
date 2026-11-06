@@ -147,7 +147,8 @@ a short commit message is skipped. The writer is the first installed family
 in `order` that isn't the author's; the fact checker is the next, else the
 author's. The writer lists each passage's claims and conditions in a ledger
 before rewriting, using the writing sections of the repo's `AGENTS.md` and
-`CLAUDE.md`; the checker reports each rewrite that changes the meaning.
+`CLAUDE.md` and the house rules; the checker reports each rewrite that changes
+the meaning.
 
 `_pre-review` prints each rewrite with any fact-check failure, and saves the
 ones that passed as a patch for `git apply` and a commit message for
@@ -1136,7 +1137,7 @@ Conversation comments by the PR author are the exception: the operator and fix a
 
 `agent_display` controls where agent panes live. `detached` (the default) puts each agent in its own window of a detached tmux session named `klaus-agents-<session-id>`, so your coordinator window is never split. `pane` restores the old behaviour of splitting the coordinator's window for every agent.
 
-`house_rules` names a file of rules you hold across all your projects, in the repository of a registered project: `"house_rules": {"repo": "qinling", "path": "guidance/house-rules.md"}`. At launch klaus fetches that repository's origin default branch and reads the file from it with `git show`, never from a working tree. It adds the text after klaus's own worker rules, including for repos with their own `.klaus/prompt.md`, and to the context of `klaus consult --repo` and the `_pre-review` reviewer. The run's state records the file's source (with commit) and sha256 digest, and launch prints them. A repo's `.klaus/config.json` may name different rules. If the file can't be read, launch warns once, records it as missing, and goes ahead. Unset means no house rules.
+`house_rules` names a file of rules you hold across all your projects, in the repository of a registered project: `"house_rules": {"repo": "qinling", "path": "guidance/house-rules.md"}`. At launch klaus fetches that repository's origin default branch and reads the file from it with `git show`, never from a working tree. It adds the text after klaus's own worker rules, including for repos with their own `.klaus/prompt.md`, and to the context of `klaus consult --repo`, the `_pre-review` reviewer and its prose rewrite and fact check. The run's state records the file's source (with commit) and sha256 digest, and launch prints them. A repo's `.klaus/config.json` may name different rules. If the file can't be read, launch warns once, records it as missing, and goes ahead. Unset means no house rules.
 
 `forbidden_terms` lists words a repo's changes must never add, such as the names of your own hosts, projects, accounts or addresses in a public repo. The list is itself private, so klaus reads it only from `~/.klaus/config.json` and ignores it in a repo's `.klaus/config.json`:
 

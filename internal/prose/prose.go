@@ -39,6 +39,9 @@ type Options struct {
 	Patterns  []string // more prose paths, beyond Markdown and READMEs
 	MaxInput  int      // bytes of diff sent
 	Timeout   time.Duration
+	// HouseRules are the operator's house rules, added to both models'
+	// context beside the repository's own writing rules.
+	HouseRules string
 	// Defaults gives a backend's model and effort.
 	Defaults func(backend.Kind) (model, effort string)
 	// Started, if set, is called when the writer is about to be asked.
@@ -445,7 +448,7 @@ func Settle(dir string, r *Result) {
 func ask(ctx context.Context, o Options, kind backend.Kind, model, effort, role, prompt string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	t := &consult.Thread{Backend: kind, Model: model, Effort: effort, Role: role, Dir: o.Dir}
+	t := &consult.Thread{Backend: kind, Model: model, Effort: effort, Role: role, Dir: o.Dir, HouseRules: o.HouseRules}
 	res, err := consult.Ask(ctx, t, prompt, false, "", io.Discard, io.Discard)
 	if err != nil {
 		if s := lastLine(res.Stderr); s != "" {

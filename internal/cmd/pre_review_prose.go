@@ -19,7 +19,7 @@ import (
 // startProsePass runs _pre-review's prose pass beside the peer review. The
 // function it returns waits for the pass and prints its report. The pass
 // never fails _pre-review.
-func startProsePass(ctx context.Context, dir string, cfg config.Config, author backend.Kind) func(w io.Writer) {
+func startProsePass(ctx context.Context, dir string, cfg config.Config, author backend.Kind, houseRules string) func(w io.Writer) {
 	pc := cfg.Prose()
 	if !*pc.Enabled {
 		return func(w io.Writer) { fmt.Fprintln(w, "Prose rewrite: off (pre_review.prose.enabled).") }
@@ -28,7 +28,7 @@ func startProsePass(ctx context.Context, dir string, cfg config.Config, author b
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runProsePass(ctx, &out, dir, cfg, pc, author)
+		runProsePass(ctx, &out, dir, cfg, pc, author, houseRules)
 	}()
 	return func(w io.Writer) {
 		<-done
@@ -37,7 +37,7 @@ func startProsePass(ctx context.Context, dir string, cfg config.Config, author b
 	}
 }
 
-func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Config, pc config.ProseConfig, author backend.Kind) {
+func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Config, pc config.ProseConfig, author backend.Kind, houseRules string) {
 	// A sandbox host has no session to record the pass in.
 	var store *jobs.Store
 	if os.Getenv(runEventsEnv) != runEventsOutput {
@@ -52,7 +52,8 @@ func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Confi
 	r := prose.Run(ctx, prose.Options{
 		Dir: dir, Base: defaultBranchRef(dir, cfg.DefaultBranch), Author: author,
 		Order: pc.Order, Patterns: pc.Paths, MaxInput: pc.MaxInputBytes,
-		Timeout: time.Duration(pc.TimeoutSeconds) * time.Second,
+		Timeout:    time.Duration(pc.TimeoutSeconds) * time.Second,
+		HouseRules: houseRules,
 		Defaults: func(k backend.Kind) (string, string) {
 			d := cfg.AgentDefaults(string(k))
 			return d.Model, d.Effort

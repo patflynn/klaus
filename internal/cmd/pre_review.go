@@ -139,7 +139,7 @@ var preReviewCmd = &cobra.Command{
 		reviewStart := time.Now()
 		reg, _ := project.Load()
 		houseRules := loadHouseRules(cmd.Context(), dir, cfg, reg, cmd.ErrOrStderr()).Text
-		printProse := startProsePass(cmd.Context(), dir, cfg, author)
+		printProse := startProsePass(cmd.Context(), dir, cfg, author, houseRules)
 		result, err := review.ReviewDiff(dir, review.ReviewConfig{
 			Backend:      string(kind),
 			Model:        model,
