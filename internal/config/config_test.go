@@ -299,25 +299,18 @@ func TestRenderPromptFromFileReadError(t *testing.T) {
 }
 
 // TestEveryWorkerGetsTheRules renders each kind of worker prompt as launch
-// does, with WorkerRules appended. The test guidance, the build rule, the
-// proportion rule and the final report's headings reach every kind, custom
-// template included; only a valley change's run is told to keep the change's
-// head message true to the whole change; and the coordinator's testing
-// section carries the workers' test guidance.
+// does, with WorkerRules appended. The mechanics (build rule, process rule,
+// final report's headings) reach every kind, custom template included, and
+// the taste rules are not among them; only a valley change's run is told to
+// keep the change's head message true to the whole change.
 func TestEveryWorkerGetsTheRules(t *testing.T) {
 	shared := []string{
-		"one end-to-end path, at the outermost layer that shows it",
-		"focused tests of their own logic",
-		"Don't write tests that re-prove upstream software.",
-		"A test's cost, in run time and check time, is part of the change.",
-		"Run the project's test suite before pushing",
+		"Never kill processes by a broad pattern",
 		"run `go vet ./...` or `go test ./...`, or build into $KLAUS_SCRATCH",
-		"carried for the project's lifetime",
-		"stop instead of pushing through",
-		"That is a successful outcome.",
 		"**Intent:**", "**Decisions:**", "**Shape:**", "**What the implementation taught us:**", "**Checks:**", "**Diff summary:**",
 	}
-	never := []string{"`go build ./...`", "Prefer integration and e2e tests"}
+	// Taste (tests, carrying cost) is the house rules', not every worker's.
+	never := []string{"`go build ./...`", "Prefer integration and e2e tests", "end-to-end path", "re-prove upstream", "lifetime", "out of proportion"}
 	valleyFollowUp := []string{
 		"Amend the change's head commit",
 		"end with a commit whose message describes the whole change",
@@ -366,20 +359,6 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 				}
 			}
 		})
-	}
-
-	session, err := RenderSessionPrompt(t.TempDir(), PromptVars{RunID: "s"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, section, _ := strings.Cut(session, "## Testing guidance for agents\n")
-	for _, line := range strings.Split(strings.TrimSpace(testRules), "\n") {
-		if !strings.Contains(section, line+"\n") {
-			t.Errorf("coordinator's testing section missing %q:\n%s", line, section)
-		}
-	}
-	if strings.Contains(session, "prefer integration and e2e tests") {
-		t.Errorf("coordinator prompt still prefers e2e tests:\n%s", section)
 	}
 }
 

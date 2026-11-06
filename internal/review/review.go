@@ -18,6 +18,7 @@ type ReviewConfig struct {
 	Backend      string
 	Model        string // e.g. "haiku" — passed to claude CLI --model flag
 	MaxFixRounds int    // default 2
+	HouseRules   string // the operator's house rules, added to the reviewer's context
 }
 
 // Finding represents a single review finding.
@@ -89,11 +90,19 @@ func callReviewInDir(dir, diff string, cfg ReviewConfig) (*ReviewResult, error) 
 	if model == "" && kind == backend.Claude {
 		model = "haiku"
 	}
-	text, err := runReviewer(context.Background(), kind, model, reviewSystemPrompt, buildReviewPrompt(diff), dir)
+	text, err := runReviewer(context.Background(), kind, model, withHouseRules(reviewSystemPrompt, cfg.HouseRules), buildReviewPrompt(diff), dir)
 	if err != nil {
 		return nil, err
 	}
 	return parseReviewResponse(text)
+}
+
+// withHouseRules adds the house rules to a reviewer's system prompt.
+func withHouseRules(system, rules string) string {
+	if strings.TrimSpace(rules) == "" {
+		return system
+	}
+	return system + "\n\nThe operator's house rules for all their projects; flag changes that break them:\n\n<house-rules>\n" + strings.TrimSpace(rules) + "\n</house-rules>"
 }
 
 // runReviewer returns one read-only, non-persistent review response.

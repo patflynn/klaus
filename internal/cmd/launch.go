@@ -712,6 +712,8 @@ are synced back after completion. Use --local to force local execution, or
 			return fmt.Errorf("rendering prompt: %w", err)
 		}
 		sysPrompt = config.WithWorkerRules(sysPrompt)
+		rules := loadHouseRules(ctx, repoRoot, hostCfg, reg, os.Stdout)
+		sysPrompt = rules.Append(sysPrompt)
 
 		logFile := filepath.Join(store.LogDir(), id+".jsonl")
 		promptPath := filepath.Join(run.PromptDir(store), id+".md")
@@ -1100,6 +1102,7 @@ are synced back after completion. Use --local to force local execution, or
 			Knot:        knotRec,
 			HeadSHA:     gitHead(ctx, worktree),
 			SharedGit:   sharedGit,
+			HouseRules:  rules.Record(),
 		}
 		state.DispatchReason = dispatchReason(reasonFlag, isPRFix, budgetPaused, changeRef != "", resumeFrom)
 		state.RepoKey = launchRepoKey(ctx, state, repoRoot)

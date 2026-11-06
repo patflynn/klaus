@@ -50,6 +50,9 @@ func Ask(ctx context.Context, t *Thread, prompt string, threaded bool, sessionID
 		return Result{}, err
 	}
 	system := SystemPrompt(t.Role) + fmt.Sprintf("\n\nInspect the repository at %q. Resolve referenced code paths against that directory.", t.Dir)
+	if t.HouseRules != "" {
+		system += "\n\nThe operator's house rules for all their projects, which the repository's code should follow:\n\n<house-rules>\n" + strings.TrimSpace(t.HouseRules) + "\n</house-rules>"
+	}
 	agyAgent, diagnosticLog := "", ""
 	if t.Backend == backend.Agy {
 		var cleanup func()
