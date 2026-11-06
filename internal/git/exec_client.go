@@ -98,8 +98,8 @@ func (c *ExecClient) ReadDataRefFile(ctx context.Context, repoDir, dataRef, tree
 	return ReadDataRefFile(ctx, repoDir, dataRef, treePath)
 }
 
-func (c *ExecClient) InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenance) error {
-	return InstallCommitMsgHook(ctx, worktreeDir, prov)
+func (c *ExecClient) InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, format []string) error {
+	return InstallHooks(ctx, worktreeDir, prov, format)
 }
 
 // compile-time check

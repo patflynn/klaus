@@ -719,10 +719,10 @@ func (p Provenance) Trailers() string {
 	return strings.Join(lines, "\n")
 }
 
-// hookConfigName is the file beside klaus's commit-msg hook that holds the
-// hook's data, in git config format: the trailer values and the path of the
-// hook it chains to. The script reads it with git config and never has a
-// value spliced into its code.
+// hookConfigName is the file beside klaus's hooks that holds their data, in
+// git config format: the trailer values, the formatter's command line and the
+// hooks directory they chain to. The scripts read it with git config and never
+// have a value spliced into their code.
 const hookConfigName = "klaus.config"
 
 // commitMsgHookScript is klaus's commit-msg hook. It strips Co-Authored-By
@@ -768,26 +768,75 @@ if sed '/^. -\{24\} >8 -\{24\}$/,$d' "$1" | git stripspace --strip-comments | gr
   fi
 fi
 
-next=$(setting chainhook)
-if [ -n "$next" ] && [ -x "$next" ]; then
-  exec "$next" "$@"
+next=$(setting chaindir)
+if [ -n "$next" ] && [ -x "$next/commit-msg" ]; then
+  exec "$next/commit-msg" "$@"
 fi
 `
 
-// InstallCommitMsgHook installs klaus's commit-msg hook in the linked worktree
-// at worktreeDir. The hook strips Claude/Anthropic attribution, adds prov's
-// trailers (none when prov is zero), and then runs the commit-msg hook the
-// repository would otherwise run. It is idempotent.
+// preCommitHookScript is klaus's pre-commit hook. It runs the formatter whose
+// command line klaus.config lists, one argument per klaus.format value, from
+// the worktree root, where git runs hooks. A formatter that fails fails the
+// commit, its output shown. Then it re-stages the paths whose index entries
+// differ from HEAD: the files staged for this commit, since the formatter
+// changes only the working tree. A file that also had changes not staged gets
+// its staged content back, so the commit never takes a change that wasn't
+// staged. Files not staged stay as the formatter left them. Last it runs the
+// pre-commit hook git would otherwise have run.
+const preCommitHookScript = `#!/bin/sh
+# Installed by klaus: formats the files staged for commit with the project's
+# formatter, then runs the repository's own pre-commit hook.
+conf="$(dirname "$0")/` + hookConfigName + `"
+setting() { git config --file "$conf" --get-all "klaus.$1"; }
+
+if [ -n "$(setting format)" ]; then
+  set --
+  while IFS= read -r arg; do set -- "$@" "$arg"; done <<EOF
+$(setting format)
+EOF
+  staged=$(git write-tree) || exit 1
+  unstaged=$(mktemp) || exit 1
+  git diff -z --name-only > "$unstaged" || { rm -f "$unstaged"; exit 1; }
+  if ! "$@"; then
+    rm -f "$unstaged"
+    echo "klaus: the formatter ($*) failed, so the commit was not made" >&2
+    exit 1
+  fi
+  git update-index --again || { rm -f "$unstaged"; exit 1; }
+  if [ -s "$unstaged" ]; then
+    xargs -0 git --literal-pathspecs reset -q "$staged" -- < "$unstaged" || { rm -f "$unstaged"; exit 1; }
+  fi
+  rm -f "$unstaged"
+fi
+
+next=$(setting chaindir)
+if [ -n "$next" ] && [ -x "$next/pre-commit" ]; then
+  exec "$next/pre-commit"
+fi
+`
+
+// InstallHooks installs klaus's commit-msg and pre-commit hooks in the linked
+// worktree at worktreeDir. The commit-msg hook strips Claude/Anthropic
+// attribution and adds prov's trailers (none when prov is zero). The
+// pre-commit hook runs format, a command line run from the worktree root (no
+// formatting when empty), and re-stages the files staged for the commit. Each
+// then runs the hook of its name the repository would otherwise run. It is
+// idempotent.
 //
-// The hook lives in the worktree's own git dir and is enabled with a
+// The hooks live in the worktree's own git dir and are enabled with a
 // worktree-scoped core.hooksPath, so other worktrees and the main clone keep
 // their own hooks. That needs extensions.worktreeConfig, which this enables on
 // the repository once. A shared core.hooksPath that points into a worktree's
 // git dir, as earlier klaus versions left behind, is removed.
-func InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenance) error {
+func InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, format []string) error {
 	for _, v := range []string{prov.RunID, prov.ChangeID} {
 		if strings.ContainsAny(v, " \t\r\n") {
 			return fmt.Errorf("provenance value %q must be a single token", v)
+		}
+	}
+	for _, arg := range format {
+		if arg == "" || strings.ContainsAny(arg, "\r\n") {
+			return fmt.Errorf("format argument %q must be a single, non-empty line", arg)
 		}
 	}
 	gitDir, err := absGitPath(ctx, worktreeDir, "--git-dir")
@@ -806,7 +855,7 @@ func InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenan
 	if err := removeLeakedHooksPath(ctx, worktreeDir, commonDir); err != nil {
 		return err
 	}
-	chain := chainedCommitMsgHook(ctx, worktreeDir, commonDir)
+	chain := chainedHooksDir(ctx, worktreeDir, commonDir)
 
 	hooksDir := filepath.Join(gitDir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -816,7 +865,7 @@ func InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenan
 	if err := os.Remove(conf); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("replacing %s: %w", hookConfigName, err)
 	}
-	for _, kv := range [][2]string{{"run", prov.RunID}, {"changeid", prov.ChangeID}, {"chainhook", chain}} {
+	for _, kv := range [][2]string{{"run", prov.RunID}, {"changeid", prov.ChangeID}, {"chaindir", chain}} {
 		if kv[1] == "" {
 			continue
 		}
@@ -824,8 +873,15 @@ func InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenan
 			return fmt.Errorf("writing %s: %w", hookConfigName, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "commit-msg"), []byte(commitMsgHookScript), 0o755); err != nil {
-		return fmt.Errorf("writing commit-msg hook: %w", err)
+	for _, arg := range format {
+		if _, err := runGit(ctx, worktreeDir, "config", "--file", conf, "--add", "klaus.format", arg); err != nil {
+			return fmt.Errorf("writing %s: %w", hookConfigName, err)
+		}
+	}
+	for name, script := range map[string]string{"commit-msg": commitMsgHookScript, "pre-commit": preCommitHookScript} {
+		if err := os.WriteFile(filepath.Join(hooksDir, name), []byte(script), 0o755); err != nil {
+			return fmt.Errorf("writing %s hook: %w", name, err)
+		}
 	}
 
 	if err := enableWorktreeConfig(ctx, worktreeDir); err != nil {
@@ -927,11 +983,11 @@ func updateSharedConfig(ctx context.Context, dir string, done func() bool, args 
 	}
 }
 
-// chainedCommitMsgHook returns the commit-msg hook git would run in the
-// worktree at dir without klaus's: under the core.hooksPath set outside the
-// worktree's own config, else under the common git dir's hooks/. It returns ""
-// when that path is inside a worktree's git dir: another run's klaus hook.
-func chainedCommitMsgHook(ctx context.Context, dir, commonDir string) string {
+// chainedHooksDir returns the hooks directory git would use in the worktree
+// at dir without klaus's: the core.hooksPath set outside the worktree's own
+// config, else the common git dir's hooks/. It returns "" when that path is
+// inside a worktree's git dir: another run's klaus hooks.
+func chainedHooksDir(ctx context.Context, dir, commonDir string) string {
 	hooksDir := filepath.Join(commonDir, "hooks")
 	// --show-scope lists values lowest precedence first; the last one wins.
 	if out, err := runGit(ctx, dir, "config", "--show-scope", "--type=path", "--get-all", "core.hooksPath"); err == nil {
@@ -951,7 +1007,7 @@ func chainedCommitMsgHook(ctx context.Context, dir, commonDir string) string {
 	if inWorktreesDir(hooksDir, commonDir) {
 		return ""
 	}
-	return filepath.Join(hooksDir, "commit-msg")
+	return hooksDir
 }
 
 // inWorktreesDir reports whether the absolute path p is inside the common git

@@ -85,8 +85,9 @@ type Client interface {
 	// ReadDataRefFile returns the raw bytes of a file stored in the data ref tree.
 	ReadDataRefFile(ctx context.Context, repoDir, dataRef, treePath string) ([]byte, error)
 
-	// InstallCommitMsgHook installs klaus's commit-msg hook in the given
-	// linked worktree only: it strips Claude/Anthropic attribution, adds prov's
-	// trailers, then runs the repository's own commit-msg hook.
-	InstallCommitMsgHook(ctx context.Context, worktreeDir string, prov Provenance) error
+	// InstallHooks installs klaus's hooks in the given linked worktree only:
+	// commit-msg strips Claude/Anthropic attribution and adds prov's trailers,
+	// pre-commit runs format and re-stages the staged files, and each then
+	// runs the repository's own hook of its name.
+	InstallHooks(ctx context.Context, worktreeDir string, prov Provenance, format []string) error
 }

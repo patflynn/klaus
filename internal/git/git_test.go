@@ -380,7 +380,7 @@ func TestParseRepoRefSSH(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
+func TestInstallHooks_StripsClaudeAttribution(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook")
@@ -390,8 +390,8 @@ func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(ctx, wtPath, Provenance{}, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 
 	// Create a file and commit with a Co-Authored-By trailer
@@ -422,7 +422,7 @@ func TestInstallCommitMsgHook_StripsClaudeAttribution(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
+func TestInstallHooks_PreservesHumanCoAuthor(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-human")
@@ -432,8 +432,8 @@ func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(ctx, wtPath, Provenance{}, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
@@ -459,7 +459,7 @@ func TestInstallCommitMsgHook_PreservesHumanCoAuthor(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
+func TestInstallHooks_NoTrailerUnchanged(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-clean")
@@ -469,8 +469,8 @@ func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(ctx, wtPath, Provenance{}, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
@@ -496,7 +496,7 @@ func TestInstallCommitMsgHook_NoTrailerUnchanged(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
+func TestInstallHooks_StripsMultiplePatterns(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "wt-hook-multi")
@@ -506,8 +506,8 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(ctx, wtPath, Provenance{}, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(wtPath, "file.txt"), []byte("hello\n"), 0o644); err != nil {
@@ -541,11 +541,11 @@ func TestInstallCommitMsgHook_StripsMultiplePatterns(t *testing.T) {
 	}
 }
 
-// TestInstallCommitMsgHook_CoordinatorWorktree mirrors the coordinator session
+// TestInstallHooks_CoordinatorWorktree mirrors the coordinator session
 // worktree path (see internal/cmd/session.go): after the worktree is created the
 // commit-msg hook is installed, and a real commit with mixed trailers should have
 // the Claude/Anthropic attribution stripped while a human Co-Authored-By is kept.
-func TestInstallCommitMsgHook_CoordinatorWorktree(t *testing.T) {
+func TestInstallHooks_CoordinatorWorktree(t *testing.T) {
 	ctx := context.Background()
 	repo := initTestRepo(t)
 	wtPath := filepath.Join(t.TempDir(), "session-wt")
@@ -555,8 +555,8 @@ func TestInstallCommitMsgHook_CoordinatorWorktree(t *testing.T) {
 	}
 	defer WorktreeRemove(ctx, repo, wtPath)
 
-	if err := InstallCommitMsgHook(ctx, wtPath, Provenance{}); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(ctx, wtPath, Provenance{}, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 
 	// The hook must be active: core.hooksPath set and the commit-msg file present.

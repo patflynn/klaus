@@ -69,6 +69,12 @@ type Config struct {
 	// worker's context and to the consults and reviews it runs over a
 	// repository. A repo's .klaus/config.json may name another.
 	HouseRules *HouseRulesConfig `json:"house_rules,omitempty"`
+	// Format is the project's formatter, a command line run from the
+	// worktree root, e.g. ["nix", "run", ".#fmt"]. klaus's pre-commit hook
+	// in an agent's worktree runs it before every commit. Unset means nix
+	// fmt when the flake has a formatter output for the current system, else
+	// no formatting.
+	Format []string `json:"format,omitempty"`
 }
 
 // HouseRulesConfig locates the house rules: Path in the repository of the
