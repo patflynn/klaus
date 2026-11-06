@@ -189,8 +189,10 @@ type gqlPR struct {
 	} `json:"comments"`
 }
 
-// parseSnapshots reads a PRSnapshots response. A PR missing from it reads
-// StateNoAccess; GraphQL reports it NOT_FOUND beside the others' data.
+// parseSnapshots reads a PRSnapshots response. A PR, or a repository,
+// GraphQL reports NOT_FOUND or FORBIDDEN beside the others' data reads
+// StateNoAccess; one missing for another error is left out, so it keeps its
+// last status.
 func parseSnapshots(body []byte, numbers []int) (map[int]*PRSnapshot, error) {
 	var resp struct {
 		Data *struct {
@@ -199,27 +201,43 @@ func parseSnapshots(body []byte, numbers []int) (map[int]*PRSnapshot, error) {
 			} `json:"viewer"`
 			Repository map[string]*gqlPR `json:"repository"`
 		} `json:"data"`
+		Errors []struct {
+			Type    string        `json:"type"`
+			Path    []interface{} `json:"path"`
+			Message string        `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("parsing PR snapshots: %w", err)
 	}
-	if resp.Data == nil {
-		return nil, fmt.Errorf("PR snapshots: no data in %.200s", body)
+	unreadable := make(map[string]bool) // "repository" or a PR's alias
+	for _, e := range resp.Errors {
+		if (e.Type == "NOT_FOUND" || e.Type == "FORBIDDEN") && len(e.Path) > 0 {
+			unreadable[fmt.Sprint(e.Path[len(e.Path)-1])] = true
+		}
 	}
-	if resp.Data.Repository == nil {
-		return noAccess(numbers), nil
+	if resp.Data == nil || resp.Data.Repository == nil {
+		if unreadable["repository"] {
+			return noAccess(numbers), nil
+		}
+		return nil, fmt.Errorf("PR snapshots: no data in %.200s", body)
 	}
 	operator := ""
 	if resp.Data.Viewer != nil {
 		operator = resp.Data.Viewer.Login
 	}
-	out := noAccess(numbers)
+	out := make(map[int]*PRSnapshot, len(numbers))
 	for _, n := range numbers {
-		pr := resp.Data.Repository["pr"+strconv.Itoa(n)]
+		alias := "pr" + strconv.Itoa(n)
+		pr := resp.Data.Repository[alias]
 		if pr == nil {
+			if unreadable[alias] {
+				out[n] = &PRSnapshot{Number: n, State: StateNoAccess}
+			}
 			continue
 		}
-		s := out[n]
+		s := &PRSnapshot{Number: n}
+		out[n] = s
 		s.State = strings.ToUpper(pr.State)
 		s.Draft = pr.IsDraft
 		s.ReviewDecision = pr.ReviewDecision
