@@ -265,6 +265,7 @@ var finalizeCmd = &cobra.Command{
 			// WIP commit failed; removing the worktree would discard it.
 			fmt.Fprintf(os.Stderr, "warning: keeping worktree %s: uncommitted changes could not be committed\n", state.Worktree)
 		} else {
+			settleProseJobs(baseDir, state.ID, state.Worktree)
 			cleanupWorktree(ctx, store, gitClient, state, salvage != nil)
 		}
 

@@ -122,7 +122,7 @@ starting its worker), or left alone (the conflict is in a change below it,
 or the change sits on other changes). klaus restack-conflicts, which the
 dashboard runs, does the dispatching; status only reads.
 
-After the runs, a jobs table lists the session's consults and reviews (see
+After the runs, a jobs table lists the session's consults, reviews and prose passes (see
 klaus jobs): every one running, and those that finished in the last 3 hours,
 with how long each has run or took. It is left out when there are none.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
