@@ -45,6 +45,7 @@ type PRStatus struct {
 	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
 	Labels                []string // GitHub label names; klaus uses "klaus:budget-paused" as a pause signal
 	HeadSHA               string
+	TrustedFeedbackAt     time.Time // when trusted reviewers last left feedback; new feedback moves it
 }
 
 // DispatchInputs are what a PR's dispatch decision reads from GitHub. A
@@ -54,10 +55,11 @@ type DispatchInputs struct {
 	CI              string
 	ReviewDecision  string
 	TrustedComments bool
+	TrustedFeedback time.Time
 }
 
 func dispatchInputs(s *PRStatus) DispatchInputs {
-	return DispatchInputs{HeadSHA: s.HeadSHA, CI: s.CI, ReviewDecision: s.ReviewDecision, TrustedComments: s.HasNewTrustedComments}
+	return DispatchInputs{HeadSHA: s.HeadSHA, CI: s.CI, ReviewDecision: s.ReviewDecision, TrustedComments: s.HasNewTrustedComments, TrustedFeedback: s.TrustedFeedbackAt}
 }
 
 // PRPipelineState tracks per-PR pipeline state.
@@ -518,7 +520,8 @@ func (c *Controller) evaluate(ps *PRPipelineState, status *PRStatus, runStates [
 }
 
 // Settled returns MERGED or CLOSED for a PR the ledger has seen so, else "".
-// Neither is undone, so the PR needn't be asked about again.
+// The dashboard doesn't ask GitHub about such a PR again, so a closed PR
+// that is reopened stays closed to klaus.
 func (c *Controller) Settled(prURL string) string {
 	switch {
 	case c.ledger.has(prURL, markMerged):

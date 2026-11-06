@@ -49,8 +49,16 @@ func isOptedIn(body string) bool {
 // and fix agents share that account; inline review comments don't treat the
 // author specially.
 func hasUnaddressedTrustedComments(a *github.PRActivity, trustedReviewers []string) bool {
+	_, unaddressed := trustedFeedback(a, trustedReviewers)
+	return unaddressed
+}
+
+// trustedFeedback returns when trusted reviewers last left actionable
+// feedback on the PR (zero when never), and whether no push has addressed it
+// since.
+func trustedFeedback(a *github.PRActivity, trustedReviewers []string) (time.Time, bool) {
 	if a == nil || len(trustedReviewers) == 0 {
-		return false
+		return time.Time{}, false
 	}
 	trustedSet := make(map[string]bool, len(trustedReviewers))
 	for _, r := range trustedReviewers {
@@ -62,16 +70,16 @@ func hasUnaddressedTrustedComments(a *github.PRActivity, trustedReviewers []stri
 		latest = t
 	}
 	if latest.IsZero() {
-		return false
+		return latest, false
 	}
 	if a.LastCommitAt.IsZero() {
 		// Can't determine commit time; assume comments are unaddressed.
-		return true
+		return latest, true
 	}
 	// The head's committer date, not its author date: author dates survive
 	// rebases unchanged and can be arbitrarily old, which would falsely mark
 	// a fresh push as predating the reviews it addresses.
-	return latest.After(a.LastCommitAt)
+	return latest, latest.After(a.LastCommitAt)
 }
 
 // latestTrustedReviewTime returns the submission time of the most recent

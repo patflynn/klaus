@@ -106,7 +106,7 @@ func (p *ghPoller) status(ctx context.Context, slug, url string, s *gh.PRSnapsho
 	// GitHub's review decision doesn't reflect comments from trusted
 	// reviewers, unless it is already decided.
 	if !strings.EqualFold(ps.ReviewDecision, "CHANGES_REQUESTED") && !strings.EqualFold(ps.ReviewDecision, "APPROVED") {
-		ps.HasNewTrustedComments = hasUnaddressedTrustedComments(s.Activity, p.trusted)
+		ps.TrustedFeedbackAt, ps.HasNewTrustedComments = trustedFeedback(s.Activity, p.trusted)
 	}
 	return ps, true
 }

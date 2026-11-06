@@ -504,6 +504,7 @@ func TestFailedDispatchWaitsForNewInputs(t *testing.T) {
 		{"ci", func(s *PRStatus) { s.CI, s.Conflicts = "passing", "yes" }},
 		{"review", func(s *PRStatus) { s.ReviewDecision = "CHANGES_REQUESTED" }},
 		{"trusted comments", func(s *PRStatus) { s.HasNewTrustedComments = true }},
+		{"more trusted comments", func(s *PRStatus) { s.TrustedFeedbackAt = time.Now() }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			c, dir := newTestController(t)

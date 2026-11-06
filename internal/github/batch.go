@@ -191,8 +191,8 @@ type gqlPR struct {
 
 // parseSnapshots reads a PRSnapshots response. A PR, or a repository,
 // GraphQL reports NOT_FOUND or FORBIDDEN beside the others' data reads
-// StateNoAccess; one missing for another error is left out, so it keeps its
-// last status.
+// StateNoAccess; one with any other error, on it or on one of its fields, is
+// left out, so it keeps its last status.
 func parseSnapshots(body []byte, numbers []int) (map[int]*PRSnapshot, error) {
 	var resp struct {
 		Data *struct {
@@ -211,9 +211,12 @@ func parseSnapshots(body []byte, numbers []int) (map[int]*PRSnapshot, error) {
 		return nil, fmt.Errorf("parsing PR snapshots: %w", err)
 	}
 	unreadable := make(map[string]bool) // "repository" or a PR's alias
+	failed := make(map[string]bool)     // PR aliases with an error on them or a field
 	for _, e := range resp.Errors {
-		if (e.Type == "NOT_FOUND" || e.Type == "FORBIDDEN") && len(e.Path) > 0 {
+		if (e.Type == "NOT_FOUND" || e.Type == "FORBIDDEN") && len(e.Path) > 0 && len(e.Path) <= 2 {
 			unreadable[fmt.Sprint(e.Path[len(e.Path)-1])] = true
+		} else if len(e.Path) >= 2 {
+			failed[fmt.Sprint(e.Path[1])] = true
 		}
 	}
 	if resp.Data == nil || resp.Data.Repository == nil {
@@ -230,6 +233,9 @@ func parseSnapshots(body []byte, numbers []int) (map[int]*PRSnapshot, error) {
 	for _, n := range numbers {
 		alias := "pr" + strconv.Itoa(n)
 		pr := resp.Data.Repository[alias]
+		if failed[alias] {
+			continue
+		}
 		if pr == nil {
 			if unreadable[alias] {
 				out[n] = &PRSnapshot{Number: n, State: StateNoAccess}

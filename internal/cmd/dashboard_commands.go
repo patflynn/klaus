@@ -100,12 +100,13 @@ type prStatus struct {
 	State                 string // OPEN, MERGED, CLOSED or NOACCESS (gh.StateNoAccess)
 	Draft                 bool
 	HeadSHA               string
-	CI                    string   // passing, failing, pending, unknown
-	Conflicts             string   // yes, none, unknown
-	BehindBy              int      // commits base has that head lacks; >0 = stale-but-mergeable
-	ReviewDecision        string   // APPROVED, CHANGES_REQUESTED, etc.
-	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
-	Labels                []string // applied PR labels (used to surface klaus:budget-paused)
+	CI                    string    // passing, failing, pending, unknown
+	Conflicts             string    // yes, none, unknown
+	BehindBy              int       // commits base has that head lacks; >0 = stale-but-mergeable
+	ReviewDecision        string    // APPROVED, CHANGES_REQUESTED, etc.
+	HasNewTrustedComments bool      // unaddressed comments from trusted reviewers
+	TrustedFeedbackAt     time.Time // when trusted reviewers last left feedback
+	Labels                []string  // applied PR labels (used to surface klaus:budget-paused)
 }
 
 // Commands for the bubbletea event loop.

@@ -693,6 +693,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				HasNewTrustedComments: v.HasNewTrustedComments,
 				Labels:                v.Labels,
 				HeadSHA:               v.HeadSHA,
+				TrustedFeedbackAt:     v.TrustedFeedbackAt,
 			}
 			if s.TargetRepo != nil {
 				ps.TargetRepo = *s.TargetRepo
