@@ -491,69 +491,65 @@ func TestTruncateError(t *testing.T) {
 	}
 }
 
-func TestLaunchFailureRetriesBeforeStalling(t *testing.T) {
-	c, _ := newTestController(t)
-
-	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
-		launchCount++
-		return "", fmt.Errorf("worktree already exists")
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
-	}
-
-	// First failure: should NOT go to stalled (retry 1 of 2).
-	actions := c.HandleGHStatus(context.Background(), statuses, nil)
-	state := c.PipelineStates()["42"]
-	if state.Stage == StageStalled {
-		t.Error("expected pipeline to retry, not stall on first failure")
-	}
-	if launchCount != 1 {
-		t.Errorf("expected 1 launch attempt, got %d", launchCount)
-	}
-	// No error action on retryable failure.
-	for _, a := range actions {
-		if a.Type == "error" {
-			t.Error("expected no error action while retries remain")
-		}
-	}
-
-	// Simulate backoff elapsed by resetting LastFailedAt.
-	c.mu.Lock()
-	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
-	c.mu.Unlock()
-
-	// Second failure: retry 2 of 2, still not stalled.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	state = c.PipelineStates()["42"]
-	if state.Stage == StageStalled {
-		t.Error("expected pipeline to retry on second failure, not stall")
-	}
-
-	// Simulate backoff elapsed again.
-	c.mu.Lock()
-	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
-	c.mu.Unlock()
-
-	// Third failure: retries exhausted, should stall and return error action.
-	actions = c.HandleGHStatus(context.Background(), statuses, nil)
-	state = c.PipelineStates()["42"]
-	if state.Stage != StageStalled {
-		t.Errorf("expected stalled after retries exhausted, got %s", state.Stage)
-	}
-	hasError := false
-	for _, a := range actions {
-		if a.Type == "error" {
-			hasError = true
-			if a.Error == "" {
-				t.Error("expected non-empty Error field on error action")
+// TestFailedDispatchWaitsForNewInputs: a launch that fails stalls the PR
+// and reports it once; polls on the same inputs, however late, don't launch
+// again, and a change to any input does.
+func TestFailedDispatchWaitsForNewInputs(t *testing.T) {
+	base := PRStatus{PRNumber: "42", PRURL: "https://github.com/owner/repo/pull/42", State: "OPEN", CI: "failing", HeadSHA: "aaa", TargetRepo: "owner/repo"}
+	for _, tt := range []struct {
+		name   string
+		change func(*PRStatus)
+	}{
+		{"head", func(s *PRStatus) { s.HeadSHA = "bbb" }},
+		{"ci", func(s *PRStatus) { s.CI, s.Conflicts = "passing", "yes" }},
+		{"review", func(s *PRStatus) { s.ReviewDecision = "CHANGES_REQUESTED" }},
+		{"trusted comments", func(s *PRStatus) { s.HasNewTrustedComments = true }},
+		{"more trusted comments", func(s *PRStatus) { s.TrustedFeedbackAt = time.Now() }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, dir := newTestController(t)
+			launches := 0
+			c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
+				launches++
+				return "", fmt.Errorf("worktree has an unpushed commit")
+			})
+			poll := func(s PRStatus) []Action {
+				return c.HandleGHStatus(context.Background(), map[string]*PRStatus{"42": &s}, nil)
 			}
-		}
-	}
-	if !hasError {
-		t.Error("expected error action when retries exhausted and pipeline stalls")
+
+			actions := poll(base)
+			if launches != 1 || len(actions) != 1 || actions[0].Type != "error" || !strings.Contains(actions[0].Error, "unpushed commit") {
+				t.Fatalf("first poll: %d launches, actions %+v; want 1 launch and its error", launches, actions)
+			}
+			for i := 0; i < 5; i++ {
+				c.mu.Lock()
+				c.prStates["42"].LastDispatchAt = time.Now().Add(-time.Hour)
+				c.mu.Unlock()
+				poll(base)
+			}
+			if launches != 1 {
+				t.Errorf("same inputs: %d launches, want 1", launches)
+			}
+			if got := c.PipelineStates()["42"].Stage; got != StageStalled {
+				t.Errorf("stage on the same inputs = %s, want stalled", got)
+			}
+			evts := readEvents(t, dir)
+			if got := countEvents(evts, event.PipelineStalled); got != 1 {
+				t.Fatalf("pipeline:stalled events = %d, want 1", got)
+			}
+			for _, e := range evts {
+				if e.Type == event.PipelineStalled && !strings.Contains(fmt.Sprint(e.Data["reason"]), "unpushed commit") {
+					t.Errorf("stalled event doesn't carry the error: %v", e.Data)
+				}
+			}
+
+			next := base
+			tt.change(&next)
+			poll(next)
+			if launches != 2 {
+				t.Errorf("after the %s changed: %d launches, want 2", tt.name, launches)
+			}
+		})
 	}
 }
 
@@ -596,30 +592,6 @@ func TestWorktreeCleanupBeforeDispatch(t *testing.T) {
 	}
 
 	_ = cleanedUpID // cleanup runs best-effort via exec
-}
-
-func TestReviewFixLaunchRetry(t *testing.T) {
-	c, _ := newTestController(t)
-
-	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
-		launchCount++
-		return "", fmt.Errorf("worktree already exists")
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {
-			PRNumber: "42", State: "OPEN", CI: "passing",
-			ReviewDecision: "CHANGES_REQUESTED", TargetRepo: "owner/repo",
-		},
-	}
-
-	// First failure: should not stall.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	state := c.PipelineStates()["42"]
-	if state.Stage == StageStalled {
-		t.Error("expected retry for review fix, not stall on first failure")
-	}
 }
 
 func TestTrustedCommentDispatch(t *testing.T) {
@@ -857,63 +829,6 @@ func TestNeedsRebaseNoDoubleDispatch(t *testing.T) {
 	c.HandleGHStatus(context.Background(), statuses, runStates)
 	if launchCount != 1 {
 		t.Errorf("expected no duplicate rebase dispatch, got %d total", launchCount)
-	}
-}
-
-func TestRebaseDispatchRetryOnFailure(t *testing.T) {
-	c, _ := newTestController(t)
-
-	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
-		launchCount++
-		return "", fmt.Errorf("worktree already exists")
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {
-			PRNumber: "42", State: "OPEN", CI: "passing",
-			ReviewDecision: "APPROVED", Conflicts: "yes", TargetRepo: "owner/repo",
-		},
-	}
-
-	// First failure: should retry, not stall.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	state := c.PipelineStates()["42"]
-	if state.Stage == StageStalled {
-		t.Error("expected retry on first rebase dispatch failure, not stall")
-	}
-
-	// Simulate backoff elapsed.
-	c.mu.Lock()
-	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
-	c.mu.Unlock()
-
-	// Second failure.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	state = c.PipelineStates()["42"]
-	if state.Stage == StageStalled {
-		t.Error("expected retry on second failure")
-	}
-
-	// Simulate backoff elapsed.
-	c.mu.Lock()
-	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
-	c.mu.Unlock()
-
-	// Third failure: should stall.
-	actions := c.HandleGHStatus(context.Background(), statuses, nil)
-	state = c.PipelineStates()["42"]
-	if state.Stage != StageStalled {
-		t.Errorf("expected stalled after retries exhausted, got %s", state.Stage)
-	}
-	hasError := false
-	for _, a := range actions {
-		if a.Type == "error" {
-			hasError = true
-		}
-	}
-	if !hasError {
-		t.Error("expected error action when rebase retries exhausted")
 	}
 }
 
@@ -2200,43 +2115,6 @@ func TestIsRunning_DeadPane(t *testing.T) {
 	s2 := &run.State{}
 	if c.isRunning(s2) {
 		t.Error("expected isRunning=false when TmuxPane is nil")
-	}
-}
-
-func TestCooldownRespectsLastFailedAt(t *testing.T) {
-	c, _ := newTestController(t)
-
-	launchCount := 0
-	c.SetLaunchAgent(func(ctx context.Context, prNumber, repo, prompt, resumeFrom, reason string) (string, error) {
-		launchCount++
-		return "", fmt.Errorf("worktree conflict")
-	})
-
-	statuses := map[string]*PRStatus{
-		"42": {PRNumber: "42", State: "OPEN", CI: "failing", TargetRepo: "owner/repo"},
-	}
-
-	// First call: dispatches and fails.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	if launchCount != 1 {
-		t.Fatalf("expected 1 launch attempt, got %d", launchCount)
-	}
-
-	// Second call immediately after: cooldown should prevent re-dispatch
-	// because LastFailedAt was just set.
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	if launchCount != 1 {
-		t.Errorf("expected cooldown to block immediate retry, got %d launches", launchCount)
-	}
-
-	// After cooldown expires, retry should be allowed.
-	c.mu.Lock()
-	c.prStates["42"].LastFailedAt = time.Now().Add(-2 * time.Minute)
-	c.mu.Unlock()
-
-	c.HandleGHStatus(context.Background(), statuses, nil)
-	if launchCount != 2 {
-		t.Errorf("expected retry after cooldown expired, got %d launches", launchCount)
 	}
 }
 

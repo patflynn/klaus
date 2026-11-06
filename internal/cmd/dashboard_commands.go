@@ -6,14 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/fsnotify/fsnotify"
 	"github.com/patflynn/klaus/internal/config"
 	"github.com/patflynn/klaus/internal/event"
-	gh "github.com/patflynn/klaus/internal/github"
 	"github.com/patflynn/klaus/internal/integration"
 	"github.com/patflynn/klaus/internal/pipeline"
 	"github.com/patflynn/klaus/internal/restack"
@@ -29,6 +27,9 @@ type statesLoadedMsg struct {
 
 type ghStatusMsg struct {
 	statuses map[string]*prStatus // keyed by PR URL
+	// rateLimitedUntil is when GitHub lets polling resume; zero when it
+	// isn't rate-limited.
+	rateLimitedUntil time.Time
 }
 
 // integrationTickMsg starts an integration check of pushed runs, unless a
@@ -96,14 +97,16 @@ type trustedCommentsMsg struct {
 // prStatus holds the GitHub-fetched status for a single PR.
 type prStatus struct {
 	PRNumber              string
-	State                 string   // OPEN, MERGED, CLOSED, NOACCESS (gh.StateNoAccess) or UNKNOWN
-	Draft                 bool     // checked only when the PR is otherwise ready to merge
-	CI                    string   // passing, failing, pending, unknown
-	Conflicts             string   // yes, none, unknown
-	BehindBy              int      // commits base has that head lacks; >0 = stale-but-mergeable
-	ReviewDecision        string   // APPROVED, CHANGES_REQUESTED, etc.
-	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
-	Labels                []string // applied PR labels (used to surface klaus:budget-paused)
+	State                 string // OPEN, MERGED, CLOSED or NOACCESS (gh.StateNoAccess)
+	Draft                 bool
+	HeadSHA               string
+	CI                    string    // passing, failing, pending, unknown
+	Conflicts             string    // yes, none, unknown
+	BehindBy              int       // commits base has that head lacks; >0 = stale-but-mergeable
+	ReviewDecision        string    // APPROVED, CHANGES_REQUESTED, etc.
+	HasNewTrustedComments bool      // unaddressed comments from trusted reviewers
+	TrustedFeedbackAt     time.Time // when trusted reviewers last left feedback
+	Labels                []string  // applied PR labels (used to surface klaus:budget-paused)
 }
 
 // Commands for the bubbletea event loop.
@@ -126,7 +129,9 @@ const noAccessRecheck = 30 * time.Minute
 // fetchGHStatusCmd fetches the GitHub status of every PR the states refer
 // to, keyed by PR URL so equal PR numbers in different repos don't collide.
 // PRs last found unreadable less than noAccessRecheck ago are skipped; their
-// NOACCESS status stays in place.
+// NOACCESS status stays in place. A PR the pipeline's ledger has seen merged
+// or closed isn't asked about again, even after a restart; its status comes
+// from the ledger.
 func (m dashboardModel) fetchGHStatusCmd(states []*run.State) tea.Cmd {
 	skip := make(map[string]bool)
 	now := time.Now()
@@ -135,20 +140,35 @@ func (m dashboardModel) fetchGHStatusCmd(states []*run.State) tea.Cmd {
 			skip[url] = true
 		}
 	}
-	return fetchGHStatusCmd(m.ghClient, states, skip)
+	settled := func(string) string { return "" }
+	if m.pipelineCtrl != nil {
+		settled = m.pipelineCtrl.Settled
+	}
+	return fetchGHStatusCmd(m.ghPoller, settled, states, skip)
 }
 
-func fetchGHStatusCmd(client gh.Client, states []*run.State, skip map[string]bool) tea.Cmd {
-	return func() tea.Msg {
-		statuses := make(map[string]*prStatus)
-		for _, s := range states {
-			prRef := extractPRRef(s)
-			if prRef == "" || skip[prRef] || statuses[prRef] != nil {
-				continue
-			}
-			statuses[prRef] = fetchPRStatus(client, extractPRNumber(s), prRef)
+func fetchGHStatusCmd(p *ghPoller, settled func(prURL string) string, states []*run.State, skip map[string]bool) tea.Cmd {
+	var prs []trackedPR
+	done := make(map[string]*prStatus)
+	seen := make(map[string]bool)
+	for _, s := range states {
+		url := extractPRRef(s)
+		if url == "" || skip[url] || seen[url] {
+			continue
 		}
-		return ghStatusMsg{statuses: statuses}
+		seen[url] = true
+		if state := settled(url); state != "" {
+			done[url] = &prStatus{PRNumber: extractPRNumber(s), State: state}
+			continue
+		}
+		prs = append(prs, trackedPR{url: url, number: extractPRNumber(s)})
+	}
+	return func() tea.Msg {
+		statuses, until := p.poll(context.TODO(), prs)
+		for url, ps := range done {
+			statuses[url] = ps
+		}
+		return ghStatusMsg{statuses: statuses, rateLimitedUntil: until}
 	}
 }
 
@@ -449,36 +469,4 @@ func checkSandboxCmd(states []*run.State) tea.Cmd {
 		}
 		return sandboxStatusMsg{hosts: hosts}
 	}
-}
-
-// fetchPRStatus queries GitHub for a single PR's status.
-// prRef should be a full PR URL so gh can resolve it from any directory.
-func fetchPRStatus(client gh.Client, prNumber, prRef string) *prStatus {
-	ctx := context.TODO()
-	ps := &prStatus{PRNumber: prNumber}
-	ps.State = client.GetState(ctx, prRef)
-	if ps.State == "MERGED" || ps.State == "CLOSED" || ps.State == gh.StateNoAccess {
-		return ps
-	}
-	ps.CI = client.GetCI(ctx, prRef)
-	ps.Conflicts = client.GetConflicts(ctx, prRef)
-	ps.BehindBy = client.GetCommitsBehind(ctx, prRef)
-	ps.ReviewDecision = client.GetReviewDecision(ctx, prRef)
-	ps.Labels = client.GetLabels(ctx, prRef)
-	// A ready PR waits on the operator unless it's a draft; only then does
-	// draft-ness matter, so only then is it asked for.
-	if computeMergeStatus(ps.CI, ps.Conflicts, ps.ReviewDecision, ps.BehindBy) == "ready" {
-		ps.Draft = client.IsDraft(ctx, prRef)
-	}
-
-	// When reviewDecision is not CHANGES_REQUESTED, check for unaddressed
-	// trusted reviewer comments that GitHub doesn't reflect in reviewDecision.
-	if !strings.EqualFold(ps.ReviewDecision, "CHANGES_REQUESTED") &&
-		!strings.EqualFold(ps.ReviewDecision, "APPROVED") {
-		ownerRepo := gh.OwnerRepoFromPRURL(prRef)
-		if ownerRepo != "" {
-			ps.HasNewTrustedComments = hasUnaddressedTrustedComments(ownerRepo, prNumber)
-		}
-	}
-	return ps
 }

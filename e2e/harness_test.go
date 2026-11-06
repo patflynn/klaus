@@ -611,3 +611,15 @@ func mustBash(t *testing.T) string {
 	}
 	return p
 }
+
+// ghGraphQLAnswer is a gh stub fragment that answers the dashboard's PR
+// query: each PR in states (number -> OPEN, MERGED or CLOSED) is mergeable,
+// with its checks in rollup (SUCCESS, FAILURE or PENDING).
+func ghGraphQLAnswer(states map[int]string, rollup string) string {
+	var prs []string
+	for n, state := range states {
+		prs = append(prs, fmt.Sprintf(`"pr%d": {"state": "%s", "mergeable": "MERGEABLE", "headRefOid": "h%d", "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "%s"}}}]}}`, n, state, n, rollup))
+	}
+	body := `{"data": {"repository": {` + strings.Join(prs, ", ") + `}}}`
+	return fmt.Sprintf("if [[ \"$*\" == *graphql* ]]; then printf 'HTTP/2.0 200 OK\\r\\n\\r\\n%%s' %q; exit 0; fi\n", body)
+}

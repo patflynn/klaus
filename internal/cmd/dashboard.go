@@ -318,6 +318,8 @@ func logTo(logger *slog.Logger) (restore func()) {
 type dashboardModel struct {
 	store           run.StateStore
 	ghClient        gh.Client
+	ghPoller        *ghPoller
+	ghLimitedUntil  time.Time // GitHub rate-limited PR polling until then
 	tmuxDeps        run.TmuxDeps
 	tmux            tmux.Client // for keyboard-driven actions (discuss)
 	cursor          int         // index into the displayed rows of the selected row
@@ -429,6 +431,7 @@ func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Clie
 	return dashboardModel{
 		store:           store,
 		ghClient:        ghClient,
+		ghPoller:        newGHPoller(ghClient, cfg.TrustedReviewers),
 		tmuxDeps:        run.DefaultTmuxDeps(),
 		tmux:            tmux.NewExecClient(),
 		ghStatus:        make(map[string]*prStatus),
@@ -655,6 +658,7 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ghStatusMsg:
 		now := time.Now()
+		m.ghLimitedUntil = msg.rateLimitedUntil
 		for url, v := range msg.statuses {
 			m.ghStatus[url] = v
 			if v.State == gh.StateNoAccess {
@@ -688,6 +692,8 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ReviewDecision:        v.ReviewDecision,
 				HasNewTrustedComments: v.HasNewTrustedComments,
 				Labels:                v.Labels,
+				HeadSHA:               v.HeadSHA,
+				TrustedFeedbackAt:     v.TrustedFeedbackAt,
 			}
 			if s.TargetRepo != nil {
 				ps.TargetRepo = *s.TargetRepo
@@ -901,6 +907,9 @@ func (m dashboardModel) View() string {
 			title := " klaus dashboard"
 			headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f",
 				formatDuration(computeSessionDuration(m.states)), computeTotalCost(m.states))
+			if now.Before(m.ghLimitedUntil) {
+				headerRight = "GitHub rate-limited until " + m.ghLimitedUntil.Format("15:04") + " | " + headerRight
+			}
 			pad := max(width-2-lipgloss.Width(title)-lipgloss.Width(headerRight), 1)
 			return headerStyle.Render(title + strings.Repeat(" ", pad) + headerRight)
 		case chromeSource:

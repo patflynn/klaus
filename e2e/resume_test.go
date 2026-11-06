@@ -273,15 +273,15 @@ func TestSupersededAttentionFoldsIntoPR(t *testing.T) {
 	h.WriteStub("gh", fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
 echo "$*" >> "$dir/gh.argv"
+%s
 ref="${@: -1}"
 case "$*" in
   *"--json state "*) case "${ref##*/}" in 334) echo OPEN ;; *) echo MERGED ;; esac ;;
   "pr checks"*) printf 'build\tpending\t0\thttps://ci.invalid/1\n' ;;
   *"--json mergeable "*) echo MERGEABLE ;;
-  *"--json isDraft "*) echo false ;;
 esac
 exit 0
-`, h.E2EDir))
+`, h.E2EDir, ghGraphQLAnswer(map[int]string{334: "OPEN", 335: "MERGED", 336: "MERGED"}, "PENDING")))
 	ago := func(m int) string { return time.Now().Add(-time.Duration(m) * time.Minute).Format(time.RFC3339) }
 	cost := 3.5
 	salvaged := func(id, branch, change string) *run.State {

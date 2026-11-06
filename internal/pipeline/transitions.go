@@ -31,6 +31,15 @@ var transitions = []transition{
 		},
 	},
 
+	// ── A failed dispatch waits, stalled, for new inputs ────────────────
+	{
+		Name:  "dispatch-failed/await-new-inputs",
+		Guard: dispatchFailedOnTheseInputs,
+		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
+			return nil, nil
+		},
+	},
+
 	// ── Budget-paused (handled before CI rules so the dashboard surfaces
 	// the pause regardless of CI state) ────────────────────────────────
 
@@ -173,7 +182,7 @@ var transitions = []transition{
 		},
 	},
 	{
-		Name: "ci-failing/noop-already-handling",
+		Name:  "ci-failing/noop-already-handling",
 		Guard: ciFailing,
 		Apply: func(_ *Controller, _ *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			return nil, nil
@@ -569,7 +578,7 @@ var transitions = []transition{
 
 	// CI passing catch-all (agent running, or already approved/merging with no action needed).
 	{
-		Name: "ci-passing/noop",
+		Name:  "ci-passing/noop",
 		Guard: ciPassing,
 		Apply: func(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) ([]Action, []ActionDescriptor) {
 			ps.FixAttempts = 0
@@ -665,13 +674,13 @@ func agentNotRunning(c *Controller, ps *PRPipelineState, _ *PRStatus, runStates 
 }
 
 func cooldownExpired(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
-	// Check both LastDispatchAt (set on success) and LastFailedAt (set on failure).
-	// Without checking LastFailedAt, a failed dispatch allows immediate re-evaluation
-	// because LastDispatchAt is never updated on failure.
-	if !ps.LastFailedAt.IsZero() && time.Since(ps.LastFailedAt) <= dispatchCooldown {
-		return false
-	}
 	return time.Since(ps.LastDispatchAt) > dispatchCooldown
+}
+
+// dispatchFailedOnTheseInputs holds a PR whose last dispatch failed while its
+// inputs stay as they were (HandleGHStatus clears the failure once they change).
+func dispatchFailedOnTheseInputs(_ *Controller, ps *PRPipelineState, _ *PRStatus, _ []*run.State) bool {
+	return ps.FailedDispatch != nil
 }
 
 // Fix attempt guards.
