@@ -101,12 +101,12 @@ func sharedHooksPaths(t *testing.T, clone string) []string {
 
 func install(t *testing.T, wt string, prov Provenance) {
 	t.Helper()
-	if err := InstallCommitMsgHook(context.Background(), wt, prov); err != nil {
-		t.Fatalf("InstallCommitMsgHook: %v", err)
+	if err := InstallHooks(context.Background(), wt, prov, nil); err != nil {
+		t.Fatalf("InstallHooks: %v", err)
 	}
 }
 
-func TestInstallCommitMsgHook_ScopedToWorktree(t *testing.T) {
+func TestInstallHooks_ScopedToWorktree(t *testing.T) {
 	clone := testClone(t)
 	wtA := addWorktree(t, clone, "run-a")
 	wtB := addWorktree(t, clone, "run-b")
@@ -140,7 +140,7 @@ func TestInstallCommitMsgHook_ScopedToWorktree(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_RepairsLeakedSharedHooksPath(t *testing.T) {
+func TestInstallHooks_RepairsLeakedSharedHooksPath(t *testing.T) {
 	t.Run("value inside a worktree's git dir is removed", func(t *testing.T) {
 		clone := testClone(t)
 		gone := addWorktree(t, clone, "gone")
@@ -210,10 +210,10 @@ func holdConfigLock(t *testing.T, clone string, delay time.Duration, update ...s
 	return released
 }
 
-// TestInstallCommitMsgHook_WaitsForConcurrentConfigWrite covers two launches
+// TestInstallHooks_WaitsForConcurrentConfigWrite covers two launches
 // installing at once: the one that loses config.lock must wait for the winner
 // to put the same change in place, not fail on seeing the old config.
-func TestInstallCommitMsgHook_WaitsForConcurrentConfigWrite(t *testing.T) {
+func TestInstallHooks_WaitsForConcurrentConfigWrite(t *testing.T) {
 	t.Run("enabling extensions.worktreeConfig", func(t *testing.T) {
 		clone := testClone(t)
 		wt := addWorktree(t, clone, "run-a")
@@ -255,15 +255,16 @@ func TestInstallCommitMsgHook_WaitsForConcurrentConfigWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := InstallCommitMsgHook(context.Background(), wt, Provenance{RunID: testRunA})
+		err := InstallHooks(context.Background(), wt, Provenance{RunID: testRunA}, nil)
 		if err == nil || !strings.Contains(err.Error(), "extensions.worktreeConfig") {
-			t.Errorf("InstallCommitMsgHook with a stale config.lock = %v, want an error enabling extensions.worktreeConfig", err)
+			t.Errorf("InstallHooks with a stale config.lock = %v, want an error enabling extensions.worktreeConfig", err)
 		}
 	})
 }
 
-// writeRepoHook installs a commit-msg hook in dir that appends a trailer and
-// saves the message it was given to seen.
+// writeRepoHook installs hooks in dir: a commit-msg hook that appends a
+// trailer and saves the message it was given to seen, and a pre-commit hook
+// that saves the staged a.txt to seen.pre.
 func writeRepoHook(t *testing.T, dir, seen string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -273,9 +274,13 @@ func writeRepoHook(t *testing.T, dir, seen string) {
 	if err := os.WriteFile(filepath.Join(dir, "commit-msg"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	script = "#!/bin/sh\ngit show :a.txt > '" + seen + ".pre'\n"
+	if err := os.WriteFile(filepath.Join(dir, "pre-commit"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
 }
 
-func TestInstallCommitMsgHook_ChainsRepositoryHook(t *testing.T) {
+func TestInstallHooks_ChainsRepositoryHook(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		hooks func(clone string) string // where the repository's hook lives
@@ -292,9 +297,16 @@ func TestInstallCommitMsgHook_ChainsRepositoryHook(t *testing.T) {
 			seen := filepath.Join(t.TempDir(), "seen")
 			writeRepoHook(t, tc.hooks(clone), seen)
 			wt := addWorktree(t, clone, "run-a")
-			install(t, wt, Provenance{RunID: testRunA, ChangeID: testChangeID})
+			upcase := []string{"sh", "-c", "tr a-z A-Z < a.txt > a.tmp && mv a.tmp a.txt"}
+			if err := InstallHooks(context.Background(), wt, Provenance{RunID: testRunA, ChangeID: testChangeID}, upcase); err != nil {
+				t.Fatalf("InstallHooks: %v", err)
+			}
 
 			commitFile(t, wt, "a.txt", "change\n\nCo-Authored-By: Claude <noreply@anthropic.com>")
+
+			if got, err := os.ReadFile(seen + ".pre"); err != nil || string(got) != "A.TXT\n" {
+				t.Errorf("repository pre-commit hook should run after the formatter and see a.txt formatted, saw %q (%v)", got, err)
+			}
 
 			got, err := os.ReadFile(seen)
 			if err != nil {
@@ -310,7 +322,7 @@ func TestInstallCommitMsgHook_ChainsRepositoryHook(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_ProvenanceTrailers(t *testing.T) {
+func TestInstallHooks_ProvenanceTrailers(t *testing.T) {
 	clone := testClone(t)
 	wt := addWorktree(t, clone, "run-a")
 	install(t, wt, Provenance{RunID: testRunA, ChangeID: testChangeID})
@@ -348,10 +360,10 @@ func TestInstallCommitMsgHook_ProvenanceTrailers(t *testing.T) {
 	}
 }
 
-// TestInstallCommitMsgHook_AttributionAndTrailers checks attribution stripping
+// TestInstallHooks_AttributionAndTrailers checks attribution stripping
 // and the trailers together: the stripped lines go, a human co-author stays in
 // the trailer block, and the provenance trailers join it.
-func TestInstallCommitMsgHook_AttributionAndTrailers(t *testing.T) {
+func TestInstallHooks_AttributionAndTrailers(t *testing.T) {
 	clone := testClone(t)
 	wt := addWorktree(t, clone, "run-a")
 	install(t, wt, Provenance{RunID: testRunA, ChangeID: testChangeID})
@@ -367,9 +379,9 @@ func TestInstallCommitMsgHook_AttributionAndTrailers(t *testing.T) {
 	}
 }
 
-func TestInstallCommitMsgHook_RejectsMainWorktree(t *testing.T) {
+func TestInstallHooks_RejectsMainWorktree(t *testing.T) {
 	clone := testClone(t)
-	if err := InstallCommitMsgHook(context.Background(), clone, Provenance{}); err == nil {
+	if err := InstallHooks(context.Background(), clone, Provenance{}, nil); err == nil {
 		t.Fatal("installing in the main worktree should fail: its hooks dir is the repository's own")
 	}
 }

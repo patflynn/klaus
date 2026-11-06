@@ -185,6 +185,11 @@ PR, a --change run that of the change it names, a --resume-from run that of the
 run it resumes; any other run gets a new one. The trailers label commits for
 finding and auditing; they grant nothing.
 
+A pre-commit hook in the same worktree runs the project's formatter and
+stages the formatted files again: the format command line from the project's
+klaus config, else 'nix fmt' when the flake has a formatter for the current
+system, else nothing.
+
 A run that keeps an existing change in a repo that delivers to a valley
 returns the change to draft before its agent starts ('valley unready
 <change-id>', within 30 seconds), so it can't be approved while the agent
@@ -453,6 +458,9 @@ are synced back after completion. Use --local to force local execution, or
 			defaultBranch string
 			targetRepo    *string
 			cloneDirPtr   *string
+			// projectCfg is the target repo's config, which sets its
+			// formatter.
+			projectCfg = hostCfg
 		)
 
 		if projectLocalPath != "" {
@@ -464,8 +472,11 @@ are synced back after completion. Use --local to force local execution, or
 			targetCfg, loadErr := config.Load(projectLocalPath)
 			if loadErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not load config from project %s: %v\n", repoRef, loadErr)
-			} else if targetCfg.DefaultBranch != "" {
-				defaultBranch = targetCfg.DefaultBranch
+			} else {
+				projectCfg = targetCfg
+				if targetCfg.DefaultBranch != "" {
+					defaultBranch = targetCfg.DefaultBranch
+				}
 			}
 
 			// Store as target for state tracking
@@ -494,8 +505,11 @@ are synced back after completion. Use --local to force local execution, or
 			targetCfg, loadErr := config.Load(cloneDir)
 			if loadErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not load config from target repo %s: %v\n", repoRef, loadErr)
-			} else if targetCfg.DefaultBranch != "" {
-				defaultBranch = targetCfg.DefaultBranch
+			} else {
+				projectCfg = targetCfg
+				if targetCfg.DefaultBranch != "" {
+					defaultBranch = targetCfg.DefaultBranch
+				}
 			}
 		} else {
 			repoRoot = hostRoot
@@ -888,8 +902,12 @@ are synced back after completion. Use --local to force local execution, or
 
 		// Every commit the agent makes carries the provenance trailers, so a
 		// run that cannot stamp them does not start.
-		if err := gitClient.InstallCommitMsgHook(ctx, worktree, git.Provenance{RunID: id, ChangeID: change.ID}); err != nil {
-			return fmt.Errorf("installing commit-msg hook: %w", err)
+		format := formatCommand(ctx, projectCfg, worktree)
+		if err := gitClient.InstallHooks(ctx, worktree, git.Provenance{RunID: id, ChangeID: change.ID}, format); err != nil {
+			return fmt.Errorf("installing git hooks: %w", err)
+		}
+		if len(format) > 0 {
+			fmt.Printf("  format:   %s\n", strings.Join(format, " "))
 		}
 
 		// A follow-up on a valley change takes it back to draft before the
@@ -1504,6 +1522,20 @@ func resolveRepoTarget(repoFlag, sessionTarget string, reg *project.Registry) (r
 	}
 
 	return repoRef, projectLocalPath
+}
+
+// formatCommand returns the formatter klaus's pre-commit hook runs in
+// worktree: cfg's format, else nix fmt when the worktree's flake has a
+// formatter for the current system, else none. Launch decides it once, so
+// commits don't evaluate the flake.
+func formatCommand(ctx context.Context, cfg config.Config, worktree string) []string {
+	if len(cfg.Format) > 0 {
+		return cfg.Format
+	}
+	if nix.HasFormatter(ctx, worktree) {
+		return []string{"nix", "fmt"}
+	}
+	return nil
 }
 
 // isDirectPushRepo reports whether agents deliver to repoRoot by pushing their
