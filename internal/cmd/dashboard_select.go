@@ -64,6 +64,9 @@ type dashRow struct {
 	category rowCategory
 	lastSeen time.Time // most recent activity across runs, for ordering and hiding
 	hideable bool      // merged, closed, integrated, gone, no access or cleaned up: may be hidden once old
+	// finished is merged, closed, integrated, withdrawn or gone once the
+	// row's PR or change is finished; "" otherwise.
+	finished string
 	// attention is set when the row is the operator's because something
 	// needs attention (salvaged work, a stalled or budget-paused PR).
 	attention bool
@@ -359,6 +362,14 @@ func (m dashboardModel) classify(r *dashRow, superseded map[string]bool) {
 	case merged || closed || noAccess || r.verdict.Settled():
 		r.category = catDone
 		r.hideable = true
+		switch {
+		case merged:
+			r.finished = "merged"
+		case closed:
+			r.finished = "closed"
+		default:
+			r.finished = finishedVerdict(r.verdict)
+		}
 	case attention:
 		r.category = catYours
 		r.attention = true

@@ -391,6 +391,13 @@ type dashboardModel struct {
 	lastKeyAt    time.Time
 	binNotice    string
 	binNoticeErr bool
+	// clearing is the clear the x key awaits confirmation of; nil when none.
+	clearing *dashClear
+	// jobsClearedAt is when the x key last cleared finished jobs from the
+	// jobs section.
+	jobsClearedAt time.Time
+	// cleared sums the runs cleanup removed, for the header's totals.
+	cleared run.Cleared
 }
 
 func newDashboardModel(store run.StateStore, cfg config.Config, ghClient gh.Client) dashboardModel {
@@ -501,6 +508,14 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.detail != nil && key != "ctrl+c" {
 			return m.detailKey(key), nil
 		}
+		if c := m.clearing; c != nil {
+			m.clearing = nil
+			if key != "y" {
+				return m, nil
+			}
+			m.jobsClearedAt = m.lastKeyAt
+			return m, m.clearCmd(c)
+		}
 		if m.jobFocus {
 			if next, ok := m.jobKey(key, m.lastKeyAt); ok {
 				return next, nil
@@ -540,6 +555,10 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectEdge(true)
 		case "h":
 			m.showAll = !m.showAll
+		case "x":
+			// Clear what's finished, as klaus cleanup --done does, once
+			// the operator confirms.
+			m.clearing = m.planClear(m.lastKeyAt)
 		case "a":
 			// Approve the selected PR immediately (no confirmation).
 			r, ok := m.selectedPR("approve")
@@ -593,8 +612,15 @@ func (m dashboardModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case clearedMsg:
+		if len(msg.failed) > 0 {
+			m.noteError(fmt.Sprintf("clear finished: couldn't remove %v", msg.failed))
+		}
+		return m, loadStatesCmd(m.store)
+
 	case statesLoadedMsg:
 		m.states = msg.states
+		m.cleared = msg.cleared
 		// Detect and finalize stale (orphaned) runs so they stop appearing as active.
 		for _, s := range m.states {
 			if s.IsStaleWith(m.tmuxDeps) {
@@ -905,8 +931,12 @@ func (m dashboardModel) View() string {
 		switch c.kind {
 		case chromeHeader:
 			title := " klaus dashboard"
+			span := computeSessionDuration(m.states)
+			if first := m.cleared.FirstCreated; !first.IsZero() && now.Sub(first) > span {
+				span = now.Sub(first)
+			}
 			headerRight := fmt.Sprintf("Session: %s | Cost: $%.2f",
-				formatDuration(computeSessionDuration(m.states)), computeTotalCost(m.states))
+				formatDuration(span), computeTotalCost(m.states)+m.cleared.CostUSD)
 			if now.Before(m.ghLimitedUntil) {
 				headerRight = "GitHub rate-limited until " + m.ghLimitedUntil.Format("15:04") + " | " + headerRight
 			}

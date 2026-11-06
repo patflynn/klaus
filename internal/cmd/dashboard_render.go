@@ -490,10 +490,13 @@ func (m dashboardModel) renderFooter(v dashView, width int) string {
 		jobsKey = " · tab jobs"
 	}
 	variants := []string{
-		fmt.Sprintf("  %d/%d agents running | j/k move · pgup/pgdn page · g/G top/bottom · %s · a approve · d discuss · o open%s | r refresh · q quit",
+		fmt.Sprintf("  %d/%d agents running | j/k move · pgup/pgdn page · g/G top/bottom · %s · a approve · d discuss · o open%s · x clear finished | r refresh · q quit",
 			running, total, showKey, jobsKey),
-		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open%s · r refresh · q quit", showKey, jobsKey),
-		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open%s · q quit", showKey, jobsKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G move · %s · a approve · d discuss · o open%s · x clear finished · r refresh · q quit", showKey, jobsKey),
+		fmt.Sprintf("  j/k pgup/pgdn g/G · %s · a approve · d discuss · o open%s · x clear · q quit", showKey, jobsKey),
+	}
+	if m.clearing != nil {
+		variants = []string{m.clearing.prompt()}
 	}
 	style := func(f string) string { return dimStyle.Render(f) }
 	// The notes on the selected row, each part in its style, go before the
