@@ -30,6 +30,7 @@ type ledgerEntry struct {
 	SeenOpen string `json:"seen_open,omitempty"` // GitHub first reported it open
 	Approved string `json:"approved,omitempty"`  // pr:approved was emitted
 	Merged   string `json:"merged,omitempty"`    // GitHub first reported it merged
+	Closed   string `json:"closed,omitempty"`    // GitHub first reported it closed unmerged
 }
 
 type ledgerMark int
@@ -38,6 +39,7 @@ const (
 	markSeenOpen ledgerMark = iota
 	markApproved
 	markMerged
+	markClosed
 )
 
 func (e *ledgerEntry) field(m ledgerMark) *string {
@@ -46,6 +48,8 @@ func (e *ledgerEntry) field(m ledgerMark) *string {
 		return &e.SeenOpen
 	case markApproved:
 		return &e.Approved
+	case markClosed:
+		return &e.Closed
 	default:
 		return &e.Merged
 	}

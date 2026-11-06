@@ -133,8 +133,8 @@ a state machine:
              │    │       │    ┌────┴────┐
              │    │       │    ▼         │
              │    │       │  stalled     │
-             │    │       │  (retries    │
-             │    │       │  exhausted)  │
+             │    │       │  (dispatch   │
+             │    │       │  failed)     │
              │    │       │             success
              │    ▼       ▼              │
              │  dispatch fix agent       │
@@ -159,10 +159,12 @@ Key behaviors:
   Approval is not required; the rebase circuit breaker stops after
   `maxFixAttempts` consecutive failed rebase attempts.
 
-- **Retry logic** — if an agent dispatch fails, the controller retries up to 2
-  times with 60-second backoff. A 60-second cooldown prevents duplicate dispatches
-  for the same PR. After retries are exhausted, the PR moves to `stalled` and
-  needs human attention.
+- **Failed dispatch** — if an agent dispatch fails, the PR moves to `stalled`
+  and the controller emits one `pipeline:stalled` whose reason carries the
+  error. It doesn't dispatch for that PR again until one of the inputs the
+  dispatch read changes: the head SHA, the CI result, the review decision or
+  new trusted comments. Retrying on the same inputs would fail the same way. A
+  60-second cooldown prevents duplicate dispatches for the same PR.
 
 - **Auto-merge** — when `auto_merge_on_approval` is enabled in config and a PR
   is approved with passing CI and no conflicts, the controller merges it

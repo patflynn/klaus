@@ -21,6 +21,10 @@ type Client interface {
 	GetTitle(ctx context.Context, prRef string) string
 	PRDiff(ctx context.Context, prRef string) (string, error)
 
+	// Batched PR status, for polling
+	PRSnapshots(ctx context.Context, slug string, numbers []int, activity bool) (map[int]*PRSnapshot, error)
+	CommitsBehindSHA(ctx context.Context, slug, base, head string) (int, error)
+
 	// PR mutations
 	Merge(ctx context.Context, prNumber, mergeMethod string, deleteBranch bool) error
 	UpdateBranch(ctx context.Context, prNumber string) error

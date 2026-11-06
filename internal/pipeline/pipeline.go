@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,14 +36,28 @@ const (
 type PRStatus struct {
 	PRNumber              string
 	PRURL                 string
-	State                 string // OPEN, MERGED, CLOSED, or UNKNOWN when GitHub couldn't be asked
-	CI                    string // passing, failing, pending, unknown
-	Conflicts             string // yes, none, unknown
-	BehindBy              int    // commits base has that head lacks; >0 = stale-but-mergeable
-	ReviewDecision        string // APPROVED, CHANGES_REQUESTED, etc.
-	TargetRepo            string // canonical project short name (e.g. "klaus") for registered projects, else an owner/repo slug; NOT guaranteed to be a GitHub owner/repo slug — do not use in gh api paths
-	HasNewTrustedComments bool   // unaddressed comments from trusted reviewers
+	State                 string   // OPEN, MERGED, CLOSED, or UNKNOWN when GitHub couldn't be asked
+	CI                    string   // passing, failing, pending, unknown
+	Conflicts             string   // yes, none, unknown
+	BehindBy              int      // commits base has that head lacks; >0 = stale-but-mergeable
+	ReviewDecision        string   // APPROVED, CHANGES_REQUESTED, etc.
+	TargetRepo            string   // canonical project short name (e.g. "klaus") for registered projects, else an owner/repo slug; NOT guaranteed to be a GitHub owner/repo slug — do not use in gh api paths
+	HasNewTrustedComments bool     // unaddressed comments from trusted reviewers
 	Labels                []string // GitHub label names; klaus uses "klaus:budget-paused" as a pause signal
+	HeadSHA               string
+}
+
+// DispatchInputs are what a PR's dispatch decision reads from GitHub. A
+// dispatch that failed isn't tried again until they change.
+type DispatchInputs struct {
+	HeadSHA         string
+	CI              string
+	ReviewDecision  string
+	TrustedComments bool
+}
+
+func dispatchInputs(s *PRStatus) DispatchInputs {
+	return DispatchInputs{HeadSHA: s.HeadSHA, CI: s.CI, ReviewDecision: s.ReviewDecision, TrustedComments: s.HasNewTrustedComments}
 }
 
 // PRPipelineState tracks per-PR pipeline state.
@@ -54,16 +68,15 @@ type PRPipelineState struct {
 	LastAgentID             string // run ID of last dispatched agent
 	AgentRunning            bool   // whether the dispatched agent is still active
 	SeenCommentIDs          map[int64]bool
-	PendingResolveThreadIDs []string  // GraphQL thread IDs to resolve after agent completes
-	RetryCount              int       // number of launch retries after failure
-	LastFailedAt            time.Time // when the last launch failure occurred
-	LastDispatchAt          time.Time // when the last agent was dispatched (cooldown guard)
-	FixAttempts             int       // number of CI-fix agents dispatched that completed without fixing CI
-	RebaseAttempts          int       // number of rebase agents dispatched that completed without resolving conflicts
-	ReviewFixAttempts       int       // number of review-fix agents dispatched that completed without addressing trusted comments
-	MergeAttempts           int       // number of auto-merge attempts made since approval
-	BranchUpdateAttempts    int       // number of base-branch updates attempted since approval
-	LastMergeAttemptAt      time.Time // when the last merge or branch-update attempt was made (backoff guard)
+	PendingResolveThreadIDs []string        // GraphQL thread IDs to resolve after agent completes
+	FailedDispatch          *DispatchInputs // the inputs the last dispatch failed on; nil once they change
+	LastDispatchAt          time.Time       // when the last agent was dispatched (cooldown guard)
+	FixAttempts             int             // number of CI-fix agents dispatched that completed without fixing CI
+	RebaseAttempts          int             // number of rebase agents dispatched that completed without resolving conflicts
+	ReviewFixAttempts       int             // number of review-fix agents dispatched that completed without addressing trusted comments
+	MergeAttempts           int             // number of auto-merge attempts made since approval
+	BranchUpdateAttempts    int             // number of base-branch updates attempted since approval
+	LastMergeAttemptAt      time.Time       // when the last merge or branch-update attempt was made (backoff guard)
 
 	pendingLaunchDetail string // transient: detail text for pending launch action
 }
@@ -94,8 +107,8 @@ type ActionDescriptor struct {
 	Repo       string
 	Prompt     string
 	ResumeFrom string
-	Reason     string   // why an agent is launched: an event.Dispatch* reason, for klaus launch --reason
-	PRNumbers  []string // for merge
+	Reason     string       // why an agent is launched: an event.Dispatch* reason, for klaus launch --reason
+	PRNumbers  []string     // for merge
 	RunStates  []*run.State // for worktree cleanup
 }
 
@@ -237,6 +250,7 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			delete(c.prStates, prNum)
 			continue
 		case "CLOSED":
+			c.recordTransition(key, markClosed)
 			delete(c.prStates, prNum)
 			continue
 		default:
@@ -269,6 +283,12 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			ps.MergeAttempts = 0
 			ps.BranchUpdateAttempts = 0
 			ps.LastMergeAttemptAt = time.Time{}
+		}
+
+		// A dispatch that failed waits for its inputs to change; once they
+		// have, the PR is evaluated afresh.
+		if ps.FailedDispatch != nil && *ps.FailedDispatch != dispatchInputs(status) {
+			ps.FailedDispatch = nil
 		}
 
 		prevStage := ps.Stage
@@ -361,13 +381,15 @@ func (c *Controller) HandleGHStatus(ctx context.Context, statuses map[string]*PR
 			continue
 		}
 		if lr.err != nil {
+			// Retrying on the same inputs fails the same way, so the PR stalls
+			// until they change, and the coordinator hears of it once.
 			c.logger.Error("failed to dispatch agent", "pr", lr.prNumber, "err", lr.err)
-			if !c.handleLaunchRetry(ps) {
-				ps.Stage = StageStalled
-				actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", lr.prNumber), Error: truncateError(lr.err.Error(), 120)})
-			}
+			in := dispatchInputs(statuses[lr.prNumber])
+			ps.FailedDispatch = &in
+			msg := truncateError(lr.err.Error(), 120)
+			c.stall(ps, ps.PRURL, "dispatch failed: "+msg)
+			actions = append(actions, Action{Type: "error", Detail: fmt.Sprintf("PR #%s: dispatch failed", lr.prNumber), Error: msg})
 		} else {
-			ps.RetryCount = 0
 			ps.LastAgentID = lr.agentID
 			ps.AgentRunning = true
 			ps.LastDispatchAt = time.Now()
@@ -460,15 +482,9 @@ func seedStageFromStatus(status *PRStatus) Stage {
 	}
 }
 
-// maxLaunchRetries is the maximum number of agent launch retries before going to StageStalled.
-const maxLaunchRetries = 2
-
 // maxFixAttempts is the maximum number of fix agents dispatched for a single PR
 // before the pipeline gives up. Reset when the branch is updated or CI passes.
 const maxFixAttempts = 3
-
-// retryBackoff is the minimum time between launch retries.
-const retryBackoff = 60 * time.Second
 
 // dispatchCooldown is the minimum time between agent dispatches for the same PR.
 const dispatchCooldown = 60 * time.Second
@@ -501,24 +517,16 @@ func (c *Controller) evaluate(ps *PRPipelineState, status *PRStatus, runStates [
 	return nil, nil
 }
 
-// handleLaunchRetry checks whether the pipeline state is eligible for retry.
-// Returns true if the retry was accepted (caller should NOT go to StageStalled).
-func (c *Controller) handleLaunchRetry(ps *PRPipelineState) bool {
-	if ps.RetryCount >= maxLaunchRetries {
-		return false
+// Settled returns MERGED or CLOSED for a PR the ledger has seen so, else "".
+// Neither is undone, so the PR needn't be asked about again.
+func (c *Controller) Settled(prURL string) string {
+	switch {
+	case c.ledger.has(prURL, markMerged):
+		return "MERGED"
+	case c.ledger.has(prURL, markClosed):
+		return "CLOSED"
 	}
-	if !ps.LastFailedAt.IsZero() && time.Since(ps.LastFailedAt) < retryBackoff {
-		// Too soon to retry — stay in current stage but don't stall yet.
-		return true
-	}
-	ps.RetryCount++
-	ps.LastFailedAt = time.Now()
-	c.logger.Info("agent launch failed, will retry",
-		"pr", ps.PRNumber,
-		"retry", ps.RetryCount,
-		"max", maxLaunchRetries,
-	)
-	return true
+	return ""
 }
 
 // stall moves a PR into StageStalled and emits pipeline:stalled on the

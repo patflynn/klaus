@@ -43,25 +43,24 @@ func TestDashboardReportsEachPRTransitionOnce(t *testing.T) {
 	stateCalls := filepath.Join(h.E2EDir, "gh.state-calls")
 	h.WriteStub("gh", fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
-echo "$*" >> "$dir/gh.argv"
-ref="${@: -1}"
-n="${ref##*/}"
-if [[ "$*" == *"--json state "* ]]; then
+line=$(printf '%%s' "$*" | tr '\n' ' ')
+echo "$line" >> "$dir/gh.argv"
+if [[ "$line" == *graphql* ]]; then
   if [ -e "$dir/gh-down" ]; then
-    echo "$n down" >> "$dir/gh.state-calls"
-    echo "HTTP 403: API rate limit exceeded" >&2
+    echo "down" >> "$dir/gh.state-calls"
+    echo "error connecting to api.github.com" >&2
     exit 1
   fi
-  echo "$n up" >> "$dir/gh.state-calls"
-  cat "$dir/gh-prs/$n"
-  exit 0
+  echo "up" >> "$dir/gh.state-calls"
+  printf 'HTTP/2.0 200 OK\r\n\r\n{"data": {"repository": {'
+  sep=""
+  for f in "$dir"/gh-prs/*; do
+    n=$(basename "$f")
+    printf '%%s"pr%%s": {"state": "%%s", "mergeable": "MERGEABLE", "reviewDecision": "APPROVED", "headRefOid": "h%%s", "commits": {"nodes": [{"commit": {"statusCheckRollup": {"state": "SUCCESS"}}}]}}' "$sep" "$n" "$(cat "$f")" "$n"
+    sep=","
+  done
+  printf '}}}'
 fi
-case "$*" in
-  "pr checks"*) printf 'build\tpass\t1m\thttps://ci.invalid/1\n' ;;
-  *"--json mergeable "*) echo MERGEABLE ;;
-  *"--json reviewDecision "*) echo APPROVED ;;
-  *"--json isDraft "*) echo false ;;
-esac
 exit 0
 `, h.E2EDir))
 
@@ -95,14 +94,14 @@ exit 0
 		}
 		return n
 	}
-	// pass waits for the dashboard to ask for every PR's state with GitHub
-	// up or down, then for gh to go quiet: the pass's other queries are done.
+	// pass waits for the dashboard to query GitHub, up or down, then for gh
+	// to go quiet.
 	pass := func(kind string, before int) {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)
-		for countLines(stateCalls, " "+kind) < before+len(states) {
+		for countLines(stateCalls, kind) < before+1 {
 			if time.Now().After(deadline) {
-				t.Fatalf("no full %s pass: %d state queries, want %d", kind, countLines(stateCalls, " "+kind), before+len(states))
+				t.Fatalf("no %s pass: %d queries, want %d", kind, countLines(stateCalls, kind), before+1)
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -122,13 +121,13 @@ exit 0
 		if err := os.WriteFile(down, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		before := countLines(stateCalls, " down")
+		before := countLines(stateCalls, "down")
 		reload()
 		pass("down", before)
 		if err := os.Remove(down); err != nil {
 			t.Fatal(err)
 		}
-		before = countLines(stateCalls, " up")
+		before = countLines(stateCalls, "up")
 		reload()
 		pass("up", before)
 	}
@@ -171,7 +170,7 @@ exit 0
 	startDashboard()
 	waitEvent("pr:approved #106")
 	reload()
-	pass("up", countLines(stateCalls, " up"))
+	pass("up", countLines(stateCalls, "up"))
 	outage()
 	outage()
 	setPR(104, "MERGED")
@@ -185,7 +184,7 @@ exit 0
 	startDashboard()
 	waitEvent("pr:merged #105")
 	reload()
-	pass("up", countLines(stateCalls, " up"))
+	pass("up", countLines(stateCalls, "up"))
 	outage()
 	setPR(106, "MERGED")
 	reload()

@@ -616,7 +616,7 @@ func TestDashboardOctober12(t *testing.T) {
 	}
 }
 
-// fakeGHClient answers the status queries the dashboard makes from a table
+// fakeGHClient answers the dashboard's PR snapshot queries from a table
 // keyed by PR URL, and records which PRs were asked about.
 type fakeGHClient struct {
 	gh.Client
@@ -626,40 +626,22 @@ type fakeGHClient struct {
 }
 
 func (f *fakeGHClient) record(ref, q string) { f.asked[ref] = append(f.asked[ref], q) }
-func (f *fakeGHClient) GetState(_ context.Context, ref string) string {
-	f.record(ref, "state")
-	return f.states[ref]
-}
-func (f *fakeGHClient) GetCI(_ context.Context, ref string) string {
-	f.record(ref, "ci")
-	if f.pending[ref] {
-		return "pending"
+func (f *fakeGHClient) PRSnapshots(_ context.Context, slug string, numbers []int, _ bool) (map[int]*gh.PRSnapshot, error) {
+	out := make(map[int]*gh.PRSnapshot)
+	for _, n := range numbers {
+		ref := fmt.Sprintf("https://github.com/%s/pull/%d", slug, n)
+		f.record(ref, "snapshot")
+		s := &gh.PRSnapshot{Number: n, State: f.states[ref], CI: "passing", Conflicts: "none", ReviewDecision: "APPROVED"}
+		if f.pending[ref] {
+			s.CI = "pending"
+		}
+		out[n] = s
 	}
-	return "passing"
-}
-func (f *fakeGHClient) GetConflicts(_ context.Context, ref string) string {
-	f.record(ref, "conflicts")
-	return "none"
-}
-func (f *fakeGHClient) GetCommitsBehind(_ context.Context, ref string) int {
-	f.record(ref, "behind")
-	return 0
-}
-func (f *fakeGHClient) GetReviewDecision(_ context.Context, ref string) string {
-	f.record(ref, "review")
-	return "APPROVED"
-}
-func (f *fakeGHClient) GetLabels(_ context.Context, ref string) []string {
-	f.record(ref, "labels")
-	return nil
-}
-func (f *fakeGHClient) IsDraft(_ context.Context, ref string) bool {
-	f.record(ref, "draft")
-	return false
+	return out, nil
 }
 
 // TestDashboardNoAccessPRs: a PR the agent can't read shows NO ACCESS, is
-// done, costs only the state query, and is re-queried every 30 minutes, not
+// done, is asked about once, and is re-queried every 30 minutes, not
 // every poll. Statuses are keyed by URL, so PR #5 in two repos doesn't
 // collide.
 func TestDashboardNoAccessPRs(t *testing.T) {
@@ -685,11 +667,11 @@ func TestDashboardNoAccessPRs(t *testing.T) {
 		m = send(m, m.fetchGHStatusCmd(m.states)())
 	}
 	poll()
-	if got := strings.Join(client.asked[lost], ","); got != "state" {
-		t.Errorf("queries for the unreadable PR = %s, want only state", got)
+	if got := strings.Join(client.asked[lost], ","); got != "snapshot" {
+		t.Errorf("queries for the unreadable PR = %s, want one snapshot", got)
 	}
-	if len(client.asked[readable]) < 2 {
-		t.Errorf("the readable PR #5 in another repo should be fully queried, got %v", client.asked[readable])
+	if got := strings.Join(client.asked[readable], ","); got != "snapshot" {
+		t.Errorf("the readable PR #5 in another repo should be queried, got %v", client.asked[readable])
 	}
 	view := ansi.Strip(m.View())
 	if line := lineWith(view, "cosmo fix"); !strings.Contains(line, "NO ACCESS") {
@@ -716,7 +698,7 @@ func TestDashboardNoAccessPRs(t *testing.T) {
 	m.noAccessAt[lost] = time.Now().Add(-31 * time.Minute)
 	client.states[lost] = "OPEN"
 	poll()
-	if q := client.asked[lost]; len(q) < 2 {
+	if q := client.asked[lost]; len(q) != 1 {
 		t.Errorf("after 30 minutes the PR should be queried again, got %v", q)
 	}
 	if _, ok := m.noAccessAt[lost]; ok {
