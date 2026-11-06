@@ -338,7 +338,7 @@ func TestAgentStatusLabel(t *testing.T) {
 		{"valley, check fell back to git", pushed, "READY"},
 		{"valley, ready", pushed, "READY"},
 		{"valley, landed", pushed, "INTEGRATED"},
-		{"valley, superseded", pushed, "SUPERSEDED"},
+		{"valley, superseded", pushed, "OLDER VERSION"},
 	}
 	verdicts := map[string]integration.Verdict{
 		"pushed, awaiting":               integration.Awaiting,

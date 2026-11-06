@@ -66,7 +66,9 @@ says the change stands:
   failed                with passed checks, or on a valley that lists
                         none, is for you to look at)
   withdrawn             the change was withdrawn
-  superseded            another version of the change is the active one
+  older-version         the change has a newer version, made by the
+                        valley's restacker or a later run; the run's row
+                        says nothing of whether the change is done
   draft                 returned to draft ('valley unready'), as launch
                         does when a follow-up run continues the change;
                         approve refuses it until a head is ready again.
@@ -122,6 +124,9 @@ starting its worker), or left alone (the conflict is in a change below it,
 or the change sits on other changes). klaus restack-conflicts, which the
 dashboard runs, does the dispatching; status only reads.
 
+A line after them sums the session's cost, counting the runs klaus cleanup
+removed.
+
 After the runs, a jobs table lists the session's consults, reviews and prose passes (see
 klaus jobs): every one running, and those that finished in the last 3 hours,
 with how long each has run or took. It is left out when there are none.`,
@@ -157,31 +162,77 @@ func printRecentJobs(w io.Writer, store run.StateStore, now time.Time) {
 	}
 }
 
-// printRuns prints the runs table, or says there are no runs.
+// printRuns prints the runs table and the session's spend, or says there
+// are no runs.
 func printRuns(ctx context.Context, store run.StateStore) error {
-	tmuxClient := tmux.NewExecClient()
 	states, err := store.List()
 	if err != nil {
 		return err
 	}
-
-	if len(states) == 0 {
+	cleared := sessionCleared(store, states)
+	if len(states) == 0 && cleared.Runs == 0 {
 		fmt.Println("No runs found.")
 		return nil
 	}
+	if len(states) > 0 {
+		if _, err := runStatuses(ctx, store, states, os.Stdout, nil); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintf(os.Stdout, "Session cost: $%.2f", computeTotalCost(states)+cleared.CostUSD)
+	if cleared.Runs > 0 {
+		fmt.Fprintf(os.Stdout, " ($%.2f of it by %d runs cleanup removed)", cleared.CostUSD, cleared.Runs)
+	}
+	fmt.Fprintln(os.Stdout)
+	return nil
+}
 
+// sessionCleared sums the runs cleanup removed from the session; zero when
+// store isn't a session directory or the ledger can't be read.
+func sessionCleared(store run.StateStore, live []*run.State) run.Cleared {
+	c, err := clearedOf(store, live)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: reading cleared runs: %v\n", err)
+	}
+	return c
+}
+
+// clearedOf sums the runs cleanup removed from store's session, other than
+// those in live; zero when store isn't a session directory.
+func clearedOf(store run.StateStore, live []*run.State) (run.Cleared, error) {
+	hds, ok := store.(*run.HomeDirStore)
+	if !ok {
+		return run.Cleared{}, nil
+	}
+	return run.ReadCleared(hds.BaseDir(), live)
+}
+
+// runStanding returns where each run of states stands, by index, as klaus
+// status shows it, and the integration check it read.
+func runStanding(ctx context.Context, store run.StateStore, states []*run.State) ([]string, integration.Report, error) {
+	var report integration.Report
+	statuses, err := runStatuses(ctx, store, states, io.Discard, &report)
+	return statuses, report, err
+}
+
+// runStatuses writes the runs table for states to out and returns where
+// each run stands, by index into states, as the table shows it. A non-nil
+// checked receives the integration check it read.
+func runStatuses(ctx context.Context, store run.StateStore, states []*run.State, out io.Writer, checked *integration.Report) ([]string, error) {
+	tmuxClient := tmux.NewExecClient()
 	ghClient := gh.NewGHCLIClient("")
 
-	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+	fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
 		"RUN ID", "STATUS", "MODEL", "COST", "ISSUE", "REPO", "HOST", "CHANGE", "CI", "CONFLICTS", "BEHIND", "MERGE", "PROMPT")
-	fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+	fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
 		"------", "------", "-----", "----", "-----", "----", "----", "------", "--", "---------", "------", "-----", "------")
 
 	statuses := make([]string, len(states))
 	running := make(map[string]bool)
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		statuses[i] = determineStatus(ctx, s, tmuxClient)
 		running[s.ID] = statuses[i] == "running"
@@ -201,6 +252,9 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	// valley knows and the tracked valley changes, one check per repo
 	// against each run's own clone for the rest.
 	report := integration.NewValleyChecker(nil).Check(ctx, pushed)
+	if checked != nil {
+		*checked = report
+	}
 	if note := integration.ValleyNote(report.ValleyErr); note != "" {
 		fmt.Fprintln(os.Stderr, note)
 	}
@@ -209,6 +263,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 	// The restack conflicts on changes klaus owns, and what klaus did
 	// about them; reading them changes nothing.
 	var restackList []restack.View
+	var err error
 	if hds, ok := store.(*run.HomeDirStore); ok && (report.Listing != nil || !report.Asked) {
 		if restackList, err = restackPass(ctx, hds, report.Listing, false); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: reading restack conflicts: %v\n", err)
@@ -228,7 +283,7 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 
 	for i, s := range states {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		status := statuses[i]
 		prompt := truncate(s.Prompt, 40)
@@ -310,7 +365,8 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			status = "working"
 		}
 
-		fmt.Fprintf(os.Stdout, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
+		statuses[i] = status
+		fmt.Fprintf(out, "%-22s  %-10s  %-26s  %-8s  %-6s  %-20s  %-15s  %-8s  %-10s  %-10s  %-8s  %-10s  %s\n",
 			s.ID, status, runBackendName(s), cost, issue, repo, host, changeLabel(s, changeOf, prs, handles), ci, conflicts, behind, merge, prompt)
 	}
 
@@ -322,30 +378,30 @@ func printRuns(ctx context.Context, store run.StateStore) error {
 			continue
 		}
 		if first {
-			fmt.Fprintln(os.Stdout)
+			fmt.Fprintln(out)
 			first = false
 		}
-		fmt.Fprintf(os.Stdout, "%s changed its clone's shared git files while it ran: %s (in %s); check them before running git in that clone\n",
+		fmt.Fprintf(out, "%s changed its clone's shared git files while it ran: %s (in %s); check them before running git in that clone\n",
 			s.ID, strings.Join(s.SharedGit.Changed, ", "), s.SharedGit.Dir)
 	}
 
 	if failing := failingChecks(states, report.Changes); len(failing) > 0 {
-		fmt.Fprintln(os.Stdout)
-		fmt.Fprintln(os.Stdout, "Failed valley checks:")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Failed valley checks:")
 		for _, f := range failing {
-			fmt.Fprintf(os.Stdout, "  %s\n", f)
+			fmt.Fprintf(out, "  %s\n", f)
 		}
 	}
 
 	if len(restackList) > 0 {
-		fmt.Fprintln(os.Stdout)
-		fmt.Fprintln(os.Stdout, "Restack conflicts on changes klaus owns:")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Restack conflicts on changes klaus owns:")
 		for _, v := range restackList {
-			fmt.Fprintf(os.Stdout, "  %s\n", v)
+			fmt.Fprintf(out, "  %s\n", v)
 		}
 	}
 
-	return nil
+	return statuses, nil
 }
 
 // prSettled is the status of run s, status so far, once GitHub says its PR
@@ -405,7 +461,7 @@ func determineStatus(ctx context.Context, s *run.State, tc tmux.Client) string {
 
 // live reports whether a status leaves something to do for a run that isn't
 // running: salvaged work, an open PR, or a pushed branch that hasn't landed,
-// gone, or been withdrawn or superseded.
+// gone, or been withdrawn or gained a newer version.
 func live(status string) bool {
 	switch status {
 	case "needs-attention", "pr-created", "awaiting-integration", "awaiting-review", "awaiting-approval",
@@ -432,9 +488,13 @@ func pushedStatus(v integration.Verdict, valley bool) string {
 			return "awaiting-approval"
 		}
 		return "awaiting-integration"
+	case integration.Superseded:
+		// The change has a newer version, the restacker's or a later
+		// run's; the change itself may still wait for approval.
+		return "older-version"
 	}
 	// approved, checks-failed, conflicting, uncertain, stale, rejected,
-	// failed, withdrawn, superseded, draft
+	// failed, withdrawn, draft
 	return v.String()
 }
 

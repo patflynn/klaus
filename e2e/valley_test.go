@@ -417,7 +417,7 @@ func rowOf(t *testing.T, screen, handle string) string {
 // repo, the handle and the title, under its label and in its group, and the
 // footer offers the approve command bound to the head on screen. A change
 // whose active version was marked ready elsewhere reads as that version,
-// while klaus status shows the local run's own version superseded.
+// while klaus status shows the local run's own version as an older version.
 func TestDashboardShowsValleyChanges(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -503,7 +503,7 @@ func TestDashboardShowsValleyChanges(t *testing.T) {
 		{ready, "awaiting-approval"},
 		{uncertain, "uncertain"},
 		{landed, "integrated"},
-		{superseded, "superseded"},
+		{superseded, "older-version"},
 		{withdrawn, "withdrawn"},
 	} {
 		// A valley run's row keeps its run ID, names its change by handle

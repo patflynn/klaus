@@ -47,9 +47,16 @@ func loadJobsCmd(dir string) tea.Cmd {
 	}
 }
 
-// recentJobList is what the jobs section lists.
+// recentJobList is what the jobs section lists: the recent jobs, but none
+// that finished before the x key last cleared them.
 func (m dashboardModel) recentJobList(now time.Time) []*jobs.Job {
-	return jobs.Recent(m.jobs, now, recentJobs)
+	var out []*jobs.Job
+	for _, j := range jobs.Recent(m.jobs, now, recentJobs) {
+		if !j.Finished() || j.Settled().After(m.jobsClearedAt) {
+			out = append(out, j)
+		}
+	}
+	return out
 }
 
 // renderJobsHeader renders the line above the job lines, counting the

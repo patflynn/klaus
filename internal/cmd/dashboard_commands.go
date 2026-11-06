@@ -22,7 +22,8 @@ import (
 // Messages for the bubbletea event loop.
 
 type statesLoadedMsg struct {
-	states []*run.State
+	states  []*run.State
+	cleared run.Cleared // the runs cleanup removed
 }
 
 type ghStatusMsg struct {
@@ -117,7 +118,8 @@ func loadStatesCmd(store run.StateStore) tea.Cmd {
 		if err != nil {
 			return errMsg{err: err}
 		}
-		return statesLoadedMsg{states: states}
+		cleared, _ := clearedOf(store, states)
+		return statesLoadedMsg{states: states, cleared: cleared}
 	}
 }
 

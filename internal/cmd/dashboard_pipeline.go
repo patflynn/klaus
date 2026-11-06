@@ -111,7 +111,7 @@ func pushedLabel(v integration.Verdict, valley bool) string {
 	case integration.Withdrawn:
 		return "WITHDRAWN"
 	case integration.Superseded:
-		return "SUPERSEDED"
+		return "OLDER VERSION"
 	case integration.Draft:
 		return "DRAFT"
 	}
