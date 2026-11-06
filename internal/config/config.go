@@ -64,6 +64,18 @@ type Config struct {
 	// does. The list is private, so it is read only from the host config,
 	// ~/.klaus/config.json: Load ignores it in a repo's .klaus/config.json.
 	ForbiddenTerms map[string]ForbiddenTermsConfig `json:"forbidden_terms,omitempty"`
+	// HouseRules names a file, in a registered project's repository, of the
+	// rules the operator holds across all projects. klaus adds it to every
+	// worker's context and to the consults and reviews it runs over a
+	// repository. A repo's .klaus/config.json may name another.
+	HouseRules *HouseRulesConfig `json:"house_rules,omitempty"`
+}
+
+// HouseRulesConfig locates the house rules: Path in the repository of the
+// registered project Repo, read at origin's default branch.
+type HouseRulesConfig struct {
+	Repo string `json:"repo"`
+	Path string `json:"path"`
 }
 
 // ForbiddenTermsConfig is one repo's forbidden_terms entry. Each term matches
@@ -197,11 +209,43 @@ func (s *SelfUpdateConfig) BranchName() string {
 
 // PreReviewConfig configures the pre-PR review checks.
 type PreReviewConfig struct {
-	Enabled      *bool    `json:"enabled,omitempty"`        // default: true
-	Linters      []string `json:"linters,omitempty"`        // default: auto-detect from project
-	ReviewModel  string   `json:"review_model,omitempty"`   // default: "haiku"
-	MaxFixRounds int      `json:"max_fix_rounds,omitempty"` // default: 2
-	BlockOn      string   `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
+	Enabled      *bool        `json:"enabled,omitempty"`        // default: true
+	Linters      []string     `json:"linters,omitempty"`        // default: auto-detect from project
+	ReviewModel  string       `json:"review_model,omitempty"`   // default: "haiku"
+	MaxFixRounds int          `json:"max_fix_rounds,omitempty"` // default: 2
+	BlockOn      string       `json:"block_on,omitempty"`       // default: "high" (block PR on high+ findings)
+	Prose        *ProseConfig `json:"prose,omitempty"`
+}
+
+// ProseConfig configures _pre-review's prose pass.
+type ProseConfig struct {
+	Enabled        *bool    `json:"enabled,omitempty"`         // default: true
+	Order          []string `json:"order,omitempty"`           // writer preference; default: agy, codex, claude
+	Paths          []string `json:"paths,omitempty"`           // files beyond Markdown and READMEs whose added lines are prose
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // per model call; default: 180
+	MaxInputBytes  int      `json:"max_input_bytes,omitempty"` // diff sent to the models; default: 40000
+}
+
+// Prose returns the prose pass's config with its defaults filled in.
+func (c *Config) Prose() ProseConfig {
+	p := ProseConfig{}
+	if c.PreReview != nil && c.PreReview.Prose != nil {
+		p = *c.PreReview.Prose
+	}
+	if p.Enabled == nil {
+		on := true
+		p.Enabled = &on
+	}
+	if len(p.Order) == 0 {
+		p.Order = []string{"agy", "codex", "claude"}
+	}
+	if p.TimeoutSeconds <= 0 {
+		p.TimeoutSeconds = 180
+	}
+	if p.MaxInputBytes <= 0 {
+		p.MaxInputBytes = 40000
+	}
+	return p
 }
 
 // CrossReviewConfig picks a reviewer family that differs from the PR author's.
@@ -467,25 +511,11 @@ const defaultPromptTemplate = `You are an autonomous agent working on this repos
 2. Run ` + "`git add`" + ` on any new files.
 3. Test your changes.
 4. Create a focused git commit.
-5. Push your branch: ` + "`git push -u origin HEAD`" + `
+5. Push your branch: ` + "{{if and .Change .Valley .Head}}as the Delivery section below directs{{else if .Change}}`git push origin HEAD`, fast-forward to the same branch{{else}}`git push -u origin HEAD`{{end}}" + `
 {{- if .DirectPush}}
 
 This repository's origin is not on GitHub. Pushing the branch is the delivery: the operator integrates it from there.
 Do not create a PR, and do not run ` + "`gh`" + ` against this repository.
-{{- if .Change}}
-
-You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
-{{- if and .Valley .Head}}
-The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
-Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
-If the brief asks you to rebase the change, or it conflicts with origin/main, rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts and test it.
-Push to the same branch with a lease on the head this run started from, instead of step 5:
-` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
-After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so amending or rebasing loses nothing. Never force-push any other way. If the push is refused, someone else moved the branch: stop and say so in your report.
-{{- else}}
-Commit on top of it and push fast-forward to the same branch. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
-{{- end}}
-{{- end}}
 {{- if .Issue}}
 Reference issue #{{.Issue}} in your commit message.
 {{- end}}
@@ -505,10 +535,6 @@ Base its diff summary on ` + "`git diff --stat`" + ` against the branch you star
    Fixes #{{.Issue}}{{end}}
 {{if .Reviewer}}
 Use --reviewer {{.Reviewer}} when creating the PR.
-{{end}}
-{{- if .Change}}
-You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
-Commit on top of it, push fast-forward to the same branch and open the PR from it. Do not create a new branch, and do not rebase, amend pushed commits or force-push.
 {{end}}
 {{- end}}
 Do not include any AI attribution or 'Generated with Claude Code' lines in {{if .DirectPush}}commit messages or the report{{else}}the PR body{{end}}.
@@ -560,24 +586,15 @@ func RenderPRFixPrompt(repoRoot string, vars PromptVars) (string, error) {
 	return renderPromptFromFile(repoRoot, "pr-fix-prompt.md", defaultPRFixPromptTemplate, vars)
 }
 
-// testRules is the test guidance every worker gets in WorkerRules and the
-// coordinator gets in its session prompt.
-const testRules = `Tests should ensure the behavior of the module is correct and serve the agent to satisfy themselves of that. They shouldn't be mirrors of implementations trying to get 100% code coverage. e2e tests are great, but if every layer of the onion defines its own e2e and tries to comprehensively test that layer, the cost explodes.
-- Give each user-visible behaviour one end-to-end path, at the outermost layer that shows it.
-- Give inner layers focused tests of their own logic.
-- Don't write tests that re-prove upstream software.
-- A test's cost, in run time and check time, is part of the change.
-- Run the project's test suite before pushing, and fix any failures.
-`
-
-// WorkerRules states the rules every worker backend shares: the run ends
-// with the agent's turn; the test guidance; scratch and build output stay
-// out of the worktree, whose uncommitted files finalize salvages into a
-// commit; a worker whose environment is broken stops and reports instead of
-// writing outside its worktree, to shared configuration, to get around it; a
-// change out of proportion to what it delivers stops and reports what it
-// taught; and the final report has fixed headings. It is not part of the
-// templates, so a custom .klaus/prompt.md cannot drop it.
+// WorkerRules states the mechanics every worker backend shares, in any
+// repository: the run ends with the agent's turn; scratch and build output
+// stay out of the worktree, whose uncommitted files finalize salvages into a
+// commit; the author decides on _pre-review's prose rewrites; a worker whose
+// environment is broken stops and reports instead of writing outside its
+// worktree, to shared configuration, to get around it; processes are never
+// killed by a broad pattern; and the final report has fixed headings. Taste
+// (tests, writing, carrying cost) belongs to the operator's house rules. It
+// is not part of the templates, so a custom .klaus/prompt.md cannot drop it.
 const WorkerRules = `## Non-interactive run
 You run non-interactively: your run ends when your turn ends. Nothing wakes you afterwards, so you never see the result of work still running in the background, and klaus's cleanup of the run interrupts it.
 - Run long builds and tests in the foreground with a generous timeout, or wait for them in a foreground loop that exits when they finish.
@@ -587,14 +604,15 @@ You run non-interactively: your run ends when your turn ends. Nothing wakes you 
 - Build output, test binaries and other scratch files go under $KLAUS_SCRATCH, never in the worktree: for example, ` + "`go build -o \"$KLAUS_SCRATCH/<name>\" ./<pkg>`" + `. $KLAUS_SCRATCH is outside the worktree, and klaus removes it when the run ends; where it is unset, use a directory from ` + "`mktemp -d`" + `.
 - To check that Go code compiles, run ` + "`go vet ./...`" + ` or ` + "`go test ./...`" + `, or build into $KLAUS_SCRATCH as above. Never leave a binary in the worktree.
 
-## Tests
-` + testRules + `
+## Prose rewrites
+- ` + "`klaus _pre-review`" + ` may propose rewrites of your change's prose from another model, with a fact check by a third. Apply them unless the fact check or your own knowledge says the meaning changed, and say in your final report what you applied and why you rejected anything.
+
 ## A broken environment
 - If your environment keeps you from working (commands fail to start, the shell or a tool you need is missing, a tool's permissions block you), stop and report what fails, with the error, and end your turn. Don't work around it.
 - Never edit files outside your worktree and $KLAUS_SCRATCH to get past a problem: not the clone's git configuration, attributes or hooks, not your home directory, shell profiles or package profiles, not system files. Other workers and the operator share them.
 
-## Proportion
-The code and tests a change adds are carried for the project's lifetime. When a change's cost in code, tests, check time or new concepts is out of proportion to what it delivers, stop instead of pushing through. Report what the implementation revealed about the problem or the platform, and what you would change higher up. That is a successful outcome.
+## Processes
+Never kill processes by a broad pattern (` + "`pkill -f`, `killall`" + `): other workers and the operator run the same programs. Kill only a process you started, by its PID.
 
 ## Final report
 End your turn with a short report under these headings, so it can become the change's description:
@@ -605,6 +623,33 @@ End your turn with a short report under these headings, so it can become the cha
 - **Checks:** each check and test you ran, with its result.
 - **Diff summary:** the files changed, and what changed in each.
 `
+
+// deliveryTemplate is the Delivery section of a run's system prompt: the
+// push and continuation instructions that depend on the run, appended after
+// whatever template rendered, so a repository's own .klaus/prompt.md gets
+// them too.
+const deliveryTemplate = `## Delivery
+{{- if not .Change}}
+{{if .DirectPush}}Deliver by pushing your branch: ` + "`git push -u origin HEAD`" + `. Do not create a PR.{{else}}Deliver by pushing your branch (` + "`git push -u origin HEAD`" + `) and opening a PR from it.{{end}}
+{{- else}}
+You are continuing an existing change, {{.Change}}. This worktree is on its branch, {{.Branch}}, which already holds the earlier work.
+{{- if and .Valley .Head}}
+The valley lands a change as one commit carrying its head commit's message. Amend the change's head commit with your work (` + "`git commit --amend`" + `), or end with a commit whose message describes the whole change. Either way, keep the head message accurate for the whole change, not just this round.
+Do not create a new branch, and never merge another branch into it: the valley takes a change only as a line of commits on main.
+If the brief asks you to rebase the change, or it conflicts with origin/main, rebase it onto origin/main (` + "`git fetch origin && git rebase origin/main`" + `), resolve any conflicts and test it.
+Push to the same branch with a lease on the head this run started from:
+` + "`git push {{shellarg (printf \"--force-with-lease=refs/heads/%s:%s\" .Branch .Head)}} origin {{shellarg (printf \"HEAD:refs/heads/%s\" .Branch)}}`" + `
+After a push of your own, lease on the head you pushed instead. The valley keeps every version's head, so amending or rebasing loses nothing. Never force-push any other way. If the push is refused, someone else moved the branch: stop and say so in your report.
+{{- else}}
+Commit on top of it and push fast-forward to the same branch {{if .DirectPush}}(` + "`git push origin HEAD`" + `){{else}}and open the PR from it{{end}}. Do not create a new branch. Do not rebase, amend pushed commits or force-push.
+{{- end}}
+{{- end}}
+`
+
+// RenderDelivery renders the Delivery section for a run's vars.
+func RenderDelivery(vars PromptVars) (string, error) {
+	return renderTemplate(deliveryTemplate, vars)
+}
 
 // WithWorkerRules appends WorkerRules to a worker system prompt.
 func WithWorkerRules(systemPrompt string) string {
@@ -931,11 +976,7 @@ Each costs a relaunch (new worktree, new pane). None costs a cold re-exploration
 
 These projects are available by name with ` + "`klaus launch --repo <name>`" + ` or ` + "`klaus target <name>`" + `:
 {{.Projects}}
-{{end}}
-## Testing guidance for agents
-Every worker's rules carry this guidance, so a brief need not repeat it:
-
-` + testRules
+{{end}}`
 
 // RenderSessionPrompt renders the session coordinator system prompt.
 // It reads from .klaus/session-prompt.md, falling back to the built-in default.
@@ -1225,7 +1266,7 @@ const DefaultPrinciples = `# Project Principles
 - Three lines of duplicated code beats a premature abstraction
 
 ## Project Setup
-- CLAUDE.md with project conventions and rules
+- AGENTS.md with project conventions and rules (read natively by Claude Code, Codex and agy)
 - .klaus/config.json for klaus integration
 - README.md with setup instructions
 - .gitignore appropriate to the language

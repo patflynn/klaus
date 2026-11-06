@@ -21,6 +21,7 @@ import (
 	"github.com/patflynn/klaus/internal/event"
 	"github.com/patflynn/klaus/internal/git"
 	"github.com/patflynn/klaus/internal/jobs"
+	"github.com/patflynn/klaus/internal/project"
 	"github.com/patflynn/klaus/internal/run"
 	"github.com/spf13/cobra"
 )
@@ -272,6 +273,13 @@ func runConsult(cmd *cobra.Command, args []string) error {
 			kinds = kinds[:1]
 		}
 	}
+	// A --repo consult carries the house rules, read once for all its members.
+	var houseRules string
+	if repo != "" {
+		reg, _ := project.Load()
+		_, clone := resolveRepoTarget(repo, "", reg)
+		houseRules = loadHouseRules(cmd.Context(), clone, cfg, reg, cmd.ErrOrStderr()).Text
+	}
 	threads := make([]*consult.Thread, 0, len(kinds))
 	for _, kind := range kinds {
 		defaults := cfg.AgentDefaults(string(kind))
@@ -291,6 +299,7 @@ func runConsult(cmd *cobra.Command, args []string) error {
 		if snap != nil {
 			t.Commit = snap.commit
 		}
+		t.HouseRules = houseRules
 		threads = append(threads, t)
 	}
 	panelID := ""

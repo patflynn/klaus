@@ -299,25 +299,18 @@ func TestRenderPromptFromFileReadError(t *testing.T) {
 }
 
 // TestEveryWorkerGetsTheRules renders each kind of worker prompt as launch
-// does, with WorkerRules appended. The test guidance, the build rule, the
-// proportion rule and the final report's headings reach every kind, custom
-// template included; only a valley change's run is told to keep the change's
-// head message true to the whole change; and the coordinator's testing
-// section carries the workers' test guidance.
+// does, with WorkerRules appended. The mechanics (build rule, process rule,
+// final report's headings) reach every kind, custom template included, and
+// the taste rules are not among them; only a valley change's run is told to
+// keep the change's head message true to the whole change.
 func TestEveryWorkerGetsTheRules(t *testing.T) {
 	shared := []string{
-		"one end-to-end path, at the outermost layer that shows it",
-		"focused tests of their own logic",
-		"Don't write tests that re-prove upstream software.",
-		"A test's cost, in run time and check time, is part of the change.",
-		"Run the project's test suite before pushing",
+		"Never kill processes by a broad pattern",
 		"run `go vet ./...` or `go test ./...`, or build into $KLAUS_SCRATCH",
-		"carried for the project's lifetime",
-		"stop instead of pushing through",
-		"That is a successful outcome.",
 		"**Intent:**", "**Decisions:**", "**Shape:**", "**What the implementation taught us:**", "**Checks:**", "**Diff summary:**",
 	}
-	never := []string{"`go build ./...`", "Prefer integration and e2e tests"}
+	// Taste (tests, carrying cost) is the house rules', not every worker's.
+	never := []string{"`go build ./...`", "Prefer integration and e2e tests", "end-to-end path", "re-prove upstream", "lifetime", "out of proportion"}
 	valleyFollowUp := []string{
 		"Amend the change's head commit",
 		"end with a commit whose message describes the whole change",
@@ -340,10 +333,13 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 	}{
 		{"plain", t.TempDir(), PromptVars{RunID: "r", Branch: "b"}, nil, valleyFollowUp},
 		{"--pr", t.TempDir(), PromptVars{RunID: "r", Branch: "b", PR: "7"}, nil, valleyFollowUp},
-		{"--change on a valley", t.TempDir(), valley, valleyFollowUp, []string{"push fast-forward", "do not rewrite pushed commits"}},
+		{"--change on a valley", t.TempDir(), valley, append([]string{"5. Push your branch: as the Delivery section below directs"}, valleyFollowUp...),
+			[]string{"push fast-forward", "git push -u origin HEAD"}},
 		{"--change on GitHub", t.TempDir(), PromptVars{RunID: "r", Branch: "b", Change: "kkkk"},
-			[]string{"push fast-forward to the same branch and open the PR from it"}, valleyFollowUp},
-		{"overridden template", custom, valley, []string{"House rules for r."}, valleyFollowUp},
+			[]string{"push fast-forward to the same branch and open the PR from it"}, append([]string{"git push -u origin HEAD"}, valleyFollowUp...)},
+		{"overridden template", custom, valley, append([]string{"House rules for r.", "## Delivery",
+			"--force-with-lease=refs/heads/b:" + strings.Repeat("a", 40) + " origin HEAD:refs/heads/b"}, valleyFollowUp...),
+			[]string{"git push -u origin HEAD"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			render := RenderPrompt
@@ -353,6 +349,13 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 			prompt, err := render(tc.dir, tc.vars)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.vars.PR == "" {
+				delivery, err := RenderDelivery(tc.vars)
+				if err != nil {
+					t.Fatal(err)
+				}
+				prompt += "\n\n" + delivery
 			}
 			prompt = WithWorkerRules(prompt)
 			for _, want := range append(shared, tc.want...) {
@@ -366,20 +369,6 @@ func TestEveryWorkerGetsTheRules(t *testing.T) {
 				}
 			}
 		})
-	}
-
-	session, err := RenderSessionPrompt(t.TempDir(), PromptVars{RunID: "s"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, section, _ := strings.Cut(session, "## Testing guidance for agents\n")
-	for _, line := range strings.Split(strings.TrimSpace(testRules), "\n") {
-		if !strings.Contains(section, line+"\n") {
-			t.Errorf("coordinator's testing section missing %q:\n%s", line, section)
-		}
-	}
-	if strings.Contains(session, "prefer integration and e2e tests") {
-		t.Errorf("coordinator prompt still prefers e2e tests:\n%s", section)
 	}
 }
 
@@ -1154,7 +1143,7 @@ func TestRestackPushQuotesTheBranch(t *testing.T) {
 	dir := t.TempDir()
 	head := strings.Repeat("a", 40)
 	for _, branch := range []string{"add-a-greeting-1a2b3c4d", `x$(touch pwned);'y`} {
-		prompt, err := RenderPrompt(dir, PromptVars{RunID: "r", Branch: branch, DirectPush: true, Change: "kkkk", Valley: true, Head: head})
+		prompt, err := RenderDelivery(PromptVars{RunID: "r", Branch: branch, DirectPush: true, Change: "kkkk", Valley: true, Head: head})
 		if err != nil {
 			t.Fatal(err)
 		}

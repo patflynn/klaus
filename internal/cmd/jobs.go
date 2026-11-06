@@ -23,10 +23,11 @@ const recentJobs = 3 * time.Hour
 func newJobsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "jobs",
-		Short: "List running and recent consults and reviews",
+		Short: "List running and recent consults, reviews and prose passes",
 		Long: `Lists the read-only background jobs of the current Klaus session (or the
 most recent session outside a pane): each klaus consult backend call, one per
-member of a --panel, and each klaus review. Running jobs come first, then the
+member of a --panel, each klaus review, and each prose pass of a worker's
+_pre-review, with the run's ID under THREAD/PR. Running jobs come first, then the
 jobs that finished in the last 3 hours, newest first; --all lists every
 record kept.
 
@@ -71,10 +72,11 @@ func newJobsShowCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "show <job-id>",
 		Short: "Print a job's record and its answer",
-		Long: `Prints a consult's or review's record, then its answer: for a threaded
+		Long: `Prints a job's record, then its answer: for a threaded
 consult, its turn's answer from the thread's log; for a one-shot consult,
 the answer saved beside the record; for a review, its verdict, findings and
-summary. A job that didn't succeed shows its error and where its raw output
+summary; for a prose pass, its rewrites, fact-check failures and, once the
+run finalized, which were applied. A job that didn't succeed shows its error and where its raw output
 was saved.
 
 <job-id> is a job's ID, the ID of a panel (every member is shown), or a
@@ -182,6 +184,8 @@ func jobTarget(j *jobs.Job) string {
 		return j.PR
 	case j.Panel != "":
 		return "panel"
+	case j.Run != "":
+		return j.Run
 	}
 	return "-"
 }
@@ -270,6 +274,7 @@ func showJob(w io.Writer, store jobs.Store, j *jobs.Job, now time.Time) error {
 		add("running", jobTime(j, now))
 	}
 	add("pid", fmt.Sprint(j.PID))
+	add("run", j.Run)
 	add("prompt", j.Prompt)
 	if j.Review != nil {
 		add("posted", j.Review.ReviewURL)
@@ -300,6 +305,14 @@ func showJob(w io.Writer, store jobs.Store, j *jobs.Job, now time.Time) error {
 // or the file beside its record, or a review's findings. ok is false when
 // the job has none to show.
 func jobAnswer(store jobs.Store, j *jobs.Job) (answer string, ok bool, err error) {
+	if j.Kind == jobs.KindProse {
+		if j.Prose == nil {
+			return "", false, nil
+		}
+		var b bytes.Buffer
+		printProse(&b, j.Prose)
+		return b.String(), true, nil
+	}
 	if j.Kind == jobs.KindReview {
 		if j.Review == nil {
 			return "", false, nil
