@@ -292,11 +292,10 @@ type landedKnot struct {
 }
 
 // knotsToSettle picks the runs launched for a knot whose change the valley
-// says landed and that klaus hasn't commented on yet, grouped by knot and
-// change. A change lands once any of its versions does: a run's change is
-// read from changes, the valley's view of every change, else from runs, its
-// own version's. Only a fresh view of the valley's counts, never one kept from
-// an earlier check.
+// says landed (integration.LandedAs) and that klaus hasn't commented on yet,
+// grouped by knot and change. A run's change is read from changes, the
+// valley's view of every change, else from runs, its own version's. Only a
+// fresh view of the valley's counts, never one kept from an earlier check.
 func knotsToSettle(states []*run.State, runs map[string]integration.Result, changes map[integration.ChangeKey]integration.Result) []landedKnot {
 	var out []landedKnot
 	index := make(map[string]int)

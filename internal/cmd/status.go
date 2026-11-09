@@ -44,7 +44,7 @@ and, for runs that finished by pushing a branch without a PR:
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
                         or by an equal patch-id, or the valley says its
-                        change landed as any of its versions
+                        change landed
   branch-gone           the branch was deleted from origin without landing
 
 and, for a branch finalize recorded as a version of its change on a valley

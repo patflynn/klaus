@@ -101,9 +101,10 @@ var checksEvents = map[string]string{
 //     holds that own says this session didn't record;
 //   - change:approved when the active version of a ready change has an
 //     integration request, and no version at or above it was approved;
-//   - change:integrated once, when a version landed: the active one, or
-//     else the latest that did, as when another became active before the
-//     check saw the landing;
+//   - change:integrated when the valley says the change landed
+//     (integration.LandedAs), whichever version is active, as a version
+//     above the last landing the ledger holds: once, and again when a next
+//     round lands;
 //   - change:withdrawn once, when the change was withdrawn without landing;
 //   - change:stale, change:rejected or change:failed when the integrator's
 //     decision on the active version of a ready change that hasn't landed
@@ -175,8 +176,8 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		mark(&e.Approved, ChangeMark{Version: active.N, Head: active.Head},
 			ChangeTransition{Type: event.ChangeApproved, Version: active})
 	}
-	v, isLanded := landedVersion(versions, ch.Active)
-	if isLanded && e.Landed == nil {
+	v, isLanded := integration.LandedAs(ch, active)
+	if isLanded && (e.Landed == nil || e.Landed.Version < v.N) {
 		commit := v.Head
 		if v.LandedCommit != nil && *v.LandedCommit != "" {
 			commit = *v.LandedCommit
@@ -211,30 +212,6 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		}
 	}
 	return out, l.saved(changed, lockErr, loadErr)
-}
-
-// landed reports whether the valley says v landed.
-func landed(v valley.Version) bool {
-	return v.Landing == valley.Landed || v.Landing == valley.LandedRecorded
-}
-
-// landedVersion is the version among versions that landed: the active one
-// if it did, else the latest that did.
-func landedVersion(versions []valley.Version, active int) (valley.Version, bool) {
-	var found valley.Version
-	ok := false
-	for _, v := range versions {
-		if !landed(v) {
-			continue
-		}
-		if v.N == active {
-			return v, true
-		}
-		if !ok || v.N > found.N {
-			found, ok = v, true
-		}
-	}
-	return found, ok
 }
 
 // outcomeOf is what the integrator decided on v's request, for a version
