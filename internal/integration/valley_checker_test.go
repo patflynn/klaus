@@ -61,6 +61,17 @@ const changesFixture = `{
             "request": { "ref": "x", "commit": "r" } } ] },
         { "change_id": "dlnd-id", "handle": "dlnd", "state": "draft", "active": 1,
           "versions": [ { "n": 1, "head": "dlnd-1", "landing": "landed-recorded" } ] },
+        { "change_id": "rstk-id", "handle": "rstk", "state": "ready", "active": 3,
+          "versions": [
+            { "n": 1, "head": "rstk-1", "uploader": "klaus-env", "landing": "not-landed" },
+            { "n": 2, "head": "rstk-2", "uploader": "restacker", "landing": "not-landed" },
+            { "n": 3, "head": "rstk-3", "uploader": "restacker", "landing": "landed" }
+          ] },
+        { "change_id": "more-id", "handle": "more", "state": "ready", "active": 2,
+          "versions": [
+            { "n": 1, "head": "more-1", "landing": "landed" },
+            { "n": 2, "head": "more-2", "landing": "not-landed" }
+          ] },
         { "change_id": "frzn-id", "handle": "frzn", "state": "frozen", "active": 1,
           "versions": [ { "n": 1, "head": "frzn-1", "landing": "landed" } ] }
       ] },
@@ -106,6 +117,9 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"request filed", pushed("cosmo", "appr-id", "appr-1"), Approved, "appr", 1},
 		{"landed", pushed("cosmo", "land-id", "land-2"), Integrated, "land", 2},
 		{"landed, then superseded", pushed("cosmo", "land-id", "land-1"), Integrated, "land", 1},
+		{"restacked, then landed", pushed("cosmo", "rstk-id", "rstk-1"), Integrated, "rstk", 1},
+		{"restacked once, then landed", pushed("cosmo", "rstk-id", "rstk-2"), Integrated, "rstk", 2},
+		{"new work after a landing", pushed("cosmo", "more-id", "more-2"), Ready, "more", 2},
 		{"withdrawn", pushed("cosmo", "with-id", "with-1"), Withdrawn, "with", 1},
 		{"uncertain", pushed("cosmo", "unce-id", "unce-1"), Uncertain, "unce", 1},
 		{"stale, superseded", pushed("cosmo", "stal-id", "stal-1"), Superseded, "stal", 1},
@@ -122,7 +136,7 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 			}
 			if got.Verdict != tc.want || got.Change.Handle != tc.handle || got.Change.Version != tc.version ||
 				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID ||
-				got.Change.Active != (tc.want != Superseded && tc.name != "landed, then superseded") {
+				got.Change.Active != (tc.want != Superseded && tc.name != "landed, then superseded" && !strings.HasPrefix(tc.name, "restacked")) {
 				t.Errorf("placed as %v %+v, want %v %s v%d", got.Verdict, *got.Change, tc.want, tc.handle, tc.version)
 			}
 		})

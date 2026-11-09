@@ -233,7 +233,7 @@ func ActiveVersion(ch valley.Change) (valley.Version, bool) {
 func changeAt(repo string, ch valley.Change, v valley.Version) *Change {
 	c := &Change{Repo: repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
 		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active, Checks: v.Checks}
-	if v.Landing == valley.Landed || v.Landing == valley.LandedRecorded {
+	if landed(v) {
 		c.LandedCommit = v.Head
 		if v.LandedCommit != nil && *v.LandedCommit != "" {
 			c.LandedCommit = *v.LandedCommit
@@ -299,12 +299,15 @@ func versionAt(ch valley.Change, head string) (valley.Version, bool) {
 // verdictOf reads the valley's record of version v of change ch, whose state
 // klaus knows. Landing evidence comes first: a landed version is Integrated
 // even after a later version took its place, or its change went back to
-// draft. A draft change's active version is otherwise Draft, whatever the
-// valley is unsure of or the integrator decided on its request: its submitter
-// has it back, and there is nothing for the operator to do.
+// draft, and so is a version whose change landed as a later one, as when the
+// host's restacker rebased it onto main and the rebased version landed, as a
+// PR merges whatever happened to its branch. A draft change's active version
+// is otherwise Draft, whatever the valley is unsure of or the integrator
+// decided on its request: its submitter has it back, and there is nothing for
+// the operator to do.
 func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	switch {
-	case v.Landing == valley.Landed || v.Landing == valley.LandedRecorded:
+	case landed(v) || landedLater(ch, v):
 		return Integrated
 	case ch.State == valley.StateWithdrawn:
 		return Withdrawn
@@ -332,6 +335,22 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	default:
 		return Ready
 	}
+}
+
+// landed reports whether the valley says version v landed.
+func landed(v valley.Version) bool {
+	return v.Landing == valley.Landed || v.Landing == valley.LandedRecorded
+}
+
+// landedLater reports whether ch landed as a version later than v. A version
+// before v that landed doesn't count: v is work added to the change after it.
+func landedLater(ch valley.Change, v valley.Version) bool {
+	for _, w := range ch.Versions {
+		if w.N > v.N && landed(w) {
+			return true
+		}
+	}
+	return false
 }
 
 // StaleReason says what a stale decision on version v of change ch means. A

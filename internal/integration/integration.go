@@ -60,7 +60,8 @@ const (
 	Conflicting
 	// Withdrawn means the change was withdrawn.
 	Withdrawn
-	// Superseded means another version of the change is the active one.
+	// Superseded means another version of the change is the active one, and
+	// no version since the run's landed.
 	Superseded
 	// Draft means the change is back with its submitter (`valley unready`),
 	// as when a follow-up run continues it: approve refuses it until a head
@@ -139,7 +140,8 @@ type Change struct {
 	Head     string // the version's head, which is the run's pushed SHA
 	Branch   string // the branch the version's head was pushed to, when known
 	// Active is set when the run's version is its change's active one. A
-	// landed version reads Integrated even after another became active.
+	// version reads Integrated even after another became active once it or
+	// a later version landed.
 	Active bool
 	// LandedCommit is the commit the version landed as, when the valley
 	// says it landed: its landed_commit, else its head.

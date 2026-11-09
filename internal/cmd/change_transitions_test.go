@@ -212,8 +212,8 @@ func TestChangeApprovedThenLanded(t *testing.T) {
 
 // TestChangeRestackedTwiceThenLanded: each version the valley's restacker
 // records is a change:new-version, and the change landing at the last of
-// them is the change's change:integrated, once, though the run's own
-// version reads superseded.
+// them is the change's change:integrated, once, and the run's own version
+// reads integrated.
 func TestChangeRestackedTwiceThenLanded(t *testing.T) {
 	c := newChangeSession(t)
 	s := c.pushed("20261030-0900-0001", "rstk", 1, "restack.txt")
@@ -247,8 +247,8 @@ func TestChangeRestackedTwiceThenLanded(t *testing.T) {
 	c.list(listedChange("rstk", "ready", v1, v2, landedAs(v3, v3["head"].(string))))
 	msg := check()
 	c.expect("landed", "rstk change:integrated v3")
-	if r := msg.results[s.ID]; r.Verdict != integration.Superseded {
-		t.Errorf("the run's own version reads %v, want superseded", r.Verdict)
+	if r := msg.results[s.ID]; r.Verdict != integration.Integrated {
+		t.Errorf("the run's own version reads %v, want integrated", r.Verdict)
 	}
 	check()
 	c.dashboard()()
