@@ -104,13 +104,12 @@ var checksEvents = map[string]string{
 //   - change:integrated once, when a version landed: the active one, or
 //     else the latest that did, as when another became active before the
 //     check saw the landing;
-//   - change:withdrawn once, when the change was withdrawn and its active
-//     version didn't land;
+//   - change:withdrawn once, when the change was withdrawn without landing;
 //   - change:stale, change:rejected or change:failed when the integrator's
-//     decision on a ready change's active version, which didn't land, is a
-//     new one, or is on a later version than the last;
-//   - change:checks-failed or change:checks-passed when the checks of a
-//     ready change's active version, which didn't land, failed or passed,
+//     decision on the active version of a ready change that hasn't landed
+//     is a new one, or is on a later version than the last;
+//   - change:checks-failed or change:checks-passed when the checks of the
+//     active version of a ready change that hasn't landed failed or passed,
 //     and the last verdict the ledger holds is on an earlier version or
 //     head, or is the other one. A listing with no checks, or pending
 //     ones, changes nothing.
@@ -176,7 +175,8 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 		mark(&e.Approved, ChangeMark{Version: active.N, Head: active.Head},
 			ChangeTransition{Type: event.ChangeApproved, Version: active})
 	}
-	if v, ok := landedVersion(versions, ch.Active); ok && e.Landed == nil {
+	v, isLanded := landedVersion(versions, ch.Active)
+	if isLanded && e.Landed == nil {
 		commit := v.Head
 		if v.LandedCommit != nil && *v.LandedCommit != "" {
 			commit = *v.LandedCommit
@@ -185,7 +185,7 @@ func (l *ChangeLedger) Observe(repo string, ch valley.Change, own func(valley.Ve
 			ChangeTransition{Type: event.ChangeIntegrated, Version: v, Commit: commit})
 	}
 	switch {
-	case landed(active), superseded:
+	case isLanded, superseded:
 	case ch.State == valley.StateWithdrawn:
 		if e.Withdrawn == nil {
 			mark(&e.Withdrawn, ChangeMark{Version: active.N, Head: active.Head},

@@ -293,9 +293,9 @@ type landedKnot struct {
 
 // knotsToSettle picks the runs launched for a knot whose change the valley
 // says landed and that klaus hasn't commented on yet, grouped by knot and
-// change. A change lands when its active version does: a run's change is read
-// from changes, the valley's view of every change, else from runs, its own
-// version's. Only a fresh view of the valley's counts, never one kept from
+// change. A change lands once any of its versions does: a run's change is
+// read from changes, the valley's view of every change, else from runs, its
+// own version's. Only a fresh view of the valley's counts, never one kept from
 // an earlier check.
 func knotsToSettle(states []*run.State, runs map[string]integration.Result, changes map[integration.ChangeKey]integration.Result) []landedKnot {
 	var out []landedKnot
@@ -346,7 +346,7 @@ func knotsToSettle(states []*run.State, runs map[string]integration.Result, chan
 func settleKnot(ctx context.Context, dir string, lk landedKnot, changes map[integration.ChangeKey]integration.Result) {
 	first := lk.runs[0]
 	k, ch := first.Knot, lk.change
-	landed := fmt.Sprintf("Change %s landed: v%d as %s.", valley.ChangeLink(ch.Repo, ch.ChangeID), ch.Version, ch.LandedCommit)
+	landed := fmt.Sprintf("Change %s landed: v%d as %s.", valley.ChangeLink(ch.Repo, ch.ChangeID), ch.LandedAs, ch.LandedCommit)
 	fail := func(err error) {
 		slog.Warn("knot write failed", "knot", k.ID, "err", err)
 		for _, s := range lk.runs {

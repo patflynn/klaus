@@ -61,6 +61,20 @@ const changesFixture = `{
             "request": { "ref": "x", "commit": "r" } } ] },
         { "change_id": "dlnd-id", "handle": "dlnd", "state": "draft", "active": 1,
           "versions": [ { "n": 1, "head": "dlnd-1", "landing": "landed-recorded" } ] },
+        { "change_id": "rstk-id", "handle": "rstk", "state": "ready", "active": 3,
+          "versions": [
+            { "n": 1, "head": "rstk-1", "uploader": "klaus-env", "landing": "not-landed" },
+            { "n": 2, "head": "rstk-2", "uploader": "restacker", "landing": "not-landed" },
+            { "n": 3, "head": "rstk-3", "uploader": "restacker", "landing": "landed" }
+          ] },
+        { "change_id": "late-id", "handle": "late", "state": "ready", "active": 4,
+          "versions": [
+            { "n": 1, "head": "late-1", "uploader": "klaus-env", "landing": "not-landed" },
+            { "n": 2, "head": "late-2", "uploader": "klaus-env", "landing": "not-landed" },
+            { "n": 3, "head": "late-3", "uploader": "restacker", "landing": "landed-recorded",
+              "request": { "ref": "x", "commit": "late-3" } },
+            { "n": 4, "head": "late-4", "uploader": "restacker", "landing": "not-landed" }
+          ] },
         { "change_id": "frzn-id", "handle": "frzn", "state": "frozen", "active": 1,
           "versions": [ { "n": 1, "head": "frzn-1", "landing": "landed" } ] }
       ] },
@@ -91,6 +105,10 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		return s
 	}
 
+	// replaced are the versions, besides the superseded ones, that aren't
+	// their change's active one.
+	replaced := map[string]bool{"landed, then superseded": true, "restacked, then landed": true,
+		"restacked once, then landed": true, "landed, restacked since": true}
 	for _, tc := range []struct {
 		name    string
 		run     *run.State
@@ -106,6 +124,10 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		{"request filed", pushed("cosmo", "appr-id", "appr-1"), Approved, "appr", 1},
 		{"landed", pushed("cosmo", "land-id", "land-2"), Integrated, "land", 2},
 		{"landed, then superseded", pushed("cosmo", "land-id", "land-1"), Integrated, "land", 1},
+		{"restacked, then landed", pushed("cosmo", "rstk-id", "rstk-1"), Integrated, "rstk", 1},
+		{"restacked once, then landed", pushed("cosmo", "rstk-id", "rstk-2"), Integrated, "rstk", 2},
+		{"landed, restacked since", pushed("cosmo", "late-id", "late-2"), Integrated, "late", 2},
+		{"active restack after a landing", pushed("cosmo", "late-id", "late-4"), Integrated, "late", 4},
 		{"withdrawn", pushed("cosmo", "with-id", "with-1"), Withdrawn, "with", 1},
 		{"uncertain", pushed("cosmo", "unce-id", "unce-1"), Uncertain, "unce", 1},
 		{"stale, superseded", pushed("cosmo", "stal-id", "stal-1"), Superseded, "stal", 1},
@@ -122,8 +144,11 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 			}
 			if got.Verdict != tc.want || got.Change.Handle != tc.handle || got.Change.Version != tc.version ||
 				got.Change.Head != *tc.run.PushedSHA || got.Change.ChangeID != tc.run.ChangeID ||
-				got.Change.Active != (tc.want != Superseded && tc.name != "landed, then superseded") {
+				got.Change.Active != (tc.want != Superseded && !replaced[tc.name]) {
 				t.Errorf("placed as %v %+v, want %v %s v%d", got.Verdict, *got.Change, tc.want, tc.handle, tc.version)
+			}
+			if tc.handle == "late" && (got.Change.LandedAs != 3 || got.Change.LandedCommit != "late-3") {
+				t.Errorf("late should read landed as v3 at late-3: %+v", *got.Change)
 			}
 		})
 	}

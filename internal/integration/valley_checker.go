@@ -233,10 +233,10 @@ func ActiveVersion(ch valley.Change) (valley.Version, bool) {
 func changeAt(repo string, ch valley.Change, v valley.Version) *Change {
 	c := &Change{Repo: repo, ChangeID: ch.ChangeID, Handle: ch.Handle, Title: v.Title,
 		Version: v.N, Head: v.Head, Branch: v.Branch, Active: v.N == ch.Active, Checks: v.Checks}
-	if v.Landing == valley.Landed || v.Landing == valley.LandedRecorded {
-		c.LandedCommit = v.Head
-		if v.LandedCommit != nil && *v.LandedCommit != "" {
-			c.LandedCommit = *v.LandedCommit
+	if w, ok := landedAs(ch, v); ok {
+		c.LandedAs, c.LandedCommit = w.N, w.Head
+		if w.LandedCommit != nil && *w.LandedCommit != "" {
+			c.LandedCommit = *w.LandedCommit
 		}
 	}
 	for _, k := range ch.Knots {
@@ -297,15 +297,17 @@ func versionAt(ch valley.Change, head string) (valley.Version, bool) {
 }
 
 // verdictOf reads the valley's record of version v of change ch, whose state
-// klaus knows. Landing evidence comes first: a landed version is Integrated
-// even after a later version took its place, or its change went back to
-// draft. A draft change's active version is otherwise Draft, whatever the
+// klaus knows. Landing evidence comes first: once the change landed as any
+// version (landedAs), every version of it is Integrated, whichever is active
+// and even if the change went back to draft, as `valley pending` counts it
+// landed. A draft change's active version is otherwise Draft, whatever the
 // valley is unsure of or the integrator decided on its request: its submitter
 // has it back, and there is nothing for the operator to do.
 func verdictOf(ch valley.Change, v valley.Version) Verdict {
-	switch {
-	case v.Landing == valley.Landed || v.Landing == valley.LandedRecorded:
+	if _, ok := landedAs(ch, v); ok {
 		return Integrated
+	}
+	switch {
 	case ch.State == valley.StateWithdrawn:
 		return Withdrawn
 	case v.N != ch.Active:
@@ -332,6 +334,32 @@ func verdictOf(ch valley.Change, v valley.Version) Verdict {
 	default:
 		return Ready
 	}
+}
+
+// landedAs is the version change ch landed as, seen from its version v: v
+// if it landed, else the newest that did. A change has landed once any of
+// its versions has (the valley's rebase.Snapshot.LandedAs), so a version the
+// restacker recorded while an earlier one was approved is no work left once
+// that one lands. The valley also reads the change unlanded while its active
+// version's head descends from the landing, as the change's next round; the
+// listing doesn't say which heads do, so klaus counts such a change landed.
+func landedAs(ch valley.Change, v valley.Version) (valley.Version, bool) {
+	if landed(v) {
+		return v, true
+	}
+	var found valley.Version
+	ok := false
+	for _, w := range ch.Versions {
+		if landed(w) && (!ok || w.N > found.N) {
+			found, ok = w, true
+		}
+	}
+	return found, ok
+}
+
+// landed reports whether the valley says version v landed.
+func landed(v valley.Version) bool {
+	return v.Landing == valley.Landed || v.Landing == valley.LandedRecorded
 }
 
 // StaleReason says what a stale decision on version v of change ch means. A
