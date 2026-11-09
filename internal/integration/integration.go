@@ -61,7 +61,7 @@ const (
 	// Withdrawn means the change was withdrawn.
 	Withdrawn
 	// Superseded means another version of the change is the active one, and
-	// no version since the run's landed.
+	// the change hasn't landed.
 	Superseded
 	// Draft means the change is back with its submitter (`valley unready`),
 	// as when a follow-up run continues it: approve refuses it until a head
@@ -139,12 +139,14 @@ type Change struct {
 	Version  int    // the run's version
 	Head     string // the version's head, which is the run's pushed SHA
 	Branch   string // the branch the version's head was pushed to, when known
-	// Active is set when the run's version is its change's active one. A
-	// version reads Integrated even after another became active once it or
-	// a later version landed.
+	// Active is set when the run's version is its change's active one. Every
+	// version of a change that landed reads Integrated, whichever is active.
 	Active bool
-	// LandedCommit is the commit the version landed as, when the valley
-	// says it landed: its landed_commit, else its head.
+	// LandedAs and LandedCommit are the version the change landed as and the
+	// commit it landed as (its landed_commit, else its head), when the valley
+	// says it landed: the run's version if that one did, else the newest
+	// that did.
+	LandedAs     int
 	LandedCommit string
 	// Knots are the IDs of the knots in the repo's plan graph that link the
 	// change, as the valley lists them.

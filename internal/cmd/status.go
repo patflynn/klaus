@@ -43,8 +43,8 @@ and, for runs that finished by pushing a branch without a PR:
 
   awaiting-integration  the branch is on origin and hasn't landed
   integrated            its work is on origin's default branch, by ancestry
-                        or by an equal patch-id, or the valley says it, or
-                        a later version of its change, landed
+                        or by an equal patch-id, or the valley says its
+                        change landed as any of its versions
   branch-gone           the branch was deleted from origin without landing
 
 and, for a branch finalize recorded as a version of its change on a valley
@@ -68,9 +68,9 @@ says the change stands:
                         none, is for you to look at)
   withdrawn             the change was withdrawn
   older-version         the change has a newer version, made by the
-                        valley's restacker or a later run, and none since
-                        the run's has landed; the run's row says nothing
-                        of whether the change is done
+                        valley's restacker or a later run, and hasn't
+                        landed; the run's row says nothing of whether the
+                        change is done
   draft                 returned to draft ('valley unready'), as launch
                         does when a follow-up run continues the change;
                         approve refuses it until a head is ready again.
