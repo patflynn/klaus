@@ -81,6 +81,26 @@ type Change struct {
 	// change, or nil for none; a valley from before restack reports lists
 	// none.
 	Restack *Restack `json:"restack"`
+	// LandedVersion and LandedCommit are the valley's verdict on whether the
+	// change landed (its LandedAs): the version it landed as and the commit
+	// on main, or null while it hasn't, as for a next round made on a main
+	// that already holds a landing.
+	LandedVersion LandedVersion `json:"landed_version"`
+	LandedCommit  *string       `json:"landed_commit"`
+}
+
+// LandedVersion is a change's landed_version: N is the version the valley
+// says the change landed as, or nil for none. Listed is false when the
+// listing has no such field, as from a valley older than it.
+type LandedVersion struct {
+	Listed bool
+	N      *int
+}
+
+// UnmarshalJSON reads a landed_version the listing carries, null included.
+func (l *LandedVersion) UnmarshalJSON(data []byte) error {
+	l.Listed = true
+	return json.Unmarshal(data, &l.N)
 }
 
 // Restack is a change's latest restack report as the valley lists it: its

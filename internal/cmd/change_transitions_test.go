@@ -255,6 +255,62 @@ func TestChangeRestackedTwiceThenLanded(t *testing.T) {
 	c.expect("landed, checked again and restarted")
 }
 
+// TestChangeNextRoundAfterALanding: a follow-up run's version, made on a
+// main that already holds the change's landing, is the change's next round,
+// which the valley reads unlanded (landed_version null). The follow-up and
+// the change's row read it as it stands, so cleanup --done and the knot step
+// leave it alone, the integrator's decision on it is news again, and so is
+// its landing.
+func TestChangeNextRoundAfterALanding(t *testing.T) {
+	c := newChangeSession(t)
+	s1 := c.pushed("20261030-0900-0001", "nrnd", 1, "round1.txt")
+	v1 := listed(1, *s1.PushedSHA, "klaus-env")
+	c.list(listedChange("nrnd", "ready", v1))
+	check := c.dashboard()
+	check()
+	c.expect("ready")
+
+	c.fastForward(*s1.PushedSHA)
+	v1 = landedAs(v1, *s1.PushedSHA)
+	c.list(with(listedChange("nrnd", "ready", v1), "landed_version", 1, "landed_commit", *s1.PushedSHA))
+	check()
+	c.expect("landed", "nrnd change:approved v1", "nrnd change:integrated v1")
+
+	s2 := c.pushed("20261030-1000-0002", "nrnd", 2, "round2.txt")
+	s2.Knot = &run.Knot{ID: "oc-1", Project: "cosmo", Type: "outcome", Linked: "valley:cosmo/" + s2.ChangeID}
+	if err := c.store.Save(s2); err != nil {
+		t.Fatal(err)
+	}
+	v2 := listed(2, *s2.PushedSHA, "klaus-env")
+	c.list(with(listedChange("nrnd", "ready", v1, v2), "landed_version", nil, "landed_commit", nil))
+	msg := check()
+	c.expect("next round")
+	if r := msg.results[s2.ID]; r.Verdict != integration.Ready {
+		t.Errorf("the next round's run reads %v, want ready", r.Verdict)
+	}
+	row := msg.changes[integration.ChangeKey{Repo: "cosmo", ChangeID: s2.ChangeID}]
+	if row.Verdict != integration.Ready || finishedVerdict(row.Verdict) != "" {
+		t.Errorf("the change's row reads %v, want ready and unfinished", row.Verdict)
+	}
+	states, err := c.store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lks := knotsToSettle(states, msg.results, msg.changes); len(lks) != 0 {
+		t.Errorf("knots to settle on the next round: %+v", lks)
+	}
+
+	c.list(with(listedChange("nrnd", "ready", v1, decided(v2, "stale")), "landed_version", nil, "landed_commit", nil))
+	check()
+	c.expect("next round stale", "nrnd change:approved v2", "nrnd change:stale v2")
+
+	c.fastForward(*s2.PushedSHA)
+	c.list(with(listedChange("nrnd", "ready", v1, landedAs(v2, *s2.PushedSHA)), "landed_version", 2, "landed_commit", *s2.PushedSHA))
+	check()
+	check()
+	c.expect("next round landed", "nrnd change:integrated v2")
+}
+
 // TestChangeStaleThenApprovedAgain: an approved version going stale is a
 // change:stale; the restacker's next version, and its approval, report
 // again; and a version a run of the session pushed is no news, even before

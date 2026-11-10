@@ -144,8 +144,7 @@ type Change struct {
 	Active bool
 	// LandedAs and LandedCommit are the version the change landed as and the
 	// commit it landed as (its landed_commit, else its head), when the valley
-	// says it landed: the run's version if that one did, else the newest
-	// that did.
+	// says it landed (LandedAs).
 	LandedAs     int
 	LandedCommit string
 	// Knots are the IDs of the knots in the repo's plan graph that link the

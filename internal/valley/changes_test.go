@@ -62,6 +62,29 @@ func TestDecodeToleratesUnknownFields(t *testing.T) {
 	}
 }
 
+// TestDecodeLandedVersion: a change's landed_version is read whether it is
+// a version, null, or absent, as from a valley older than the field, and
+// absent stays distinct from null.
+func TestDecodeLandedVersion(t *testing.T) {
+	c, err := Decode([]byte(`{"schema":"valley-changes/v1","repos":[{"repo":"r","changes":[
+		{"change_id":"k1","landed_version":2,"landed_commit":"cccc"},
+		{"change_id":"k2","landed_version":null,"landed_commit":null},
+		{"change_id":"k3"}]}]}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	chs := c.Repos[0].Changes
+	if l := chs[0].LandedVersion; !l.Listed || l.N == nil || *l.N != 2 || *chs[0].LandedCommit != "cccc" {
+		t.Errorf("landed: %+v, commit %v", l, chs[0].LandedCommit)
+	}
+	if l := chs[1].LandedVersion; !l.Listed || l.N != nil || chs[1].LandedCommit != nil {
+		t.Errorf("not landed: %+v, commit %v", l, chs[1].LandedCommit)
+	}
+	if l := chs[2].LandedVersion; l.Listed || l.N != nil {
+		t.Errorf("absent: %+v", l)
+	}
+}
+
 func TestDecodeRefusesOtherSchemas(t *testing.T) {
 	for name, schema := range map[string]string{
 		"later version": `"valley-changes/v2"`,

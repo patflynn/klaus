@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -183,6 +184,71 @@ func TestPlaceMatchesRunsToVersions(t *testing.T) {
 		if got, ok := place(changes, tc.run); ok {
 			t.Errorf("%s: placed as %v %+v, want unplaced", tc.name, got.Verdict, *got.Change)
 		}
+	}
+}
+
+// TestPlaceFollowsTheValleysLandedVerdict: where the listing carries the
+// valley's landed_version, it alone says whether a change landed, for every
+// run of it and for the change's row; a listing without it falls back to
+// any version having landed.
+func TestPlaceFollowsTheValleysLandedVerdict(t *testing.T) {
+	listing := func(verdict string) *valley.Changes {
+		t.Helper()
+		changes, err := valley.Decode([]byte(`{"schema": "valley-changes/v1", "repos": [{"repo": "cosmo", "changes": [
+		  { "change_id": "actv-id", "handle": "actv", "state": "ready", "active": 2` + verdict + `,
+		    "versions": [ { "n": 1, "head": "actv-1", "landing": "not-landed" },
+		                  { "n": 2, "head": "actv-2", "landing": "landed", "landed_commit": "actv-2" } ] },
+		  { "change_id": "belo-id", "handle": "belo", "state": "ready", "active": 2` + verdict + `,
+		    "versions": [ { "n": 1, "head": "belo-1", "landing": "landed", "landed_commit": "belo-1",
+		                    "request": { "ref": "x", "commit": "belo-1" } },
+		                  { "n": 2, "head": "belo-2", "uploader": "restacker", "landing": "not-landed" } ] },
+		  { "change_id": "next-id", "handle": "next", "state": "ready", "active": 2` + verdict + `,
+		    "versions": [ { "n": 1, "head": "next-1", "landing": "landed", "landed_commit": "next-1" },
+		                  { "n": 2, "head": "next-2", "landing": "not-landed" } ] }
+		]}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return changes
+	}
+	withVerdict := map[string]*valley.Changes{
+		"actv": listing(`, "landed_version": 2, "landed_commit": "actv-c"`),
+		"belo": listing(`, "landed_version": 1, "landed_commit": "belo-c"`),
+		"next": listing(`, "landed_version": null, "landed_commit": null`),
+	}
+	older := listing("")
+	for _, tc := range []struct {
+		name     string
+		changes  *valley.Changes
+		handle   string
+		want     [2]Verdict // the runs at v1 and v2, the active one
+		landedAs int
+		commit   string
+	}{
+		{"landed at the active version", withVerdict["actv"], "actv", [2]Verdict{Integrated, Integrated}, 2, "actv-c"},
+		{"landed below a restacked active version", withVerdict["belo"], "belo", [2]Verdict{Integrated, Integrated}, 1, "belo-c"},
+		{"next round on top of a landing", withVerdict["next"], "next", [2]Verdict{Superseded, Ready}, 0, ""},
+		{"no verdict listed: any version landed", older, "next", [2]Verdict{Integrated, Integrated}, 1, "next-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for i, want := range tc.want {
+				head, branch := fmt.Sprintf("%s-%d", tc.handle, i+1), "agent/x"
+				s := &run.State{ID: head, ChangeID: tc.handle + "-id", Valley: &run.Valley{Repo: "cosmo"},
+					PushedBranch: &branch, PushedSHA: &head}
+				got, ok := place(tc.changes, s)
+				if !ok {
+					t.Fatalf("run at %s not placed", head)
+				}
+				if got.Verdict != want || got.Change.LandedAs != tc.landedAs || got.Change.LandedCommit != tc.commit {
+					t.Errorf("run at %s: %v, landed as v%d at %q; want %v, v%d at %q",
+						head, got.Verdict, got.Change.LandedAs, got.Change.LandedCommit, want, tc.landedAs, tc.commit)
+				}
+			}
+			row := activeVersions(tc.changes)[ChangeKey{Repo: "cosmo", ChangeID: tc.handle + "-id"}]
+			if row.Verdict != tc.want[1] {
+				t.Errorf("change row reads %v, want %v", row.Verdict, tc.want[1])
+			}
+		})
 	}
 }
 

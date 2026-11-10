@@ -171,6 +171,68 @@ func TestChangeLandedBehindItsActiveVersionIntegrated(t *testing.T) {
 	}
 }
 
+// TestNextRoundAfterALandingStaysOpen drives a change that lands and is
+// then continued, with real launches against the real valley CLI and bare
+// repos. A run readies v1 and v1 lands; a later run continues the change on
+// top of the landing and readies v2, the change's next round, which the
+// valley reads unlanded (landed_version null). The later run shows
+// awaiting-approval, the change's row reads READY at v2, and cleanup --done
+// keeps the later run.
+func TestNextRoundAfterALandingStaysOpen(t *testing.T) {
+	t.Parallel()
+	h := NewHarness(t)
+	h.useRealValley()
+	h.joinValley()
+	h.WriteDefaultClaudeOutput(`{"type":"result","subtype":"success","total_cost_usd":0.5,"duration_ms":1000,"session_id":"` + changeSession + `"}` + "\n")
+
+	first, _ := h.launchRun("add a greeting")
+	h.WaitForClaudeStart(30 * time.Second)
+	h.pushWork(first, "greeting.txt", "Add a greeting")
+	first = h.finishRun(first.ID)
+	if first.Valley == nil || first.Valley.Version != 1 || first.Valley.Handle == "" {
+		t.Fatalf("finalize should mark v1 ready: %+v", first.Valley)
+	}
+	id, handle := first.ChangeID, first.Valley.Handle
+
+	h.git(h.OriginDir, "update-ref", "refs/heads/main", *first.PushedSHA)
+	ch := h.changeOf(id)
+	if !ch.LandedVersion.Listed {
+		t.Skip("the valley on PATH lists no landed_version")
+	}
+	if ch.LandedVersion.N == nil || *ch.LandedVersion.N != 1 {
+		t.Fatalf("the valley should say the change landed as v1: %+v", ch)
+	}
+
+	time.Sleep(time.Second) // the later run is created in a later second
+	h.resetWorker()
+	later, _ := h.launchRun("--change", handle, "tidy the greeting")
+	h.WaitForClaudeStart(30 * time.Second)
+	h.pushWork(later, "greeting.txt", "Tidy the greeting")
+	later = h.finishRun(later.ID)
+	if later.Valley == nil || later.Valley.Version != 2 || later.ChangeID != id {
+		t.Fatalf("finalize should mark the later head ready as v2 of %s: %+v", id, later.Valley)
+	}
+	if ch := h.changeOf(id); ch.Active != 2 || !ch.LandedVersion.Listed || ch.LandedVersion.N != nil {
+		t.Fatalf("the valley should read the next round unlanded: %+v", ch)
+	}
+
+	res := h.RunKlaus("status")
+	if got := statusOf(t, res.Stdout, later.ID); got != "awaiting-approval" {
+		t.Errorf("the next round's run shows %q, want awaiting-approval:\n%s%s", got, res.Stdout, res.Stderr)
+	}
+
+	_, screen := h.startDashboard(170)
+	s := screen(handle, "READY")
+	if row := rowOf(t, s, handle); !strings.Contains(row, "READY") || !strings.Contains(row, "v2@") {
+		t.Errorf("the change's row should read READY at v2: %q", row)
+	}
+
+	res = h.RunKlaus("cleanup", "--done")
+	if res.ExitCode != 0 || strings.Contains(res.Stdout, "removed "+later.ID+"  ") {
+		t.Errorf("cleanup --done should keep the next round's run (exit %d):\n%s%s", res.ExitCode, res.Stdout, res.Stderr)
+	}
+}
+
 // TestOlderVersionUntilTheChangeLands drives a change a later run gives a
 // newer version, with real launches against the real valley CLI and bare
 // repos. Until the change lands, the run that readied v1 shows
