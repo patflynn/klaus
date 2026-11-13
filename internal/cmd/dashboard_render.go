@@ -629,6 +629,9 @@ func shellWord(s string) string {
 // renderSourceLine renders the data source status line.
 func (m dashboardModel) renderSourceLine() string {
 	if !m.useWebhook {
+		if m.webhookHeldNote != "" {
+			return dimStyle.Render("  polling: 30s (" + m.webhookHeldNote + ")")
+		}
 		return dimStyle.Render("  polling: 30s")
 	}
 	addr := m.webhookAddr

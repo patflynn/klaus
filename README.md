@@ -1073,6 +1073,8 @@ Both commands require `webhook.relay_url` in your config. `setup` also requires 
 
 The created webhooks subscribe to `push`, `check_run`, `check_suite`, `pull_request`, `pull_request_review`, and `issue_comment` events. `pull_request_review` and `issue_comment` are what let comments from `trusted_reviewers` dispatch fix agents promptly: both inline review comments and PR conversation comments count (conversation comments are re-evaluated when created or edited). Webhooks created before `issue_comment` was added don't include it; add it to the hook's events in GitHub (or to your relay's forwarded events).
 
+Only one dashboard can hold the webhook port. When another dashboard of the same user already holds it, this one polls GitHub every 30s as if no webhook were configured, and its source line says so.
+
 Additional webhook config knobs:
 
 - `poll_fallback` (bool, default `false`): when `true`, the dashboard polls GitHub every 30s *in addition* to receiving webhooks.

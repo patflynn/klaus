@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"fmt"
+	"github.com/patflynn/klaus/internal/config"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -89,5 +92,33 @@ func TestSelectedPRURLForOpenHandler(t *testing.T) {
 	}
 	if len(m.recentErrors) != 1 || !strings.Contains(m.recentErrors[0].Message, "agent:beef has no PR") {
 		t.Errorf("recentErrors = %v, want a no-PR hint", m.recentErrors)
+	}
+}
+
+func TestSetupWebhookPortHeldFallsBackToPolling(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	m := newDashboardModel(nil, config.Config{}, nil)
+	srv, err := setupWebhook(&m, config.Config{Webhook: &config.WebhookConfig{Port: port}})
+	if err != nil {
+		t.Fatalf("setupWebhook: %v", err)
+	}
+	if srv != nil || m.useWebhook || !m.pollEnabled {
+		t.Errorf("srv=%v useWebhook=%v pollEnabled=%v, want polling only", srv, m.useWebhook, m.pollEnabled)
+	}
+	if line := m.renderSourceLine(); !strings.Contains(line, "polling: 30s") || !strings.Contains(line, fmt.Sprintf("port %d", port)) {
+		t.Errorf("source line = %q", line)
+	}
+}
+
+func TestSetupWebhookOtherListenErrorFails(t *testing.T) {
+	m := newDashboardModel(nil, config.Config{}, nil)
+	if _, err := setupWebhook(&m, config.Config{Webhook: &config.WebhookConfig{Port: -1}}); err == nil {
+		t.Fatal("want an error for an unusable port")
 	}
 }
