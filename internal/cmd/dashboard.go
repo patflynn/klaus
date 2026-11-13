@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -49,7 +50,8 @@ GitHub state (CI, conflicts, reviews) polls every 30 seconds by default.
 
 When webhook config is present in .klaus/config.json, the dashboard starts
 an HTTP server to receive push events from github-relay instead of polling.
-Set "webhook": {"port": 9800} in config to enable.
+Set "webhook": {"port": 9800} in config to enable. When another dashboard
+of the same user already holds the port, this one polls instead.
 
 In webhook-only mode (poll_fallback false), a slow reconcile heartbeat runs
 a full status re-fetch every 5 minutes by default (configurable via
@@ -233,33 +235,10 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 			}()
 		}
 
-		var webhookSrv *webhook.Server
-		if cfg.Webhook != nil {
-			ch := make(chan webhook.Event, 64)
-			port := cfg.Webhook.Port
-			if port == 0 {
-				port = 9800
-			}
-			webhookSrv = webhook.NewServer(port, cfg.Webhook.Path, ch)
-
-			if err := webhookSrv.Listen(); err != nil {
-				cancel()
-				return nil, fmt.Errorf("webhook server: %w", err)
-			}
-
-			model.webhookCh = ch
-			model.useWebhook = true
-			model.pollEnabled = cfg.Webhook.PollFallback
-			model.webhookAddr = webhookSrv.Addr()
-			model.reconcileEvery = reconcileInterval(cfg.Webhook)
-
-			go func() {
-				if err := webhookSrv.Serve(); err != nil && err != http.ErrServerClosed {
-					model.logger.Error("webhook server", "err", err)
-				}
-			}()
-		} else {
-			model.pollEnabled = true
+		webhookSrv, err := setupWebhook(&model, cfg)
+		if err != nil {
+			cancel()
+			return nil, err
 		}
 
 		model.waker = startValleyWaker(ctx, model.logger)
@@ -293,6 +272,46 @@ func runDashboard(cmd *cobra.Command, bin *binCheck, notice string) (*binUpdateM
 
 		return restart, err
 	}
+}
+
+// setupWebhook starts the webhook server when cfg asks for one and sets the
+// model's data source to match. When another dashboard already holds the
+// port, the model polls instead and says so; any other listen error is
+// returned. The returned server is nil when none runs.
+func setupWebhook(model *dashboardModel, cfg config.Config) (*webhook.Server, error) {
+	if cfg.Webhook == nil {
+		model.pollEnabled = true
+		return nil, nil
+	}
+	ch := make(chan webhook.Event, 64)
+	port := cfg.Webhook.Port
+	if port == 0 {
+		port = 9800
+	}
+	srv := webhook.NewServer(port, cfg.Webhook.Path, ch)
+	if err := srv.Listen(); err != nil {
+		if !errors.Is(err, syscall.EADDRINUSE) {
+			return nil, fmt.Errorf("webhook server: %w", err)
+		}
+		model.pollEnabled = true
+		model.webhookHeldNote = fmt.Sprintf("webhook port %d is held by another dashboard", port)
+		model.logger.Info("polling instead of receiving webhooks", "reason", model.webhookHeldNote)
+		return nil, nil
+	}
+
+	model.webhookCh = ch
+	model.useWebhook = true
+	model.pollEnabled = cfg.Webhook.PollFallback
+	model.webhookAddr = srv.Addr()
+	model.reconcileEvery = reconcileInterval(cfg.Webhook)
+
+	logger := model.logger
+	go func() {
+		if err := srv.Serve(); err != nil && err != http.ErrServerClosed {
+			logger.Error("webhook server", "err", err)
+		}
+	}()
+	return srv, nil
 }
 
 func init() {
@@ -365,6 +384,7 @@ type dashboardModel struct {
 	logFile         *os.File
 	shutdownCancel  context.CancelFunc   // cancels the shared shutdown context
 	webhookCh       <-chan webhook.Event // non-nil when webhook mode is active
+	webhookHeldNote string               // why polling replaced the webhook: another dashboard holds the port
 	webhookAddr     string               // e.g. "127.0.0.1:9800"
 	useWebhook      bool                 // true when webhook server is running
 	pollEnabled     bool                 // true when polling is active (default or poll_fallback)
