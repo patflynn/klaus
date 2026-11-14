@@ -136,7 +136,9 @@ and commit messages say what the code can't, not what it already shows:
 ```json
 {
   "pre_review": { "prose": { "enabled": true, "order": ["agy", "codex", "claude"],
-    "paths": ["internal/cmd/*.go"], "timeout_seconds": 180, "max_input_bytes": 40000 } }
+    "paths": ["internal/cmd/*.go"], "timeout_seconds": 600, "max_input_bytes": 40000,
+    "writer": { "agy": { "model": "gemini-4-hydrogen-high", "effort": "high" } },
+    "checker": { "codex": { "effort": "medium" } } } }
 }
 ```
 
@@ -145,10 +147,13 @@ matches (a pattern without a slash matches a file name anywhere; `dir/**`
 matches a tree), and the head commit's message. A change with no prose beyond
 a short commit message is skipped. The writer is the first installed family
 in `order` that isn't the author's; the fact checker is the next, else the
-author's. The writer lists each passage's claims and conditions in a ledger
-before rewriting, using the writing sections of the repo's `AGENTS.md` and
-`CLAUDE.md` and the house rules; the checker reports each rewrite that changes
-the meaning.
+author's. Each runs at the model and effort `writer.<backend>` or
+`checker.<backend>` sets, else at the backend's defaults (`backends`), except
+that an agy writer's model defaults to `gemini-4-hydrogen-high`.
+`timeout_seconds` limits each model call. The writer lists each passage's
+claims and conditions in a ledger before rewriting, using the writing sections
+of the repo's `AGENTS.md` and `CLAUDE.md` and the house rules; the checker
+reports each rewrite that changes the meaning.
 
 `_pre-review` prints each rewrite with any fact-check failure, and saves the
 ones that passed as a patch for `git apply` and a commit message for

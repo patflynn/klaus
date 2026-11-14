@@ -115,7 +115,7 @@ func RunPRReview(ctx context.Context, repo, prNumber string, opts PROptions) (*R
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	text, err := runReviewer(ctx, opts.Backend, opts.Model, prReviewSystemPrompt, buildPRReviewPrompt(pr.Title, pr.Body, truncateDiff(diff)), dir)
+	text, err := runReviewer(ctx, opts.Backend, opts.Model, prReviewSystemPrompt, buildPRReviewPrompt(pr.Title, pr.Body, promptDiff(diff, maxDiffBytes)), dir)
 	if err != nil {
 		return nil, err
 	}

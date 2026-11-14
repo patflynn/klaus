@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/patflynn/klaus/internal/backend"
+	"github.com/patflynn/klaus/internal/git"
 )
 
 // ReviewConfig configures the peer review agent.
@@ -56,12 +57,15 @@ func ReviewDiff(dir string, cfg ReviewConfig, baseBranch string) (*ReviewResult,
 		return &ReviewResult{Summary: "No changes to review."}, nil
 	}
 
-	return callReviewInDir(dir, truncateDiff(diff), cfg)
+	return callReviewInDir(dir, promptDiff(diff, maxDiffBytes), cfg)
 }
 
-func truncateDiff(diff string) string {
-	if len(diff) > maxDiffBytes {
-		return diff[:maxDiffBytes] + "\n\n[... diff truncated due to size ...]"
+// promptDiff is a diff as a reviewer is sent it: valid UTF-8, with any file
+// that isn't text named but left out (git.TextDiff), cut to max bytes.
+func promptDiff(diff string, max int) string {
+	diff = git.TextDiff(diff)
+	if len(diff) > max {
+		return git.TruncateText(diff, max) + "\n\n[... diff truncated due to size ...]"
 	}
 	return diff
 }

@@ -54,10 +54,8 @@ func runProsePass(ctx context.Context, w io.Writer, dir string, cfg config.Confi
 		Order: pc.Order, Patterns: pc.Paths, MaxInput: pc.MaxInputBytes,
 		Timeout:    time.Duration(pc.TimeoutSeconds) * time.Second,
 		HouseRules: houseRules,
-		Defaults: func(k backend.Kind) (string, string) {
-			d := cfg.AgentDefaults(string(k))
-			return d.Model, d.Effort
-		},
+		Writer:     func(k backend.Kind) (string, string) { return cfg.ProseWriter(string(k)) },
+		Checker:    func(k backend.Kind) (string, string) { return cfg.ProseChecker(string(k)) },
 		Started: func(r *prose.Result) {
 			if store != nil {
 				job.Backend, job.Model = r.Writer, r.WriterModel
