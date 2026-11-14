@@ -19,9 +19,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/patflynn/klaus/internal/backend"
 	"github.com/patflynn/klaus/internal/consult"
+	kgit "github.com/patflynn/klaus/internal/git"
 )
 
 // CommitFile is the file name edits to the head commit's message use.
@@ -42,8 +44,9 @@ type Options struct {
 	// HouseRules are the operator's house rules, added to both models'
 	// context beside the repository's own writing rules.
 	HouseRules string
-	// Defaults gives a backend's model and effort.
-	Defaults func(backend.Kind) (model, effort string)
+	// Writer and Checker give the model and effort the writer and the fact
+	// checker run at on a backend.
+	Writer, Checker func(backend.Kind) (model, effort string)
 	// Started, if set, is called when the writer is about to be asked.
 	Started func(*Result)
 }
@@ -170,9 +173,11 @@ func Run(ctx context.Context, o Options) *Result {
 	}
 	r.Writer, r.Checker = string(writer), string(checker)
 	var wEffort, cEffort string
-	if o.Defaults != nil {
-		r.WriterModel, wEffort = o.Defaults(writer)
-		r.CheckerModel, cEffort = o.Defaults(checker)
+	if o.Writer != nil {
+		r.WriterModel, wEffort = o.Writer(writer)
+	}
+	if o.Checker != nil {
+		r.CheckerModel, cEffort = o.Checker(checker)
 	}
 
 	if o.Started != nil {
@@ -231,6 +236,7 @@ func collect(ctx context.Context, o Options, r *Result) (*input, error) {
 		if err != nil {
 			return nil, err
 		}
+		hunks = kgit.TextDiff(hunks)
 		if diff.Len()+len(hunks) > o.MaxInput {
 			r.Omitted = append(r.Omitted, name)
 			continue
@@ -241,9 +247,11 @@ func collect(ctx context.Context, o Options, r *Result) (*input, error) {
 	}
 	in.diff = diff.String()
 	if n, err := git(ctx, o.Dir, "rev-list", "--count", o.Base+"..HEAD"); err == nil && strings.TrimSpace(n) != "0" {
+		// A message that isn't valid UTF-8 isn't text to rewrite, and the
+		// CLIs refuse it.
 		if msg, err := git(ctx, o.Dir, "log", "-1", "--format=%B"); err == nil && len(msg) > o.MaxInput {
 			r.Omitted = append(r.Omitted, "commit message")
-		} else if err == nil {
+		} else if err == nil && utf8.ValidString(msg) {
 			in.message = strings.TrimSpace(msg)
 			in.added[CommitFile] = map[int]bool{}
 			for n := range strings.Split(in.message, "\n") {
@@ -462,10 +470,7 @@ func ask(ctx context.Context, o Options, kind backend.Kind, model, effort, role,
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	l := strings.TrimSpace(lines[len(lines)-1])
-	if len(l) > 200 {
-		l = l[:200]
-	}
-	return l
+	return kgit.TruncateText(l, 200)
 }
 
 // decodeJSON reads the first JSON object with key in a model's answer,
@@ -523,8 +528,5 @@ func Rules(dir string) string {
 			}
 		}
 	}
-	if b.Len() > 8000 {
-		return b.String()[:8000]
-	}
-	return b.String()
+	return kgit.TruncateText(b.String(), 8000)
 }

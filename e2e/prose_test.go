@@ -10,15 +10,19 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/patflynn/klaus/internal/git"
 )
 
 // stubProseBackends replaces agy, codex and claude with stubs that tell the
 // prose pass's rewrite and fact check, and the peer review, apart by their
-// prompt. Each logs its role to <name>.calls and its last prompt to
-// <name>.<role>.stdin, then prints <name>.<role> from E2EDir (a clean review
-// by default). <name>.<role>.fail makes it fail; <name>.<role>.sleep makes it
-// hang. prose sets the repo's pre_review.prose config; the peer reviewer is
-// always claude, and the author is author.
+// prompt. Each logs its role to <name>.calls, its last prompt to
+// <name>.<role>.stdin and its arguments to <name>.<role>.args, then prints
+// <name>.<role> from E2EDir (a clean review by default). <name>.<role>.fail
+// makes it fail; <name>.<role>.sleep makes it hang. prose sets the repo's
+// pre_review.prose config; the peer reviewer is always claude, and the
+// author is author.
 func (h *Harness) stubProseBackends(author string, prose map[string]any) {
 	h.t.Helper()
 	for _, name := range []string{"agy", "codex", "claude"} {
@@ -33,6 +37,7 @@ esac
 f="$dir/`+name+`.$role"
 echo "$role" >> "$dir/`+name+`.calls"
 printf '%s\n' "$input" > "$f.stdin"
+printf '%s\n' "$*" > "$f.args"
 [ -e "$f.sleep" ] && sleep 60
 [ -e "$f.fail" ] && { echo "boom" >&2; exit 3; }
 if [ -e "$f" ]; then cat "$f"; else echo '{"findings": [], "summary": "No issues found.", "ledger": [], "edits": [], "failures": []}'; fi
@@ -145,19 +150,21 @@ func TestPreReviewProseChoosesFamilies(t *testing.T) {
 	}
 }
 
-// TestPreReviewProseRewrite: the writer gets the change's prose hunks and its
-// commit message, not its code; a fact-check failure surfaces against its
-// rewrite and keeps it out of the patch, which applies the rest. The pass is
-// recorded as a prose job.
+// TestPreReviewProseRewrite: the writer, at agy's prose model, gets the
+// change's prose hunks and its commit message, not its code; a fact-check
+// failure surfaces against its rewrite and keeps it out of the patch, which
+// applies the rest. A file that isn't UTF-8 reaches the writer and the peer
+// reviewer named, as valid UTF-8. The pass is recorded as a prose job.
 func TestPreReviewProseRewrite(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
 	h.stubProseBackends("claude", map[string]any{})
 	message := "Add a deploy note\n\nThe README now says where to deploy and when, because operators kept deploying straight to production from feature branches before the smoke test had finished running on the build host."
 	h.commitFiles(map[string]string{
-		"README.md":     proseReadme,
-		"docs/guide.md": "# Guide\n\nIn order to be able to run the tool, you will need to install it first.\n",
-		"main.go":       "package main\n\nfunc main() { println(\"secret code text\") }\n",
+		"README.md":      proseReadme,
+		"docs/guide.md":  "# Guide\n\nIn order to be able to run the tool, you will need to install it first.\n",
+		"main.go":        "package main\n\nfunc main() { println(\"secret code text\") }\n",
+		"docs/legacy.md": "# Caf\xe9\n", // Latin-1
 	}, message)
 	h.stubAnswer("agy", "write", map[string]any{
 		"ledger": []any{
@@ -188,6 +195,15 @@ func TestPreReviewProseRewrite(t *testing.T) {
 	}
 	if strings.Contains(prompt, "secret code text") {
 		t.Errorf("the writer got a code file that isn't prose:\n%s", prompt)
+	}
+	if args := h.readE2E("agy.write.args"); !strings.Contains(args, "--model gemini-4-hydrogen-high") {
+		t.Errorf("the writer didn't run at agy's prose model: %s", args)
+	}
+	for _, f := range []string{"agy.write.stdin", "claude.review.stdin"} {
+		got := h.readE2E(f)
+		if !utf8.ValidString(got) || !strings.Contains(got, "+++ b/docs/legacy.md\n"+git.NotText+"\n") {
+			t.Errorf("%s isn't valid UTF-8 naming docs/legacy.md without its content:\n%q", f, got)
+		}
 	}
 	if check := h.readE2E("codex.check.stdin"); !strings.Contains(check, "only from main") || !strings.Contains(check, "Install the tool before running it.") {
 		t.Errorf("the fact check didn't get the ledger and rewrites:\n%s", check)
@@ -230,8 +246,8 @@ func TestPreReviewProseRewrite(t *testing.T) {
 	}
 	id := strings.Fields(strings.Split(jobsOut.Stdout, "\n")[2])[0]
 	show := h.RunKlaus("jobs", "show", id)
-	if !strings.Contains(show.Stdout, "[1] README.md: failed the fact check") {
-		t.Errorf("klaus jobs show lacks the proposal:\n%s%s", show.Stdout, show.Stderr)
+	if !strings.Contains(show.Stdout, "[1] README.md: failed the fact check") || !strings.Contains(show.Stdout, "agy gemini-4-hydrogen-high") {
+		t.Errorf("klaus jobs show lacks the proposal or the writer's model:\n%s%s", show.Stdout, show.Stderr)
 	}
 }
 

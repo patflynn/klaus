@@ -228,8 +228,51 @@ type ProseConfig struct {
 	Enabled        *bool    `json:"enabled,omitempty"`         // default: true
 	Order          []string `json:"order,omitempty"`           // writer preference; default: agy, codex, claude
 	Paths          []string `json:"paths,omitempty"`           // files beyond Markdown and READMEs whose added lines are prose
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // per model call; default: 180
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"` // per model call; default: 600
 	MaxInputBytes  int      `json:"max_input_bytes,omitempty"` // diff sent to the models; default: 40000
+	// Writer and Checker give the model and effort the writer and the fact
+	// checker run at, by backend; see ProseWriter and ProseChecker.
+	Writer  map[string]ProseModel `json:"writer,omitempty"`
+	Checker map[string]ProseModel `json:"checker,omitempty"`
+}
+
+// ProseModel is the model and effort a backend runs at in the prose pass.
+type ProseModel struct {
+	Model  string `json:"model,omitempty"`
+	Effort string `json:"effort,omitempty"`
+}
+
+// proseWriterModels are the writer's models, by backend, when
+// pre_review.prose.writer names none.
+var proseWriterModels = map[string]string{"agy": "gemini-4-hydrogen-high"}
+
+// ProseWriter returns the model and effort the prose pass's writer runs at
+// on backend kind: each as pre_review.prose.writer.<kind> sets it, else the
+// model from proseWriterModels, else the backend's general default.
+func (c Config) ProseWriter(kind string) (model, effort string) {
+	return c.proseModel(kind, c.Prose().Writer, proseWriterModels[kind])
+}
+
+// ProseChecker returns the model and effort the prose pass's fact checker
+// runs at on backend kind: pre_review.prose.checker.<kind>, else the
+// backend's general default.
+func (c Config) ProseChecker(kind string) (model, effort string) {
+	return c.proseModel(kind, c.Prose().Checker, "")
+}
+
+func (c Config) proseModel(kind string, set map[string]ProseModel, builtin string) (model, effort string) {
+	general := c.AgentDefaults(kind)
+	model, effort = set[kind].Model, set[kind].Effort
+	if model == "" {
+		model = builtin
+	}
+	if model == "" {
+		model = general.Model
+	}
+	if effort == "" {
+		effort = general.Effort
+	}
+	return model, effort
 }
 
 // Prose returns the prose pass's config with its defaults filled in.
@@ -246,7 +289,7 @@ func (c *Config) Prose() ProseConfig {
 		p.Order = []string{"agy", "codex", "claude"}
 	}
 	if p.TimeoutSeconds <= 0 {
-		p.TimeoutSeconds = 180
+		p.TimeoutSeconds = 600
 	}
 	if p.MaxInputBytes <= 0 {
 		p.MaxInputBytes = 40000
