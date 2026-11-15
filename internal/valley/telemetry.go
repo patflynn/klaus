@@ -21,8 +21,9 @@ const FollowTimeout = 6 * time.Minute
 const maxTelemetryLine = 8 << 20
 
 // wakeTypes are the telemetry record types after which a change can stand
-// elsewhere: the integrator's decision on a request, and the check worker's
-// stored evidence and the end of its batch.
+// elsewhere: the integrator's decision on a request, stored evidence, and
+// the end of the check worker's batch. Records of every other type, from
+// any stream, pass without a wake.
 var wakeTypes = map[string]bool{"decision": true, "evidence.stored": true, "batch.end": true}
 
 // telemetryLine is the part of a valley-telemetry/v1 answer line klaus
@@ -33,16 +34,18 @@ type telemetryLine struct {
 	Cursor string `json:"cursor"`
 }
 
-// Follow runs `valley telemetry --json follow --source <source>` in dir,
-// after since when it isn't "", until the host ends the follow. It calls
-// wake as each record arrives whose type can move a change: a decision,
-// stored evidence or a batch's end. A record says only that something
-// happened, never where a change stands. Follow returns the cursor the
-// follow ended with, to resume from; an answer that doesn't end with one is
-// an error, as is a valley without telemetry or a key without the host's
-// observe grant.
-func Follow(ctx context.Context, dir, source, since string, wake func()) (string, error) {
-	args := []string{"telemetry", "--json", "follow", "--source", source}
+// Follow runs `valley telemetry --json follow` in dir, after since when it
+// isn't "", until the host ends the follow. Naming no source, it takes one
+// of the principal's follow slots on the host for every stream the
+// principal may observe. It calls wake as each record arrives whose type
+// can move a change: a decision, stored evidence or a batch's end. A record
+// says only that something happened, never where a change stands. Follow
+// returns the cursor the follow ended with, one position per stream, to
+// resume from; an answer that doesn't end with one is an error, as is a
+// valley without telemetry, a key without the host's observe grant, or a
+// host whose follow slots for the principal are all taken.
+func Follow(ctx context.Context, dir, since string, wake func()) (string, error) {
+	args := []string{"telemetry", "--json", "follow"}
 	if since != "" {
 		args = append(args, "--since", since)
 	}
