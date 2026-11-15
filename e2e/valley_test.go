@@ -33,13 +33,14 @@ import (
 // writeKnot wrote (see there). Its telemetry verb is unknown, as in a valley
 // without telemetry, until valley.has-telemetry exists; then a follow prints
 // a header, the records of valley.telemetry.jsonl once that appears (one
-// follow takes them), and an end line with a cursor, within 2s.
+// follow takes them), and an end line with a cursor, within 2s. A follow
+// that starts while another runs creates valley.follow-overlap.
 func (h *Harness) installValleyStub() {
 	h.t.Helper()
 	h.WriteStub("valley", fmt.Sprintf(`#!/usr/bin/env bash
 dir=%q
-# One write per call, so calls made at once (a follow per telemetry source)
-# don't interleave their words.
+# One write per call, so calls made at once (a follow beside a check) don't
+# interleave their words.
 line="$PWD:"; for a in "$@"; do line="$line $a"; done
 printf '%%s\n' "$line" >> "$dir/valley.argv"
 case "$1" in
@@ -90,11 +91,13 @@ unready)
   ;;
 telemetry)
   if [ ! -f "$dir/valley.has-telemetry" ]; then echo "valley: unknown verb $1" >&2; exit 2; fi
+  if ! mkdir "$dir/valley.following" 2>/dev/null; then : > "$dir/valley.follow-overlap"; fi
   printf '{"kind":"header","format":"valley-telemetry/v1","op":"follow"}\n'
   for i in 1 2 3 4 5 6 7 8 9 10; do
     if mv "$dir/valley.telemetry.jsonl" "$dir/valley.telemetry.$$" 2>/dev/null; then cat "$dir/valley.telemetry.$$"; break; fi
     sleep 0.2
   done
+  rmdir "$dir/valley.following" 2>/dev/null
   printf '{"kind":"end","cursor":"c%%s","truncated":false}\n' "$$"
   ;;
 changes)
@@ -581,11 +584,11 @@ func TestDashboardValleyFailureFallsBackToGit(t *testing.T) {
 }
 
 // TestDashboardWakesOnValleyDecision runs the real dashboard over a valley
-// change while the fake valley's telemetry reports a landing: the decision
-// wakes the integration check at once, well before the minute's check, a
-// burst of records costs one check, and each follow resumes from the cursor
-// the last one ended with. The listing, not the record, says the change
-// landed.
+// change while the fake valley's telemetry reports a landing: the host is
+// followed by one follow at a time, of every stream, the decision wakes the
+// integration check at once, well before the minute's check, a burst of
+// records costs one check, and each follow resumes from the cursor the last
+// one ended with. The listing, not the record, says the change landed.
 func TestDashboardWakesOnValleyDecision(t *testing.T) {
 	t.Parallel()
 	h := NewHarness(t)
@@ -610,18 +613,17 @@ func TestDashboardWakesOnValleyDecision(t *testing.T) {
 
 	_, screen := h.startDashboard(170)
 	screen("READY  v1@1111111")
-	// Both sources are followed, from the run's clone.
+	// Every stream is followed, from the run's clone.
 	for deadline := time.Now().Add(15 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		var integrator, worker bool
+		followed := false
 		for _, c := range h.valleyCalls("telemetry") {
-			integrator = integrator || strings.HasPrefix(c, h.RepoDir+": telemetry --json follow --source integrator")
-			worker = worker || strings.HasPrefix(c, h.RepoDir+": telemetry --json follow --source worker")
+			followed = followed || c == h.RepoDir+": telemetry --json follow"
 		}
-		if integrator && worker {
+		if followed {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the dashboard should follow the integrator and worker sources; valley calls: %q", h.valleyCalls(""))
+			t.Fatalf("the dashboard should follow the host's every stream; valley calls: %q", h.valleyCalls(""))
 		}
 	}
 	if calls := h.valleyCalls("changes"); len(calls) != 1 {
@@ -653,9 +655,15 @@ func TestDashboardWakesOnValleyDecision(t *testing.T) {
 	}
 	resumed := false
 	for _, c := range h.valleyCalls("telemetry") {
-		resumed = resumed || strings.Contains(c, " --since c")
+		resumed = resumed || strings.HasPrefix(c, h.RepoDir+": telemetry --json follow --since c")
+		if strings.Contains(c, "--source") {
+			t.Errorf("a follow should name no source, so one follow carries every stream: %q", c)
+		}
 	}
 	if !resumed {
 		t.Errorf("a follow should resume from the last one's cursor; valley calls: %q", h.valleyCalls("telemetry"))
+	}
+	if _, err := os.Stat(filepath.Join(h.E2EDir, "valley.follow-overlap")); err == nil {
+		t.Errorf("the dashboard should hold one follow of the host at a time; valley calls: %q", h.valleyCalls("telemetry"))
 	}
 }

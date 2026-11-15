@@ -28,26 +28,25 @@ type valleyWakeCheckMsg struct{}
 // so the burst costs one check.
 const wakeSettle = 500 * time.Millisecond
 
-// telemetrySources are the valley telemetry sources whose records can move
-// a change: the integrator's decisions, and the check worker's evidence.
-var telemetrySources = []string{"integrator", "worker"}
-
 const (
-	// followFloor is the least time between two follows of one source, so a
+	// followFloor is the least time between two follows of one host, so a
 	// host that ends each follow at once isn't asked in a busy loop.
 	followFloor = time.Second
 	// followTries is how many follows in a row may fail, a little apart,
 	// before the dashboard says so and asks only every followRetry.
 	followTries = 3
-	// followRetry is how long a source that keeps failing waits between
-	// follows: the minute's check carries the dashboard until one succeeds.
+	// followRetry is how long a host whose follows keep failing waits
+	// between follows: the minute's check carries the dashboard until one
+	// succeeds.
 	followRetry = 10 * time.Minute
 )
 
 // valleyWaker follows the telemetry of each valley host the dashboard's
-// valley changes live on, from one checkout per host, and says on its wake
-// channel when a record arrives that can move a change. Records that arrive
-// before the dashboard reads the channel are one wake.
+// valley changes live on, with one follow of every stream from one checkout
+// per host, so a dashboard holds one of a principal's follow slots per
+// host. It says on its wake channel when a record arrives that can move a
+// change. Records that arrive before the dashboard reads the channel are
+// one wake.
 type valleyWaker struct {
 	wake   chan struct{}
 	want   chan []string // the checkouts to follow from; only the latest counts
@@ -123,9 +122,9 @@ func (w *valleyWaker) poke() {
 	}
 }
 
-// run follows each tracked host's sources, once per host, until ctx ends.
-// A host is followed from one of its tracked checkouts; when that checkout
-// is no longer tracked, its follows restart from another.
+// run follows each tracked host's telemetry, once per host, until ctx
+// ends. A host is followed from one of its tracked checkouts; when that
+// checkout is no longer tracked, its follow restarts from another.
 func (w *valleyWaker) run(ctx context.Context) {
 	type following struct {
 		dir  string
@@ -167,22 +166,21 @@ func (w *valleyWaker) run(ctx context.Context) {
 			}
 			fctx, stop := context.WithCancel(ctx)
 			followers[host] = following{dir: dir, stop: stop}
-			for _, source := range telemetrySources {
-				go w.follow(fctx, host, dir, source)
-			}
+			go w.follow(fctx, host, dir)
 		}
 	}
 }
 
-// follow follows one source of host's telemetry from dir, resuming each
-// follow where the last ended, until ctx ends. A failing follow is retried
-// a little later, and after followTries failures in a row, logged once and
-// retried only every followRetry.
-func (w *valleyWaker) follow(ctx context.Context, host, dir, source string) {
+// follow follows host's telemetry from dir, resuming each follow where the
+// last ended, until ctx ends. A failing follow, a refusal because the
+// principal's follow slots are taken among them, is retried a little later,
+// and after followTries failures in a row, logged once and retried only
+// every followRetry.
+func (w *valleyWaker) follow(ctx context.Context, host, dir string) {
 	cursor, failures := "", 0
 	for {
 		started := time.Now()
-		next, err := valley.Follow(ctx, dir, source, cursor, w.poke)
+		next, err := valley.Follow(ctx, dir, cursor, w.poke)
 		if ctx.Err() != nil {
 			return
 		}
@@ -194,7 +192,7 @@ func (w *valleyWaker) follow(ctx context.Context, host, dir, source string) {
 			pause = time.Second << (failures - 1)
 			if failures >= followTries {
 				pause = followRetry
-				w.noteQuiet(host, source, err)
+				w.noteQuiet(host, err)
 			}
 		}
 		if pause > 0 {
@@ -209,7 +207,7 @@ func (w *valleyWaker) follow(ctx context.Context, host, dir, source string) {
 
 // noteQuiet logs, once per host, that its telemetry can't be followed, so
 // its changes are checked each minute only.
-func (w *valleyWaker) noteQuiet(host, source string, err error) {
+func (w *valleyWaker) noteQuiet(host string, err error) {
 	w.quietMu.Lock()
 	defer w.quietMu.Unlock()
 	if w.quiet[host] {
@@ -217,7 +215,7 @@ func (w *valleyWaker) noteQuiet(host, source string, err error) {
 	}
 	w.quiet[host] = true
 	w.logger.Info("can't follow the valley host's telemetry; checking its changes each minute",
-		"host", host, "source", source, "err", err)
+		"host", host, "err", err)
 }
 
 // originHost returns the host of the origin of the checkout in dir: the
