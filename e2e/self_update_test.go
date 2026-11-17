@@ -44,7 +44,7 @@ case "$1 $2" in
   out="$store/$rev-klaus-0.4.1-$short"
   mkdir -p "$out/bin"
   if [ -e "$dir/status.fail" ]; then status='echo "error: cannot read run state" >&2; exit 1'; else status='echo "No runs found."'; fi
-  printf '#!/usr/bin/env bash\ncase "$1" in\n--version) echo "klaus version 0.4.1-%%s";;\nstatus) %%s;;\nesac\n' "$short" "$status" > "$out/bin/klaus"
+  printf '#!/bin/sh\ncase "$1" in\n--version) echo "klaus version 0.4.1-%%s";;\nstatus) %%s;;\nesac\n' "$short" "$status" > "$out/bin/klaus"
   chmod +x "$out/bin/klaus"
   echo "$out";;
 "profile list")
@@ -417,7 +417,7 @@ func TestDashboardRestartsOntoNewKlaus(t *testing.T) {
 	if err := os.MkdirAll(store, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf(`#!/usr/bin/env bash
+	script := fmt.Sprintf(`#!/bin/sh
 [ "$1" = --version ] && { echo "klaus version 9.9.9-feedbee"; exit 0; }
 dir=%q
 printf '%%s\n' "$@" > "$dir/new.argv"
