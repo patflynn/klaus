@@ -728,6 +728,9 @@ make test-e2e   # end-to-end tests against a real, isolated tmux server
 make vet        # go vet ./...
 ```
 
+The flake runs the build and test suites in the nix build sandbox as `checks`:
+`nix build .#checks.x86_64-linux.<name>` (`build`, `unit`, `vet` or `e2e`).
+
 The e2e suite (`e2e/`, guarded by the `e2e` build tag so `go test ./...` is
 unaffected) drives the real `klaus` binary against a private tmux server and
 real git repositories, faking only `claude`/`gh`. It requires `tmux` on PATH.

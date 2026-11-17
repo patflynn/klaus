@@ -109,9 +109,14 @@ func (h *Harness) installKlausBinary() {
 }
 
 // WriteStub writes an executable script into BinDir, shadowing any real binary
-// of the same name for klaus invocations in this harness.
+// of the same name for klaus invocations in this harness. A script that starts
+// with "#!/usr/bin/env bash" runs under the bash on PATH, named by its path:
+// the nix build sandbox the e2e check runs in has no /usr/bin/env.
 func (h *Harness) WriteStub(name, script string) {
 	h.t.Helper()
+	if rest, ok := strings.CutPrefix(script, "#!/usr/bin/env bash\n"); ok {
+		script = "#!" + mustBash(h.t) + "\n" + rest
+	}
 	p := filepath.Join(h.BinDir, name)
 	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
 		h.t.Fatalf("writing stub %s: %v", name, err)

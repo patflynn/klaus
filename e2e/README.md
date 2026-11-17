@@ -11,15 +11,21 @@ _finalize` pipeline, worktree lifecycle, and run-state persistence.
 make test-e2e
 # or
 go test -tags e2e ./e2e/...
+# or, inside the nix build sandbox
+nix build .#checks.x86_64-linux.e2e
 ```
 
 The suite is guarded by the `e2e` build tag, so the default `go test ./...`
 (and the `build-and-test` CI job) never compile or run it. Requirements:
 
-- `tmux` and `git` on `PATH` (real, used as-is)
+- `tmux`, `git` and `bash` on `PATH` (real, used as-is)
 - `go` (the binary is built once per run by `TestMain`)
 
 A dedicated `e2e` CI job runs the suite on `ubuntu-latest`.
+
+The nix check runs the suite with no network, no home directory, no terminal and
+no `/usr/bin/env`. `WriteStub` runs `#!/usr/bin/env bash` stubs under the `bash`
+on `PATH`; scripts written any other way need `#!/bin/sh`.
 
 ## Isolation
 
